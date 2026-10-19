@@ -59,6 +59,8 @@ async def config_get(connection, ref, params):
     policy = _authorize(connection, ref, params)
     if 'cwd' in params and (key != 'project' or not isinstance(params['cwd'], str)):
         raise RuntimeStoreError('invalid_params')
+    if key == 'voice':
+        return _voice(connection, ref)
     agent = connection.authority.agent(ref) if ref.session_id else None
 
     def read():
@@ -97,6 +99,65 @@ async def config_get(connection, ref, params):
                 raise RuntimeStoreError('invalid_params')
             return getters[key]()
     return await asyncio.to_thread(read)
+
+
+def session_voice_mode(connection, ref):
+    """``off`` / ``voice_only`` / ``all``: the session's ``/voice`` mode as the messaging handler stored it."""
+    runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
+    modes = getattr(runner, '_voice_mode', None) or {}
+    return modes.get(runner._voice_key_for_source(live.source), 'off')
+
+
+def local_voice_enabled(session_id):
+    """True/False for a local session the running owner holds (its gateway ``/voice`` mode), else
+    None (no owner in this process, or not one of its sessions: the sidecar's env flag applies)."""
+    from gateway.run_api import _ACTIVE_RUNNER
+    from gateway.session_authorities import all_authorities
+    if _ACTIVE_RUNNER is None or not isinstance(session_id, str) or not session_id:
+        return None
+    for authority in all_authorities(_ACTIVE_RUNNER):
+        live = getattr(authority, 'sessions', {}).get(session_id)
+        if live is not None:
+            modes = getattr(_ACTIVE_RUNNER, '_voice_mode', None) or {}
+            return modes.get(_ACTIVE_RUNNER._voice_key_for_source(live.source), 'off') != 'off'
+    return None
+
+
+def set_local_voice_mode(session_id, mode):
+    """The one writer for a local session's voice mode outside ``/voice`` (wake, spoken stop): sets
+    and persists the owner's per-session mode. True when the running owner holds the session, else
+    None (the sidecar's env flag applies)."""
+    from gateway.run_api import _ACTIVE_RUNNER
+    from gateway.session_authorities import all_authorities
+    if _ACTIVE_RUNNER is None or not isinstance(session_id, str) or not session_id:
+        return None
+    for authority in all_authorities(_ACTIVE_RUNNER):
+        live = getattr(authority, 'sessions', {}).get(session_id)
+        if live is not None:
+            _ACTIVE_RUNNER._voice_mode[_ACTIVE_RUNNER._voice_key_for_source(live.source)] = mode
+            _ACTIVE_RUNNER._save_voice_modes()
+            local_voice_transition(live.source, mode)
+            return True
+    return None
+
+
+def local_voice_transition(source, mode):
+    """A local session's voice mode went ``off``: end the push-to-talk capture it started in this
+    process (and drop its late callbacks), as the sidecar's ``voice.toggle off`` did. Another
+    session's capture is left alone."""
+    import sys
+    from gateway.config import Platform
+    server = sys.modules.get('tui_gateway.server')
+    if mode == 'off' and server is not None and getattr(source, 'platform', None) == Platform.LOCAL:
+        server._stop_session_voice_capture(source.chat_id)
+
+
+def _voice(connection, ref):
+    """The session's own ``/voice`` mode, so Ink mirrors the gateway's per-session state instead of
+    the sidecar's process-global ``HERMES_VOICE`` (T9)."""
+    if not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    return {'value': session_voice_mode(connection, ref)}
 
 
 def _fast(connection, ref, policy, agent, cfg):

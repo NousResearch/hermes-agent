@@ -1,4 +1,3 @@
-# health: allow FILE_LINES -- preserve platform create_time on inbound messages
 """
 Feishu/Lark platform adapter.
 

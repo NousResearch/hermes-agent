@@ -1583,8 +1583,14 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
     return
   }
 
+  // The family is the opened session's own profile's rows: another profile's same-id session is a
+  // different conversation. Its owner is the first matching row, recents first as selection reads them.
+  // (Local normalize: importing @/store/profile here would be circular.)
+  const profileOf = (row: SessionInfo) => (row.profile ?? '').trim() || 'default'
   const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
-  const familyIds = new Set<string>(lineageAliases(storedSessionId, rows))
+  const opened = rows.find(row => sessionMatchesStoredId(row, storedSessionId))
+  const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }

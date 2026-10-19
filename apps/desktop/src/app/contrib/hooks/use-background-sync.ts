@@ -790,7 +790,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
-    noteLiveSessionSource(storedSessionId, session.source)
+    noteLiveSessionSource(storedSessionId, session.source, profileKey)
 
     if (working) {
       workingStoredIds.add(storedSessionId)

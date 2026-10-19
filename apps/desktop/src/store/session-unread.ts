@@ -6,6 +6,7 @@ import { readKey } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $projectTree } from './project-tree'
 import {
   $cronSessions,
   $lastReadAtBySessionId,
@@ -284,7 +285,9 @@ function writeUnread(transientId: string, profile: string, durableId: string) {
   setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
 }
 
-/** Stamped completions that arrived before their admission was noted, keyed by admission. */
+/** Stamped completions that arrived before their admission was noted, keyed by admission. Every
+ *  completion lands here first; a turn this Desktop never sent (a chat or CLI turn) never gets its
+ *  admission noted, so its entry is expected to stay unmatched until the cap evicts it. */
 const earlyCompletions = new Map<
   string,
   { storedSessionId: string; focused: boolean; profile?: string; completedAt: number }
@@ -324,23 +327,48 @@ function resolveOwnedRow(storedSessionId: string, profile?: string): SessionInfo
     : resolveLoadedRow(storedSessionId)
 }
 
-/** Sources the live poll reported, by stored id: a messaging turn can settle before its row loads. */
-const liveSources = new Map<string, string>()
+/** A project-tree row for *storedSessionId* (in *profile*'s bucket when one is named). */
+function projectTreeRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
+  return $projectTree
+    .get()
+    .flatMap(project => [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ])
+    .find(
+      row =>
+        sessionMatchesStoredId(row, storedSessionId) &&
+        (!profile || profileKeyForRow(row) === normalizeProfileKey(profile))
+    )
+}
 
-/** `session.active_list` named `storedSessionId`'s source. */
-export function noteLiveSessionSource(storedSessionId: string, source: null | string | undefined) {
+/** Sources the live poll reported, by profile and stored id: a messaging turn can settle before its row
+ *  loads, and another profile's same-id session is a different session. */
+const liveSources = new Map<string, string>()
+const liveSourceKey = (profile: null | string | undefined, storedSessionId: string) =>
+  `${normalizeProfileKey(profile)}\n${storedSessionId}`
+
+/** `profile`'s `session.active_list` named `storedSessionId`'s source. */
+export function noteLiveSessionSource(
+  storedSessionId: string,
+  source: null | string | undefined,
+  profile: null | string | undefined
+) {
   if (source) {
-    liveSources.set(storedSessionId, source)
+    liveSources.set(liveSourceKey(profile, storedSessionId), source)
     trimOldest(liveSources)
   }
 }
 
 /** A messaging conversation delivers its completion to its own platform; a
- *  Desktop observer is not an unread recipient of it at the busy-to-idle edge. */
+ *  Desktop observer is not an unread recipient of it at the busy-to-idle edge. Looks in every loaded
+ *  slice, the project tree included: it lists messaging rows and is the only loaded copy of one older
+ *  than the messaging page. */
 export function isMessagingCompletion(storedSessionId: string, profile?: string): boolean {
-  const row = resolveOwnedRow(storedSessionId, profile)
+  const row = resolveOwnedRow(storedSessionId, profile) ?? projectTreeRow(storedSessionId, profile)
+  const polled = liveSources.get(liveSourceKey(profile ?? $activeGatewayProfile.get(), storedSessionId))
 
-  return isMessagingSource(row ? row.source : liveSources.get(storedSessionId))
+  return isMessagingSource(row ? row.source : polled)
 }
 
 /** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface

@@ -534,7 +534,7 @@ def _memory_parts(agent: Any) -> list[str]:
     # configuration has already gated off (#81014).
     if agent._memory_manager:
         try:
-            from agent.memory_manager import memory_provider_tools_exposed as _mem_exposed
+            from agent.memory_manager_tools import memory_provider_tools_exposed as _mem_exposed
         except Exception:
             _mem_exposed = None
         if _mem_exposed is None or _mem_exposed(agent):

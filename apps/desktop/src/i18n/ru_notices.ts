@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { ruDesktopCommands } from './ru_desktop_commands'
 import { ruSessionCommands } from './ru_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ru.ts.
@@ -24,7 +25,11 @@ export const ruNotices = {
       'Чат занят: изменение MCP применится, когда завершится текущий ход и MCP будет перезагружен снова, или при повторном открытии чата',
     mcpReloadNotInChat: server => `${server} не включён в этом чате`,
     mcpReloadUnavailable: servers => `Не удалось подключиться: ${servers}`,
-    sessionCommands: ruSessionCommands
+    compactedTurnUnavailable:
+      'Это сообщение было сжато в краткое изложение при сжатии чата, поэтому его больше нельзя восстановить или изменить.',
+    staleTurnUnavailable: 'Этого сообщения больше нет в истории этого чата.',
+    sessionCommands: ruSessionCommands,
+    desktopCommands: ruDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Компьютер ушёл в сон, пока Hermes работал',

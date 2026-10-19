@@ -46,6 +46,8 @@ def _toggles():
         'density': ('tui_compact', {'on': True, 'off': False},
                     lambda d: not bool(d.get('tui_compact', False)), on_off),
         'battery': ('battery', _BOOL_WORDS, lambda d: not bool(d.get('battery', False)), on_off),
+        # The classic CLI's /timestamps key: [HH:MM] on transcript rows (T10).
+        'timestamps': ('timestamps', _BOOL_WORDS, lambda d: not bool(d.get('timestamps', False)), on_off),
         'statusbar': ('tui_statusbar', {'on': 'top', **{m: m for m in _STATUSBAR_MODES}},
                       lambda d: 'top' if _statusbar(d.get('tui_statusbar', 'top')) == 'off' else 'off', str),
         'mouse': ('mouse_tracking', _MOUSE_TRACKING_ALIASES,
@@ -341,6 +343,8 @@ async def _set_command_setting(connection, ref, params):
     if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
         raise RuntimeStoreError('invalid_params')
     live, runner = connection.authority.sessions[ref.session_id], connection.authority.runner
+    from gateway.session_setting_commands import commit_reasoning_command
+    await commit_reasoning_command(connection.authority, connection.actor, ref, value, scope == 'global')
 
     def apply():
         with _profile_runtime_scope(Path(connection.authority.profile_id)):

@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Para subir registros completos, usa `hermes debug share` desde la CLI."
     share_hint: "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
     report_label: "Informe"
+    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug` para subir el informe resumido."
   deny:
     stale: "❌ Comando denegado (la aprobación había caducado)."
     no_pending: "No hay ningún comando pendiente que denegar."
@@ -445,6 +446,9 @@ gateway:
     state_no: "No"
     queued: "**Seguimientos en cola:** {count}"
     platforms: "**Plataformas conectadas:** {platforms}"
+  discard:
+    nothing: "Nada que descartar: este chat no tiene ningún turno perdido en un reinicio."
+    done: "🗑️ Se descartaron {count} turno(s) perdido(s); no se volvieron a ejecutar. Tus mensajes guardados se responderán ahora."
   stop:
     stopped_pending: "⚡ Detenido. El agente aún no había comenzado — puedes continuar esta sesión."
     stopped: "⚡ Detenido. Puedes continuar esta sesión."
@@ -1530,6 +1534,8 @@ slash:
     description: "Importar un archivo de perfil compartido como nuevo perfil"
   stop:
     description: "Terminar todos los procesos en segundo plano en ejecución"
+  discard:
+    description: "Descarta un turno perdido al reiniciar Hermes para que la cola de este chat continúe"
   pause:
     description: "Pausar todo el trabajo nuevo globalmente (parada de emergencia); '/pause off' reanuda"
   deny:
@@ -1683,6 +1689,21 @@ slash:
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
+  modern:
+    thought_for: "Pensó durante {seconds}s"
+    thought: "Pensó"
+    working: "Trabajando…"
+    preparing: "Preparando {what}…"
+    hint_steer: "guiar"
+    hint_queue: "encolar"
+    hint_interrupt: "interrumpir"
+    hint_stop: "detener"
+    hint_commands: "comandos"
+    hint_files: "archivos"
+    hint_shell: "shell"
+    placeholder_busy_steer: "escribe para guiar este turno · Tab lo encola para después"
+    placeholder_busy_interrupt: "escribe para redirigir este turno · Tab lo encola para después"
+    placeholder_busy_queue: "escribe para encolar un mensaje para después de este turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "No se pudo cargar la facturación"
@@ -2226,6 +2247,7 @@ cli:
     queue_heading: "Cola · {count} en cola · /queue list{controls}"
     more_queued: "+{count} más"
     transcript_unavailable: "La transcripción en vivo aún no está disponible."
+    control_pending: "Enviando…"
     steer_prompt: "Redirigir: "
     roster_empty: "No hay subagentes activos ni procesos en segundo plano. Los resultados llegan a la conversación."
     entry_gone: "Esta entrada ya no está activa."
@@ -2364,6 +2386,14 @@ cli:
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"
     moved: "Elemento {source} de la cola movido a {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "El gateway no lo encoló: {error}. No se encoló nada; envíalo de nuevo cuando termine el turno."
+    submit_unknown: "El gateway no respondió ({error}), así que el prompt puede estar ya en la cola. Revisa /queue list antes de enviarlo de nuevo."
+    move_gateway_fifo: "El gateway ejecuta los prompts en cola en el orden de envío; edita o elimina uno en su lugar."
+    remove_refused: "No se pudo quitar el elemento {index} de la cola: {error}"
+    edit_refused: "No se pudo editar el elemento {index} de la cola: {error}"
+    already_started: "El elemento {index} de la cola ya empezó; se ejecuta tal como se envió."
+    started_stopped: "El elemento {index} de la cola ya había empezado; el gateway lo detuvo."
+    change_unknown: "El gateway no respondió sobre el elemento {index} de la cola ({error}); revisa /queue list antes de reintentarlo."
   reload:
     env_reloaded: "Se recargó .env ({count} variable(s) actualizada(s))"
   steer:
@@ -3004,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   Volver al backend de navegador predeterminado"
       usage_status: "status       Mostrar el modo de navegador actual"
       usage_use: "use [off]    Cambiar al modo Browser Use (CLI 3.0) / volver a las herramientas integradas"
+      remote_gateway: "/browser connect y /browser disconnect gestionan un navegador Chromium en el host del gateway — solo disponible con un gateway local."
+      checking: "Comprobando la depuración remota del navegador Chromium en {url}..."
+      new_sessions_only: "Se aplica a sesiones nuevas — esta conserva sus herramientas actuales (/new para iniciar una)."
+      status_gateway_default: "🌐 Navegador: backend de navegador predeterminado del gateway (sin conexión CDP en vivo)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat pausado: {prompt}"

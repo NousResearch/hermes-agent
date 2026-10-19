@@ -227,12 +227,20 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))
         if changed.rowcount != 1:
             raise RuntimeStoreError('stale_generation')
-        return _row(_admission(conn, row['admission_id']))
+        claimed = _row(_admission(conn, row['admission_id']))
+        # The transcript high-water mark at the claim (``messages.id`` is AUTOINCREMENT across every
+        # session): a row above it on this conversation was written by this turn, so settlement can
+        # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
+        claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
+        return claimed
     return db._execute_write(write)
 
 
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
-                         result: dict | None = None, _transfers=None) -> dict:
+                         result: dict | None = None, _transfers=None, _terminal_write=None) -> dict:
+    """``_terminal_write(conn, row)`` is the owner's same-transaction effect (a transcript notice,
+    ``gateway.session_results.finish_result``); like ``resolve_unknown_session_input``'s it must
+    not commit, may run again on SQLite retry, and raising rolls the settlement back."""
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
     from hermes_state_terminal import compact_result, encode_result
@@ -245,6 +253,8 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
         _retire_admission_workers(conn, row, epoch)
+        if _terminal_write is not None:
+            _terminal_write(conn, row)
         if result is not None:
             from hermes_state_terminal import RESULT_PREFIX
             encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))
@@ -394,6 +404,43 @@ def rehome_queued_inputs(db, *, epoch: int, old_session_id: str, new_session_id:
             for sid in (old_session_id, new_session_id):
                 conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (sid,))
         return [row['admission_id'] for row in rows]
+    return db._execute_write(write)
+
+
+def retarget_local_automation(db, *, epoch: int, session_id: str, principal_id: str,
+                               old_targets, new_target: str) -> list[str]:
+    """Point a LOCAL owner's still-queued ``principal_id`` automation rows (a Bot Chat's queued
+    ``hermes peer dm`` turns, plugin and completion notices) that name a pre-reset transcript in
+    ``old_targets`` at ``new_target``, in one transaction (the compression-exhaustion auto-reset).
+    A LOCAL FIFO's owner is its receipt id and survives the reset; only the descriptor's ``target``
+    goes stale, and the drain refuses a stale one (``admission_conflict``), pausing the FIFO for
+    good. Admission id, request id and seq are kept; the digest is re-keyed to the new payload.
+    Nothing moves behind an ``unknown`` head. Returns the retargeted admission ids in FIFO order."""
+    for value in (session_id, principal_id, new_target, *old_targets):
+        _text(value)
+    old_targets = set(old_targets)
+
+    def write(conn):
+        _epoch(conn, epoch)
+        _session(conn, new_target)
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'",
+                        (session_id,)).fetchone():
+            return []
+        moved = []
+        for row in conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' "
+                                "AND principal_id=? ORDER BY seq", (session_id, principal_id)).fetchall():
+            payload = json.loads(row['payload_json'])
+            descriptor = payload.get('local_automation_v1') if isinstance(payload, dict) else None
+            if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
+                continue
+            descriptor['target'] = new_target
+            digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET payload_json=?,payload_digest=? WHERE admission_id=? AND status='queued'",
+                         (_json(payload), digest, row['admission_id']))
+            moved.append(row['admission_id'])
+        if moved:
+            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
+        return moved
     return db._execute_write(write)
 
 

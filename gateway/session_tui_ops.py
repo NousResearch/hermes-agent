@@ -22,13 +22,15 @@ from hermes_state_runtime import RuntimeStoreError
 
 def handlers(connection):
     return {'session.save': partial(save_session, connection),
+            'session.export': partial(export_session, connection),
             'reload.env': partial(reload_env, connection),
             'delegation.pause': partial(pause_delegation, connection),
             'rollback.list': partial(rollback, connection, kind='list'),
             'rollback.diff': partial(rollback, connection, kind='diff'),
             'rollback.restore': partial(rollback, connection, kind='restore'),
             'rollback.session_diff': partial(rollback, connection, kind='session_diff'),
-            'session.context_breakdown': partial(context_breakdown, connection)}
+            'session.context_breakdown': partial(context_breakdown, connection),
+            'session.history': partial(session_history, connection)}
 
 
 def _profile_home(authority):
@@ -79,6 +81,55 @@ async def save_session(connection, ref, params):
             raise RuntimeStoreError('storage_unavailable') from exc
         return {'file': str(path)}
     return await asyncio.to_thread(write)
+
+
+async def export_session(connection, ref, params):
+    """``session.export``: the ``/save`` transcript rendered for the CLIENT to write (json/md/html,
+    optional force-redaction). Nothing is written on the gateway host, so a remote Desktop and a
+    local Ink both save to the user's own disk (T10/T11)."""
+    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
+    fmt, redact = params.get('format', 'json'), params.get('redact', False)
+    if not isinstance(fmt, str) or not isinstance(redact, bool):
+        raise RuntimeStoreError('invalid_params')
+    from hermes_cli.session_export import default_save_filename, normalize_save_format
+    try:
+        fmt = normalize_save_format(fmt)
+    except ValueError:
+        raise RuntimeStoreError('invalid_params') from None
+    authority = connection.authority
+    from gateway.session_ancillary import physical_target
+    target = physical_target(authority, ref)
+
+    def render():
+        from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+        from hermes_state import SessionExportTooLargeError
+        try:
+            data = load_save_snapshot(authority.db, target, fmt)
+        except SessionExportTooLargeError as exc:
+            raise RuntimeStoreError('export_too_large') from exc
+        if not data:
+            raise RuntimeStoreError('not_found')
+        if redact:
+            from hermes_cli.session_export_md import redact_session_data
+            data = redact_session_data(data)
+        return render_session_for_save(data, fmt)
+    content = await asyncio.to_thread(render)
+    return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
+
+
+async def session_history(connection, ref, params):
+    """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
+    _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
+    authority = connection.authority
+    from gateway.session_local_recovery import transcript_target
+    # On the loop, as ``attach`` resolves it: a local restore publishes the live entry.
+    target = transcript_target(authority, ref)
+
+    def read():
+        from gateway.session_controls import display_projection
+        rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
+        return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
+    return await asyncio.to_thread(read)
 
 
 async def reload_env(connection, ref, params):
@@ -249,8 +300,8 @@ async def _rewind_last_turn(connection, ref):
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
     rows = await asyncio.to_thread(local_history, authority, ref)
-    target = next((row['row_id'] for row in reversed(rows)
-                   if isinstance(row.get('row_id'), int) and user_originated_turn_view(row) is not None), None)
+    target = next((row['row_id'] for row in reversed(rows) if isinstance(row.get('row_id'), int)
+                   and not row.get('archived') and user_originated_turn_view(row) is not None), None)
     if target is None:
         return 0
     from gateway.session_mutations import mutate_session

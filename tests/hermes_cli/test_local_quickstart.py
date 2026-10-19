@@ -66,7 +66,7 @@ def test_quickstart_without_recommendation_requires_explicit_choice(client, monk
 
     calls: list[tuple] = []
 
-    def download(job, plan, label):
+    def download(job, plan, label, entry=None):
         calls.append(("download", label))
 
     class Server:
@@ -336,7 +336,7 @@ def test_quickstart_prices_after_installing_the_engine(client, monkeypatch):
     monkeypatch.setattr(lm, "_runtime_target", lambda backend=None: ("b1", "vulkan"))
     monkeypatch.setattr(lm.binaries, "installed_engine", lambda *a, **k: None)
     monkeypatch.setattr(lm.binaries, "ensure_engine", lambda backend, **kw: installed.append(backend))
-    monkeypatch.setattr(lm, "_run_download_plan", lambda job, plan, label: downloaded.append(label))
+    monkeypatch.setattr(lm, "_run_download_plan", lambda job, plan, label, entry=None: downloaded.append(label))
     monkeypatch.setattr(lm, "_ensure_server", lambda *a, **k: None)
     monkeypatch.setattr(lm, "_assign_default", lambda job, model_id: assigned.append(model_id))
 

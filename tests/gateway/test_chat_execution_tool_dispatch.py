@@ -42,7 +42,7 @@ def dispatch(monkeypatch, branch, leaf):
         agent._context_engine_tool_names = {name}
         agent.context_compressor = SimpleNamespace(handle_tool_call=lambda *a, **k: leaf())
     def memory():
-        agent._memory_manager = SimpleNamespace(has_tool=lambda n: n == name, handle_tool_call=lambda *a: leaf())
+        agent._memory_manager = SimpleNamespace(has_tool=lambda n: n == name, handle_tool_call=lambda *a, **k: leaf())
     def registry():
         monkeypatch.setattr(model_tools, "handle_function_call", lambda *a, **k: leaf())
     {"inline": inline, "delegate": delegate, "context": context,

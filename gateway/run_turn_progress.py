@@ -87,8 +87,17 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
         verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
         payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
     authority.publish_execution(session_id, generation, kind, payload)
-    from gateway.session_api_turn import publish_api_tool_event
+    from gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
     publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
+    # A worker sends no progress events: progress-only observers get the executor's preview of its
+    # args and the frame's own verdict, taken before the result was bounded.
+    if kind == "tool.start":
+        from agent.display import build_tool_preview
+        publish_api_tool_progress(authority, session_id, generation, "tool.started", name,
+                                  build_tool_preview(name, args), args)
+    else:
+        publish_api_tool_progress(authority, session_id, generation, "tool.completed", name, None, None,
+                                  is_error=frame["is_error"], result=result)
     return True
 
 
@@ -796,7 +805,8 @@ class GatewayTurnProgressMixin:
         if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
             return
         ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
+        # The bot whose call the guild was resolved on (#139345), not the default profile's.
+        adapter = self._runner._delivery_adapter_for(ctx.source)
         if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
             return
         try:
@@ -868,6 +878,9 @@ class GatewayTurnProgressMixin:
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
             self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.publish_control_if_changed(self)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 

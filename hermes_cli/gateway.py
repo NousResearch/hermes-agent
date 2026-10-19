@@ -4647,11 +4647,11 @@ from hermes_cli.gateway_setup_wizard import (
     _all_platforms,
     _platform_status,
     _set_platform_unauthorized_dm_behavior,
-    _print_setup_header,
-    _confirm_reconfigure,
-    _offer_home_channel,
-    _save_env_values,
-    _prompt_csv,
+    print_setup_header,
+    confirm_reconfigure,
+    offer_home_channel,
+    save_env_values,
+    prompt_csv,
     _UNAUTHORIZED_ACCESS_CHOICES,
     _prompt_unauthorized_access,
     _telegram_auto_setup,
@@ -5445,12 +5445,11 @@ def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
         return
     from hermes_cli import main_dashboard as _dash
 
-    unit = _dash._get_systemd_service_for_pid(pid)
-    if unit is None:
+    owner = _dash._systemd_owner_for_pid(pid)
+    if owner is None:
         return
-    scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
-    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
-    cmds = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [user_cmd, system_cmd])
+    unit, scope = owner
+    cmds = _dash._systemd_restart_commands(unit, scope)
     _print_lines(
         "",
         f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",

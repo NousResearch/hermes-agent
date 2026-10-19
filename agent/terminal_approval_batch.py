@@ -62,7 +62,11 @@ class _TerminalSlot:
                     turn_id=getattr(self.batch.agent, "_current_turn_id", "") or "",
                 )
                 try:
-                    self.guard_key = (ref.args["command"], config["env_type"], tt._docker_has_host_access(config))
+                    # Key on what will actually run: a foreground `cmd &` executes as `cmd`.
+                    command = ref.args["command"]
+                    if not ref.args.get("background"):
+                        command = tt.trailing_amp_background_command(command) or command
+                    self.guard_key = (command, config["env_type"], tt._docker_has_host_access(config))
                     self.decision = tt._check_all_guards(*self.guard_key)
                 finally:
                     reset_current_observability_context(tokens)

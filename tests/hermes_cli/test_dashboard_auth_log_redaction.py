@@ -1,6 +1,7 @@
 """Regression tests for credential-safe Uvicorn diagnostics."""
 import logging
 import sys
+from io import StringIO
 
 import pytest
 from uvicorn.logging import AccessFormatter, DefaultFormatter
@@ -59,3 +60,20 @@ def test_config_is_independent_and_protects_protocol_and_access_channels():
         assert "gateway_query_credentials" in logger["filters"]
     for handler in second["handlers"].values():
         assert "gateway_query_credentials" in handler["filters"]
+
+
+def test_live_uvicorn_handler_redacts_protocol_url_without_replacing_log_config(monkeypatch):
+    from hermes_cli.web_server_lifecycle import _uvicorn_console_logging
+
+    output = StringIO()
+    parent = logging.getLogger("uvicorn")
+    access = logging.getLogger("uvicorn.access")
+    monkeypatch.setattr(parent, "handlers", [logging.StreamHandler(output)])
+    monkeypatch.setattr(access, "handlers", [])
+    monkeypatch.setattr(sys, "stdout", StringIO())
+    monkeypatch.setattr(parent, "level", logging.INFO)
+    _uvicorn_console_logging()
+    logging.getLogger("uvicorn.error").error("rejected /api/ws?ticket=synthetic-secret&profile=demo")
+    rendered = output.getvalue()
+    assert "synthetic-secret" not in rendered
+    assert "ticket=[REDACTED]" in rendered and "profile=demo" in rendered

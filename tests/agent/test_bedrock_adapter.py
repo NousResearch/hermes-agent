@@ -851,6 +851,20 @@ class TestCachePointRejectionRecovery:
         assert CACHE_POINT in first.kwargs["toolConfig"]["tools"]
         assert CACHE_POINT not in second.kwargs["toolConfig"]["tools"]
 
+    def test_call_converse_one_shot_carries_no_cache_point(self):
+        """call_converse is the auxiliary entry point: a system + single-user request with no
+        tools is never read back, so no section may carry a cachePoint (a pure cache write)."""
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+            "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            call_converse(region="us-east-1", model="us.anthropic.claude-sonnet-4-6",
+                          messages=[{"role": "system", "content": "Summarize."},
+                                    {"role": "user", "content": "TRANSCRIPT"}])
+        assert "cachePoint" not in repr(client.converse.call_args.kwargs)
+
     def test_call_converse_reraises_unrelated_errors(self):
         from agent.bedrock_adapter import call_converse
         client = MagicMock()

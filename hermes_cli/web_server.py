@@ -71,6 +71,7 @@ from hermes_cli.web_server_lifecycle import (
     _read_bound_port,
     _report_port_in_use,
     _start_parent_death_watchdog,
+    _uvicorn_console_logging,
     _warm_gateway_module,
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
@@ -370,8 +371,11 @@ def _require_token(request: Request) -> None:
     A verified native owner (``authenticate_native_http``) is the same-user
     principal the outer seams already accepted; local Desktop runs with no
     static token, so that principal must satisfy route-local policy too.
+    Hosted plugins receive this guard's decision via private IPC and request-local
+    state, not via a forwarded gateway credential or a process-wide bypass.
     """
-    if getattr(request.state, "native_http_principal", None):
+    if (getattr(request.state, "native_http_principal", None)
+            or getattr(request.state, "hosted_http_authenticated", None) is True):
         return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
@@ -1049,13 +1053,9 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         served_app = wrap_asgi_with_ws_tracking(app, app.state.ssh_isolated_clients)
         ping_interval, ping_timeout = TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S
 
-    from hermes_cli.dashboard_auth.log_redaction import redacted_uvicorn_log_config
-
+    _uvicorn_console_logging()  # log_config=None: uvicorn's dictConfig would close every live handler
     config = uvicorn.Config(
-        served_app, host=host, port=port, log_level="warning",
-        # WebSocket accept/reject URLs use uvicorn.error, not only access logs.
-        # Redact both channels even if an operator increases the log verbosity.
-        log_config=redacted_uvicorn_log_config(),
+        served_app, host=host, port=port, log_level="warning", log_config=None,
         access_log=False,
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs

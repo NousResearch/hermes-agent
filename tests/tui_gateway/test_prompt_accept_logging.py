@@ -115,7 +115,7 @@ def test_pre_worker_admission_refusal_settles_synthesized_submit_claim(turn_stub
     assert store.worker_finished("gw-session-key", 1)
     session = _session(running=True, profile_home=tmp_path)
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: True)
-    monkeypatch.setattr(server, "_admit_prompt_turn", lambda *args: None)
+    monkeypatch.setattr(server, "_admit_prompt_turn", lambda *args, **kwargs: None)
 
     assert server._run_prompt_submit("rid", "sid", session, "queued text") is False
     assert store.retire_for_handoff("gw-session-key", 1, "handoff")["status"] == "retired"

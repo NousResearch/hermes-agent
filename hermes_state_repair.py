@@ -534,7 +534,7 @@ def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
         return None, f"backup copy failed: {exc}"
 
 
-def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> None:
+def preflight_db_writability(db_path: Path, *, db_label: str = "state.db", directory_only: bool = False) -> None:
     """Refuse-or-repair read-only DB files BEFORE the first connection opens.
 
     A stray read-only ``state.db`` / ``-wal`` / ``-shm`` (sudo run, restored backup, copied dotfiles) otherwise
@@ -553,7 +553,8 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
         home = Path(get_hermes_home()).resolve()
     # SQLite needs a writable directory in every journal mode (WAL/SHM sidecars, or the DELETE-mode journal).
     sidecars = (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm"))
-    for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
+    files = () if directory_only else tuple((p, False) for p in (db_path, *sidecars) if p.is_file())
+    for p, is_dir in [(db_path.parent, True), *files]:
         if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
             continue
         # A concurrent quarantine renames the file between the is_file() snapshot

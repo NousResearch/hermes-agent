@@ -48,7 +48,7 @@ import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
 import { mutateCanonicalSession, openModelConfirmation } from './slash/canonicalSessionControls.js'
-import { loadSlashCatalog } from './slashCatalog.js'
+import { loadSlashCatalog, refreshSlashCatalogOnSkillsChange } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
@@ -1064,6 +1064,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     })
   }
 
+  // Shared-control settles and the skills.changed catalog refetch need no per-event state.
+  const handledBeforeSwitch = (ev: AnyGatewayEvent) =>
+    settleSharedPrompt(ev) || refreshSlashCatalogOnSkillsChange(ev, rpc, setCatalog)
+
   return (ev: AnyGatewayEvent) => {
     const sid = getUiState().sid
 
@@ -1078,7 +1082,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
-    if (settleSharedPrompt(ev)) {
+    if (handledBeforeSwitch(ev)) {
       return
     }
 
@@ -1334,7 +1338,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
 
           setVoiceEnabled(true)
-          await rpc('voice.toggle', { action: 'on' })
+          // A shared-owner session's voice mode is the owner's per-session /voice state (T9), the
+          // one voice.record gates on; the sidecar's voice.toggle flips only its global flag.
+          await (gw.isCanonical
+            ? gw.request('slash.exec', { command: 'voice on', session_id: sid })
+            : rpc('voice.toggle', { action: 'on' }))
           await rpc('voice.record', { action: 'start', session_id: sid })
         })().catch((e: unknown) => {
           sys(t('gatewayMsg.wake.failed', rpcErrorMessage(e)))

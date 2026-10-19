@@ -59,7 +59,7 @@ from hermes_cli.plugins_dispatch import (
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
-    PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
+    PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value, _plugin_home_key,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
 
@@ -128,7 +128,7 @@ VALID_HOOKS: set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset",
+    "on_session_finalize", "on_session_reset", "on_session_delete",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -195,10 +195,10 @@ VALID_HOOKS: set[str] = {
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
     # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
-    # Slash-command dispatch observer (#64204, observer-first per #64182 ground rule 3). Return values are
-    # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
-    # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
@@ -590,16 +590,8 @@ class PluginContext:
     def _tool_override_allowed(self, tool_name: str) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
         choice, not privilege escalation); others need ``tools.override`` via
-        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``).
-
-        Bundled plugins (shipped with Hermes core) are trusted by default — an override there is a
-        deliberate maintainer choice, not a third-party plugin trying to elevate privilege. For every other
-        source, the canonical check is :func:`plugin_capability_granted` with the ``tools.override``
-        capability — satisfied by EITHER the consent-flow grant
-        (``plugins.entries.<plugin_id>.granted_capabilities``) OR the deprecated legacy key
-        ``allow_tool_override: true`` (still honored for backward compatibility; #64228 reference
-        migration).
-        """
+        :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``,
+        still honored for backward compatibility; #64228)."""
         if self.manifest.source == "bundled":
             return True
         try:
@@ -634,6 +626,17 @@ class PluginContext:
         from hermes_cli.plugin_session import context_surface
         return context_surface(self._manager)
 
+    def post_message(self, text: str) -> Any:
+        """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
+        place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""
+        from hermes_cli.plugin_messages import post
+        return post(self, text)
+
+    async def apost_message(self, text: str) -> Any:
+        """``post_message`` for async code on the gateway loop (edit with ``await handle.aedit``)."""
+        from hermes_cli.plugin_messages import apost
+        return await apost(self, text)
+
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's
         own profile config, never the calling thread's ambient home)."""
@@ -664,7 +667,7 @@ class PluginContext:
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
+        (sync or async), plus the session-context keywords it declares (``plugin_command_dispatch``). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
         field; without it the command registers parameterless there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -1622,15 +1625,6 @@ _published_gateway_host_lock = threading.Lock()
 # aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
 _published_tui_message_injector: tuple[object, Callable] | None = None
 _published_tui_host_lock = threading.Lock()
-
-
-def _plugin_home_key() -> Path:
-    """Resolved active Hermes home — the key for per-profile plugin managers (plugins capture the
-    home at registration, so a process serving several profiles cannot share one manager)."""
-    try:
-        return get_hermes_home().expanduser().resolve()
-    except Exception:
-        return get_hermes_home().expanduser()
 
 
 def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:

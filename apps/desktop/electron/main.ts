@@ -406,6 +406,8 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
+import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
+import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -419,7 +421,14 @@ import {
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver } from './parent-process-identity'
-import { bundledPayload, installIdForRoot, type PayloadInfo, payloadPythonPath } from './payload-backend'
+import {
+  bundledPayload,
+  installIdForRoot,
+  type PayloadInfo,
+  payloadPythonPath,
+  payloadTicketRuntime,
+  requireBundledPayload
+} from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -475,18 +484,18 @@ import {
   fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
-  fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
-  pathWithRemoteOwnerScope,
+  isRemoteSessionRequestPath,
+  mergeRegistrySessionRows,
   type RegistrySessionSource,
+  remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
-  spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -511,6 +520,14 @@ import {
   createQuitTeardownCoordinator,
   type QuitTeardownTask
 } from './quit-teardown'
+import {
+  boundedInstallId,
+  createPrimaryInstallIdResolver,
+  INSTALL_ID_NEGATIVE_TTL_MS,
+  INSTALL_ID_TTL_MS,
+  probeCachedConnectionInstallId,
+  rememberConnectionInstallId
+} from './registry-backend-identity'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -542,6 +559,7 @@ import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
+import { registerSaveDialogIpc } from './save-text-file'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -3566,21 +3584,6 @@ function createNativePackagedStrategy(
 }
 
 /**
- * The bundled Python payload for a strategy whose update check runs inside
- * it. A stamp that names such a mechanism without a payload is a broken
- * install; say so instead of failing on `payload.storePython`.
- */
-function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): PayloadInfo {
-  const payload: PayloadInfo | null = bundledPayload(process.resourcesPath)
-
-  if (!payload) {
-    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
-  }
-
-  return payload
-}
-
-/**
  * The checkout updater strategy (windows-handoff / posix-handoff). The flow
  * lives in updater/checkout.ts; this is the composition root that hands it
  * the app shell's impure edges. The public checkUpdates/applyUpdates
@@ -4917,6 +4920,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
       command: payload.shim,
       args: [...backendArgs],
       env: { ...buildDesktopBackendEnv(), HERMES_RUNTIME_DIR: payload.toolsDir },
+      ...payloadTicketRuntime(payload),
       root: payload.repoDir,
       bootstrap: false,
       shell: false,
@@ -5100,6 +5104,8 @@ interface ResolvedHermesBackend {
   shell: boolean
   local?: string
   root?: string
+  ticketCommand?: string
+  ticketEnv?: NodeJS.ProcessEnv
   installStamp?: Readonly<InstallStamp> | null
   activeRoot?: string
   isPackaged?: boolean
@@ -6075,7 +6081,9 @@ async function waitForRemoteHermes(remote) {
     rememberLog('[cloud] boot: agent session rejected but portal session is live, running silent sign-in')
 
     try {
-      await cloudAgentSilentSignIn(remote.baseUrl)
+      // Boot re-runs on wake and renderer retries, not only on a click: keep
+      // the cascade hidden and let the overlay's Sign in button own any prompt.
+      await cloudAgentSilentSignIn(remote.baseUrl, { background: true })
     } catch (cascadeError) {
       rememberLog(`[cloud] boot: silent sign-in did not complete: ${cascadeError?.message || cascadeError}`)
 
@@ -7192,192 +7200,67 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
-// Open a gateway login window in the OAuth session partition, resolving once
-// the access-token cookie appears (login done) or rejecting if the user closes
-// the window first. The window navigates through the IDP and back to
-// /auth/callback, which sets the session cookies on the partition; we poll the
-// cookie jar rather than try to read the HttpOnly value.
-//
-// `silent` selects the URL the window loads, which decides interactive-vs-silent:
-//   - silent=false (default): load ``/login`` — the public interstitial that
-//     renders the "Log in with X" provider chooser. This is the interactive
-//     remote-gateway login the settings UI drives.
-//   - silent=true: load the PROTECTED root ``/`` instead. ``/login`` is a public
-//     route, so loading it NEVER triggers the gate's auto-SSO and always shows
-//     the chooser. Loading a protected page with no session cookie makes the
-//     gate run ``_auto_sso_response``: single registered provider + a live
-//     portal session in this partition → a silent 302 through
-//     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
-//     → ``/auth/callback``, which sets the gateway cookie with NO interactive
-//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
+// Open a gateway login window in the OAuth session partition; window mechanics
+// and the silent/background contract live in oauth-login-window.ts. A refused
+// background request is never a user gesture, so `background` (or a
+// withoutInteractiveOauthLogin scope) keeps the window hidden; only a
+// user-driven caller may show one. oauth-login-flights.ts keeps one flow per
+// cookie jar, so a burst of callers shares one window.
+const oauthLoginFlights = new OauthLoginFlights()
+
 function openOauthLoginWindow(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {
-  return new Promise((resolve, reject) => {
-    // Background roster work may silently renew a Cloud session, but must
-    // never turn an expired saved gateway into a visible login window.
-    const hiddenRecovery = background || !canShowInteractiveOauthLogin()
+  const identity = { connectionId, pendingAuthMode, pendingKind }
+  const unattended = background || !canShowInteractiveOauthLogin()
+  const partition = resolveOauthPartitionForUrl(baseUrl, identity)
 
-    if (!app.isReady()) {
-      reject(new Error('Desktop is not ready to start an OAuth login.'))
-
-      return
-    }
-
-    const sess = getOauthSessionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
+  return oauthLoginFlights.run(loginFlightKey(partition, baseUrl), unattended ? 'background' : 'foreground', () => {
+    const sess = app.isReady() ? getOauthSessionForUrl(baseUrl, identity) : null
 
     if (!sess) {
-      reject(new Error('OAuth session partition is unavailable.'))
-
-      return
+      throw new Error(
+        app.isReady() ? 'OAuth session partition is unavailable.' : 'Desktop is not ready to start an OAuth login.'
+      )
     }
 
-    let settled = false
-    let win = null
-    let pollTimer = null
-    let revealTimer = null
-    let deadlineTimer = null
+    return startOauthLoginWindow(
+      { baseUrl: normalizeRemoteBaseUrl(baseUrl), session: sess, silent, background: unattended },
+      {
+        createWindow: ({ session: windowSession, show, title }) =>
+          new BrowserWindow({
+            width: 520,
+            height: 720,
+            title,
+            autoHideMenuBar: true,
+            show,
+            webPreferences: {
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: true,
+              session: windowSession,
+              webSecurity: true
+            }
+          }),
+        hasSessionCookie: () => hasOauthSessionCookie(baseUrl, identity),
+        isExpectedNavigationAbort: isExpectedOauthNavigationAbort,
+        loadOptionsFor: loginUrl => {
+          const loginHeaders = headersForRemoteRequest(loginUrl)
+          rememberLog(
+            `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(loginUrl).host}`
+          )
 
-    const finish = err => {
-      if (settled) {
-        return
+          return oauthLoginLoadUrlOptions(loginHeaders)
+        },
+        log: rememberLog,
+        // #61457: mirror the fresh cookies before the jar can drop them again.
+        onLanded: () => void captureRemoteSessionCookiesIntoMirror(sess, partition, baseUrl),
+        // A crashed sign-in renderer never settles the promise; log it (#81290).
+        onWindowCreated: win =>
+          installWindowRendererLifecycle(win as BrowserWindow, { kind: 'oauth', callbacks: { log: rememberLog } })
       }
-
-      settled = true
-
-      if (pollTimer) {
-        clearInterval(pollTimer)
-      }
-
-      if (revealTimer) {
-        clearTimeout(revealTimer)
-      }
-
-      if (deadlineTimer) {
-        clearTimeout(deadlineTimer)
-      }
-
-      try {
-        if (win && !win.isDestroyed()) {
-          win.destroy()
-        }
-      } catch {
-        // window already torn down
-      }
-
-      if (err) {
-        reject(err)
-      } else {
-        // #61457: the jar just got the fresh session cookies — mirror them
-        // into memory immediately, before the jar can drop them again.
-        void captureRemoteSessionCookiesIntoMirror(
-          sess,
-          resolveOauthPartitionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind }),
-          baseUrl
-        )
-        resolve({ baseUrl, ok: true })
-      }
-    }
-
-    const checkCookie = async () => {
-      if (settled) {
-        return
-      }
-
-      if (await hasOauthSessionCookie(baseUrl, { connectionId, pendingAuthMode, pendingKind })) {
-        finish(null)
-      }
-    }
-
-    try {
-      win = new BrowserWindow({
-        width: 520,
-        height: 720,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
-        autoHideMenuBar: true,
-        // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
-        // well under a second, so the window normally never needs to show. We
-        // only reveal it as a fallback if the cascade DOESN'T complete quickly
-        // (e.g. the portal session lapsed and the gate fell through to the
-        // interactive chooser) — see the reveal timer below.
-        show: !silent && !hiddenRecovery,
-        webPreferences: {
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-          session: sess,
-          webSecurity: true
-        }
-      })
-    } catch (error) {
-      finish(error instanceof Error ? error : new Error(String(error)))
-
-      return
-    }
-
-    // Re-check the cookie jar on every successful navigation (the callback
-    // redirect is the moment cookies get set) plus a low-frequency poll as a
-    // belt-and-braces fallback for IDPs that finish via in-page JS.
-    win.webContents.on('did-navigate', () => void checkCookie())
-    win.webContents.on('did-redirect-navigation', () => void checkCookie())
-    win.webContents.on('did-frame-navigate', () => void checkCookie())
-    // Log-only lifecycle diagnostics: a crashed sign-in renderer is invisible
-    // to the window's promise path (it never settles), so without this the
-    // failure leaves no trace in desktop.log (#81290 follow-up).
-    installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
-    pollTimer = setInterval(() => void checkCookie(), 750)
-
-    // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
-    // auto-SSO didn't go through silently (no portal session, multi-provider,
-    // loop-guard tripped, etc.) and the window is now showing an interactive
-    // page. Reveal it so the user can complete sign-in manually rather than
-    // staring at nothing. Cleared on finish().
-    if (silent && win && !hiddenRecovery) {
-      revealTimer = setTimeout(() => {
-        try {
-          if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
-            win.show()
-          }
-        } catch {
-          // window torn down
-        }
-      }, 2500)
-    }
-
-    if (hiddenRecovery) {
-      deadlineTimer = setTimeout(() => finish(new Error('Cloud session recovery requires sign-in.')), 12_000)
-    }
-
-    win.on('closed', () => {
-      if (!settled) {
-        finish(new Error('Login window closed before authentication completed.'))
-      }
-    })
-
-    // ``next`` is intentionally omitted: the gateway lands on ``/`` after
-    // login, which is a valid authenticated page that sets the cookies. We
-    // only care that the cookie jar is populated.
-    //
-    // silent=true loads the protected root so the gate auto-SSOs (no chooser);
-    // silent=false loads the public ``/login`` chooser for interactive sign-in.
-    const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
-    const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
-    const loginHeaders = headersForRemoteRequest(loginUrl)
-    rememberLog(
-      `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
     )
-    win.loadURL(loginUrl, oauthLoginLoadUrlOptions(loginHeaders)).catch(error => {
-      // Callback navigation can abort the original load after setting cookies.
-      // Keep the bounded hidden recovery alive long enough to observe them.
-      if (hiddenRecovery && isExpectedOauthNavigationAbort(error)) {
-        void checkCookie()
-
-        return
-      }
-
-      finish(error instanceof Error ? error : new Error(String(error)))
-    })
   })
 }
 
@@ -7498,11 +7381,22 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     })
 
   return attempt().catch(async error => {
+    const origin = new URL(url).origin
+
     return retryCookie401WithLogin(error, options, {
-      clearCookies: () => remoteSessionCookies.clear(partition, url),
+      // One burst shares one clear: a joiner must not wipe the mirror the
+      // running window is about to fill.
+      clearCookies: () => {
+        if (!oauthLoginFlights.isRunning(loginFlightKey(partition, origin))) {
+          remoteSessionCookies.clear(partition, url)
+        }
+      },
       login: async () => {
         try {
-          await openOauthLoginWindow(new URL(url).origin, { silent: true })
+          // A refused request is never a user gesture: try the hidden
+          // auto-SSO, and on failure leave the 401 to the app's own "Sign in"
+          // surface instead of opening a window nobody asked for.
+          await openOauthLoginWindow(origin, { silent: true, background: true })
         } catch (reloginError) {
           rememberLog(
             `Remote session re-login after 401 failed for ${new URL(url).host}: ${reloginError?.message || reloginError}`
@@ -8008,7 +7902,7 @@ function trimCloudAgents(body) {
 // if the portal session were absent it would fall through to an interactive
 // login, which the discovery gate already prevents). Returns once the agent's
 // gateway session cookie is present.
-async function cloudAgentSilentSignIn(dashboardUrl) {
+async function cloudAgentSilentSignIn(dashboardUrl, { background = false } = {}) {
   const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
 
   // Pre-req: a live portal session must exist, or this would surface an
@@ -8028,7 +7922,7 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
     await renewPortalAccessSilently()
   }
 
-  await openOauthLoginWindow(baseUrl, { silent: true })
+  await openOauthLoginWindow(baseUrl, { silent: true, background })
 
   return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 }
@@ -15063,47 +14957,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // removing a connection or re-pointing it must evict them (`evictConnectionCaches`).
 const SSH_INVENTORY_RETRY_MS = 60_000
 
-// Stable backend identity per registered connection: the `install_id` its
-// /api/status reports (absent on backends older than the field). Enumeration
-// runs on the ~5s Bot Mode roster poll and only hits /api/profiles, so the
-// status probe is cached per connection with a TTL to avoid doubling roster
-// traffic; the Test button refreshes it eagerly. A missing id simply bypasses
-// the same-backend roster collapse — fully backward compatible.
-const INSTALL_ID_TTL_MS = 5 * 60_000
-const INSTALL_ID_NEGATIVE_TTL_MS = 60_000
-
-function rememberConnectionInstallId(connectionId: string, statusBody: any) {
-  const raw = statusBody && typeof statusBody === 'object' ? statusBody.install_id : undefined
-  const id = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
-  connectionInstallIds.set(connectionId, { id, ts: Date.now() })
-
-  return id
-}
-
-async function probeConnectionInstallId(connectionId: string, descriptor: any): Promise<string | undefined> {
-  const cached = connectionInstallIds.get(connectionId)
-
-  if (cached && Date.now() - cached.ts < (cached.id ? INSTALL_ID_TTL_MS : INSTALL_ID_NEGATIVE_TTL_MS)) {
-    return cached.id
-  }
-
-  try {
-    const status: any = await getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 })
-
-    return rememberConnectionInstallId(connectionId, status)
-  } catch {
-    // Keep any previously-known id (identity is stable; a transient fetch
-    // failure must not flap the roster collapse), but do not cache a MISS
-    // over it.
-    if (cached?.id) {
-      return cached.id
-    }
-
-    connectionInstallIds.set(connectionId, { id: undefined, ts: Date.now() })
-
-    return undefined
-  }
-}
+// Stable backend identity per registered connection: the `install_id` its /api/status reports,
+// TTL-cached in `connectionInstallIds` (see registry-backend-identity.ts).
+const probeConnectionInstallId = (connectionId: string, descriptor: any) =>
+  probeCachedConnectionInstallId(connectionId, () => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 }))
 
 async function probeSshProfileInventory(connection) {
   if (
@@ -15957,9 +15814,8 @@ ipcMain.handle('hermes:window:readBelow', async event => {
 // request.profile. Either way, a remote profile's session lives only on its
 // remote host, so the request must go there (where it serves its own state.db).
 //   GET    /api/profiles/sessions        → splice each remote profile's rows in
-//   GET    /api/sessions/{id}[/messages] → read from remote
-//   DELETE /api/sessions/{id}            → delete on remote
-//   PATCH  /api/sessions/{id}            → rename/archive on remote
+//   GET    /api/sessions/{id}[/messages|/mutation-snapshot|/timeline|/messages/around] → read from remote
+//   DELETE/PATCH /api/sessions/{id}      → delete/rename/archive on remote
 async function interceptSessionRequestForRemote(request, registryConnectionId = null) {
   if (typeof request?.path !== 'string') {
     return undefined
@@ -16047,7 +15903,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
   //    param (it serves its own state.db natively).
   //  - global remote mode: ONE backend serves every profile via ?profile=, so
   //    route there and KEEP the profile param so it opens the right state.db.
-  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
+  if (isRemoteSessionRequestPath(pathname)) {
     let profile = (searchParams.get('profile') || request.profile || '').trim()
 
     if (!profile) {
@@ -16070,7 +15926,6 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     // against paginating remote backends).
     const passthroughParams = new URLSearchParams(searchParams)
     passthroughParams.delete('profile')
-    const passthroughQuery = passthroughParams.toString()
 
     if (profileHasRemoteOverride(profile)) {
       // #64999: the override's remote can be a multi-profile backend — an
@@ -16082,11 +15937,10 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         remoteProfileQueryScope(profile, profileSshOverride(readDesktopConnectionConfig(), profile)?.remoteProfile) ||
         profile
 
+      const ownerPath = remoteOwnerRoutePath(pathname, searchParams, ownerScope)
+
       if (method === 'GET') {
-        return fetchJsonForProfile(
-          profile,
-          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
-        )
+        return fetchJsonForProfile(profile, ownerPath)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
@@ -16095,7 +15949,8 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return requestJsonForProfile(profile, pathname, method, body)
+      // A DELETE's mutation identity is query-only; a bare pathname 409s on the remote.
+      return requestJsonForProfile(profile, ownerPath, method, body)
     }
 
     if (globalRemoteActive()) {
@@ -16201,7 +16056,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
+  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -16243,18 +16098,18 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
 
   if (registrySources.length) {
-    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
-      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
-    )
-
-    const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
-    total += added
+    const getRegistryJson = (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    // RT-42: count each backend (install_id) once; remote-override profiles are another backend.
+    const identity = { primaryBackendId: await primaryBackendInstallId(), unknownPrimaryProfiles: remoteProfiles }
+    total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals, identity)
   }
 
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors)
+  const archivedOnly = searchParams.get('archived') === 'only'
+
+  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
@@ -16306,12 +16161,21 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
     }
 
     if (backends.length) {
-      sources.push({ backends, connectionId: connection.id, kind: connection.kind })
+      const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
+      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
     }
   }
 
   return sources
 }
+
+// RT-42: install_id of the backend the primary session aggregate reads (see the module).
+const primaryBackendInstallId = createPrimaryInstallIdResolver({
+  resolve: () => ensureBackend(null, { passive: true }),
+  status: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 2_000 }),
+  ttlMs: INSTALL_ID_TTL_MS,
+  negativeTtlMs: INSTALL_ID_NEGATIVE_TTL_MS
+})
 
 async function dispatchRegistryApiRequest(
   request,
@@ -16331,7 +16195,7 @@ async function dispatchRegistryApiRequest(
         ensureRegistryBackend(registryConnectionId, routeProfile)
       )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET')
 
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,
@@ -16753,20 +16617,10 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
-// Native save-location picker (profile export etc.) — the write itself happens
-// elsewhere (the backend, for profile archives); this only picks the path.
-ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: options?.title || 'Save',
-    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
-    filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
-
-  if (result.canceled || !result.filePath) {
-    return null
-  }
-
-  return result.filePath
+// Save dialogs: the path picker (profile export) and /save's main-process write (save-text-file.ts).
+registerSaveDialogIpc(ipcMain, {
+  defaultDir: () => app.getPath('documents'),
+  showSaveDialog: options => dialog.showSaveDialog(mainWindow, options)
 })
 
 // Paired reader for the GUI terminal's paste chord: the renderer's

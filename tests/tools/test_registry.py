@@ -31,6 +31,28 @@ def _make_schema(name="test_tool"):
 
 
 class TestRegisterAndDispatch:
+    def test_delegated_child_does_not_inherit_parent_host_instruction(self):
+        from agent.delegation_context import delegated_child_context
+        from gateway.session_context import clear_session_vars, set_session_vars, set_turn_user_message
+        from tools.registry import _current_tool_invocation_context
+
+        tokens = set_session_vars(profile="alpha", platform="desktop", session_key="parent-chat",
+                                  session_id="parent-session", browser_control_provider="ticket",
+                                  browser_control_subject="user")
+        try:
+            set_turn_user_message("Transfer ISSUE-1 to this chat")
+            parent = _current_tool_invocation_context()
+            with delegated_child_context("child-session"):
+                child = _current_tool_invocation_context()
+            assert parent.user_message == "Transfer ISSUE-1 to this chat"
+            assert parent.browser_control_subject == "user"
+            assert child.session_id == "child-session"
+            assert child.user_message == ""
+            assert child.browser_control_provider == ""
+            assert child.browser_control_subject == ""
+        finally:
+            clear_session_vars(tokens)
+
     def test_register_and_dispatch(self):
         reg = ToolRegistry()
         reg.register(

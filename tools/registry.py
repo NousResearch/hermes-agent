@@ -252,6 +252,8 @@ def _current_tool_invocation_context() -> ToolInvocationContext:
         return str(get_session_env(name, "") or "")
 
     browser_control_provider, browser_control_subject = browser_control_identity()
+    from agent.delegation_context import is_delegated_child_process_context
+    delegated_child = is_delegated_child_process_context()
     return ToolInvocationContext(
         profile=value("HERMES_SESSION_PROFILE"),
         platform=value("HERMES_SESSION_PLATFORM"),
@@ -264,9 +266,9 @@ def _current_tool_invocation_context() -> ToolInvocationContext:
         session_key=value("HERMES_SESSION_KEY"),
         run_generation=get_session_run_generation(),
         message_id=value("HERMES_SESSION_MESSAGE_ID"),
-        browser_control_provider=browser_control_provider,
-        browser_control_subject=browser_control_subject,
-        user_message=get_turn_user_message(),
+        browser_control_provider="" if delegated_child else browser_control_provider,
+        browser_control_subject="" if delegated_child else browser_control_subject,
+        user_message="" if delegated_child else get_turn_user_message(),
     )
 
 

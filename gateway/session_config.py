@@ -39,6 +39,11 @@ def _client_config(cfg):
     from hermes_cli.config import redact_config_value
     result = redact_config_value({key: cfg[key] for key in (
         'display', 'approvals', 'paste_collapse_threshold', 'paste_collapse_char_threshold') if key in cfg})
+    if 'display' in result:
+        # Its readers are local surfaces (Ink, Desktop): the local key a local /reasoning show|hide or
+        # /footer saved wins over the global one (T7).
+        from gateway.display_config import local_display_config
+        result['display'] = local_display_config(result['display'])
     # Allowlisted after redaction: ``record_key`` is a keybinding, not a credential, but the
     # structural masker treats every ``*_key`` leaf as one. The voice section's real secrets
     # (``api_key``) never enter the projection.
@@ -180,7 +185,9 @@ def _reasoning(agent, policy, cfg, connection=None, ref=None):
     elif not isinstance(value, dict):
         value = resolve_reasoning_config(cfg, '')
     effort = 'none' if value and value.get('enabled') is False else (value or {}).get('effort', 'medium')
-    return {'value': effort, 'display': 'show' if cfg.get('display', {}).get('show_reasoning', True) else 'hide'}
+    from gateway.display_config import local_display_config
+    shown = local_display_config(cfg.get('display')).get('show_reasoning', True)
+    return {'value': effort, 'display': 'show' if shown else 'hide'}
 
 
 def _project(params, policy, cfg):

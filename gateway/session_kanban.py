@@ -141,7 +141,14 @@ async def run_task(connection, params):
     payload: dict = {'text': f'work kanban task {params["task_id"]}'}
     if committed is None or 'finite' in committed['payload']:
         payload['finite'] = True
-    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'))
+    # The dispatcher's trusted producer marker (#134889 KB-8): nobody waits on a card attempt, so one
+    # lost across an owner restart settles interrupted instead of pausing the card session. An
+    # attempt main committed without it resubmits unmarked (same digest, original receipt).
+    card = None
+    if committed is None or 'kanban_card_v1' in committed['payload']:
+        card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
+                                     _kanban_card=card)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 

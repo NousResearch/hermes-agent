@@ -122,12 +122,7 @@ describe("profile route location", () => {
     expect(extractProfileRoutes(config)).toEqual([]);
     expect(profileRoutesSavePartial(config, whatsapp)).toEqual({
       profile_routes: whatsapp,
-      gateway: {
-        profile_routes: [
-          { name: "hidden", platform: "whatsapp", chat_id: "1@g.us", profile: "acme" },
-          ...whatsapp,
-        ],
-      },
+      gateway: { profile_routes: whatsapp },
     });
   });
 

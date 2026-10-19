@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
+  modern:
+    thought_for: "思考了 {seconds} 秒"
+    thought: "思考"
+    working: "工作中…"
+    preparing: "正在准备 {what}…"
+    hint_steer: "引导"
+    hint_queue: "排队"
+    hint_interrupt: "中断"
+    hint_stop: "停止"
+    hint_commands: "命令"
+    hint_files: "文件"
+    hint_shell: "终端"
+    placeholder_busy_steer: "输入以引导本轮 · Tab 排到之后"
+    placeholder_busy_interrupt: "输入以改变本轮方向 · Tab 排到之后"
+    placeholder_busy_queue: "输入以排队一条本轮结束后的消息"
   billing:
     load_failed: "{label}：{error}"
     load_failed_label: "无法加载账单信息"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "队列 · {count} 个排队中 · /queue list{controls}"
     more_queued: "+{count} 个"
     transcript_unavailable: "实时记录尚不可用。"
+    control_pending: "发送中…"
     steer_prompt: "引导："
     roster_empty: "没有运行中的子代理或后台进程。结果会出现在对话中。"
     entry_gone: "此条目已不再运行。"

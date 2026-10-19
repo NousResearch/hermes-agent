@@ -19,6 +19,10 @@ def test_cold_setup_uses_exact_lock_values(tmp_path, missing_target, real_bash):
     checkout = tmp_path / "checkout"
     (checkout / "pm").mkdir(parents=True)
     shutil.copy2(ROOT / "setup-hermes.sh", checkout / "setup-hermes.sh")
+    # setup-hermes.sh sources the canonical resolver instead of carrying a copy.
+    (checkout / "scripts" / "bootstrap").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "bootstrap" / "store_root.sh",
+                 checkout / "scripts" / "bootstrap" / "store_root.sh")
     # The bootstrap reads the artifact mirror beside the lock before selecting a pin.
     shutil.copy2(ROOT / "pm" / "artifact-mirror.json", checkout / "pm" / "artifact-mirror.json")
     lock = json.loads((ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))

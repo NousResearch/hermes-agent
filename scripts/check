@@ -111,6 +111,10 @@ _GUARDS = {
     "case-collisions": ["scripts/check-case-collisions.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
+    # A hand edit inside install.sh's generated resolver block is drift no test
+    # matrix can see (the bytes are still executed; they just stopped matching
+    # the canonical file). Same shape as the pins fragment's CI guard.
+    "bootstrap-resolver": ["scripts/gen-bootstrap-resolver.py", "--check"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (blob-size-check.yml).

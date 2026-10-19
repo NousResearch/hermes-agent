@@ -57,7 +57,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
             env[key] = os.environ[key]
 
     def run(argv, *, cwd=tmp_path, expected=0):
-        result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=180, check=False)
+        result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
         assert result.returncode == expected, result.stdout + result.stderr
         return result
 
@@ -70,6 +70,10 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     for name in ("utils.py", "hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "hermes_bootstrap.py",
                  "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
+    # setup-hermes.sh sources the canonical resolver instead of carrying a copy.
+    (source / "scripts" / "bootstrap").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "bootstrap" / "store_root.sh",
+                 source / "scripts" / "bootstrap" / "store_root.sh")
     # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog),
     # and its config/env layer consults the stdlib-only safe-worker policy; the rest of agent/ stays
     # out so the tail cannot grow a dependency on the agent runtime.

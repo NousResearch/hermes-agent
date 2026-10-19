@@ -315,7 +315,12 @@ def main() -> int:
         help="Path RELATIVE to the stamp file's directory, naming where the "
         "pm store (the managed tool bytes) lives. A sealed desktop-app "
         "payload passes '..' (the payload dir is the install root's "
-        "parent). Omitted for source/docker/nix stamps.",
+        "parent). Omitted for source/docker/nix stamps. NOTE: a bootstrap "
+        "that runs before Python (install.sh/ps1, setup-hermes.sh/ps1) "
+        "cannot read this field, so it stages into <root>/tools while PM "
+        "looks here. Only pass it from a packager whose install never runs "
+        "those bootstraps; "
+        "tests/scripts/bootstrap/test_stamped_runtime_dir_boundary.py guards this.",
     )
     args = parser.parse_args()
 

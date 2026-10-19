@@ -103,8 +103,10 @@ def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/fact
         env["__HERMES_ACTIVATED"] = sentinel.replace("{root}", posix(root))
     return subprocess.run(
         [bash(), posix(root / "scripts" / RUNNER.name), *command],
-        capture_output=True, text=True, cwd=posix(root), env=env, timeout=60,
-        check=False,
+        # Explicit encoding: the child echoes the store root, which on Windows sits
+        # under a user name that the locale codec may not decode.
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=posix(root), env=env, timeout=60, check=False,
     )
 
 

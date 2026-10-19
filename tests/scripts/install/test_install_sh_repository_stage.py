@@ -17,7 +17,7 @@ INSTALL_SH = Path(__file__).resolve().parents[3] / "scripts" / "install.sh"
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-                          check=True, capture_output=True, text=True).stdout.strip()
+                          check=True, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 
 
 def _origin(path: Path, content: str = "one") -> Path:
@@ -39,7 +39,7 @@ def _run(tmp_path: Path, body: str, *, env: dict | None = None, **kwargs) -> sub
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\nsleep() {{ :; }}\n{body}\n"
     full_env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                     HERMES_INSTALL_DIR=(tmp_path / "install").as_posix(), **(env or {}))
-    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
+    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | None = None,
@@ -190,16 +190,24 @@ def test_rerun_follows_an_explicit_repo_url(tmp_path):
     assert _git(install, "remote", "get-url", "origin") == moved.as_posix()
 
 
-def test_path_uv_is_never_used_even_when_newer_than_the_pin(tmp_path):
+def test_path_uv_never_satisfies_the_bootstrap(tmp_path):
+    """A uv on PATH is not a substitute for the pin (#101269).
+
+    With no pinned target available, staging must fail rather than adopt a
+    PATH uv — whatever version it reports, and with no version comparison
+    at all.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "uv"
-    fake.write_text("#!/bin/sh\necho 'uv 99.0.0'\n")
+    fake.write_text("#!/bin/sh\necho 'uv 99.0.0 (newer than the pin)'\n")
     fake.chmod(0o755)
-    # No pinned target: with the PATH uv ignored, the install must fail rather than adopt it.
+    # No pinned target: without a PATH borrow that surfaces as a failure to stage one.
     body = 'uv_bootstrap_target() { return 1; }\nensure_uv\necho "UV_CMD=$UV_CMD"'
     result = _run(tmp_path, body, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
     assert result.returncode != 0
+    assert "no pinned uv build" in result.stdout + result.stderr
+    assert "older than the pinned" not in result.stdout + result.stderr
     assert f"UV_CMD={fake}" not in result.stdout
 
 

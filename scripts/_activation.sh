@@ -8,6 +8,10 @@
 #   hermes_activation_current REPO  is the inherited environment still REPO's?
 #   hermes_ensure_env REPO          sync, compose and apply unless it is current
 #
+# The store-root resolver folds HERMES_HOME to its machine root the way
+# pm.paths.store_root() does; the canonical copy lives beside this file.
+. "$(dirname "${BASH_SOURCE[0]}")/bootstrap/store_root.sh"
+
 # pm records, beside the installed-state file named by __HERMES_ACTIVATED, one
 # stamp per dependency input carrying the exact mtime that input had when the
 # install was last verified against it (pm.environments.record_activation_inputs).

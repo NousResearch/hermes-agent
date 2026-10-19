@@ -212,12 +212,19 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
         if prefix_tag and (prefix_tag == "folder") != is_dir:  # explicit `@folder:`/`@file:` skip the other kind
             continue
         full = pth.join(search_dir, entry)
-        rel = pth.relpath(full, root).replace(os.sep, "/")
+        try:
+            rel = pth.relpath(full, root).replace(os.sep, "/")
+            home_rel = (pth.relpath(full, os.path.expanduser("~") if local else "~")
+                        if word.startswith("~") else None)
+        except ValueError:
+            # Windows: a reserved-name entry (`nul`, `con`, …) or one on another drive is its own mount,
+            # so it cannot be expressed under the root. Skip it: one such name must not kill the listing.
+            continue
         suffix = "/" if is_dir else ""
         if is_context:
             text = f"@{prefix_tag or ('folder' if is_dir else 'file')}:{rel}{suffix}"
-        elif word.startswith("~"):
-            text = "~/" + pth.relpath(full, os.path.expanduser("~") if local else "~") + suffix
+        elif home_rel is not None:
+            text = "~/" + home_rel + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
         items.append(_item(text, "dir" if is_dir else "", entry + suffix))

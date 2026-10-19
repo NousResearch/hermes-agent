@@ -567,6 +567,13 @@ class PluginLoaderMixin:
         desktop-only, and ``desktop/`` is what decides it either way. The payload is required as well as
         the missing ``__init__.py`` — a directory left half-written (or one whose Python half is broken)
         keeps the warning, which is the whole reason this warning is worth reading.
+
+        ``glob("*.py")`` is root-only on purpose, so a plugin carrying ``dashboard/plugin_api.py`` and no
+        root ``.py`` (cron-bulletin, home-dashboard) still skips: that backend is imported by the web
+        server straight from ``dashboard/manifest.json``'s ``api`` field via ``spec_from_file_location``
+        (``web_server_dashboard._mount_one_plugin_api``), never through this loader — its mount failures
+        log on the web server side, not as this ``No __init__.py`` warning (#132762's shape, where the
+        warning was never the signal for the unmounted routes).
         """
         if not manifest.path:
             return False

@@ -16,6 +16,7 @@ bot token afterwards, and without this an adapter-less profile would stay adapte
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -217,16 +218,58 @@ class GatewayProfileReconcileMixin:
         logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 
+def _mcp_configured_keys() -> Optional[set]:
+    """Names enabled in ``mcp_servers`` on disk right now — the reconciler's own source of truth.
+
+    Returns ``None`` when the config cannot be read, which is NOT the same as an empty set: an empty
+    baseline recorded from a failed read makes the next successful read look like "all servers
+    added", i.e. a silent failure reborn as a false signal. Callers must skip both the baseline and
+    the diff on ``None`` and keep the last good snapshot.
+
+    Discovery reports ``removed`` from the LIVE set, so a server that never connected (dead port,
+    typo, missing token) is never reported as removed when its entry is deleted: it was never in
+    the live set to begin with. Diffing configured keys catches that case.
+
+    Loader choice: this deliberately reuses ``tools.mcp_tool_config._load_mcp_config`` — the same
+    loader ``reconcile_mcp_servers_with_config`` reads — rather than the gateway's raw
+    ``load_user_config_effective``. The diff must describe what DISCOVERY sees, so that a key the
+    gateway's loader merges in but discovery never acts on cannot show up as a phantom change (and
+    vice versa). The two loaders may legitimately disagree; the reconcile is about the MCP side.
+    """
+    try:
+        from tools.mcp_tool_config import _load_mcp_config
+
+        servers = _load_mcp_config()
+    except Exception:
+        return None
+    return {
+        name
+        for name, cfg in servers.items()
+        if not (isinstance(cfg, dict) and cfg.get("enabled") is False)
+    }
+
+
+def _mcp_keys_fingerprint(keys) -> str:
+    """Stable identity of a configured-key set, so an unchanged set never logs twice."""
+    return hashlib.sha1("\x00".join(sorted(keys)).encode("utf-8")).hexdigest()
+
+
 def _mcp_config_reconciler(runner=None):
     """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry
     the user removed (or disabled) after boot must stop — a parked one otherwise self-probes every
     ``_PARKED_RETRY_INTERVAL`` for the life of the process. One ``stat`` per profile per tick; the
     reconcile runs when ``config.yaml``'s signature changed, and again on the next tick while a
     dropped server was still mid-connect (``pending``) and could not be torn down yet. Interactive
-    OAuth is suppressed — this runs on a housekeeping thread nobody is watching."""
+    OAuth is suppressed — this runs on a housekeeping thread nobody is watching.
+
+    Logging only (never behaviour): the config-key diff below records deletions of servers that
+    never connected, and which configured servers are still unconnected. Both are advisory.
+    """
     from hermes_cli.config import get_config_path
     seen: dict = {}
     retry: set = set()
+    cfg_keys: dict = {}
+    cfg_fp: dict = {}
 
     def _sig(path) -> tuple:
         try:
@@ -241,8 +284,31 @@ def _mcp_config_reconciler(runner=None):
         sig = _sig(get_config_path())
         prev = seen.get(label)
         seen[label] = sig
+
+        def _log_configured_but_unconnected(keys) -> None:
+            # Fail quiet on a broken import: an empty ``known`` would report EVERY configured
+            # server as unconnected — a false positive worse than a missing hint.
+            try:
+                from tools.mcp_tool_discovery import get_registered_mcp_server_names
+
+                known = get_registered_mcp_server_names()
+            except Exception:
+                return
+            unconnected = sorted(name for name in keys if name not in known)
+            if unconnected:
+                logger.info("MCP configured but not connected (%s): %s", label, unconnected)
+
+        # Key baseline is established on the FIRST tick, before the early return below: the first
+        # tick has nothing to diff against, but recording it here means the first real config change
+        # after start is visible (recording it later would swallow exactly that change).
+        if label not in cfg_keys:
+            baseline = _mcp_configured_keys()
+            if baseline is not None:  # a failed read must never become a baseline
+                cfg_keys[label] = baseline
+                cfg_fp[label] = _mcp_keys_fingerprint(baseline)
+                _log_configured_but_unconnected(baseline)
         if label not in retry and (prev is None or prev == sig):
-            return  # first tick just records the baseline; startup discovery already ran
+            return  # signature unchanged; startup discovery already ran
         with suppress_interactive_oauth():
             result = reconcile_mcp_servers_with_config()
         retry.discard(label)
@@ -250,6 +316,26 @@ def _mcp_config_reconciler(runner=None):
             retry.add(label)
         if result["removed"] or result["added"]:
             logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
+        # Advisory config-key diff: catches entries deleted before they ever connected (the live-set
+        # `removed` above can never see those) and names still-configured servers that never came up.
+        current_keys = _mcp_configured_keys()
+        if current_keys is None:
+            return  # unreadable config: keep the last good snapshot and log nothing
+        fingerprint = _mcp_keys_fingerprint(current_keys)
+        previous_keys = cfg_keys.get(label)
+        if previous_keys is None:
+            cfg_keys[label] = current_keys
+            cfg_fp[label] = fingerprint
+            _log_configured_but_unconnected(current_keys)
+            return
+        if fingerprint != cfg_fp.get(label):
+            added_keys = sorted(current_keys - previous_keys)
+            removed_keys = sorted(previous_keys - current_keys)
+            if added_keys or removed_keys:
+                logger.info("MCP config keys changed (%s): removed=%s added=%s", label, removed_keys, added_keys)
+            _log_configured_but_unconnected(current_keys)
+            cfg_keys[label] = current_keys
+            cfg_fp[label] = fingerprint
 
     def _tick() -> None:
         from gateway.run import _multiplex_profile_homes, _profile_runtime_scope

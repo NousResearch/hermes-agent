@@ -135,6 +135,8 @@ class TestDetectToolFailureStructured:
             json.dumps({"results": [{"url": "https://example.com/", "content": "hi", "error": None}]}, indent=2),
             json.dumps({"done": 3, "failed": 0}),
             json.dumps({"items": [], "errors": [], "error": ""}),
+            # "error": null straddling the 500-char scan cut must not read as a truncated value
+            json.dumps({"results": [{"url": "https://example.com/", "content": "x" * 428, "error": None}]}),
         ]
         for result in ok:
             assert _detect_tool_failure("web_extract", result) == (False, ""), result

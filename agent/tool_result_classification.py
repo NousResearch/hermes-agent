@@ -45,13 +45,16 @@ def is_guardrail_refusal(result: Any) -> bool:
 # A quoted "error"/"failed" in a result's head marks it failed UNLESS it is a key whose value is
 # empty: success payloads routinely carry ``"error": null`` per item (web_extract) or a
 # ``"failed": 0`` count, and a bare substring test flagged every one of them.
-_FAILURE_MARKER_RE = re.compile(r'"(?:error|failed)"(?!\s*:\s*(?:null|false|0|""|\[\]|\{\})\s*(?:[,}\]]|$))')
+_FAILURE_MARKER_RE = re.compile(
+    r'"(?:error|failed)"(?!\s*:\s*(?:null|false|0|""|\[\]|\{\})\s*(?:[,}\]]|$))', re.IGNORECASE)
 
 
 def has_failure_marker(result: str) -> bool:
     """Last-resort text test for a failed tool result: a non-empty ``"error"``/``"failed"``
-    in the first 500 chars, or a body starting with ``Error``."""
-    return bool(_FAILURE_MARKER_RE.search(result[:500].lower())) or result.startswith("Error")
+    STARTING in the first 500 chars, or a body starting with ``Error``. The value is read past
+    the cut, so an ``"error": null`` straddling char 500 is not mistaken for a truncated one."""
+    head = result[:600]
+    return any(m.start() < 500 for m in _FAILURE_MARKER_RE.finditer(head)) or result.startswith("Error")
 
 
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:

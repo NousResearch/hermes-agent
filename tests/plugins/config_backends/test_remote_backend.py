@@ -1508,18 +1508,18 @@ def test_concurrent_first_reader_waits_for_the_bootstrap(plane, monkeypatch, tmp
     results = {}
 
     def run(name, fn):
-        threading.Thread(target=lambda: results.__setitem__(name, fn()), name=name, daemon=True).start()
+        t = threading.Thread(target=lambda: results.__setitem__(name, fn()), name=name, daemon=True)
+        t.start()
+        return t
 
-    run("first", lambda: get_config_backend().name)
+    first = run("first", lambda: get_config_backend().name)
     assert entered.wait(10)
-    run("concurrent", lambda: read_config_doc(plane.home / "config.yaml")["display"]["personality"])
-    import time
-    time.sleep(0.3)
-    assert "concurrent" not in results  # waiting for the bootstrap, not reading the local file
+    concurrent = run("concurrent", lambda: read_config_doc(plane.home / "config.yaml")["display"]["personality"])
+    concurrent.join(timeout=0.3)
+    assert concurrent.is_alive() and "concurrent" not in results  # waiting for the bootstrap, not reading the local file
     resume.set()
-    deadline = time.monotonic() + 10
-    while len(results) < 2 and time.monotonic() < deadline:
-        time.sleep(0.02)
+    first.join(timeout=10)
+    concurrent.join(timeout=10)
     assert results == {"first": "remote", "concurrent": "remote"}
 
 

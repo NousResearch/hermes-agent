@@ -2386,6 +2386,14 @@ cli:
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
     moved: "نُقل عنصر قائمة الانتظار من {source} إلى {destination}."
     usage_add: "الاستخدام: /queue add <prompt>"
+    gateway_refused: "لم تضعه البوابة في الطابور: {error}. لم يُضف شيء؛ أرسله مرة أخرى عند انتهاء الدور."
+    submit_unknown: "لم تُجب البوابة ({error})، لذا قد تكون الرسالة في الطابور بالفعل. راجع /queue list قبل إرسالها مجددًا."
+    move_gateway_fifo: "تشغّل البوابة المطالبات في الطابور بترتيب إرسالها؛ عدّل واحدة أو احذفها بدلاً من ذلك."
+    remove_refused: "تعذّرت إزالة عنصر الطابور {index}: {error}"
+    edit_refused: "تعذّر تعديل عنصر الطابور {index}: {error}"
+    already_started: "بدأ عنصر الطابور {index} بالفعل؛ سيُنفَّذ كما أُرسل."
+    started_stopped: "كان عنصر الطابور {index} قد بدأ بالفعل؛ أوقفته البوابة."
+    change_unknown: "لم تُجب البوابة بشأن عنصر الطابور {index} ({error})؛ راجع /queue list قبل المحاولة مجددًا."
   reload:
     env_reloaded: "أُعيد تحميل .env (تم تحديث {count} متغيّر)"
   steer:

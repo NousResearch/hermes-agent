@@ -650,10 +650,11 @@ def repin_catalog_plugin(
     return RepinResult(entry.sha, True, installed_name, warnings)
 
 
-def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> None:
+def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> bool:
+    """Re-pin a catalog install, printing progress; True when the pin moved. Refusals raise
+    :class:`RepinConsentRequired` / ``PluginOperationError`` with nothing changed (the caller reports them)."""
     from hermes_cli.plugins_cmd import (
-        PluginOperationError, _ask_yes, _declared_capabilities_from_manifest, _fail, _is_tty, _read_manifest,
-        _run_capability_consent)
+        _ask_yes, _declared_capabilities_from_manifest, _is_tty, _read_manifest, _run_capability_consent)
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
 
     def _confirm_widening(delta: dict[str, list[str]]) -> bool:
@@ -666,19 +667,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
             return False
         return _ask_yes("  Apply this update? [y/N]: ")
 
-    try:
-        result = repin_catalog_plugin(
-            target,
-            sidecar,
-            interactive=interactive,
-            consent_cb=_confirm_widening,
-        )
-    except RepinConsentRequired as exc:
-        _fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
-        raise SystemExit(1)
-    except PluginOperationError as exc:
-        _fail(console, f"[red]Error:[/red] {exc}")
-        raise SystemExit(1)
+    result = repin_catalog_plugin(target, sidecar, interactive=interactive, consent_cb=_confirm_widening)
     verb = "updated to" if result.changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{result.installed_name}[/bold] {verb} {result.sha[:8]}.")
     for warning in result.warnings:
@@ -697,6 +686,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
                     console.print(
                         f"[yellow]Plugin {result.installed_name} has new capabilities; review them with "
                         f"`hermes plugins capabilities {result.installed_name}`.[/yellow]")
+    return result.changed
 
 
 

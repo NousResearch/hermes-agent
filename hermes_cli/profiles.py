@@ -19,10 +19,12 @@ from typing import Dict, List, Optional, Tuple
 from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_cli.profiles_remove import (
+    _rmtree_make_writable, _rmtree_with_retry, _stop_bot_desktop, wait_profile_unowned,
+)
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
-    named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
+    named_profile_has_identity, named_profile_is_deleted, named_profile_is_live, profile_tombstone_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -321,7 +323,21 @@ def _is_our_wrapper(path: Path) -> bool:
         return False
 
 
-def _missing_profile_error(canon: str) -> FileNotFoundError:
+def _missing_profile_error(canon: str, profile_dir: Path | None = None) -> FileNotFoundError:
+    """The resolution refusal for a name that has no live profile.
+
+    A tombstone that outlived a profile directory still holding identity needs its own text: the
+    data is on disk and the directory cannot be recreated, so suggesting a create sends the operator
+    into a refusal on a directory they cannot use, list or delete (#141466). An identity-less shell
+    is not that state: create replaces it, so the create hint stays correct there.
+    """
+    if (profile_dir is not None and named_profile_is_deleted(profile_dir)
+            and named_profile_has_identity(profile_dir)):
+        return FileNotFoundError(
+            f"Profile '{canon}' is tombstoned but its directory still exists ({profile_dir}), so it can "
+            f"be neither used nor created. Recover it by removing {profile_tombstone_path(profile_dir)}, "
+            f"or delete the directory to drop the profile for good."
+        )
     return FileNotFoundError(f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}")
 
 
@@ -1691,30 +1707,6 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
-def _stop_bot_desktop(profile_dir: Path) -> None:
-    """Stop the profile's Bot Desktop (Xvnc + Xfce launcher) before its directory is removed or renamed;
-    gateway shutdown does not reach it (its own session, its own pid file). Scoped through the hermes-home
-    override so the runtime reads THIS profile's bot-desktop/ state, whichever profile invoked the op.
-    A failure here is logged, never fatal: the profile op is what the user asked for."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime
-    if not runtime.is_supported_host():
-        return
-    token = set_hermes_home_override(profile_dir)
-    try:
-        if runtime.stop():
-            print("✓ Bot Desktop stopped")
-            # The screen a human's exclusion protected is gone; on rename the directory (lease.json
-            # included) moves with the profile, and a human lease for a dead viewer would fence the
-            # agent out of the renamed profile's next screen until someone force-released it.
-            from tools.bot_desktop import lease
-            lease.release()
-    except Exception as e:
-        logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
-    finally:
-        reset_hermes_home_override(token)
-
-
 def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapper_path: Optional[Path]) -> None:
     """Show what ``delete_profile`` is about to remove."""
     model, provider = _read_config_model(profile_dir)
@@ -1850,7 +1842,15 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 5. Clear active_profile if it pointed to this profile
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
     if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
+        # The directory survived, so it is still this profile's home. Keeping the step-2 tombstone
+        # would hide the data behind a name that resolves nowhere, lists nowhere and cannot be
+        # recreated (#141466), so clear it and report the profile as still live and retryable.
+        clear_named_profile_deleted(profile_dir)
+        raise RuntimeError(
+            f"Could not remove profile directory {profile_dir}: {remove_error}\n"
+            f"The directory is intact and '{canon}' remains a live profile; fix the cause and retry "
+            f"with: hermes profile delete {canon}"
+        ) from remove_error
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the
@@ -2015,7 +2015,7 @@ def set_active_profile(name: str) -> None:
     """Set the sticky active profile (``default`` = remove the file)."""
     canon = _canon_valid(name)
     if canon != "default" and not profile_exists(canon):
-        raise _missing_profile_error(canon)
+        raise _missing_profile_error(canon, get_profile_dir(canon))
     path = _get_active_profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if canon == "default":
@@ -2456,5 +2456,5 @@ def resolve_profile_env(profile_name: str) -> str:
         return str(root)
     profile_dir = root / "profiles" / canon
     if not named_profile_is_live(profile_dir):
-        raise _missing_profile_error(canon)
+        raise _missing_profile_error(canon, profile_dir)
     return str(profile_dir)

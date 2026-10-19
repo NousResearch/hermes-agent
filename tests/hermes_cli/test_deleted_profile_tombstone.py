@@ -27,7 +27,10 @@ from hermes_cli.profiles import (
     set_active_profile,
 )
 from hermes_constants import (
+    mark_named_profile_deleted,
     named_profile_home,
+    named_profile_is_live,
+    profile_tombstone_path,
     reset_hermes_home_override,
     set_hermes_home_override,
 )
@@ -317,3 +320,40 @@ class TestNamedProfileHome:
         (profiles_dir / ".deleted").mkdir(parents=True)
         worker = profiles_dir / "worker"
         assert named_profile_home(worker / "logs") == worker
+
+
+class TestTombstoneOutlivedByItsDirectory:
+    """#141466: a tombstone that outlives its directory turns a populated profile into a ghost —
+    -p refuses it, profile list hides it, and the suggested profile create is refused because the
+    directory still exists. A failed removal, and the error that reports it, must not leave the
+    operator in that state."""
+
+    def test_failed_removal_leaves_the_profile_live_not_tombstoned(self, profile_env):
+        profile_dir = create_profile("ghosted", no_alias=True, no_skills=True)
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
+            "hermes_cli.profiles._stop_profile_backends"
+        ), patch("hermes_cli.profiles.time.sleep"), patch(
+            "hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")
+        ):
+            with pytest.raises(RuntimeError, match="Could not remove profile directory"):
+                delete_profile("ghosted", yes=True)
+
+        assert profile_dir.is_dir()
+        assert not profile_tombstone_path(profile_dir).exists()
+        assert "ghosted" in _named_homes(profile_env)
+        assert profile_exists("ghosted")
+        assert named_profile_is_live(profile_dir)
+
+    def test_missing_profile_error_names_a_tombstoned_directory(self, profile_env):
+        profile_dir = create_profile("ghosted", no_alias=True, no_skills=True)
+        mark_named_profile_deleted(profile_dir)
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            set_active_profile("ghosted")
+
+        message = str(excinfo.value)
+        assert "tombstoned but its directory still exists" in message
+        assert str(profile_tombstone_path(profile_dir)) in message
+        # The harmful suggestion: profile create ghosted is refused while the directory exists.
+        assert "hermes profile create" not in message

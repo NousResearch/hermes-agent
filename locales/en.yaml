@@ -167,6 +167,7 @@ gateway:
     full_logs_hint: "For full log uploads, use `hermes debug share` from the CLI."
     share_hint: "Share these links with the Hermes team for support."
     report_label: "Report"
+    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug` to upload the summary report."
   deny:
     stale: "❌ Command denied (approval was stale)."
     no_pending: "No pending command to deny."
@@ -449,6 +450,9 @@ gateway:
     state_no: "No"
     queued: "**Queued follow-ups:** {count}"
     platforms: "**Connected Platforms:** {platforms}"
+  discard:
+    nothing: "Nothing to discard: this chat has no turn lost in a restart."
+    done: "🗑️ Discarded {count} lost turn(s); they were not re-run. Your saved messages will be answered now."
   stop:
     stopped_pending: "⚡ Stopped. The agent hadn't started yet — you can continue this session."
     stopped: "⚡ Stopped. You can continue this session."
@@ -1601,6 +1605,8 @@ slash:
     description: "Import a shared profile archive as a new profile"
   stop:
     description: "Kill all running background processes"
+  discard:
+    description: "Drop a turn lost when Hermes restarted so this chat's queue runs again"
   pause:
     description: "Pause new work globally (emergency stop); '/pause off' resumes"
   deny:
@@ -3104,6 +3110,10 @@ cli:
       usage_disconnect: "disconnect   Revert to default browser backend"
       usage_status: "status       Show current browser mode"
       usage_use: "use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools"
+      remote_gateway: "/browser connect and /browser disconnect manage a Chromium-family browser on the gateway host — only available when connected to a local gateway."
+      checking: "Checking Chromium-family browser remote debugging at {url}..."
+      new_sessions_only: "Applies to new sessions — this one keeps its current tools (/new to start one)."
+      status_gateway_default: "🌐 Browser: the gateway's default browser backend (no live CDP connection)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat paused: {prompt}"

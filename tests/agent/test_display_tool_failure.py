@@ -8,6 +8,7 @@ not a generic "[error]".
 
 import json
 
+from agent.tool_guardrails import classify_tool_failure
 from agent.display import (
     _detect_tool_failure,
     _trim_error,
@@ -126,6 +127,30 @@ class TestDetectToolFailureStructured:
     def test_successful_result_not_flagged(self):
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
+
+    def test_empty_error_and_failed_values_are_not_failures(self):
+        """A successful web_extract carries ``"error": null`` per URL; batch results carry
+        ``"failed": 0``. Neither is a failure, in the CLI tag or the guardrail counter."""
+        ok = [
+            json.dumps({"results": [{"url": "https://example.com/", "content": "hi", "error": None}]}, indent=2),
+            json.dumps({"done": 3, "failed": 0}),
+            json.dumps({"items": [], "errors": [], "error": ""}),
+            # "error": null straddling the 500-char scan cut must not read as a truncated value
+            json.dumps({"results": [{"url": "https://example.com/", "content": "x" * 428, "error": None}]}),
+        ]
+        for result in ok:
+            assert _detect_tool_failure("web_extract", result) == (False, ""), result
+            assert classify_tool_failure("web_extract", result) == (False, ""), result
+
+    def test_real_error_and_failed_markers_still_flag(self):
+        bad = [
+            json.dumps({"results": [{"url": "https://x.test/", "content": "", "error": "HTTP 403"}]}),
+            json.dumps({"status": "failed"}),
+            "Error: connection refused",
+        ]
+        for result in bad:
+            assert _detect_tool_failure("web_extract", result)[0] is True, result
+            assert classify_tool_failure("web_extract", result)[0] is True, result
 
 
 

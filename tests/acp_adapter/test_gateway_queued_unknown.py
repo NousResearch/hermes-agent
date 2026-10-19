@@ -1,7 +1,7 @@
 """Editor prompts fail recoverably when their FIFO becomes unknown."""
 import asyncio
 from contextlib import suppress
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import acp
 import pytest
@@ -230,12 +230,45 @@ async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
     with pytest.raises(GatewayClientError) as refused:
         await agent.prompt([acp.text_block('new input')], 's')
     for text in (notice, str(refused.value)):
-        assert 'chat --cli --resume s' in text and f'/discard {lost}' in text, text
+        assert 'sessions discard s' in text and f'/discard {lost}' in text, text
         assert 'do not resend' in text
     assert 'nothing was submitted' in str(refused.value)
     # The prompt refreshed the owner's pending rows; no prompt was submitted.
     asked = [call.args[0] for call in agent._gateway.rpc.await_args_list]
     assert asked == ['session.info', 'session.resume', 'config.set', 'session.resume']
+
+
+@pytest.mark.asyncio
+async def test_resumed_unknown_turn_can_be_discarded_without_leaving_the_editor():
+    # The editor needs the same fenced recovery as classic chat. It must use the
+    # unknown row's generation, not the session's current generation.
+    agent = GatewayACPAgent()
+    agent._gateway = AsyncMock()
+    lost = 'admission-lost-0123456789abcdef'
+    unknown = {'session_id': 's', 'messages': [], 'prompts': [],
+               'pending': [{'admission_id': lost, 'status': 'unknown', 'execution_generation': 4}]}
+    cleared = {**unknown, 'pending': []}
+    agent._snapshots['s'] = unknown
+    resolved = []
+
+    def rpc(method, **params):
+        if method == 'prompt.resolve_unknown':
+            resolved.append(params)
+            return {'admission_id': lost, 'status': 'terminal', 'outcome': 'interrupted'}
+        return cleared if resolved else unknown
+    agent._gateway.rpc.side_effect = rpc
+
+    response = await agent.prompt([acp.text_block(f'/discard {lost}')], 's')
+
+    assert response.stop_reason == 'end_turn'
+    assert agent._snapshots['s']['pending'] == []
+    # The pre-prompt refresh asks the owner first (another viewer may have resolved it already).
+    assert agent._gateway.rpc.await_args_list == [
+        call('session.resume', session_id='s'),
+        call('session.resume', session_id='s'),
+        call('prompt.resolve_unknown', session_id='s', admission_id=lost, execution_generation=4),
+        call('session.resume', session_id='s'),
+    ]
 
 
 @pytest.mark.asyncio

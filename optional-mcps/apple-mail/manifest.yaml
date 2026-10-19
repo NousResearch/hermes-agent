@@ -251,12 +251,59 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # attachments before save/send) land only on send/mutation tools that are
 # disabled below. No new tools: still 52 tools, all 18 default_enabled
 # entries resolve.
+#
+# 2.20.22 is re-pinned on the same footing — six defects/perf fixes in
+# default_enabled tools, all from one contributor (@JaumeAP) landed via
+# continuation PRs sweetrb/apple-mail-mcp#313-#318 on 2026-10-19:
+#   - `list-messages`/`search-messages` reported `hasAttachments: false` on
+#     every row — the bulk AppleScript read of a message list's attachments
+#     silently returns empty, and `search-messages` never read attachments at
+#     all. Both now count per message (2.20.17, #313/orig #305).
+#   - `list-attachments`' MIME fallback returned RFC 2231/2047-encoded
+#     attachment filenames undecoded, and matched `cid:` references by
+#     substring (`cid:logo` false-matched inside `cid:logo2`), misclassifying
+#     some attached files as embedded images (2.20.18, #314/orig #307).
+#   - `get-message`/`get-thread`'s by-id lookup, given an `account` but no
+#     `mailbox`, still scanned every account plus the local "On My Mac" store
+#     instead of scoping to the named account; a nonexistent account name
+#     produced a misleading "message not found" instead of naming the problem
+#     (2.20.19, #315/orig #308).
+#   - `search-messages`' AppleScript flag-colour read shared one try/catch
+#     with every other bulk row property, so one failing getter silently
+#     dropped flag colour (and nothing else) for every row; given its own
+#     try/catch like the other properties. The IMAP colour-flag FETCH is now
+#     sliced into 500-UID batches to avoid exceeding server command-line
+#     limits on large result sets (2.20.20, #316/orig #309).
+#   - `list-attachments` took the FIRST message matching a numeric id across
+#     every mailbox of every account, so on a label store (Gmail/iCloud) where
+#     one id repeats across INBOX/Important/All Mail it could answer for the
+#     wrong message — including a false "no attachments" for a message that
+#     has them. Now resolves through the same guarded by-id lookup the read
+#     tools already use, scoped to the mailbox the id was listed from, and
+#     refuses an id several mailboxes hold rather than guessing (2.20.21,
+#     #317/orig #310; its mutation-tool half, `save-attachment`, stays
+#     disabled below).
+#   - `list-messages`/`search-messages`/`get-unread-count` on a large-mailbox
+#     account (iCloud, measured on 119 mailboxes) recomputed a full
+#     container-walked path for every mailbox on every call even though the
+#     mailbox listing itself is cached for 60s. A cached-position hint is now
+#     checked first, falling back to the full walk only when stale — measured
+#     12.9s -> 1.7s for a 2nd `list-messages` call, 24.7s -> 13.5s for the
+#     first call of a process (2.20.22, #318/orig #311).
+# A pre-existing bug surfaced during this review but deliberately NOT fixed
+# in the above (kept out to keep each continuation PR limited to the
+# contributed change): sweetrb/apple-mail-mcp#319, an explicit account-only
+# by-id hint can be silently overridden by a remembered location in a
+# different account on a hit. Tracked upstream, not yet shipped.
+# No new tools: still 52 tools, all 18 default_enabled entries resolve
+# (re-verified via a live `initialize` + `tools/list` handshake against
+# apple-mail-mcp@2.20.22, serverInfo.version matching).
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.16"
+    - "apple-mail-mcp@2.20.22"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

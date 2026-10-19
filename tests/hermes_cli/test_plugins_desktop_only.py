@@ -16,7 +16,8 @@ class TestDesktopOnlyPluginLoading:
     """A plugin whose whole payload is ``desktop/plugin.js`` has no Python half: the Desktop app
     loads that half itself, so the loader has nothing to import and no ``register()`` to call. Importing
     the absent ``__init__.py`` anyway logged ``Failed to load plugin '<name>': No __init__.py in ...``
-    on every start, in front of the real load failures an operator is reading the log for (#132741)."""
+    on every load pass — per session creation, not only per process start — in front of the real load
+    failures an operator is reading the log for (#132741)."""
 
     @staticmethod
     def _plugin(tmp_path, name, *, files, enabled=True):

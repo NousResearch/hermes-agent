@@ -560,8 +560,8 @@ class PluginLoaderMixin:
         Desktop app loads that half itself, so there is nothing to import and no ``register()`` to run.
         ``hermes plugins validate`` already counts ``desktop/plugin.js`` as a loadable entry point, so
         importing the absent ``__init__.py`` could only ever report ``Failed to load plugin '<name>': No
-        __init__.py in ...`` — once per start, for as long as the plugin is installed, on top of the real
-        load failures an operator is looking for (#132741).
+        __init__.py in ...`` on every load pass — one per session creation (e.g. the kanban dispatcher's
+        runs), not only per process start — atop the real load failures an operator looks for (#132741).
 
         Keyed on the file system, not on ``kind``: a plugin may ship no ``kind`` at all and still be
         desktop-only, and ``desktop/`` is what decides it either way. The payload is required as well as

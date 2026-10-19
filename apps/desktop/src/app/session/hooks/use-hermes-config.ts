@@ -32,6 +32,7 @@ import {
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
+import { beginProfileAppearanceRead, publishProfileAppearance } from '@/themes/profile-appearance'
 
 const DEFAULT_VOICE_SECONDS = 120
 
@@ -73,6 +74,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
       const profileRefreshEpoch = profileRefreshEpochRef.current
       const selectionGeneration = getComposerSelectionGeneration()
+      const appearanceRead = beginProfileAppearanceRead()
       const connection = $connection.get()
       const profile = $activeGatewayProfile.get()
 
@@ -161,6 +163,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
+        publishProfileAppearance(appearanceRead, config)
 
         if (!canPublish()) {
           return

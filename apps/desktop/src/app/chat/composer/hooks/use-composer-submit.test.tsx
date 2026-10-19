@@ -65,6 +65,7 @@ function renderSubmitHook({
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
+  const focusInput = vi.fn()
   const loadIntoComposer = vi.fn()
   const stashAt = vi.fn()
   const onCancel = vi.fn()
@@ -121,7 +122,7 @@ function renderSubmitHook({
         drainNextQueued: vi.fn(async () => false),
         editorRef,
         exitQueuedEdit: vi.fn(() => false),
-        focusInput: vi.fn(),
+        focusInput,
         inputDisabled,
         loadIntoComposer,
         onCancel,
@@ -142,6 +143,8 @@ function renderSubmitHook({
     loadIntoComposer,
     stashAt,
     clearDraft,
+    editor,
+    focusInput,
     hook,
     onCancel,
     onSteer,
@@ -589,6 +592,39 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('useComposerSubmit keyboard after send', () => {
+  afterEach(() => {
+    cleanup()
+    window.document.body.replaceChildren()
+    vi.unstubAllGlobals()
+  })
+
+  // iOS raises the keyboard for a focus() inside the Send tap, covering the
+  // reply just as it starts streaming.
+  it.each([
+    ['desktop', false, false, 1],
+    ['touch with the keyboard up', true, true, 1],
+    ['touch with the keyboard put away', true, false, 0]
+  ])('refocuses the composer after a send on %s', async (_case, touch, editorFocused, focusCalls) => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ addEventListener: vi.fn(), matches: touch, removeEventListener: vi.fn() })
+    )
+    const { editor, focusInput, hook, onSubmit } = renderSubmitHook({ text: 'hello' })
+    editor.tabIndex = 0
+    window.document.body.append(editor)
+
+    if (editorFocused) {
+      editor.focus()
+    }
+
+    await act(async () => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledOnce()
+    expect(focusInput).toHaveBeenCalledTimes(focusCalls)
   })
 })
 

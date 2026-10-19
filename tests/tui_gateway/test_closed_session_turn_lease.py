@@ -83,7 +83,10 @@ def test_close_while_first_prompt_waits_for_build_leaves_no_lease(turn_env):
     assert submitted["result"]["status"] == "streaming", submitted
     assert _registry_session_ids() == ["closing-session-key"]
 
+    # The turn still awaiting its build outlives the zero-second grace, but the session was closed:
+    # ``closed`` is False only for a runtime id that was already gone (clients read it that way).
     assert _rpc("session.close")["result"]["closed"] is True
+    assert SID not in server._sessions
     assert _registry_session_ids() == []
 
     session["agent"] = _built_agent(turns_run)
@@ -140,3 +143,22 @@ def test_closing_refusal_keeps_a_lease_the_session_already_held(turn_env):
 
     assert session.get("active_session_lease") is held
     assert _registry_session_ids() == ["closing-session-key"]
+
+
+def test_profile_retirement_still_refuses_a_session_whose_turn_outlives_the_grace(turn_env, tmp_path):
+    """``session.close`` reports a close it performed; deleting the session's profile needs more: the turn
+    must have settled, or the delete is refused while that turn can still write into the profile."""
+    profile_home = tmp_path / "profiles" / "busy"
+    profile_home.mkdir(parents=True)
+    release = threading.Event()
+    turn = threading.Thread(target=release.wait, args=(10,))
+    turn.start()
+    server._sessions[SID] = _session(profile_home=str(profile_home), _run_thread=turn)
+    try:
+        with pytest.raises(RuntimeError, match="still has active session turn"):
+            server.retire_profile_home(profile_home)
+        assert SID not in server._sessions
+    finally:
+        release.set()
+        turn.join(timeout=10)
+        server.allow_profile_home(profile_home)

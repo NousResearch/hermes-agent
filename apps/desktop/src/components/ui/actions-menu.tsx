@@ -1,4 +1,5 @@
 import type * as React from 'react'
+import { useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -160,6 +161,9 @@ interface ActionsContextMenuProps {
   contentClassName?: string
   /** Skip the wrapper (render children bare) — e.g. nothing is actionable yet. */
   disabled?: boolean
+  /** Vetoes an open request, e.g. a touch hold the browser owns. Radix opens
+   *  on a touch hold from pointer timers, with no contextmenu event to stop. */
+  allowOpen?: () => boolean
   onCloseAutoFocus?: (event: Event) => void
 }
 
@@ -168,6 +172,7 @@ interface ActionsContextMenuProps {
  * kebab's `items` render function so both surfaces mirror each other.
  */
 export function ActionsContextMenu({
+  allowOpen,
   ariaLabel,
   children,
   contentClassName,
@@ -175,12 +180,14 @@ export function ActionsContextMenu({
   items,
   onCloseAutoFocus
 }: ActionsContextMenuProps) {
+  const [open, setOpen] = useState(false)
+
   if (disabled) {
     return <>{children}</>
   }
 
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={next => setOpen(next && (allowOpen?.() ?? true))} open={open}>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent aria-label={ariaLabel} className={contentClassName} onCloseAutoFocus={onCloseAutoFocus}>
         <ActionItems items={items} kit={CONTEXT_KIT} />

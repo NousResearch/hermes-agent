@@ -6,8 +6,6 @@ stays the single late-binding seam tests monkeypatch (``web_deps.late``).
 Usage: ``python -m hermes_cli.main web [--port 8080]``.
 """
 
-from contextlib import asynccontextmanager
-
 import asyncio
 from collections import deque
 import hmac
@@ -23,8 +21,10 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
-from hermes_cli.process_identity import is_desktop_owned_backend
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES, is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
+from hermes_cli import web_server_file_tickets as _file_tickets
+from hermes_cli.web_server_surface import policy, private_launch
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -33,6 +33,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
 from hermes_cli.version_info import get_version_info
 
@@ -296,6 +297,12 @@ def _ssh_runtime_intact() -> bool:
 # share one testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
+from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
+
+# Inside every auth/Host middleware: those checks run before body ingestion,
+# and the receive limit runs before FastAPI can spool a multipart attachment.
+app.add_middleware(ChatFileUploadLimitMiddleware)
+
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
@@ -316,12 +323,17 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
 
 
-# Routes that may also authenticate via ``?token=`` (download links opened by
-# the OS shell / a new tab, where no header can be set). Kept narrow.
+# Routes that may also authenticate via ``?token=`` for Electron's remote
+# "open externally" download link. Browser pages use path-bound file tickets
+# instead (``web_server_file_tickets``), so the session token never lands in
+# their download history or a copyable media URL. The OAuth gate still requires
+# its session cookie; query credentials are only accepted by the loopback gate.
 _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
+    if _file_tickets.redeem(request):
+        return True
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
     token = request.query_params.get("token", "")
@@ -650,7 +662,7 @@ elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
 
 
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES
 # Multipart uploads stream to a temp file in fixed chunks and rename into
 # place: constant memory, no base64 inflation, no proxy body-size 502s (NS-501).
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -791,10 +803,14 @@ from hermes_cli.web_routers import (
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    webapp as _webapp_routes,
     shared_metrics as _shared_metrics_routes,
 )
 
+import hermes_cli.web_routers.uploads as _upload_routes
+
 app.include_router(_files_routes.router)
+app.include_router(_upload_routes.router)
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
@@ -824,6 +840,7 @@ app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_webapp_routes.router)
 app.include_router(_shared_metrics_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
@@ -1143,7 +1160,6 @@ def _on_server_started(
     *,
     host: str,
     port: int,
-    headless: bool,
     isolated: bool,
     open_browser: bool,
     initial_profile: str,
@@ -1208,7 +1224,8 @@ def _on_server_started(
     app.state.bound_port = actual_port
     # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
     # headless backend (a URL with no UI behind it).
-    app.state.serves_spa = not headless
+    serves_spa = policy(app.state).serves_spa
+    app.state.serves_spa = serves_spa
 
     # Positive process identity in the machine spawn ledger (+ Windows
     # kill-on-close job). Registered AFTER the bind so the entry carries the
@@ -1218,7 +1235,7 @@ def _on_server_started(
         from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
 
         register_self(
-            "serve" if headless else "dashboard",
+            app.state.ui_surface,
             detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
@@ -1238,13 +1255,11 @@ def _on_server_started(
     # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
     # a packaged Desktop artifact whose parser predates the neutral token
     # (#60772) still matches the legacy sentinel, while current parsers match
-    # either. The legacy `dashboard` backend keeps its own single token.
-    if headless:
+    # either. SPA-serving surfaces keep their own single token.
+    if not serves_spa:
         _write_machine_sentinel_line(f"HERMES_BACKEND_READY port={actual_port}")
-        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
-    else:
-        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
-    if headless:
+    _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
+    if not serves_spa:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.
         print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
@@ -1361,18 +1376,23 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
-    headless: bool = False,
     isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ui_surface: str = "dashboard",
+    web_dist: Optional[Path] = None,
     ssh_lock_path: Optional[Path] = None,
 ):
     """Start the web UI server.
 
+    ``ui_surface`` is the launch surface (``serve`` | ``dashboard`` | ``webapp``) and
+    its ledger purpose; what it may do is ``web_server_surface.policy``. ``serve`` is
+    the JSON-RPC/WS backend: no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``web_dist`` is the SPA a launch prepared itself (the Webapp renderer); it wins
+    over ``WEB_DIST`` and is never exported to child processes.
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
-    (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
-    JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    (profile alias ``<profile> dashboard``).
     ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
     discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
@@ -1384,6 +1404,10 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    if ui_surface not in WEB_SERVER_PURPOSES:
+        raise ValueError(f"unsupported web UI surface: {ui_surface}")
+    app.state.ui_surface = ui_surface
+    app.state.web_dist = web_dist
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
@@ -1401,6 +1425,11 @@ def start_server(
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
     _configure_auth_gate(host, allow_public, ssh_session_token, ssh_owner_nonce)
+    if private_launch(app.state):
+        # Webapp launch credentials are process-local, never inherited from
+        # Desktop environment/argv. Every start invalidates old launch links.
+        global _SESSION_TOKEN
+        _SESSION_TOKEN = secrets.token_urlsafe(32)
 
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
@@ -1460,14 +1489,13 @@ def start_server(
                 server,
                 host=host,
                 port=port,
-                headless=headless,
                 isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
                 ssh_lock_path=ssh_lock_path,
             )
-            if headless:
+            if ui_surface == "serve":
                 from hermes_cli.observability.shared_metrics_startup import record_process_ready
                 record_process_ready("serve_boot", background=True)
 

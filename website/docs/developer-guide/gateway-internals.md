@@ -270,6 +270,15 @@ OAuth bypass for remote clients. An exposure proxy must not replace remote calle
 credentials with its own native grant. It is not a filesystem sandbox against code
 already running as the same OS user.
 
+An exposure proxy (the Webapp, relaying a browser's live socket) mints an
+`exposure` WebSocket grant instead. It must name the remote login it authenticated
+as a structured `auth:v1:[provider, issuer, user]` subject (never the socket peer's
+UID, never a `local` or empty provider), may be host-scoped like the native Desktop
+socket, and attaches as that login: operator access to canonical sessions, but no
+native transport binding (no first-claim adoption of unowned historical rows) and
+no native-owner verbs such as `session.prune`. Owners advertise it as the
+`delegated-attach-v1` capability.
+
 A native grant does not retarget the daemon through a URL or JSON `profile` selector:
 each supplied selector must resolve to the served primary home. The existing
 config `current`/empty/default-name contracts are preserved rather than treating

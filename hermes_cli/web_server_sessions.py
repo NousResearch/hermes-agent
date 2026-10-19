@@ -99,8 +99,8 @@ def _session_mutation_context(request, profile):
         subject = authenticated_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({'user_id': 'legacy-token-owner', 'provider': 'session-token'})
+        from gateway.session_identity import SESSION_TOKEN_OWNER, authenticated_subject
+        subject = authenticated_subject(SESSION_TOKEN_OWNER)
     else:
         raise HTTPException(status_code=401, detail='Unauthorized')
     authority = getattr(request.app.state, 'session_authority', None)

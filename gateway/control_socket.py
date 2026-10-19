@@ -354,6 +354,12 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap subject")
         if subject is not peer_subject and not _structured_login_subject(subject):
             raise PermissionError("invalid bootstrap subject")
+        if params["purpose"] == "exposure":
+            # An exposure grant exists to carry the remote login the proxy authenticated; the
+            # peer's own UID is never that login, and a ``local`` provider would read as native.
+            from gateway.runtime_bootstrap import delegable_login
+            if "subject" not in params or delegable_login(subject) is None:
+                raise PermissionError("an exposure grant names the forwarded login")
         ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
                                        purpose=params["purpose"], scope=params.get("scope", "profile"))
         return {"ticket": ticket, "expires_in_seconds": 30,

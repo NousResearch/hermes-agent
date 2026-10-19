@@ -15,11 +15,56 @@ _PURPOSE_CAPABILITIES = {
     # Rename/delete of the ONE profile it is minted for (#140345): a registry write on that home,
     # never a read of it or any other route.
     'native-profile-registry': frozenset({'profiles:registry'}),
+    # A same-user exposure proxy (the Webapp) attaching for the remote login it authenticated: that
+    # login's operator rights, never native ones (gateway-internals.md, "must not replace remote
+    # callers' credentials with its own native grant"). See delegated_identity.
     'exposure': frozenset({'transport:delegate'}),
     'worker-adoption': frozenset({'worker:adopt'}),
 }
-# A grant's profile reach: its own home, or (interactive only) every served sibling.
+# A grant's profile reach: its own home, or every served sibling for the purposes that attach a
+# shared socket (Desktop's native one, the exposure proxy's delegated one).
 _SCOPES = frozenset({'profile', 'host'})
+_HOST_SCOPED_PURPOSES = frozenset({'interactive', 'exposure'})
+
+
+def delegable_login(subject):
+    """``(provider, issuer, user)`` of a login an exposure grant may carry, else None.
+
+    Only the structured ``auth:v1`` form names a forwarded login. A ``local`` (or empty) provider
+    would rebuild a native-looking principal at redemption (``authenticated_subject`` keeps a
+    ``local`` provider's bare user id), so it never names one."""
+    from gateway.session_identity import parse_authenticated_subject
+    parts = parse_authenticated_subject(subject)
+    if parts is None:
+        return None
+    provider, _issuer, user = parts
+    if provider.strip() in {'', 'local'} or not user.strip():
+        return None
+    return parts
+
+
+def grant_identity(grant) -> dict:
+    """The native principal a redeemed interactive/worker ticket attaches as (the private bootstrap
+    stamps profile, instance and capabilities: ``authenticated_subject`` keeps its subject bare)."""
+    return {'user_id': grant['subject'], 'provider': 'local', 'profile_id': grant['profile_id'],
+            'instance_id': grant['instance_id'], 'capabilities': grant['capabilities'],
+            'native_bootstrap': True, 'profile_scope': grant.get('scope', 'profile')}
+
+
+def delegated_identity(grant):
+    """The principal a redeemed exposure ticket attaches as, else None.
+
+    The forwarded login, shaped exactly like the dashboard WS gate's own identity for that login,
+    with interactive session rights: its subject re-namespaces to the same ``auth:v1`` string the
+    proxy's REST forwards carry. No ``native_bootstrap`` and never a ``local`` provider, so it binds
+    no native transport (no first-claim adoption of unowned history) and owns no store-wide verb."""
+    login = delegable_login(grant.get('subject'))
+    if login is None:
+        return None
+    provider, issuer, user = login
+    return {'user_id': user, 'provider': provider, 'issuer': issuer, 'profile_id': grant['profile_id'],
+            'instance_id': grant['instance_id'], 'capabilities': _PURPOSE_CAPABILITIES['interactive'],
+            'profile_scope': grant.get('scope', 'profile')}
 
 
 class TicketStore:
@@ -35,10 +80,10 @@ class TicketStore:
         self._lock = threading.Lock()
 
     def mint(self, *, profile_id, subject, purpose, scope='profile') -> str:
-        """``scope='host'`` lets an interactive connection select every profile this process
-        serves (the Desktop's one shared socket); the default binds exactly ``profile_id``."""
+        """``scope='host'`` lets an interactive or exposure connection select every profile this
+        process serves (one shared socket); the default binds exactly ``profile_id``."""
         if (profile_id not in self.profile_ids or purpose not in _PURPOSE_CAPABILITIES or not subject
-                or scope not in _SCOPES or (scope == 'host' and purpose != 'interactive')):
+                or scope not in _SCOPES or (scope == 'host' and purpose not in _HOST_SCOPED_PURPOSES)):
             raise PermissionError('bootstrap binding rejected')
         with self._lock:
             now = time.monotonic()

@@ -18,6 +18,7 @@ def homes(tmp_path, monkeypatch):
     launch = tmp_path / 'root'
     bee = launch / 'profiles' / 'bee'
     bee.mkdir(parents=True)
+    (bee / 'config.yaml').write_text('{}\n', encoding='utf-8')  # a live profile has identity
     monkeypatch.setenv('HERMES_HOME', str(launch))
     monkeypatch.setattr(server, '_hermes_home', launch)
     return server, launch, bee

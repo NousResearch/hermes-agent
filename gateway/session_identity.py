@@ -276,6 +276,9 @@ def resolve_identity(
 
 
 AUTH_SUBJECT_PREFIX = 'auth:v1:'
+#: The login a dashboard's session token stands for on an unauthenticated loopback bind. One principal for
+#: the Webapp's relayed socket, its REST mutation forwards and the in-process legacy socket alike.
+SESSION_TOKEN_OWNER = {'user_id': 'legacy-token-owner', 'provider': 'session-token'}
 
 
 def parse_authenticated_subject(subject):

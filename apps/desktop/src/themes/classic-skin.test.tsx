@@ -23,9 +23,11 @@ type ThemeApi = ReturnType<typeof useTheme>
 /** A fresh renderer launch: module state reloads, localStorage survives. */
 async function launch(localSkin: typeof stockDefaultSkin | null) {
   cleanup()
+  // Appearance picks persist through the real policy; only transport is mocked.
+  const writeConfig = vi.fn().mockResolvedValue({ ok: true })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: localSkin ? { localSkin: { profile: 'default', skin: localSkin } } : {}
+    value: { api: writeConfig, ...(localSkin ? { localSkin: { profile: 'default', skin: localSkin } } : {}) }
   })
   vi.resetModules()
 
@@ -55,7 +57,7 @@ async function launch(localSkin: typeof stockDefaultSkin | null) {
   // gateway.ready: the connect-time seed of the backend's active skin.
   const connect = () => act(() => sync.ingestBackendSkin(stockDefaultSkin, { apply: false }))
 
-  return { api, bootPaint, connect }
+  return { api, bootPaint, connect, writeConfig }
 }
 
 describe('Classic Hermes is an explicit Desktop pick, never inferred from stock config (#76579)', () => {
@@ -89,8 +91,18 @@ describe('Classic Hermes is an explicit Desktop pick, never inferred from stock 
     let run = await launch(stockDefaultSkin)
     expect(run.api.theme?.availableThemes.find(t => t.name === 'classic')?.label).toBe('Classic Hermes')
 
-    act(() => run.api.theme?.setMode('dark'))
-    act(() => run.api.theme?.setTheme('classic'))
+    await act(async () => {
+      run.api.theme?.setMode('dark')
+      run.api.theme?.setTheme('classic')
+    })
+    expect(run.writeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/config',
+        method: 'PUT',
+        profile: 'default',
+        body: { config: { desktop: { theme: 'classic' } } }
+      })
+    )
     expect(paintedSkin()).toBe('classic')
     expect(cssVar('--theme-background-seed')).toBe('#1a1a2e')
     expect(cssVar('--theme-primary').toLowerCase()).toBe('#ffbf00')

@@ -14,7 +14,7 @@ import { useSessionStateCache } from '@/app/session/hooks/use-session-state-cach
 import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
 import { getLatestSessionMessages } from '@/hermes'
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import { resetLiveSync } from '@/store/live-sync'
+import { resetLiveSync, setChangeEventsAvailable } from '@/store/live-sync'
 import {
   $busy,
   setActiveSessionId,
@@ -616,3 +616,136 @@ it('does not let an older finalizer retire the newest refresh observation', asyn
   expect(getLatestSessionMessages).toHaveBeenCalledTimes(3)
   expect(screen.getByTestId('runtime').textContent).toContain(FINAL)
 })
+
+// Completion can release a sessions.changed refresh without navigation.
+for (const shape of ['incremental', 'single chunk'] as const) {
+  it.each([false, true])(
+    `keeps ${shape} replies single when completion releases a queued refresh: %s`,
+    async queued => {
+      setChangeEventsAvailable(true)
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: STORED, messages: history })
+      render(<Harness backgroundSync />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+      act(() => cache.updateSessionState(RUNTIME, state => ({ ...state, messages: toChatMessages(history) }), STORED))
+
+      const assistantTexts = () => {
+        const messages = $sessionStates.get()[RUNTIME].messages
+
+        return messages.filter(message => message.role === 'assistant').map(chatMessageText)
+      }
+
+      const rows: SessionMessage[] = [...history]
+
+      const replies = queued
+        ? ['First immediate response.', 'Background immediate response.']
+        : ['First immediate response.']
+
+      for (const [i, text] of replies.entries()) {
+        const id = 3 + i * 4
+
+        if (i) {
+          const prompt: SessionMessage = {
+            id,
+            role: 'user',
+            content: '[ASYNC DELEGATION BATCH COMPLETE — synthetic]',
+            timestamp: id,
+            display_kind: 'async_delegation_complete'
+          }
+
+          rows.push(prompt)
+          act(() =>
+            cache.updateSessionState(
+              RUNTIME,
+              state => ({ ...state, messages: [...state.messages, ...toChatMessages([prompt])] }),
+              STORED
+            )
+          )
+        }
+
+        send('message.start')
+        send('reasoning.delta', { text: 'Synthetic reasoning.' })
+        send('tool.start', { name: 'read_file', tool_id: `synthetic-${i}`, args: {} })
+        send('tool.complete', { name: 'read_file', tool_id: `synthetic-${i}`, result: 'synthetic only' })
+
+        for (const chunk of shape === 'incremental' ? text.match(/.{1,5}/g)! : [text]) {
+          send('message.delta', { text: chunk })
+        }
+
+        rows.push(
+          {
+            id: id + 1,
+            role: 'assistant',
+            content: '',
+            reasoning: 'Synthetic reasoning.',
+            timestamp: id + 1,
+            tool_calls: [{ id: `synthetic-${i}`, type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+          },
+          {
+            id: id + 2,
+            role: 'tool',
+            content: 'synthetic only',
+            tool_call_id: `synthetic-${i}`,
+            tool_name: 'read_file',
+            timestamp: id + 2
+          },
+          { id: id + 3, role: 'assistant', content: text, timestamp: id + 3 }
+        )
+        vi.mocked(getLatestSessionMessages).mockResolvedValue({
+          session_id: STORED,
+          messages: queued ? rows.slice(3) : rows
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(100)
+        })
+
+        const before = assistantTexts()
+
+        expect(before.filter(t => t === text)).toHaveLength(1)
+        const reads = vi.mocked(getLatestSessionMessages).mock.calls.length
+
+        if (queued && i === 1) {
+          send('sessions.changed')
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(2500)
+          })
+          expect(vi.mocked(getLatestSessionMessages).mock.calls.length).toBe(reads)
+        }
+
+        send('message.complete', {
+          text,
+          persisted_turn: {
+            row_ids: [id, id + 1, id + 2, id + 3],
+            user_row_id: id,
+            final_assistant_row_id: id + 3,
+            complete: true
+          }
+        })
+
+        const justCompleted = assistantTexts()
+
+        expect(justCompleted.filter(t => t === text)).toHaveLength(1)
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(100)
+        })
+
+        const after = assistantTexts()
+
+        for (const reply of replies.slice(0, i + 1)) {
+          expect(after.filter(t => t.includes(reply))).toHaveLength(1)
+        }
+
+        expect(after.every(t => !t.includes(text + text))).toBe(true)
+
+        if (!queued) {
+          expect(vi.mocked(getLatestSessionMessages).mock.calls.length).toBe(reads)
+        }
+
+        if (queued && i === 1) {
+          expect(vi.mocked(getLatestSessionMessages).mock.calls.length).toBeGreaterThan(reads)
+        }
+      }
+    }
+  )
+}

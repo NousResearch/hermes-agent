@@ -17,8 +17,9 @@ import { isLayoutNode, normalize } from '@/components/pane-shell/tree/model'
 import { $layoutTree, markActivePreset, persistTree } from '@/components/pane-shell/tree/store'
 import { exportProfileArchive, importProfileArchive } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { modePref, skinPref, type ThemeMode } from '@/themes/context'
+import { modePref, skinPref } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
+import { isThemeMode } from '@/themes/profile-appearance'
 import type { DesktopTheme } from '@/themes/types'
 import { $userThemes, installUserTheme, resolveTheme } from '@/themes/user-themes'
 import type { ProfileDesktopOverlay } from '@/types/hermes'
@@ -79,8 +80,6 @@ export async function exportProfileBundle(profile: string, output?: string): Pro
 
   return archive
 }
-
-const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' || value === 'dark' || value === 'system'
 
 /**
  * Apply an imported overlay: install bundled themes, assign the new profile's

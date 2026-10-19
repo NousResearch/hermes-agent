@@ -149,10 +149,10 @@ class TestAttachUrl:
         )
 
         args = types.SimpleNamespace(
-            host="::1", port=9119, no_open=False, isolated=False, open_profile=""
+            host="::1", port=9119, no_open=False, isolated=False, open_profile="", ui_surface="dashboard"
         )
         with pytest.raises(SystemExit) as exc:
-            main_dashboard._attach_to_host_backend(args, headless_backend=False)
+            main_dashboard._attach_to_host_backend(args)
 
         assert exc.value.code == 0
         assert opened == ["http://[::1]:9119/?profile=worker_x"]

@@ -36,7 +36,7 @@ function CodeCardBody({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       className={cn(
-        'font-mono text-[length:calc(0.7rem*var(--conversation-text-scale,1))] leading-relaxed text-foreground/90 [&_pre]:m-0 [&_pre]:overflow-x-auto [&_pre]:scrollbar-overlay [&_pre]:bg-transparent! [&_pre]:px-2 [&_pre]:py-1.5 [&_pre]:font-mono [&_pre]:leading-relaxed',
+        'font-mono text-[length:calc(0.7rem*var(--conversation-text-scale,1))] leading-relaxed text-foreground/90 [&_pre]:m-0 [&_pre]:min-w-max [&_pre]:overflow-x-auto [&_pre]:scrollbar-overlay [&_pre]:bg-transparent! [&_pre]:px-2 [&_pre]:py-1.5 [&_pre]:font-mono [&_pre]:leading-relaxed',
         className
       )}
       data-slot="code-card-body"

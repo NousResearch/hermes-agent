@@ -16,6 +16,7 @@ from typing import Any, Union
 from urllib.parse import urlparse
 
 import hermes_yaml as yaml
+from pm.filesystem import hard_link_refused
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
     genuinely failed. Writing through the target also preserves its ACL, which ``os.replace``
     does not (the temp file's inherited ACL wins there).
     """
+    staged = os.stat(tmp_str)
     with open(tmp_str, "rb") as src:
         data = src.read()
     fd = os.open(real_path, os.O_WRONLY | getattr(os, "O_BINARY", 0))
@@ -163,6 +165,8 @@ def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
             os.fsync(fd)
     finally:
         os.close(fd)
+    with suppress(OSError):  # keep the staged mtime, as a rename would
+        os.utime(real_path, ns=(staged.st_atime_ns, staged.st_mtime_ns))
     os.unlink(tmp_str)
 
 
@@ -216,6 +220,29 @@ def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
         # The rewrite re-raises its own error, so an ACL denial is reported as such, not as contention.
         (_rewrite_in_place if contended else _copy_fallback)(tmp_str, real_path)
     return real_path
+
+
+def publish_no_clobber(tmp_path: str | Path, target: str | Path) -> None:
+    """Publish the complete file *tmp_path* at *target*; ``FileExistsError`` if *target* exists.
+
+    A hard link is atomic and never replaces a concurrent winner. Where the filesystem refuses
+    hard links, an ``O_EXCL`` reservation keeps the no-clobber contract and :func:`atomic_replace`
+    then moves the complete bytes over it, consuming *tmp_path*; until then a racing reader sees
+    an empty file.
+    """
+    try:
+        os.link(tmp_path, target)
+        return
+    except OSError as exc:
+        if not hard_link_refused(exc):
+            raise
+    os.close(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    try:
+        atomic_replace(tmp_path, target)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(target)
+        raise
 
 
 def _publish_path(target_str: str) -> str:
@@ -298,8 +325,30 @@ def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
             raise
 
 
+def _stamp_past_target(tmp_path: str, target: Path) -> int:
+    """Stamp staged *tmp_path* at least 1 µs past *target*'s mtime; return the mtime it keeps.
+
+    Readers order a file's versions by mtime, so a replacement must never tie or go backwards: two
+    saves inside one filesystem timestamp tick (milliseconds to seconds, by filesystem) would tie,
+    and a clock behind the file (an NTP step, a copy stamped ahead) would go backwards. Every publish
+    path keeps the stamp, so the result is the mtime of exactly these bytes, whatever lands after
+    them. A filesystem too coarse to keep it, or one that refuses utime, can still tie.
+    """
+    staged = os.stat(tmp_path)
+    try:
+        floor = os.stat(target).st_mtime_ns // 1000 + 1
+    except FileNotFoundError:
+        return staged.st_mtime_ns
+    if staged.st_mtime_ns // 1000 >= floor:
+        return staged.st_mtime_ns
+    with suppress(OSError):
+        os.utime(tmp_path, ns=(staged.st_atime_ns, floor * 1000))
+    return os.stat(tmp_path).st_mtime_ns
+
+
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: int | None = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  advance_mtime: bool = False) -> int | None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -312,7 +361,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
     also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
     removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
-    clean up.
+    clean up. *advance_mtime* stamps the file past the one it replaces (:func:`_stamp_past_target`)
+    and returns its published mtime in ns; otherwise the result is ``None``.
     """
     # A profile delete leaves a tombstone beside its removed home.  Background
     # writers may retain that home in a context variable, so a plain mkdir here
@@ -331,6 +381,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
+        published = _stamp_past_target(tmp_path, path) if advance_mtime else None
         replaced = Path(atomic_replace(tmp_path, path))  # symlink-preserving actual destination
         _restore_file_metadata(replaced, original_owner, mode)
         if fsync_dir:
@@ -339,6 +390,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
         with suppress(OSError):
             os.unlink(tmp_path)
         raise
+    return published
 
 
 def _mode_for_write(path: Path, create_mode: int | None, preserve: bool = True) -> int | None:
@@ -460,13 +512,14 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> int:
+    """Publish a round-trip document; returns its mtime (ns), which orders config.yaml versions."""
     def _write(f) -> None:
         yaml_rt.dump(config, f)
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+    return _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path), advance_mtime=True)
 
 
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
@@ -538,7 +591,7 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
-                               extra_content_on_create: str | None = None) -> None:
+                               extra_content_on_create: str | None = None) -> int:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE on-disk primitive for ``config.yaml`` (production callers reach it through
@@ -549,7 +602,8 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
-    users' own comments (#92554).
+    users' own comments (#92554). Returns the published file's mtime (ns): the receipt of exactly
+    these bytes, stamped past the file they replaced.
     """
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from hermes_cli.config import require_readable_config_before_write
@@ -595,7 +649,7 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
             del dst[key]
 
     _merge(existing, new_state)
-    _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
+    return _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:

@@ -8,7 +8,7 @@ import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $corruptSessionStores } from '@/store/session'
+import { $corruptSessionStores, type SessionsLoadError } from '@/store/session'
 
 import { SidebarRowCluster, SidebarRowShell, SidebarRowStack } from './chrome'
 
@@ -60,17 +60,26 @@ export function SidebarPinnedEmptyState() {
   )
 }
 
+interface SidebarLoadErrorStateProps {
+  /** A `{ detail }` failure carries the backend's own reason; for a store it will not browse,
+   *  that names the remedy. */
+  error?: SessionsLoadError
+  onRetry: () => void
+}
+
 // A failed drill-in load must not share the "no sessions yet" copy — that
 // reads as data loss. Borrows the row chrome so it resolves into the rows it
 // replaces without the list stepping sideways.
-export function SidebarLoadErrorState({ onRetry }: { onRetry: () => void }) {
+export function SidebarLoadErrorState({ error, onRetry }: SidebarLoadErrorStateProps) {
   const { t } = useI18n()
+  const detail = typeof error === 'object' ? error.detail : undefined
 
   return (
     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center">
-      <div className="flex flex-col items-center gap-2">
+      <div className="flex min-w-0 flex-col items-center gap-2">
         <Codicon className="text-(--ui-text-quaternary)" name="error" size="1rem" />
         <p className="text-xs text-(--ui-text-tertiary)">{t.sidebar.projectLoadFailed}</p>
+        {detail && <p className="text-[0.6875rem] break-words text-(--ui-text-quaternary) select-text">{detail}</p>}
         <Button className="mt-0.5 text-(--ui-text-secondary)" onClick={onRetry} size="sm" variant="ghost">
           <Codicon name="refresh" size="0.75rem" />
           {t.common.retry}

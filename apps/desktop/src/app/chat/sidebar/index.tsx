@@ -1816,7 +1816,7 @@ export function ChatSidebar({
                   inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
                     <SidebarSessionSkeletons />
                   ) : !inProject && sessionsLoadError ? (
-                    <SidebarLoadErrorState onRetry={() => void onRetrySessions()} />
+                    <SidebarLoadErrorState error={sessionsLoadError} onRetry={() => void onRetrySessions()} />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                       {inProject

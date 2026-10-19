@@ -104,6 +104,25 @@ _AUTH_LOCK_TIMEOUT_PREFIXES = (
     "Timed out waiting for auth store lock",
     "Timed out waiting for shared Nous auth lock",
 )
+# Fragments of the FileNotFoundErrors the profile lifecycle fence raises when a session's profile
+# was deleted, recreated or its folder disappeared after the session opened
+# (``hermes_cli.profile_incarnation``, ``tui_gateway.server._start_agent_build``). Model and
+# storage-repair hints would point at a configuration that is fine.
+_PROFILE_RETIRED_FRAGMENTS = (
+    "incarnation is stale",
+    "incarnation is required",
+    "home is missing or being deleted",
+    "home is unavailable",
+)
+
+PROFILE_RETIRED_FOR_SESSION = (
+    "This session's profile was deleted or recreated, or its folder is missing. "
+    "Open the profile again and start a new session.")
+
+
+def profile_retired_error(exc: Any) -> bool:
+    """Whether *exc* is the lifecycle fence refusing a session whose profile was retired."""
+    return any(fragment in str(exc) for fragment in _PROFILE_RETIRED_FRAGMENTS)
 
 
 def agent_init_failed_message(exc: Any) -> str:
@@ -111,6 +130,10 @@ def agent_init_failed_message(exc: Any) -> str:
         return (f"Hermes could not start the assistant for this session. Details: {exc}. "
                 "Wait for the other process to release the lock (or exit it — check for a running "
                 "dashboard or background hermes process), then retry.")
+    if profile_retired_error(exc):
+        return (f"Hermes could not start the assistant for this session: its profile was deleted or "
+                f"recreated, or its folder is missing. Details: {exc}. "
+                "Open the profile again and start a new session.")
     return (f"Hermes could not start the assistant for this session. Details: {exc}. "
             "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
 

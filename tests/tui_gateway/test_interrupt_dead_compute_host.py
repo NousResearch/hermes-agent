@@ -114,14 +114,53 @@ def test_a_successor_turn_that_replaced_inflight_is_not_clobbered(monkeypatch):
     assert session["_turn_cancel_requested"] is True
 
 
-def test_supervisor_reports_pending_turns_per_session():
+def _supervisor_without_child(tmp_path):
+    """A real supervisor whose turns register through ``submit_turn``; no child is spawned."""
     from tui_gateway.host_supervisor import HostSupervisor
 
-    supervisor = HostSupervisor.__new__(HostSupervisor)  # __init__ would spawn a child
-    supervisor._lock = threading.RLock()
-    supervisor._pending_turns = {"req-a": ("sid-a", None), "req-b": ("sid-b", None)}
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "compute-host.json", expected_build_sha="test",
+        expected_hermes_home=str(tmp_path), autostart=False)
+    supervisor.start = lambda: None
+    supervisor._send_frame = lambda _payload: None
+    return supervisor
+
+
+def _submit(supervisor, sid, request_id):
+    from tui_gateway.host_supervisor import TurnSettlement
+
+    supervisor.submit_turn({"sid": sid, "request_id": request_id}, settlement=TurnSettlement())
+
+
+def test_supervisor_reports_pending_turns_per_session(tmp_path):
+    supervisor = _supervisor_without_child(tmp_path)
+    _submit(supervisor, "sid-a", "req-a")
+    _submit(supervisor, "sid-b", "req-b")
 
     assert supervisor.has_pending_turn("sid-a") is True
     assert supervisor.has_pending_turn("sid-c") is False
-    supervisor._pending_turns.pop("req-a")
+    supervisor._handle_host_frame({"type": "turn.end", "request_id": "req-a"})
     assert supervisor.has_pending_turn("sid-a") is False
+    assert supervisor.has_pending_turn("sid-b") is True
+
+
+def test_dead_host_stop_clears_the_session_while_another_session_has_a_turn(monkeypatch, tmp_path):
+    # Another session's turn registered on the respawned host must not make the probe fail
+    # closed for this one, whose host died under it.
+    supervisor = _supervisor_without_child(tmp_path)
+    _submit(supervisor, "iso-other", "req-other")
+
+    def interrupt(sid, *, request_id=None):
+        raise RuntimeError("compute host is not running")
+
+    supervisor.interrupt = interrupt
+    session = _isolated_session(
+        "iso-dead-shared", monkeypatch, supervisor,
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+
+    resp = _interrupt("iso-dead-shared")
+
+    assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}, resp
+    assert session["running"] is False
+    assert session.get("inflight_turn") is None

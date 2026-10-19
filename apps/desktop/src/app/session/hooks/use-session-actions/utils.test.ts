@@ -23,19 +23,21 @@ import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
+  dedupeInflightUserAgainstTranscript,
+  removeRepresentedLocalLiveProjection
+} from './live-session-projection'
+import {
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
-  dedupeInflightUserAgainstTranscript,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
-  removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   selectBranchMessages,
   sessionMatchesStoredId,
@@ -1705,13 +1707,15 @@ describe('appendLiveSessionProjection', () => {
     // been lifted into attachmentRefs and the visible text is the bare caption.
     const stored = [
       msg('stored-user', 'user', 'current running prompt', {
-        attachmentRefs: ['@image:/tmp/cat.png']
+        attachmentRefs: ['@image:/tmp/cat.png'],
+        timestamp: 11
       }),
-      msg('stored-assistant', 'assistant', 'earlier answer')
+      msg('stored-assistant', 'assistant', 'partial tool activity', { timestamp: 12 })
     ]
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
+      turn_started_at: 10,
       inflight: {
         user: 'current running prompt',
         assistant: 'partial answer',
@@ -1978,25 +1982,6 @@ describe('dedupeInflightUserAgainstTranscript', () => {
 
     const projection = runningProjection('repeat this')
     const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, projection)
-
-    expect(unchanged).toBe(projection)
-    expect(unchanged.inflight?.user).toBe('repeat this')
-  })
-
-  it('preserves a repeated in-flight prompt when the persisted match already has an answer', () => {
-    const runtime = [
-      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
-      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
-    ]
-
-    const persisted = [
-      ...runtime,
-      msg('persisted-repeat', 'user', 'repeat this', { timestamp: 3 }),
-      msg('persisted-repeat-answer', 'assistant', 'finished repeat answer', { timestamp: 4 })
-    ]
-
-    const projection = runningProjection('repeat this')
-    const unchanged = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
 
     expect(unchanged).toBe(projection)
     expect(unchanged.inflight?.user).toBe('repeat this')
@@ -2291,9 +2276,12 @@ describe('overlayConcurrentMessageChanges', () => {
 
     const hydrated = appendLiveSessionProjection(cached, snapshot)
 
+    // The reply predates turn_started_at, so the cached prompt is the previous
+    // turn: the resent prompt projects as its own row ahead of its stream.
     expect(hydrated.map(message => [message.id, chatMessageText(message)])).toEqual([
       ['3-user', 'prompt b'],
       ['4-assistant', 'Same answer'],
+      ['user-inflight-runtime-b', 'prompt b'],
       ['assistant-stream-runtime-b', 'Same ']
     ])
 

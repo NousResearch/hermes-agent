@@ -557,9 +557,9 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton was created this process. Only successful passes are
-# recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
-_HERMES_HOME_ENSURED: set = set()
+# Home path -> identity (``config_home._hermes_home_identity``) of its last successful skeleton pass.
+# A raised managed-mode/missing-profile error records nothing, so later loads keep re-checking.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
@@ -569,17 +569,8 @@ def ensure_hermes_home():
     """Ensure the ~/.hermes directory skeleton exists with secure permissions.
     Memoized per home path: this runs on EVERY ``load_config()`` and the ~14 mkdir/chmod syscalls
     made repeated loads the dominant cost of hot read paths."""
-    home = get_hermes_home()
-    key = str(home)
-
-    # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
-    # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
-        return
-    from hermes_cli.config_home import initialize_home
-    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
+    from hermes_cli.config_home import ensure_home
+    ensure_home(get_hermes_home(), _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
@@ -2013,37 +2004,14 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def _omitted_config_paths(
-    existing: dict[str, Any], proposed: dict[str, Any], prefix: tuple[str, ...] = (),
-) -> list[str]:
-    """Mapping paths that *proposed* would delete by omission from *existing*.
-
-    The round-trip writer recurses through mappings, so the completeness check must recurse too:
-    checking top-level key counts still lets a partial ``plugins: {...}`` payload erase sibling
-    settings inside that section. Replacing a non-empty mapping with a scalar/list is likewise a
-    deletion of that mapping's children and is reported at the mapping path.
-    """
-    omitted: list[str] = []
-    for key, old_value in existing.items():
-        path = (*prefix, str(key))
-        if key not in proposed:
-            omitted.append(".".join(path))
-            continue
-        new_value = proposed[key]
-        if isinstance(old_value, dict):
-            if isinstance(new_value, dict):
-                omitted.extend(_omitted_config_paths(old_value, new_value, path))
-            elif old_value:
-                omitted.append(".".join(path))
-    return omitted
-
-
 def _write_config_state(
     config_path: Path, data: dict[str, Any], *, allow_omissions: bool,
     extra_content_on_create: Optional[str] = None,
-) -> None:
-    """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
+) -> int:
+    """Shared comment-preserving config writer; omission policy is selected by the public wrapper.
+    Returns the published file's mtime (ns): the receipt of these bytes, past the file replaced."""
     from utils import atomic_roundtrip_yaml_save
+    from hermes_cli.config_omission_guard import _omitted_config_paths
 
     _refuse_failed_read(config_path, data)
     if not allow_omissions:
@@ -2061,27 +2029,27 @@ def _write_config_state(
                 "Pass the complete current config, or use atomic_config_replace() only when "
                 "deletion by omission is deliberate.",
             ) from exc
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    return atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
 
 
 def atomic_config_write(
     config_path: Path, data: dict[str, Any], *, extra_content_on_create: Optional[str] = None,
-) -> None:
+) -> int:
     """Persist config without allowing an incomplete mapping to delete existing settings.
 
     Values explicitly present in *data* may change, but every existing mapping path must remain.
     Use ``atomic_config_replace`` for a deliberate full-state replacement where omitted keys are
     meant to be deleted. Both paths retain the unreadable-file guard and ruamel comment preservation.
     """
-    _write_config_state(
+    return _write_config_state(
         config_path, data, allow_omissions=False, extra_content_on_create=extra_content_on_create)
 
 
 def atomic_config_replace(
     config_path: Path, data: dict[str, Any], *, extra_content_on_create: Optional[str] = None,
-) -> None:
+) -> int:
     """Persist the complete desired config state; omitted mapping keys are deliberately deleted."""
-    _write_config_state(
+    return _write_config_state(
         config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create)
 
 
@@ -2338,6 +2306,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
+                # YAML freshness cannot prove the named home's generation is live.
+                # Keep the lifecycle check without waiting on the config writer lock.
+                ensure_hermes_home()
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
         # Any surprise here falls through to the locked path, which is the
@@ -2475,8 +2446,8 @@ def _commented_sections_for_save(normalized: dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[set[tuple[str, ...]]] = None, merge_existing: bool = False):
-    """Save configuration to ~/.hermes/config.yaml.
+    preserve_keys: Optional[set[tuple[str, ...]]] = None, merge_existing: bool = False) -> Optional[int]:
+    """Save configuration to ~/.hermes/config.yaml; returns the published mtime (ns), None if managed.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
@@ -2484,7 +2455,7 @@ def save_config(
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
-            return
+            return None
 
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
@@ -2512,12 +2483,14 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        published = atomic_config_replace(
+            config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
     from hermes_cli.observability.shared_metrics_disabled import record_config_saved
     record_config_saved(_raw_for_paths, current_normalized)
+    return published
 
 
 def load_env() -> dict[str, str]:

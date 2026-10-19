@@ -26,7 +26,11 @@ def server():
     import tui_gateway.server_requests
     import tui_gateway.transport
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
+        "hermes_constants": MagicMock(
+            get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
+            named_profile_home_is_unavailable=MagicMock(return_value=False),
+            profile_deletion_marker_path=MagicMock(return_value=None),
+        ),
         "hermes_cli.env_loader": MagicMock(),
         "hermes_cli.banner": MagicMock(),
         "hermes_state": MagicMock(),

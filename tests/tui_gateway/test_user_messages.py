@@ -36,3 +36,14 @@ def test_generic_timeout_keeps_the_model_setup_hints():
 def test_other_init_failures_keep_the_model_setup_hints():
     message = agent_init_failed_message(RuntimeError("provider bootstrap failed"))
     assert "/model" in message and "hermes setup" in message
+
+
+@pytest.mark.parametrize("exc_text", [
+    "Named profile incarnation is stale: /home/u/.hermes/profiles/coder",
+    "Profile incarnation is stale or home is unavailable: /home/u/.hermes/profiles/coder",
+    "Named profile home is missing or being deleted: /home/u/.hermes/profiles/coder",
+], ids=["stale", "unavailable", "deleting"])
+def test_retired_profile_failures_name_the_profile_not_the_model(exc_text):
+    message = agent_init_failed_message(FileNotFoundError(exc_text))
+    assert "/model" not in message and "hermes setup" not in message
+    assert "profile was deleted or recreated" in message

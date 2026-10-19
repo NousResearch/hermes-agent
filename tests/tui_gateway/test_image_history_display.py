@@ -18,9 +18,9 @@ def test_verified_native_image_history_reconciles_without_inline_payload(tmp_pat
                {"role": "user", "content": current}]
 
     displayed = server._history_to_messages(history)
-    assert displayed == [{"role": "user", "text": f"Caption\n\n@image:`{path}`"},
+    assert displayed == [{"role": "user", "text": f"Caption\n\n@image:`{path}`", "user_originated": True},
                          {"role": "assistant", "text": "Done"},
-                         {"role": "user", "text": f"Caption\n@image:`{path}`"}]
+                         {"role": "user", "text": f"Caption\n@image:`{path}`", "user_originated": True}]
     assert history[0]["content"] is legacy
     assert history[2]["content"] is current
 
@@ -37,8 +37,8 @@ def test_flattened_screenshot_placeholder_still_projects(tmp_path):
     history = [{"role": "user", "content": legacy}, {"role": "user", "content": current}]
 
     displayed = server._history_to_messages(history)
-    assert displayed == [{"role": "user", "text": f"Caption\n\n@image:`{path}`"},
-                         {"role": "user", "text": f"Caption\n@image:`{path}`"}]
+    assert displayed == [{"role": "user", "text": f"Caption\n\n@image:`{path}`", "user_originated": True},
+                         {"role": "user", "text": f"Caption\n@image:`{path}`", "user_originated": True}]
 
 
 def test_screenshot_placeholder_without_image_part_stays_unprojected(tmp_path):

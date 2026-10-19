@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
+import { filterSessionsByProfileScope } from '@/app/chat/sidebar/profile-scope'
 import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
@@ -29,6 +30,7 @@ import {
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   messagingListServerForFetch,
+  type SessionsLoadError,
   setCorruptSessionStores,
   setCronSessions,
   setMessagingListServer,
@@ -117,6 +119,24 @@ function dropRemovalRaced(sessions: SessionInfo[], snapshot: SessionTombstoneGen
   const kept = sessions.filter(session => !raced(session))
 
   return kept.length === sessions.length ? sessions : kept
+}
+
+// The backend words a profile's failed read for the user and names the way out (an older
+// gateway owning a store this build would upgrade: "Restart that gateway", #140315). Keep it,
+// minus the HTTP status prefix; ALL has no single profile's reason to give.
+function scopedLoadError(
+  failed: boolean,
+  errors: Array<{ error: string; profile: string }> | undefined,
+  scope: string
+): SessionsLoadError {
+  if (!failed) {
+    return false
+  }
+
+  const error = scope === 'all' ? undefined : errors?.find(e => normalizeProfileKey(e.profile) === scope)?.error
+  const detail = error?.replace(/^\d{3}:\s*/, '').trim()
+
+  return detail ? { detail } : true
 }
 
 function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): SessionInfo[] {
@@ -336,7 +356,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // while the list is empty). Turn-complete / reconnect refreshes over a
       // populated list used to flip it true→false anyway, churning every
       // $sessionsLoading subscriber twice per turn for no visible change.
-      const showLoading = $sessions.get().length === 0
+      // "Empty" means the profile on screen: after a switch the list still holds
+      // the profile you left (open tile, pins, settling turns), and asking of the
+      // whole list painted "No sessions yet" over a pending or failed read.
+      const showLoading = filterSessionsByProfileScope($sessions.get(), profileScope).length === 0
 
       if (showLoading && shouldPublish()) {
         setSessionsLoadError(false)
@@ -408,7 +431,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // A damaged store already has its own notice; Retry can't repair it.
           const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
           setSessionsLoadError(
-            Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0)
+            scopedLoadError(
+              Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0),
+              retryableErrors,
+              sessionProfile
+            )
           )
 
           // Drop rows the user just deleted/archived: a refresh can race an

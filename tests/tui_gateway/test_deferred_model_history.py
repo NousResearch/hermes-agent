@@ -11,7 +11,8 @@ from tui_gateway import server
 
 @pytest.mark.parametrize("source,omit_messages", [("desktop", True), ("desktop", False), ("tui", True)])
 @pytest.mark.parametrize("profile", [None, "work"])
-def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monkeypatch, source, omit_messages, profile):
+def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monkeypatch, route_profiles, source,
+                                                                   omit_messages, profile):
     home = tmp_path / "work"
     home.mkdir()
     db = SessionDB(home / "state.db")
@@ -61,7 +62,7 @@ def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monk
     monkeypatch.setattr(db, "get_resume_conversations", read_display)
     monkeypatch.setattr(db, "get_ancestor_display_prefix", read_prefix)
     monkeypatch.setattr("hermes_state_registry.acquire", acquire)
-    monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
+    route_profiles(server, lambda p: home if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)

@@ -98,11 +98,23 @@ _tearing_down: dict[Path, _TeardownBarrier] = {}
 _path_lifecycle_locks: dict[Path, threading.Lock] = {}
 
 
-def _open_session_db(path: Path) -> SessionDB:
+def _open_session_db(path: Path, expected_profile_incarnation: Optional[str]) -> SessionDB:
     """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
     from hermes_state import SessionDB
 
-    return SessionDB(db_path=path)
+    return SessionDB(db_path=path, expected_profile_incarnation=expected_profile_incarnation)
+
+
+def _assert_expected_profile_incarnation(
+    path: Path,
+    expected_profile_incarnation: Optional[str],
+) -> None:
+    """Reject a stale named-profile acquisition before lending a generation."""
+    if expected_profile_incarnation is None:
+        return
+    from hermes_cli.profile_incarnation import assert_profile_incarnation_current
+
+    assert_profile_incarnation_current(path.parent, expected_profile_incarnation)
 
 
 def _teardown(db: SessionDB) -> None:
@@ -176,6 +188,14 @@ def _teardown_generation(
             _finish_teardown(path, barrier)
 
 
+def _registry_key(db_path: Path) -> Path:
+    """The canonical path that keys a shared generation, so every spelling of one file shares it."""
+    try:
+        return db_path.resolve()
+    except OSError:
+        return db_path
+
+
 def _db_path_of(db: SessionDB) -> Optional[Path]:
     """``Path(db.db_path)`` or None when absent/unconvertible."""
     path = getattr(db, "db_path", None)
@@ -192,7 +212,7 @@ def _finish_opening(path: Path, opening: threading.Event) -> None:
     opening.set()
 
 
-def acquire(db_path: Optional[Path] = None) -> SessionDB:
+def acquire(db_path: Optional[Path] = None, expected_profile_incarnation: Optional[str] = None) -> SessionDB:
     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
     replaced (different inode) since the generation opened, that generation is RETIRED
     but stays alive for its holders, and a fresh one is opened in its place. Raises
@@ -201,12 +221,51 @@ def acquire(db_path: Optional[Path] = None) -> SessionDB:
     from hermes_state import _default_db_path
 
     raw_path = Path(db_path) if db_path is not None else Path(_default_db_path())
-    try:
-        path = raw_path.resolve()
-    except OSError:
-        path = raw_path
+    path = _registry_key(raw_path)
+    # Lifecycle authority follows the spelling the caller named. A named profile entry linked
+    # outside every Hermes root keeps its own lexical fence (``_named_profile_spelling``); its
+    # resolved storage directory carries no named-profile marker, so checking there refused the
+    # live profile as stale.
+    authority = Path(os.path.abspath(raw_path))
 
+    with _lock:
+        generation = _generations.get(path)
+        if generation is not None:
+            current = _stat_db_file_identity(path)
+            if current is None or generation.identity is None or current == generation.identity:
+                # Warm readers take no mutation lease: the tracked connection already
+                # prevents deletion of its generation. Check under _lock, since a
+                # delete/recreate may have replaced it before this caller got here.
+                _assert_expected_profile_incarnation(authority, expected_profile_incarnation)
+                generation.refcount += 1
+                return generation.db
+
+    # A stale caller fails as stale here, never waiting on (or timing out behind) the lease.
+    _assert_expected_profile_incarnation(authority, expected_profile_incarnation)
+    from hermes_cli.profile_incarnation import profile_incarnation_lease
+
+    # Acquire BEFORE publishing _opening or taking a path lifecycle mutex:
+    # gateway callers can already hold this lease when they enter the registry.
+    # Teardown does not acquire the profile lease, so waiting for its barrier
+    # here cannot invert that order. Default/custom homes remain lock-free.
+    with profile_incarnation_lease(authority.parent, expected_profile_incarnation):
+        return _acquire_at_path(path, authority, expected_profile_incarnation)
+
+
+def _acquire_at_path(path: Path, authority: Path, expected_profile_incarnation: Optional[str]) -> SessionDB:
+    """Cold acquisition with named-profile lifecycle authority already held.
+
+    *path* keys the shared generation; *authority* is the caller's spelling, which the incarnation
+    checks and the SessionDB itself (it re-checks its own ``db_path.parent``) must see.
+    """
+    # A shared generation may predate this caller, so constructor-time checks
+    # alone are insufficient: validate every incarnation-scoped acquisition
+    # before an existing handle can be lent. If no generation exists (or it is
+    # retired below), SessionDB repeats the check under the profile lifecycle
+    # lease while opening the fresh connection, closing the validation/open
+    # race with profile delete/recreate.
     while True:
+        _assert_expected_profile_incarnation(authority, expected_profile_incarnation)
         wait_for: Optional[threading.Event] = None
         with _lock:
             generation = _generations.get(path)
@@ -242,7 +301,7 @@ def acquire(db_path: Optional[Path] = None) -> SessionDB:
         # serialising other files, the lifecycle mutex keeps the open off a same-path close.
         try:
             with lifecycle_lock:
-                db = _open_session_db(path)
+                db = _open_session_db(authority, expected_profile_incarnation)
                 db._shared_registry_owned = True
                 identity = _stat_db_file_identity(path)
         except BaseException:
@@ -288,7 +347,8 @@ def release(db: SessionDB) -> bool:
             path = _db_path_of(db)
             if path is None:
                 return False
-            generation = _generations.get(path)
+            # The handle carries the caller's spelling; generations are keyed canonically.
+            generation = _generations.get(_registry_key(path))
             if generation is None or generation.db is not db:
                 # Not shared (bare SessionDB()); the caller owns close().
                 return False

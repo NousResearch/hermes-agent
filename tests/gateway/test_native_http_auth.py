@@ -106,8 +106,10 @@ def test_native_http_grants_are_single_use_and_bound_to_daemon(tmp_path):
             ('X-Hermes-Gateway-Ticket', ticket(home, descriptor)),
             ('X-Hermes-Gateway-Ticket', ticket(home, descriptor)),
         ]).status_code == 401
-        for purpose in ('interactive', 'exposure', 'worker-adoption'):
-            assert client.get('/api/config', headers=headers(ticket(home, descriptor, purpose))).status_code == 401
+        # An exposure grant is only mintable for the remote login it forwards.
+        forwarded = {'subject': 'auth:v1:["basic","","alice"]'}
+        for purpose, extra in (('interactive', {}), ('exposure', forwarded), ('worker-adoption', {})):
+            assert client.get('/api/config', headers=headers(ticket(home, descriptor, purpose, **extra))).status_code == 401
         asyncio.run(reject_ws(descriptor['api_origin'], ticket(home, descriptor)))
         for overrides in ({'instance_id': 'stale'}, {'profile_id': str(tmp_path / 'other')}):
             with pytest.raises(AssertionError, match='PermissionError'):

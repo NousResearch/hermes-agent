@@ -223,6 +223,21 @@ describe('ChatSidebar cold-start load failure', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(retry).toHaveBeenCalledTimes(1)
   })
+
+  it("shows the backend's reason, which names the remedy, alongside retry", () => {
+    const detail =
+      "Session store for profile 'work' is behind this Hermes version. Restart that gateway (`hermes gateway restart`)."
+
+    $sessions.set([])
+    $sessionsLoading.set(false)
+    $sessionsLoadError.set({ detail })
+
+    renderSidebar('/', 'chat', vi.fn(noopAsync))
+
+    expect(screen.getByText('Could not load sessions')).toBeTruthy()
+    expect(screen.getByText(detail)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
 })
 
 // Entering a project is a scope switch: the conversation main is showing keeps

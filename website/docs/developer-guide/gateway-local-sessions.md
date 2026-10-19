@@ -45,6 +45,8 @@ the submitting principal.
 The server issues `session:operator` only at these existing trusted boundaries:
 
 - Native interactive bootstrap ticket redemption (not worker-adoption tickets).
+- Exposure ticket redemption: a same-user proxy's delegated grant for the remote login it
+  authenticated (the Webapp's browser socket). It is that login's operator access, never native.
 - The dashboard WebSocket upgrade gate, including authenticated dashboard login tickets,
   the process-lifetime internal credential for server-spawned PTY clients, and the verified
   legacy session token when that authentication path is enabled.

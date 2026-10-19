@@ -1,6 +1,7 @@
 """Data deletion must establish quiescence, never infer it from a signal count."""
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -108,15 +109,19 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
     assert not thread.is_alive()
 
 
+# Every web-server surface writes under the homes it serves (the Webapp its host shells and staged
+# uploads), so a wipe must not go ahead under any of them.
+@pytest.mark.parametrize("purpose", ["serve", "dashboard", "webapp"])
 @pytest.mark.parametrize("profile", ["", "sibling"])
-def test_backend_initial_profile_is_not_its_write_scope(layout, profile):
+def test_backend_initial_profile_is_not_its_write_scope(layout, capsys, profile, purpose):  # health: allow F811 -- pytest injects the imported layout fixture by parameter name
     from hermes_cli.process_identity import register_self
 
     _, _, data = layout
-    assert register_self("serve", project_root=uninstall.get_project_root(), detail={"profile": profile})
+    assert register_self(purpose, project_root=uninstall.get_project_root(), detail={"profile": profile})
     with pytest.raises(SystemExit):
         uninstall.run_data_uninstall(SimpleNamespace(yes=True))
     assert all(path.exists() for path in data)
+    assert f"backend PID {os.getpid()} still owns" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("terminal", [False, True])

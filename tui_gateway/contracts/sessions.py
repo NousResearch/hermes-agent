@@ -1,6 +1,7 @@
 """Session lifecycle contracts (``tui_gateway/methods_session.py``): create / resume / activate /
 close, the live-session snapshot those share, history + compression + undo, mid-turn corrections,
 listing/browsing stored rows, spawn-tree snapshots, event replay and the stateless one-shot LLM call.
+The spawn-tree handlers live in ``tui_gateway/methods_session_spawn_tree.py``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    user_originated: bool | None = None
     display_kind: str | None = None
     display_metadata: dict[str, JsonValue] | None = None
     corrections: list[str] | None = None

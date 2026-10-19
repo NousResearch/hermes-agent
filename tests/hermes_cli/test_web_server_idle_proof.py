@@ -134,7 +134,7 @@ def _spawn_desktop_child(tmp_path: Path, name: str, *, busy: bool) -> subprocess
     code = (
         hold
         + "from hermes_cli.web_server import start_server\n"
-        "start_server(host='127.0.0.1', port=0, open_browser=False, headless=True)\n"
+        "start_server(host='127.0.0.1', port=0, open_browser=False, ui_surface='serve')\n"
     )
     return subprocess.Popen(
         [sys.executable, "-c", code], cwd=str(REPO_ROOT), env=env,

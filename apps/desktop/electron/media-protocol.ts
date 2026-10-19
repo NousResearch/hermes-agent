@@ -1,3 +1,5 @@
+import { fileUrlToNativePath } from '../../shared/src/file-url'
+
 import { httpStatusError, readStatusCode } from './api-transport'
 import { requestWithOauthFallback } from './oauth-rest-request'
 
@@ -74,7 +76,13 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
-  const lower = filePath.toLowerCase()
+  const mediaPath = /^file:/i.test(filePath) ? fileUrlToNativePath(filePath) : filePath
+
+  if (mediaPath === null) {
+    return false
+  }
+
+  const lower = mediaPath.toLowerCase()
 
   return STREAMABLE_MEDIA_EXTENSIONS.some(extension => lower.endsWith(extension))
 }
@@ -99,6 +107,21 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`Unsupported Hermes backend URL protocol: ${url.protocol}`)
+  }
+
+  if (/^file:/i.test(filePath)) {
+    const nativePath = fileUrlToNativePath(filePath)
+
+    if (nativePath === null) {
+      throw new Error('Invalid media file URL')
+    }
+
+    // Older gateways accept native POSIX paths, not file URIs. Keep that
+    // lossless contract, but leave drive letters and UNC hosts (a native path
+    // not starting with `/`) to the gateway.
+    if (nativePath.startsWith('/')) {
+      filePath = nativePath
+    }
   }
 
   url.searchParams.set('path', filePath)

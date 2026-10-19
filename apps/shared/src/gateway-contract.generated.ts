@@ -2814,6 +2814,14 @@ export interface FileAttachParams {
   path?: string | null
   data_url?: string | null
   name?: string | null
+  staged_upload?: StagedFileUpload | null
+}
+/** Source identity returned by the browser upload route, checked against the live profile. */
+export interface StagedFileUpload {
+  install_id: string
+  path: string
+  profile_home: string
+  profile_incarnation?: string | null
 }
 export interface FileAttachResult {
   attached: boolean
@@ -3090,6 +3098,7 @@ export interface TranscriptMessage {
   row_id?: number | null
   display_kind?: string | null
   display_metadata?: unknown | null
+  user_originated?: boolean | null
   name?: string | null
   context?: string | null
   args?: Record<string, unknown> | null
@@ -3164,6 +3173,7 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  user_originated?: boolean | null
   display_kind?: string | null
   display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
@@ -5535,6 +5545,21 @@ export interface GatewayReadyPayload {
   heartbeat?: boolean | null
   session_authority?: boolean | null
 }
+/** ``tui_gateway/change_watcher.py::_skin_changed_payload`` — the resolved skin plus the profile whose config it came from. The event reaches every transport of a process that may serve several profiles, so a client ignores a change tagged for another. Older backends send no ``profile``. */
+export interface SkinChangedPayload {
+  name?: string
+  description?: string
+  colors?: Record<string, string>
+  light_colors?: Record<string, string>
+  dark_colors?: Record<string, string>
+  branding?: Record<string, string>
+  banner_logo?: string
+  banner_hero?: string
+  tool_prefix?: string
+  help_header?: string
+  profile?: string
+  [key: string]: unknown
+}
 /** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
 export interface OnboardingEndedPayload {
   run_id: string
@@ -7028,7 +7053,7 @@ export interface BackendGatewayEventMap {
   /** A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway. */
   'skills.changed': ChangeSignalPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
-  'skin.changed': SkinPayload
+  'skin.changed': SkinChangedPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
   'status.update': StatusUpdatePayload
   /** A child finished (status + observability rollup). */

@@ -217,7 +217,7 @@ describe('refreshSessions cold-start load error', () => {
       await result.current.refreshSessions()
     })
 
-    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessionsLoadError.get()).toEqual({ detail: 'boom' })
   })
 
   it('flags a failed load that carries retry and omits the session list', async () => {
@@ -233,7 +233,7 @@ describe('refreshSessions cold-start load error', () => {
       await result.current.refreshSessions()
     })
 
-    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessionsLoadError.get()).toEqual({ detail: 'schema heal exhausted' })
     expect($sessions.get()).toEqual([])
   })
 
@@ -259,6 +259,56 @@ describe('refreshSessions cold-start load error', () => {
 
     expect($sessionsLoadError.get()).toBe(false)
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+})
+
+// The list keeps the profile you left (its open tile, pins, settling turns), so "is the list
+// empty" has to be asked of the profile now on screen: asked of the whole list, a switch whose
+// read failed rendered as "No sessions yet" and dropped the backend's remedy.
+describe('refreshSessions after a profile switch', () => {
+  const ownedStore =
+    "Session store for profile 'work' is behind this Hermes version (no such column: sessions.transcript_revision), " +
+    'and a running gateway owns it, so browsing will not write to it. Restart that gateway (`hermes gateway restart`) ' +
+    'to bring the store up to date.'
+
+  it("flags the new profile's failed read with the backend's reason while the old profile's rows are held", async () => {
+    setSessions([row('a', { profile: 'default' })])
+    const failure = { errors: [{ error: `503: ${ownedStore}`, profile: 'work' }], failed: true, retry: true }
+    listSidebarSessions.mockResolvedValueOnce({
+      cron: failure,
+      errors: failure.errors,
+      messaging: failure,
+      recents: failure
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toEqual({ detail: ownedStore })
+  })
+
+  it("shows loading, not an empty profile, until the new profile's rows arrive", async () => {
+    setSessions([row('a', { profile: 'default' })])
+    const page = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValueOnce(page.promise)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+
+    let refresh!: Promise<unknown>
+    act(() => {
+      refresh = result.current.refreshSessions()
+    })
+
+    expect($sessionsLoading.get()).toBe(true)
+
+    await act(async () => {
+      page.resolve(sidebar({ sessions: [row('w', { profile: 'work' })] }))
+      await refresh
+    })
+
+    expect($sessionsLoading.get()).toBe(false)
+    expect($sessionsLoadError.get()).toBe(false)
   })
 })
 

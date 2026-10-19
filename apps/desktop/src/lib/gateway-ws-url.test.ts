@@ -172,6 +172,33 @@ describe('resolveGatewayWsUrl', () => {
       await expect(resolveGatewayWsUrl({}, { wsUrl: tokenConn.wsUrl })).resolves.toBe(tokenConn.wsUrl)
     })
   })
+
+  // A native dial (local Electron's gateway, the Webapp's relayed gateway) carries no credential in
+  // its descriptor: every dial needs a fresh ticket, so a failed mint is the reason to show, never a
+  // fallback to a URL that can only fail later without one.
+  describe('native dial', () => {
+    const nativeConn = { authMode: 'token' as const, wsUrl: 'ws://host/api/ws?native_dial=browser' }
+
+    it("surfaces the mint's own failure instead of dialing the credential-free URL", async () => {
+      const cause = new Error('Gateway starting (deadline). still booting')
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, nativeConn)).rejects.toBe(cause)
+    })
+
+    it('surfaces a structured mint refusal', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({ error: 'gateway incompatible', ok: false })
+
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, nativeConn)).rejects.toThrow('gateway incompatible')
+    })
+
+    it('dials the freshly ticketed URL', async () => {
+      const fresh = 'ws://host/api/ws?native_dial=browser&ticket=t'
+      const getGatewayWsUrl = vi.fn().mockResolvedValue(fresh)
+
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, nativeConn)).resolves.toBe(fresh)
+    })
+  })
 })
 
 describe('isGatewayReauthRequired', () => {

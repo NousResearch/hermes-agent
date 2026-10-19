@@ -43,9 +43,8 @@ async def test_profile_bound_ticket_never_reaches_a_sibling_authority(tmp_path, 
             ticket = store.mint(profile_id=profile_id, subject='uid:attacker', purpose='interactive', **scope)
             grant = store.redeem(ticket, profile_id=None, purpose='interactive')
             authority = authority_for_profile_id(runner, grant['profile_id'])
-            identity = {'user_id': grant['subject'], 'provider': 'local', 'profile_id': grant['profile_id'],
-                        'instance_id': grant['instance_id'], 'capabilities': grant['capabilities'],
-                        'native_bootstrap': True, 'profile_scope': grant.get('scope', 'profile')}
+            from gateway.runtime_bootstrap import grant_identity
+            identity = grant_identity(grant)
             with owner_scope(authority):
                 connection = AuthorityConnection(authority, _Transport(), identity, operator=True)
             connections.append(connection)

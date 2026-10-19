@@ -246,8 +246,10 @@ def _restart_wait_read(runner, scope) -> bool:
 class GatewayRuntimeAPI:
     """Redeem private local tickets at the existing WS subprotocol boundary.
 
-    Other credentials and HTTP routes retain the complete dashboard gate. Local
-    bootstrap never grants an exposure/worker ticket interactive permissions.
+    Other credentials and HTTP routes retain the complete dashboard gate. A worker ticket never
+    gets interactive permissions. An exposure ticket attaches as the remote login its proxy
+    authenticated, with that login's operator rights and never native ones
+    (``runtime_bootstrap.delegated_identity``).
     *web_app* is the dashboard mount (or any object whose ``state`` carries the listener's
     ``bound_host`` / ``auth_required`` / ``trusted_public_hosts``).
     """
@@ -336,19 +338,17 @@ class GatewayRuntimeAPI:
                 or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
             await ws.close(code=4403)
             return
-        operator = True
-        try:
-            grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='interactive')
-        except PermissionError:
-            operator = False
-            try:
-                grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='worker-adoption')
-            except PermissionError:
-                # Browser/OAuth tickets have a separate issuer.
-                if draining_socket:
-                    await ws.close(code=1013)
-                    return
-                return await self.app(scope, receive, send)
+        grant, identity = self._redeem(ticket)
+        if grant is None:
+            # Browser/OAuth tickets have a separate issuer.
+            if draining_socket:
+                await ws.close(code=1013)
+                return
+            return await self.app(scope, receive, send)
+        if identity is None:
+            await ws.close(code=4403)  # an exposure grant whose login cannot be delegated
+            return
+        operator = grant['purpose'] != 'worker-adoption'
         allow_draining = not operator
         admitted_in_wait = restart_wait_open(self.runner)
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
@@ -368,9 +368,19 @@ class GatewayRuntimeAPI:
         from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
         with owner_scope(authority), attached_client(self.runner):
-            await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
-                                              'profile_id': grant['profile_id'],
-                                              'instance_id': grant['instance_id'],
-                                              'capabilities': grant['capabilities'], 'native_bootstrap': True,
-                                              'profile_scope': grant.get('scope', 'profile')},
-                            subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)
+            await handle_ws(ws, auth_identity=identity, subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)
+
+    def _redeem(self, ticket):
+        """``(grant, identity)`` for the first purpose this ticket redeems as, else ``(None, None)``.
+        ``redeem`` consumes only on success, so trying each purpose in turn never burns a ticket.
+        ``identity`` is None for an exposure grant whose login cannot be delegated."""
+        from gateway.runtime_bootstrap import delegated_identity, grant_identity
+        store = self.runner.session_ticket_store
+        for purpose, identity_for in (('interactive', grant_identity), ('exposure', delegated_identity),
+                                      ('worker-adoption', grant_identity)):
+            try:
+                grant = store.redeem(ticket, profile_id=None, purpose=purpose)
+            except PermissionError:
+                continue
+            return grant, identity_for(grant)
+        return None, None

@@ -82,6 +82,11 @@ async def display_ws(ws: WebSocket) -> None:
     if not _ws_request_is_allowed(ws):
         await ws.close(code=_CLOSE_NOT_ALLOWED)
         return
+    from hermes_cli.web_server_surface import policy
+    if policy(ws.app.state).gateway_attach:
+        # The owner's display.observe minted this ticket, so only the owner can redeem it.
+        from hermes_cli.webapp_gateway_relay import relay_display_ws
+        return await relay_display_ws(ws, ws.query_params.get("profile"))
     await ws.accept()
     info = _consume_display_ticket(ws)
     if info is None:

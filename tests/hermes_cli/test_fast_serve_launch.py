@@ -15,7 +15,12 @@ def _capture(_args) -> None:
 def test_lean_serve_parser_matches_full_subcommand_parser() -> None:
     root = argparse.ArgumentParser()
     subparsers = root.add_subparsers(dest="command")
-    build_dashboard_parser(subparsers, cmd_dashboard=_capture, cmd_dashboard_register=_capture)
+    build_dashboard_parser(
+        subparsers,
+        cmd_dashboard=_capture,
+        cmd_dashboard_register=_capture,
+        cmd_webapp=_capture,
+    )
     lean = build_serve_parser(cmd_dashboard=_capture)
 
     argv = [
@@ -33,8 +38,8 @@ def test_fast_serve_launch_dispatches_only_unambiguous_serve(monkeypatch) -> Non
 
     monkeypatch.setattr(sys, "argv", ["hermes", "serve", "--host", "127.0.0.1", "--port", "0"])
     assert main_mod._try_fast_serve_launch() is True
-    assert (captured[0].command, captured[0].headless_backend, captured[0].no_open, captured[0].port) == (
-        "serve", True, True, 0,
+    assert (captured[0].command, captured[0].ui_surface, captured[0].no_open, captured[0].port) == (
+        "serve", "serve", True, 0,
     )
 
     # Every ambiguous shape falls back to the full parser: unknown flags,

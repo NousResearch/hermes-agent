@@ -66,7 +66,7 @@ def test_child_mirror_skips_reasoning_delta_when_hidden(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "child-sid", show_reasoning=False)
     monkeypatch.setattr(
-        server, "_find_live_session_by_key", lambda key, _home: ("child-sid", {"agent": None, "show_reasoning": False})
+        server, "_find_live_session_by_key", lambda key, _home, _incarnation: ("child-sid", {"agent": None, "show_reasoning": False})
     )
 
     server._mirror_subagent_to_child(
@@ -135,7 +135,7 @@ def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):
         _session(monkeypatch, sid, show_reasoning=show_reasoning, tool_progress=tool_progress)
         session = server._sessions[sid]
         session["agent"] = None  # a watch window, not a full agent: the mirror only feeds those
-        monkeypatch.setattr(server, "_find_live_session_by_key", lambda key, _home, sid=sid, session=session: (sid, session))
+        monkeypatch.setattr(server, "_find_live_session_by_key", lambda key, _home, _incarnation, sid=sid, session=session: (sid, session))
 
         server._mirror_subagent_to_child(
             "subagent.tool", {"child_session_id": f"key-{sid}", "tool_name": "read_file", "tool_preview": "x"}, None

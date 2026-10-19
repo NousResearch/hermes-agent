@@ -537,7 +537,7 @@ def publish_gateway_runtime_ready(runner):
     if runner.session_api.task.done() or not runner._running or runner._draining:
         raise RuntimeError('gateway stopped before session API readiness')
     descriptor.update(state='ready', capabilities=[
-        'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
+        'session-authority-v1', 'durable-admission-v1', 'event-replay-v1', 'delegated-attach-v1'])
     from gateway.session_hosted_service import start_ready_hosted_services
     start_ready_hosted_services(runner)
 

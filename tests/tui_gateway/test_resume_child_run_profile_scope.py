@@ -57,13 +57,13 @@ class _EmptyDB:
 
 
 @pytest.fixture()
-def two_profiles(monkeypatch, tmp_path):
+def two_profiles(monkeypatch, tmp_path, route_profiles):
     homes = {}
     for name in ("a", "b"):
         home = tmp_path / name
         home.mkdir()
         homes[name] = home
-    monkeypatch.setattr(server, "_profile_home", lambda profile: homes.get(profile))
+    route_profiles(server, lambda profile: homes.get(profile))
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
     monkeypatch.setattr("hermes_state_registry.acquire", _EmptyDB)
     monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key, *_a, **_k: None)

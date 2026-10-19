@@ -21,7 +21,7 @@ def _args(**kw):
     defaults = dict(
         status=False, stop=False, host="127.0.0.1", port=9119,
         no_open=True, insecure=False, skip_build=False,
-        isolated=False, open_profile="",
+        isolated=False, open_profile="", ui_surface="dashboard",
     )
     defaults.update(kw)
     return types.SimpleNamespace(**defaults)
@@ -29,13 +29,13 @@ def _args(**kw):
 
 class TestUnifiedDashboardRouting:
 
-
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: None)
         execs = []
 
         if sys.platform == "win32":
@@ -83,7 +83,6 @@ class TestUnifiedDashboardRouting:
         # test below for why we resolve explicitly instead of popping.
         from hermes_constants import get_default_hermes_root
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
-
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT

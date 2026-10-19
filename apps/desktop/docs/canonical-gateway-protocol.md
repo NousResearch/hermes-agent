@@ -28,6 +28,31 @@ transport (`/api/files/stream`); remote data-URL previews use the JSON IPC API.
 Native HTTP grants are never attached to arbitrary image URLs, web previews,
 provider voice endpoints, or remote media requests.
 
+## Browser-hosted Desktop (Webapp relay)
+
+A browser cannot reach the owner (loopback, Origin-less, control-socket tickets),
+so `hermes webapp` dials for it. The browser bridge reports a credential-free
+`/api/ws?native_dial=browser` descriptor; each dial first mints a one-use Webapp
+ticket from `POST /api/webapp/gateway-ticket?profile=`, which ensures the
+profile's owner (starting it if absent, restarting one that runs other code
+once) and pins that owner's home in the ticket. A 503 from that route carries
+the ensure verdict the renderer shows. The client offers the ticket as the
+`hermes-gateway-ticket.` subprotocol, so `native_dial` selects this canonical
+contract exactly as on Electron.
+
+The Webapp's upgrade gate consumes the ticket, then
+`hermes_cli/webapp_gateway_relay.py` mints an `exposure` grant naming the
+browser's own login (`auth:v1:[provider, issuer, user]`; a loopback private
+session is `["session-token","","legacy-token-owner"]`, the same principal its
+REST mutations forward as) and relays frames 1:1, mirroring close codes. That
+grant has operator access to canonical sessions but no native binding, so
+pre-authority history needs a native adoption first (`hermes sessions adopt`).
+`/api/display/ws` is relayed the same way because the owner minted its Bot
+Desktop ticket. A socket without a gateway ticket (a tab from before the
+cutover) is closed with 4426 to reload; the Webapp never hosts turns itself.
+The dashboard's embedded chat sockets (`/api/pty` and its `/api/pub` +
+`/api/events` feed) answer 4404 on the Webapp.
+
 ## Session and input identities
 
 `src/api/canonical-protocol.ts` adapts only native canonical sockets. Creation

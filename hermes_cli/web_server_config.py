@@ -958,6 +958,8 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
     config = dict(config)
     config.pop("_model_meta", None)
 
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)
     if not isinstance(ctx_override, int):
@@ -965,6 +967,17 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
             ctx_override = int(ctx_override)
         except (TypeError, ValueError):
             ctx_override = 0
+    # A positive override below the engine's floor is always a mistake (a stray spinner click in
+    # the Settings number field, a mistyped value): written to disk it silently makes every NEW
+    # session fail its first turn — config is read once per process, so running sessions stay
+    # healthy and the link back to this setting is invisible. Reject at the write instead.
+    if ctx_sent and 0 < ctx_override < MINIMUM_CONTEXT_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"model.context_length={ctx_override} is below the "
+                    f"{MINIMUM_CONTEXT_LENGTH:,}-token minimum Hermes requires. "
+                    "Set it to 0 to use the model's detected window."),
+        )
 
     model_val = config.get("model")
     has_model = isinstance(model_val, str) and bool(model_val)

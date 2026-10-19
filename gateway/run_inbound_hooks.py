@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
 import os
 import signal
@@ -278,15 +280,27 @@ class GatewayInboundHooksMixin:
         # message has none yet, so session_key is derived from source. Sync handlers run on the
         # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
         # the liveness watchdog and the process exits 75 mid-handler (#105279).
+        if session_entry is None and getattr(self, "session_store", None) is not None:
+            # The chat's current session, if it has one (lookup only: a command never creates one), so
+            # HERMES_SESSION_ID / session_id name what a later /new reports as old_session_id (#123245).
+            session_entry = await self.async_session_store.lookup_by_session_key(
+                self._session_key_for_source(source))
         _plugin_context = build_session_context(source, self.config, session_entry)
         if session_entry is None:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
-        with self._session_env_scope(_plugin_context):
-            if asyncio.iscoroutinefunction(plugin_handler):
-                result = await plugin_handler(user_args)
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from gateway.plugin_messages import bind_live_source
+        call = functools.partial(
+            invoke_plugin_command, plugin_handler, user_args, source=source,
+            session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",
+            platform=source.platform.value)
+        # ctx.post_message from the handler reaches this chat even before its session is stored.
+        with self._session_env_scope(_plugin_context), bind_live_source(source):
+            if inspect.iscoroutinefunction(plugin_handler):
+                result = await call()
             else:
-                result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                if asyncio.iscoroutine(result):
+                result = await self._run_in_executor_with_context(call)
+                if inspect.isawaitable(result):
                     result = await result
         return str(result) if result else None

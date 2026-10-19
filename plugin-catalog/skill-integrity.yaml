@@ -1,7 +1,7 @@
 name: skill-integrity
-version: "0.2.0"
+version: "0.2.1"
 repo: https://github.com/ZidoCode/skill-integrity
-sha: d81218627a96609987caecc9a6f44888787d07ff
+sha: 352a190b89a91246487107f016c39bb777d8466c
 description: "Rug-pull detection for installed agent skills — fingerprints every file in every skill directory (SHA-256), keeps a profile-local snapshot, and reports exactly which skill files changed, appeared, or vanished since; a skill that mutates after install without the user touching it is the rug-pull signal. A skill directory made unreadable is reported as a finding, never treated as clean. Read-only observer, stdlib-only, zero network calls; blind spots (oversize files, symlinks, permission-denied) are counted and printed, never silent. The wrapper registers an hourly pre_llm_call hook that injects findings into the agent context, plus a /skill-integrity slash command (snapshot | check | show) that creates the baseline snapshot and shows the file-level diff. The CLI supports --state-dir to target the plugin's manifest directly. Skill dirs and state derive from get_hermes_home(), covering non-default profiles. Disclosure — reads (hash-only, read-only) every file under the active profile's skills directory and ~/.claude/skills, stores a mode-0600 snapshot in HERMES_HOME/plugin-data/skill-integrity, and at most hourly injects the names of changed skills into the agent's context."
 maintainer: ZidoCode
 tier: community

@@ -529,27 +529,39 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
+    refused: list[str] = []
+
     def per_million(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+        if value is None:
+            return None
+        # Check before scaling: multiplying a signaling NaN raises.
+        if not value.is_finite() or value < 0:
+            refused.append(key)
+            return None
+        return value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
     request = _to_decimal(pricing.get("request"))
+    if request is not None and (not request.is_finite() or request < 0):
+        refused.append("request")
+        request = None
     cache_read = per_million("cache_read", "cached_prompt", "input_cache_read")
     cache_write = per_million("cache_write", "cache_creation", "input_cache_write")
     # A NEGATIVE rate is not a price: OpenRouter's router sentinels quote "-1" (per token,
     # i.e. -1,000,000 per million) for routes it cannot price, and multiplying that as money
     # produced negative dollars and a bogus 'estimated' status. Refuse the whole entry so the
-    # route reads 'unknown' instead. Each value is checked at its own scale (per_million ones
-    # are already x1e6, ``request`` is raw dollars); a missing key (None) is not negative, so
-    # a genuine $0 request fee or an absent cache rate still prices normally. A ``-0.0`` rate is
-    # the zero it equals (it renders as $0.00), so it is accepted like any other zero rate.
-    if any(v is not None and (not v.is_finite() or v < 0)
-           for v in (prompt, completion, request, cache_read, cache_write)):
+    # route reads 'unknown' instead. A non-finite rate (NaN, ±Infinity) is refused for the same
+    # reason — it is not a price, and left in place it raised out of ``format_cost_label`` into
+    # the turn. Each value is checked at its own scale (per_million ones before x1e6, the
+    # ``request`` fee as raw dollars); a missing key is not a bad rate, so a genuine $0 fee or an
+    # absent cache rate still prices normally. A ``-0.0`` rate is the zero it equals (it renders
+    # as $0.00), so it is accepted like any other zero rate.
+    if refused:
         return None
     if prompt is None and completion is None and request is None:
         return None

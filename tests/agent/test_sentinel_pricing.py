@@ -85,3 +85,34 @@ def test_priced_route_through_the_same_seam_still_estimates(monkeypatch):
     assert result.amount_usd is not None
     assert result.amount_usd > 0
     assert result.status == "estimated"
+
+
+def test_non_finite_rates_refuse_the_entry():
+    """A NaN or infinite catalog rate is not a price either.
+
+    A NaN rate used to survive into ``estimate_usage_cost`` and raise
+    ``InvalidOperation`` out of ``format_cost_label`` into the turn; an
+    ``-Infinity`` rate produced a ``~$-Infinity`` label. Both must read as
+    'unknown', the same as the negative sentinels.
+    """
+    import agent.usage_pricing as up
+
+    for rate in ("NaN", "Infinity", "-Infinity", "sNaN"):
+        entry = up._pricing_entry_from_metadata(
+            {"m": {"pricing": {"prompt": rate}}}, "m",
+            source_url="test", pricing_version="test",
+        )
+        assert entry is None, f"{rate} rate must refuse the entry"
+
+
+def test_zero_and_negative_zero_rates_still_price():
+    """Zero is a real price; -0.0 is the same zero and must not be refused."""
+    import agent.usage_pricing as up
+
+    for rate in ("0", "0.0", "-0.0"):
+        entry = up._pricing_entry_from_metadata(
+            {"m": {"pricing": {"prompt": rate}}}, "m",
+            source_url="test", pricing_version="test",
+        )
+        assert entry is not None, f"{rate} is a zero price, not a sentinel"
+        assert entry.input_cost_per_million == 0

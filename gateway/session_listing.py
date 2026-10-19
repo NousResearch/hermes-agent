@@ -9,9 +9,12 @@ from gateway.session_route_recovery import _messaging_platform, mountable
 _LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron')
 
 
-def _messaging_sources():
-    from gateway.config import Platform
-    return [p.value for p in Platform if _messaging_platform(p.value) is not None]
+def _excluded_sources():
+    """Main's picker listed every source but the internal ones; the API transport has its own restore.
+    Plugin platforms are ``Platform`` pseudo-members enum iteration never yields, so the query
+    excludes rather than enumerates, and each messaging row is judged by the cold mount's own check."""
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    return [*INTERNAL_LISTING_SOURCES, 'api_server']
 
 
 def _picker_row(row, tip, sid):
@@ -35,14 +38,17 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
     own_profile = db._own_profile_name() or 'default'
     sessions, offset, seen = [], 0, set()
     while len(sessions) < limit:
-        rows = db.list_sessions_rich(sources=[*_LOCAL_SOURCES, *_messaging_sources()], limit=200, offset=offset,
+        rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
             order_by_last_active=True, compact_rows=True, include_hidden=include_hidden)
         for row in rows:
+            local = row['source'] in _LOCAL_SOURCES
+            if not local and _messaging_platform(row['source']) is None:
+                continue  # neither a local nor a messaging label (acp, unknown, ...): nothing this picker resumes
             sid = db.get_compression_tip(row['id']) or row['id']
             tip = db.get_session(sid)
             if tip is None:
                 continue
-            if row['source'] not in _LOCAL_SOURCES:
+            if not local:
                 # A messaging conversation, under its lineage root (the cold mount; the listing
                 # projects a compressed lineage onto its tip): this profile's rows the mount opens.
                 root = row.get('_lineage_root_id') or row['id']

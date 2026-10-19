@@ -1,18 +1,25 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as GatewayStore from '@/store/gateway'
 import type { SharedMetricsConsent } from '@/store/shared-metrics'
 
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
+
 const requestGatewayForAgent = vi.fn()
+const setDesktopMetricsGate = vi.fn()
+const notifyError = vi.fn()
 
 // The real gateway store, with only the per-agent request routed to the fake backend below.
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<typeof GatewayStore>()),
   requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
 }))
-vi.mock('@/store/desktop-metrics', () => ({ recordOnboarding: vi.fn(), setDesktopMetricsGate: vi.fn() }))
+vi.mock('@/store/desktop-metrics', () => ({ recordOnboarding: vi.fn(), setDesktopMetricsGate }))
+vi.mock('@/store/notifications', () => ({ notifyError }))
 
 const { en } = await import('@/i18n/en')
 const { SharedMetricsSettings } = await import('./shared-metrics-settings')
@@ -34,6 +41,16 @@ function backend(initial: SharedMetricsConsent) {
   )
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(yes => {
+    resolve = yes
+  })
+
+  return { promise, resolve }
+}
+
 const setCalls = () =>
   requestGatewayForAgent.mock.calls
     .filter(call => call[2] === 'shared_metrics.set')
@@ -41,7 +58,8 @@ const setCalls = () =>
 
 afterEach(() => {
   cleanup()
-  requestGatewayForAgent.mockReset()
+  vi.clearAllMocks()
+  $connection.set(null)
 })
 
 describe('SharedMetricsSettings', () => {
@@ -75,5 +93,74 @@ describe('SharedMetricsSettings', () => {
     const share = await screen.findByRole('switch', { name: copy.sendLabel })
     await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
     expect(share.getAttribute('aria-checked')).toBe('false')
+  })
+})
+
+describe('SharedMetricsSettings owner isolation', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $connection.set({
+      baseUrl: 'https://original.example',
+      connectionId: 'same-id',
+      mode: 'remote',
+      profile: 'default',
+      token: 'original-token'
+    } as never)
+  })
+
+  it('pins consent writes to the captured owner and ignores their stale settlement', async () => {
+    const save = deferred<SharedMetricsConsent>()
+    requestGatewayForAgent.mockImplementation(async (_connectionId, _profile, method) => {
+      if (method === 'shared_metrics.set') {
+        return save.promise
+      }
+
+      return { decided: true, enabled: false, send: false }
+    })
+
+    render(<SharedMetricsSettings />)
+    const share = await screen.findByRole('switch', { name: copy.sendLabel })
+    await waitFor(() => expect((share as HTMLButtonElement).disabled).toBe(false))
+    const capturedOwner = $settingsOwner.get()!
+
+    fireEvent.click(share)
+    await waitFor(() =>
+      expect(requestGatewayForAgent).toHaveBeenCalledWith(
+        'same-id',
+        'default',
+        'shared_metrics.set',
+        expect.objectContaining({ enabled: true, profile: 'default', send: true }),
+        undefined,
+        undefined,
+        expect.objectContaining({
+          expectedConnectionOwner: capturedOwner.cacheOwner ?? capturedOwner.connectionOwner,
+          expectedOwner: expect.objectContaining({ connectionOwner: capturedOwner.connectionOwner }),
+          spawnPriority: 'foreground'
+        })
+      )
+    )
+
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://replacement.example',
+        connectionId: 'same-id',
+        mode: 'remote',
+        profile: 'default',
+        token: 'replacement-token'
+      } as never)
+    })
+    await act(async () => save.resolve({ decided: true, enabled: true, send: true }))
+
+    const replacementOwner = $settingsOwner.get()!
+    expect(replacementOwner).not.toBe(capturedOwner)
+    await waitFor(() => expect((share as HTMLButtonElement).disabled).toBe(false))
+    expect(
+      requestGatewayForAgent.mock.calls.filter(
+        ([, , method, , , , options]) =>
+          method === 'shared_metrics.set' && options?.expectedConnectionOwner === replacementOwner.cacheOwner
+      )
+    ).toHaveLength(0)
+    expect(setDesktopMetricsGate).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 })

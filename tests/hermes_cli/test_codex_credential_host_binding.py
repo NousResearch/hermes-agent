@@ -225,6 +225,31 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
         })
 
     monkeypatch.setattr(httpx, "get", catalog_get)
+    # The picker also starts quota workers. Keep their HTTP offline and drain them before
+    # monkeypatch restores this test's home; a late pool persist must not reach the next test.
+    from functools import partial
+    from agent import account_usage_cache
+
+    real_client = httpx.Client
+    def usage_client(*args, **kwargs):
+        def handler(request):
+            seen.append((str(request.url), request.headers))
+            return httpx.Response(200, json={
+                "rate_limit": {"primary_window": {"used_percent": 10}},
+            }, request=request)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    def finish_refresh(start, *args, **kwargs):
+        threads = start(*args, **kwargs)
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "quota worker escaped the picker test's home"
+        return threads
+
+    monkeypatch.setattr(httpx, "Client", usage_client)
+    for name in ("refresh_account_usage_async", "refresh_account_usage_entries_async"):
+        monkeypatch.setattr(account_usage_cache, name, partial(finish_refresh, getattr(account_usage_cache, name)))
     # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", list)

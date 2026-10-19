@@ -138,6 +138,11 @@ class _Relay:
             attached = await client.rpc("session.resume", session_id=self.key)
             target = str(attached.get("session_id") or self.key)
             receipt = await self._submit(client, target)
+            if receipt.get("voice_stopped") is True:
+                # TUI-26: the owner took a typed stop phrase as the end of its LOCAL voice chat and
+                # admitted nothing: there is no turn to relay.
+                self.admitted.set_result(receipt)
+                return
             admission_id = receipt.get("admission_id")
             if not isinstance(admission_id, str) or receipt.get("status") not in ("queued", "started", "terminal"):
                 raise OwnerUnavailable("the gateway did not admit it")

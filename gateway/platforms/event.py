@@ -108,6 +108,10 @@ class MessageEvent:
     # ``reply_expected`` for positional compat (see the field-order rule above).
     inherit_channel_pin: bool = False
 
+    # Provider delivery identity when it is not a message/reply target (relay interactions).
+    # Admission persists this separately; never use it to address platform messages.
+    delivery_id: Optional[str] = None
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.

@@ -878,7 +878,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
-    async def _on_inbound(self, event) -> Optional[asyncio.Task]:
+    async def _on_inbound(self, event, *, remember_labels: bool = True) -> Optional[asyncio.Task]:
         """Bridge a connector-delivered MessageEvent into the normal adapter path; a task when its
         admission runs off the reader (``admit_relay_delivery``) and the transport ACKs on its end."""
         # Inbound replay dedupe: the relay leg is at-least-once — on WS re-handshake
@@ -896,39 +896,39 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
         try:
             self._capture_scope(event)
-            await self._remember_discord_labels(event.source)
+            if remember_labels:
+                await self._remember_discord_labels(event.source)
             self._stamp_slack_session_thread(event)
             # A structured prompt answer resolves its waiting primitive and is CONSUMED —
             # never also dispatched as chat.
             if await self._consume_prompt_response(event):
                 return
             await self._localize_inbound_media(event)
-        except asyncio.CancelledError:
-            # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
-            # connector replays this frame; the replay must be admitted, not dropped as seen.
+            if native:
+                from datetime import datetime
+                from gateway.relay.inbound_admission import admit_relay_delivery
+                # The connector does not transmit a provider timestamp. Local arrival
+                # time must not change the fingerprint of a retried provider identity.
+                event.timestamp = datetime.fromtimestamp(0, UTC)
+                # Never wait for inference or outbound ACKs (those need this same WS reader).
+                return await admit_relay_delivery(self, runner, event)
+            await self.handle_message(event)
+        except (Exception, asyncio.CancelledError):
+            # Failed/cancelled before handoff: an unacknowledged replay must remain eligible.
             if dedupe_key is not None:
                 self._seen_inbound.pop(dedupe_key, None)
             raise
-        if native:
-            from datetime import datetime
-            from gateway.relay.inbound_admission import admit_relay_delivery
-            # The connector does not transmit a provider timestamp. Local arrival
-            # time must not change the fingerprint of a retried provider identity.
-            event.timestamp = datetime.fromtimestamp(0, UTC)
-            # Never wait for inference or outbound ACKs (those need this same WS reader).
-            return await admit_relay_delivery(self, runner, event)
-        await self.handle_message(event)
         return None
 
     _SEEN_INBOUND_MAX = 512
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
-        """Stable replay identity: (platform, chat, platform message id). The platform
+        """Stable replay identity: (platform, chat, delivery or platform message id). The platform
         joins the key because one relay socket can front several platforms whose
-        numeric ids may collide. None when the event carries no platform message id —
+        numeric ids may collide. None when the event carries neither identity —
         those never dedupe (fail-open: dropping a real message beats rerunning one)."""
         source = getattr(event, "source", None)
-        message_id = getattr(event, "message_id", None)
+        message_id = getattr(event, "delivery_id", None) or getattr(event, "message_id", None)
         chat_id = getattr(source, "chat_id", None)
         if not message_id or not chat_id:
             return None

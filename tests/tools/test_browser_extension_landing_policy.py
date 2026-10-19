@@ -426,3 +426,77 @@ def test_the_result_guard_runs_only_on_the_extension_lane_and_after_dispatch():
         "browser_navigate", {"url": "https://example.test"}, fallback=lambda: "legacy", broker=broker, enabled=False,
         result_guard=guard) == "legacy"
     assert seen == []
+
+
+@pytest.fixture
+def stuck_tab(lane):
+    """Tab 7 navigated to a blocked page and could not be taken back."""
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE}, {"browser_back": RuntimeError("no history")})
+    out = _call("browser_navigate", {"url": "https://example.test/start", "tab_id": 7})
+    assert "still on that page" in out["error"]
+    broker.dispatched.clear()
+    return broker
+
+
+def test_a_navigation_in_a_chosen_tab_is_taken_back_in_that_tab(lane):
+    broker = lane({"status": "navigated", "navigated": True, **BLOCKED_PAGE}, {"browser_back": PREVIOUS_PAGE})
+
+    out = _call("browser_navigate", {"url": "https://example.test/start", "tab_id": 7})
+
+    assert "taken back to the previous page" in out["error"]
+    assert broker.dispatched[-1] == ("browser_back", {"tab_id": 7})
+
+
+def test_only_the_tab_that_landed_on_a_blocked_page_is_refused(stuck_tab):
+    for name, args in [("browser_snapshot", {"tab_id": 7}), ("browser_screenshot", {"tab_id": 7}),
+                       ("browser_click", {"ref": "@e1", "tab_id": 7}),
+                       ("browser_batch", {"actions": [{"action": "click", "ref": "@e1"}], "tab_id": 7})]:
+        refused = _call(name, args)
+        assert refused["code"] == "tab_withheld" and refused["blocked_host"] == "blocked.test", name
+    assert stuck_tab.dispatched == []
+
+    stuck_tab.replies["browser_snapshot"] = {"url": "https://example.test/ok", "text": "fine", "refs": []}
+    assert _call("browser_snapshot", {})["text"] == "fine"  # the current tab
+    assert _call("browser_snapshot", {"tab_id": 8})["text"] == "fine"  # another tab
+
+
+def test_a_chosen_tab_leaves_a_blocked_page_by_navigating_or_by_closing(stuck_tab):
+    stuck_tab.replies["browser_navigate"] = {"status": "navigated", "url": "https://example.test/ok", "title": "Ok"}
+    stuck_tab.replies["browser_snapshot"] = {"url": "https://example.test/ok", "text": "fine", "refs": []}
+    assert _call("browser_navigate", {"url": "https://example.test/ok", "tab_id": 7})["status"] == "navigated"
+    assert _call("browser_snapshot", {"tab_id": 7})["text"] == "fine"
+
+    stuck_tab.replies["browser_navigate"] = {"status": "navigated", "navigated": True, **BLOCKED_PAGE}
+    _call("browser_navigate", {"url": "https://example.test/start", "tab_id": 7})
+    assert _call("browser_snapshot", {"tab_id": 7})["code"] == "tab_withheld"
+    stuck_tab.replies["browser_tab_close"] = {"status": "tab-closed"}
+    assert _call("browser_tab_close", {"tab_id": 7}) == {"status": "tab-closed"}
+    assert _call("browser_snapshot", {"tab_id": 7})["text"] == "fine"
+
+
+def test_a_new_tab_on_a_blocked_page_is_refused_by_its_id_until_it_is_closed(lane):
+    lane(REDIRECTING_TAB, {"browser_tabs": _tab_list(SECRET_PAGE["url"]),
+                           "browser_tab_close": {"status": "tab-closed"}})
+    _assert_withheld(_call("browser_tab_create", {"url": "https://example.test/redirect"}), "blocked.test")
+
+    refused = _call("browser_screenshot", {"tab_id": 31})
+    assert refused["code"] == "tab_withheld" and refused["blocked_host"] == "blocked.test"
+    assert _call("browser_tab_close", {"tab_id": 31}) == {"status": "tab-closed"}
+    assert _call("browser_screenshot", {"tab_id": 31}).get("code") != "tab_withheld"
+
+
+def test_a_tab_list_that_shows_a_withheld_tab_on_an_allowed_page_lifts_the_block(stuck_tab):
+    stuck_tab.replies["browser_tabs"] = {"tabs": [{"id": 7, "active": False, "title": "t", "url": "https://example.test/ok"}]}
+    stuck_tab.replies["browser_snapshot"] = {"url": "https://example.test/ok", "text": "fine", "refs": []}
+
+    _call("browser_tabs", {})
+
+    assert _call("browser_snapshot", {"tab_id": 7})["text"] == "fine"
+
+
+def test_a_tab_list_that_shows_a_tab_on_a_blocked_page_refuses_it(lane):
+    broker = lane({"tabs": [{"id": 9, "active": False, "title": "Private account page", "url": SECRET_PAGE["url"]}]})
+    _call("browser_tabs", {})
+
+    assert _call("browser_snapshot", {"tab_id": 9})["code"] == "tab_withheld"
+    assert [action for action, _ in broker.dispatched] == ["browser_tabs"]

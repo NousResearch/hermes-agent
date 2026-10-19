@@ -51,8 +51,8 @@ _TAB_TOOL_ARGS: dict[str, tuple[dict[str, str], tuple[str, ...]]] = {
 }
 #: Arguments that may be an empty string (typing "" into a field clears it); every other required string may not.
 _MAY_BE_EMPTY = frozenset({"text", "value"})
-#: Arguments the batch call itself takes besides ``actions``.
-_BATCH_ARGS = frozenset({"actions", "stop_on_error"})
+#: Arguments the batch call itself takes besides ``actions``; ``tab_id`` picks the tab for the whole batch.
+_BATCH_ARGS = frozenset({"actions", "stop_on_error", "tab_id"})
 
 
 def _is_number(value: Any) -> bool:
@@ -165,7 +165,8 @@ def step_error(index: int, step: Any) -> Optional[str]:
     label = f"{label} ({action})"
     unknown = sorted(set(step) - set(allowed) - {"action"})
     if unknown:
-        return f"{label} does not take {', '.join(unknown)}; it takes {', '.join(allowed) or 'no arguments'}"
+        hint = " (tab_id goes on the batch itself, not on a step)" if "tab_id" in unknown else ""
+        return f"{label} does not take {', '.join(unknown)}{hint}; it takes {', '.join(allowed) or 'no arguments'}"
     detail = _fields_error(action, step, allowed, required)
     return f"{label}: {detail}" if detail else None
 
@@ -206,5 +207,9 @@ _TOOL_CHECKS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
 def invalid_arguments(tool: str, args: dict[str, Any]) -> Optional[str]:
     """Error text for a call to ``tool`` that cannot run as given, or ``None`` when it may proceed."""
     check = _TOOL_CHECKS.get(tool)
-    detail = check(args) if check else None
+    tab_id = args.get("tab_id")  # any routed tool may name the tab it acts on
+    if tab_id is not None and not _TYPE_CHECKS["tab"](tab_id):
+        detail = f"'tab_id' must be {_TYPE_NAMES['tab']}, got {tab_id!r}"
+    else:
+        detail = check(args) if check else None
     return f"{tool}: {detail}" if detail else None

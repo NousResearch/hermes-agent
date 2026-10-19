@@ -12,6 +12,11 @@
         "description": "The element reference from the snapshot (e.g., '@e3')",
         "type": "string"
       },
+      "tab_id": {
+        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
+        "minimum": 1,
+        "type": "integer"
+      },
       "text": {
         "description": "The text to type into the field",
         "type": "string"

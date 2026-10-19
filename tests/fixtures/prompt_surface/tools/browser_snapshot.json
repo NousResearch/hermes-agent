@@ -7,6 +7,11 @@
         "default": false,
         "description": "If true, returns complete page content. If false (default), returns compact view with interactive elements only.",
         "type": "boolean"
+      },
+      "tab_id": {
+        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
+        "minimum": 1,
+        "type": "integer"
       }
     },
     "required": [],

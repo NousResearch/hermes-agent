@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from tools.browser_extension_router import route_browser_tool, routed_browser_handler
@@ -572,3 +574,25 @@ def test_a_controller_that_does_not_offer_an_action_fails_closed_with_a_remedy()
 
     message = str(raised.value)
     assert "browser_hover" in message and "update the extension" in message
+
+
+@pytest.mark.parametrize(
+    "action, args",
+    [
+        ("browser_click", {"ref": "@e1", "tab_id": 12}),
+        ("browser_snapshot", {"tab_id": 12}),
+        ("browser_batch", {"actions": [{"action": "click", "ref": "@e1"}], "tab_id": 12}),
+    ],
+)
+def test_tab_id_travels_in_the_command_arguments_untouched(action, args):
+    sent = json.loads(json.dumps(args))
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result={"status": "ok"})
+
+    route_browser_tool(
+        action, args, fallback=lambda: pytest.fail("a selected controller never falls back"), broker=broker,
+        enabled=True, session_id="session-fixture", principal_id="principal-fixture", transport_family="local-api",
+    )
+
+    assert args == sent
+    dispatched = [call for call in broker.calls if call[0] == "dispatch"]
+    assert [call[3] for call in dispatched] == [sent]

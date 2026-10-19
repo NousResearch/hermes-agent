@@ -1,5 +1,5 @@
 {
-  "description": "Bring one of your tabs to the front. This changes what the person is looking at, so the browser extension asks them to approve first (the request names the page) and the call waits for their answer: do not repeat it while it waits, and treat a refusal as final. You rarely need it: click, type, press, scroll and scroll_to work in a background tab; hover and drag need the tab in front.",
+  "description": "Bring one of your tabs to the front. This changes what the person is looking at, so the browser extension asks them to approve first (the request names the page) and the call waits for their answer: do not repeat it while it waits, and treat a refusal as final. You rarely need it: pass tab_id to any action to act on a tab without bringing it forward. click, type, press, scroll and scroll_to work in a background tab; hover and drag need the tab in front.",
   "name": "browser_tab_activate",
   "parameters": {
     "properties": {

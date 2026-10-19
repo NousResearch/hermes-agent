@@ -19,6 +19,11 @@
           "type": "string"
         },
         "type": "array"
+      },
+      "tab_id": {
+        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
+        "minimum": 1,
+        "type": "integer"
       }
     },
     "required": [

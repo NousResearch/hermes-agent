@@ -67,7 +67,7 @@ def test_every_declared_argument_reaches_the_legacy_handler():
     """_fallback_call hands the legacy function only the arguments its table row declares."""
     schemas = {s["name"]: s for s in browser_tool.BROWSER_TOOL_SCHEMAS}
     for name, _emoji, _check, defaults, *_extra in browser_tool._BROWSER_TOOL_TABLE:
-        declared = set(schemas[name]["parameters"]["properties"])
+        declared = set(schemas[name]["parameters"]["properties"]) - {"tab_id"}  # tab_id: refused, see below
         assert declared <= set(defaults), f"{name} would silently drop {sorted(declared - set(defaults))}"
 
 
@@ -317,3 +317,59 @@ def test_the_built_in_browser_screenshot_goes_through_the_same_native_path(brows
 
     assert isinstance(result, dict) and result["_multimodal"] is True
     assert result["meta"]["screenshot_path"] == str(shot)
+
+
+# --- choosing a tab (tab_id) ---------------------------------------------------------------------------------
+
+TAB_TARGETING = (
+    "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll", "browser_back",
+    "browser_press", "browser_batch", "browser_fill", "browser_select", "browser_hover", "browser_drag",
+    "browser_scroll_to", "browser_screenshot",
+)
+
+
+def test_tab_id_is_declared_where_a_tab_can_be_chosen_and_nowhere_else():
+    properties = {s["name"]: s["parameters"]["properties"] for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    declaring = {name for name, props in properties.items() if "tab_id" in props}
+
+    assert declaring == {*TAB_TARGETING, "browser_tab_activate", "browser_tab_close"}
+    for name in declaring:
+        assert properties[name]["tab_id"]["type"] == "integer" and properties[name]["tab_id"]["minimum"] == 1
+    required = {s["name"]: s["parameters"]["required"] for s in browser_tool.BROWSER_TOOL_SCHEMAS}
+    assert all("tab_id" not in required[name] for name in TAB_TARGETING)
+    assert "tab_id" in required["browser_tab_activate"] and "tab_id" in required["browser_tab_close"]
+
+
+_VALID_ARGS = {
+    "browser_navigate": {"url": "https://example.test"}, "browser_snapshot": {}, "browser_click": {"ref": "@e1"},
+    "browser_type": {"ref": "@e1", "text": "x"}, "browser_scroll": {"direction": "down"}, "browser_back": {},
+    "browser_press": {"key": "Enter"}, "browser_batch": {"actions": [{"action": "back"}]},
+    "browser_fill": {"ref": "@e1", "value": "x"}, "browser_select": {"ref": "@e1", "value": "x"},
+    "browser_hover": {"ref": "@e1"}, "browser_drag": {"ref": "@e1", "to_ref": "@e2"},
+    "browser_scroll_to": {"ref": "@e1"}, "browser_screenshot": {},
+}
+
+
+@pytest.mark.parametrize("tool", TAB_TARGETING)
+def test_the_built_in_browser_refuses_a_tab_id_instead_of_ignoring_it(browser, tool):
+    out = _call(tool, {**_VALID_ARGS[tool], "tab_id": 4})
+
+    assert out["success"] is False and out["code"] == "unsupported_in_this_browser"
+    assert out["error"].startswith(f"{tool}: tab_id is not available in this browser")
+    assert "one tab per task" in out["error"] and "Extension" in out["error"]
+    assert browser == []
+
+
+@pytest.mark.parametrize("tab_id", ["4", 0, -1, 2.5, True, [4]])
+def test_a_tab_id_that_is_not_a_tab_id_is_refused_before_either_browser(browser, tab_id):
+    out = _call("browser_click", {"ref": "@e1", "tab_id": tab_id})
+
+    assert out["success"] is False and out["error"].startswith("browser_click: 'tab_id' must be a tab id")
+    assert browser == []
+
+
+def test_an_absent_or_null_tab_id_leaves_every_lane_as_it_was(browser):
+    _call("browser_click", {"ref": "@e1"})
+    _call("browser_click", {"ref": "@e1", "tab_id": None})
+
+    assert browser == [("click", ["@e1"]), ("click", ["@e1"])]

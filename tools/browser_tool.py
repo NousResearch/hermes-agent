@@ -747,14 +747,14 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_tabs",
-        "description": "List the browser tabs this connection controls: each tab's id, title, URL and whether it is the active one. Only tabs the person attached to Hermes, or that you opened, are listed. Use the ids with browser_tab_activate and browser_tab_close.",
+        "description": "List the browser tabs this connection controls: each tab's id, title, URL and whether it is the active one. Only tabs the person attached to Hermes, or that you opened, are listed. Use the ids as tab_id on any action, or with browser_tab_activate and browser_tab_close.",
         "parameters": {
             "type": "object", "properties": {}, "required": []
         }
     },
     {
         "name": "browser_tab_activate",
-        "description": "Bring one of your tabs to the front. This changes what the person is looking at, so the browser extension asks them to approve first (the request names the page) and the call waits for their answer: do not repeat it while it waits, and treat a refusal as final. You rarely need it: click, type, press, scroll and scroll_to work in a background tab; hover and drag need the tab in front.",
+        "description": "Bring one of your tabs to the front. This changes what the person is looking at, so the browser extension asks them to approve first (the request names the page) and the call waits for their answer: do not repeat it while it waits, and treat a refusal as final. You rarely need it: pass tab_id to any action to act on a tab without bringing it forward. click, type, press, scroll and scroll_to work in a background tab; hover and drag need the tab in front.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -765,7 +765,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_tab_create",
-        "description": "Open a URL in a new tab. With the browser extension the tab always opens in the background, behind the one the person is looking at, so it never takes their view; browser_tab_activate brings it forward after the person approves. Returns the new tab's id. A URL is required.",
+        "description": "Open a URL in a new tab. With the browser extension the tab always opens in the background, behind the one the person is looking at, so it never takes their view; browser_tab_activate brings it forward after the person approves. Returns the new tab's id: pass it as tab_id to act on that tab. A URL is required.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -825,6 +825,22 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
 ]
+
+# Routed tools that can act on a chosen tab instead of the current one. The extension validates the id against
+# the tabs attached to Hermes and refuses any other with lease_not_owned. browser_tabs, browser_tab_create and
+# the two tab tools that already take a tab_id are not in this list.
+_TAB_TARGETING_TOOLS = frozenset({
+    "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll", "browser_back",
+    "browser_press", "browser_batch", "browser_fill", "browser_select", "browser_hover", "browser_drag",
+    "browser_scroll_to", "browser_screenshot",
+})
+for _schema in BROWSER_TOOL_SCHEMAS:
+    if _schema["name"] in _TAB_TARGETING_TOOLS:
+        _schema["parameters"]["properties"]["tab_id"] = {
+            "type": "integer", "minimum": 1,
+            "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). "
+                           "Refs belong to the tab they came from. Browser extension only.",
+        }
 
 from tools import browser_tool_snapshot as _snapshot
 from tools import browser_tool_args as _args
@@ -1899,11 +1915,20 @@ def _routed_handler(name: str, fallback):
         if invalid:  # refused before either lane sees it: no approval card, no silently dropped argument
             return _dumps(_err(invalid))
         result = record_browser_call(lambda legacy: routed_browser_handler(
-            name, args, fallback=lambda: legacy(lambda: fallback(args, kw)),
+            name, args, fallback=lambda: legacy(lambda: run_built_in(args, kw)),
             task_id=kw.get("task_id"), session_id=kw.get("session_id"), guard=_extension_call_guard,
             result_guard=_extension_landing_guard,
         ), _cloud.browser_backend_name)
         return finish(result) if finish else result
+
+    def run_built_in(args, kw):
+        # Only the extension lane can pick a tab; the built-in browser refuses rather than ignore the argument.
+        if name in _TAB_TARGETING_TOOLS and args.get("tab_id") is not None:
+            return _dumps(_err(
+                f"{name}: tab_id is not available in this browser: the built-in browser works in one tab per task. "
+                f"Leave tab_id out, or connect the Hermes Browser Extension to choose a tab.",
+                code="unsupported_in_this_browser"))
+        return fallback(args, kw)
     return handler
 
 

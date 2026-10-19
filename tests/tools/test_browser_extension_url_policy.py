@@ -144,3 +144,13 @@ def test_the_guard_does_not_run_on_the_built_in_lane():
         guard=lambda action, args, route: seen.append(action) or (args, "refused"))
 
     assert result == "legacy" and seen == []
+
+
+def test_tab_id_travels_with_the_checked_url_for_a_call_and_for_a_batch(broker):
+    _call("browser_navigate", {"url": "https://example.test/a", "tab_id": 7})
+    _call("browser_batch", {"actions": [{"action": "navigate", "url": "https://example.test/b"}], "tab_id": 9})
+
+    assert broker.dispatched == [
+        ("browser_navigate", {"url": "https://example.test/a", "tab_id": 7}),
+        ("browser_batch", {"actions": [{"action": "navigate", "url": "https://example.test/b"}], "tab_id": 9}),
+    ]

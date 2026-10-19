@@ -103,6 +103,11 @@
         "default": true,
         "description": "Stop at the first step that fails (default true). When false, later steps still run.",
         "type": "boolean"
+      },
+      "tab_id": {
+        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
+        "minimum": 1,
+        "type": "integer"
       }
     },
     "required": [

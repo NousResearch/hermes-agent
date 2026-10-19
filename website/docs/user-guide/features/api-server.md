@@ -424,7 +424,11 @@ sent what it advertised: an older extension that does not list a capability
 needs it fails closed with an error naming the capability, never falling back to
 another browser.
 
-The model-facing `browser_*` tools use these capability names one to one. Tools
+The model-facing `browser_*` tools use these capability names one to one, and
+a tool's arguments travel in the command frame's `arguments` object as the
+model gave them (a URL is sent in its normalized form). An optional `arguments.tab_id` picks one of the tabs
+attached to the controller for any action other than the tab tools themselves;
+the extension refuses an id it does not own with `lease_not_owned`. Tools
 that only an extension can run (the six tab tools) are
 offered to a session only while its bound controller advertises them. Before a
 `browser_navigate`, `browser_tab_create` or `browser_batch` navigate step is sent,
@@ -441,10 +445,11 @@ title and text never reach the model. The extension cannot blank a tab, so the t
 that page: Hermes takes it back one step when the call moved it there, and otherwise
 refuses every later call on that tab (`tab_withheld`) until it goes to another page or is
 closed. A `browser_batch` is checked once, on the page it ends on, not after each step.
-This check does not apply the
-private-address rule, which the extension lane skips on purpose. Raw CDP, arbitrary
-script evaluation, console access, uploads, image extraction, and vision are not
-part of the controller protocol.
+This check does not apply the private-address rule, which the extension lane skips on
+purpose.
+
+Raw CDP, arbitrary script evaluation, console access, uploads, image extraction,
+and vision are not part of the controller protocol.
 
 When a request has no bound controller identity, or when the feature is disabled,
 Hermes preserves the existing browser backend. Once the gateway binds a

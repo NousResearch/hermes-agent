@@ -2,7 +2,13 @@
   "description": "Navigate back to the previous page in browser history. Requires browser_navigate to be called first.",
   "name": "browser_back",
   "parameters": {
-    "properties": {},
+    "properties": {
+      "tab_id": {
+        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
     "required": [],
     "type": "object"
   }

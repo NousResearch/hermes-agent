@@ -7,6 +7,11 @@
         "description": "The element to pick up (e.g., '@e5')",
         "type": "string"
       },
+      "tab_id": {
+        "description": "Tab to act on, from browser_tabs or browser_tab_create (default: the current tab). Refs belong to the tab they came from. Browser extension only.",
+        "minimum": 1,
+        "type": "integer"
+      },
       "to_ref": {
         "description": "The element to drop it on (e.g., '@e9')",
         "type": "string"

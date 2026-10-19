@@ -200,3 +200,18 @@ def test_a_controller_that_did_not_advertise_batch_is_never_sent_one():
     with pytest.raises(ControllerUnavailable):
         broker.dispatch(scope, action="browser_batch", arguments={"actions": [{"action": "back"}]})
     assert frames == []
+
+
+def test_the_command_frame_carries_tab_id_in_its_arguments():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    scope = _scope(capabilities=frozenset({"controller.noop", "browser_click"}))
+    frames = []
+
+    def send(frame):
+        frames.append(frame)
+        broker.complete(frame["params"]["command_id"], ok=True, result={"status": "clicked"})
+
+    broker.attach(scope, send)
+    broker.dispatch(scope, action="browser_click", arguments={"ref": "@e1", "tab_id": 12}, tool_call_id="call-1")
+
+    assert frames[0]["params"]["arguments"] == {"ref": "@e1", "tab_id": 12}

@@ -765,6 +765,12 @@ Work with several tabs. These need the Hermes Browser Extension and are offered 
 
 The extension groups only tabs the connection owns that belong to the same task set, such as tabs the person attached together as one task; any other id, or tabs from different task sets, is refused with `lease_not_owned`. A tab opened with `browser_tab_create` is a task set of its own, so tabs from separate calls cannot be grouped with each other. Tab groups are a Chromium feature: a Firefox extension does not advertise these two tools, so they are not offered there.
 
+#### Choosing a tab with `tab_id`
+
+Every action tool (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_fill`, `browser_select`, `browser_hover`, `browser_drag`, `browser_scroll`, `browser_scroll_to`, `browser_press`, `browser_back`, `browser_screenshot`, and `browser_batch`, once for the whole batch) takes an optional `tab_id`: an id from `browser_tabs` or `browser_tab_create`. Without it the action runs in the current tab. With several tabs attached this lets the model work in a background tab without bringing it forward, so the person's view never changes. Refs belong to the tab they came from, so use a tab's own snapshot for its refs.
+
+The extension accepts only a tab attached to Hermes and refuses any other id with `lease_not_owned`. A `tab_id` that is not a positive whole number is refused before the call is sent. The built-in browser works in one tab per task, so there `tab_id` is an error that says so instead of being ignored. A tab that landed on a page the address check withheld (see `browser_navigate`) is refused by id with `tab_withheld` until it goes to another page or is closed; other tabs and the current tab keep working.
+
 ### `browser_screenshot`
 
 Take a screenshot of the page, or of one element when `ref` is given, and see it directly. It takes no question, unlike `browser_vision`. When the model accepts images the screenshot is attached to the conversation (resized and counted against the `vision` history budget like other native images); otherwise the result gives the saved file's path. Screenshots are stored in `~/.hermes/cache/screenshots/` and cleaned up after 24 hours.

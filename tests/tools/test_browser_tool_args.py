@@ -99,3 +99,17 @@ def test_the_tab_group_tools_take_a_list_of_distinct_tab_ids(tool):
 
 def test_tools_without_a_check_pass_through():
     assert invalid_arguments("browser_snapshot", {"anything": 1}) is None
+
+
+def test_a_batch_names_its_tab_once_and_a_step_may_not():
+    steps = [{"action": "click", "ref": "@e1"}]
+    assert invalid_arguments("browser_batch", {"actions": steps, "tab_id": 3}) is None
+    error = invalid_arguments("browser_batch", {"actions": [{"action": "click", "ref": "@e1", "tab_id": 3}]})
+    assert error and "tab_id goes on the batch itself" in error
+
+
+@pytest.mark.parametrize("tab_id", [0, -2, 1.5, "3", True])
+def test_any_tool_refuses_a_tab_id_that_is_not_a_positive_whole_number(tab_id):
+    error = invalid_arguments("browser_snapshot", {"tab_id": tab_id})
+    assert error and "'tab_id' must be a tab id" in error
+    assert invalid_arguments("browser_snapshot", {"tab_id": 3}) is None

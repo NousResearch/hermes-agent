@@ -93,13 +93,10 @@ def reset_withheld() -> None:
 
 
 def _tab_arg(args: dict[str, Any]) -> Optional[int]:
+    """The tab a call runs in (or, for the tab tools, is about): its ``tab_id`` when it names one, else
+    ``None``, the current tab."""
     tab = args.get("tab_id")
     return tab if isinstance(tab, int) and not isinstance(tab, bool) and tab > 0 else None
-
-
-def _acted_on_tab(args: dict[str, Any]) -> Optional[int]:
-    """The tab a call runs in: ``None``, the current tab (no action takes a tab to act in yet)."""
-    return None
 
 
 def _decode(result: Any) -> Optional[dict[str, Any]]:
@@ -203,7 +200,7 @@ def _move_back(route: RouteContext, tab: Optional[int]) -> bool:
     """Take a tab off a withheld page with one browser_back, the nearest thing to the built-in lane's
     about:blank (the extension only navigates to http(s) pages). True when it landed on an allowed page."""
     try:
-        outcome = _decode(route.send("browser_back", {})) or {}
+        outcome = _decode(route.send("browser_back", {} if tab is None else {"tab_id": tab})) or {}
     except Exception:
         logger.debug("could not move a withheld tab off its page", exc_info=True)
         return False
@@ -258,7 +255,7 @@ def extension_landing_guard(action: str, args: dict[str, Any], result: Any, rout
     if payload is None:
         return result
     key = route.key if route is not None else ()
-    tab = _acted_on_tab(args)
+    tab = _tab_arg(args)
     _bt = _origin()
     dump = (lambda value: _bt._dumps(value)) if isinstance(result, str) else (lambda value: value)
 
@@ -306,7 +303,7 @@ def extension_withheld_guard(action: str, args: dict[str, Any], route: Optional[
         steps = args.get("actions") if isinstance(args.get("actions"), list) else []
         if steps and _args.step_action(steps[0]) in _LEAVING_STEPS:
             return None
-    host = _withheld.host(route.key, _acted_on_tab(args))
+    host = _withheld.host(route.key, _tab_arg(args))
     if host is None:
         return None
     _bt = _origin()

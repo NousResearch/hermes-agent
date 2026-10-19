@@ -1,5 +1,5 @@
 {
-  "description": "Open a URL in a new tab. With the browser extension the tab always opens in the background, behind the one the person is looking at, so it never takes their view; browser_tab_activate brings it forward after the person approves. Returns the new tab's id. A URL is required.",
+  "description": "Open a URL in a new tab. With the browser extension the tab always opens in the background, behind the one the person is looking at, so it never takes their view; browser_tab_activate brings it forward after the person approves. Returns the new tab's id: pass it as tab_id to act on that tab. A URL is required.",
   "name": "browser_tab_create",
   "parameters": {
     "properties": {

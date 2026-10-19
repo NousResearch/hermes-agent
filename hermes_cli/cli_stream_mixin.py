@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import textwrap
 import time
 
 from contextlib import contextmanager
@@ -121,7 +120,7 @@ class CLIStreamMixin:
 
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
-        from cli import _DIM, _RST, _cprint
+        from cli import _DIM, _RST, _cprint, _wrap_panel_text
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
@@ -130,7 +129,9 @@ class CLIStreamMixin:
         for paragraph in re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n")):
             compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
             if compact:
-                paragraphs.append(textwrap.fill(compact, width=wrap_width))
+                # Cell-aware wrap: a CJK preview used to run ~2x past the terminal
+                # because textwrap counts characters, not display width.
+                paragraphs.append("\n".join(_wrap_panel_text(compact, wrap_width)))
         preview_text = "\n".join(paragraphs)
         if not preview_text:
             return

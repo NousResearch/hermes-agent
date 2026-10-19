@@ -12,7 +12,6 @@ import os
 import re
 import shutil
 import sys
-import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
@@ -22,6 +21,7 @@ from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
 from typing import Any
+from wcwidth import wcswidth
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
@@ -938,8 +938,8 @@ def _build_compact_banner() -> str:
     bar = "═" * w
     content_width = inner - 2
 
-    line1 = line1[:content_width].ljust(content_width)
-    line2 = version_line[:content_width].ljust(content_width)
+    line1 = _pad_display(_clip_display(line1, content_width), content_width)
+    line2 = _pad_display(_clip_display(version_line, content_width), content_width)
 
     return (
         f"\n[bold {border_color}]╔{bar}╗[/]\n"
@@ -949,26 +949,184 @@ def _build_compact_banner() -> str:
     )
 
 
+# ── display cells ───────────────────────────────────────────────────────────
+# Everything from here down lays out terminal CELLS, but Python counts code
+# points: a 20-character Chinese line is 40 columns wide, textwrap only breaks
+# on spaces (so a space-less CJK clause is one unbreakable "word"), and
+# ``str.ljust`` pads by characters. Panels therefore overflowed the terminal,
+# their right border drifted right, and CJK text left a blank gutter where the
+# line could have continued.
+
+# Scripts that wrap between characters instead of at spaces (Han, Hiragana,
+# Katakana, Hangul). Everything else (Latin words, emoji, punctuation runs)
+# stays glued into one token.
+_CJK_IDEOGRAPH_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
+
+# Closing punctuation may not start a row in CJK typography; the character
+# before it moves down with it.
+_CLOSING_PUNCTUATION = "、。，．,.;:!?！？：；）)]】」』》〉”’…—～"
+
+
+def _display_width(text: str) -> int:
+    """Terminal cells occupied by ``text`` (wide chars 2, combining 0)."""
+    width = wcswidth(text)
+    return width if width >= 0 else len(text)
+
+
+def _clip_display(text: str, width: int) -> str:
+    """``text`` cut to at most ``width`` cells without splitting a wide char."""
+    if width <= 0:
+        return ""
+
+    out: list[str] = []
+    used = 0
+
+    for ch in text:
+        cells = _display_width(ch)
+
+        if used + cells > width:
+            break
+
+        out.append(ch)
+        used += cells
+
+    return "".join(out)
+
+
+def _pad_display(text: str, width: int) -> str:
+    """Right-pad ``text`` to exactly ``width`` cells (no-op when already wider)."""
+    return text + " " * max(0, width - _display_width(text))
+
+
+def _hard_wrap_cells(line: str, width: int) -> list[str]:
+    """Break ``line`` exactly at cell boundaries, preserving whitespace."""
+    rows: list[str] = []
+    current = ""
+    used = 0
+
+    for ch in line:
+        cells = _display_width(ch)
+
+        if used + cells > width and current:
+            rows.append(current)
+            current, used = "", 0
+
+        current += ch
+        used += cells
+
+    rows.append(current)
+    return rows
+
+
+def _wrap_line_cells(line: str, first_width: int, rest_width: int, indent: str = "") -> list[str]:
+    """Word-wrap one source line in cells, breaking CJK between ideographs."""
+    indent_cells = _display_width(indent)
+    rows: list[str] = []
+    current = ""
+    used = 0
+    limit = first_width
+
+    def flush() -> None:
+        nonlocal current, used, limit
+        rows.append(current.rstrip())
+        current, used = indent, indent_cells
+        limit = rest_width
+
+    def append_hard(text: str) -> None:
+        nonlocal current, used
+        for ch in text:
+            cells = _display_width(ch)
+
+            if current and used + cells > limit:
+                flush()
+
+            current += ch
+            used += cells
+
+    word = ""
+
+    def flush_word() -> None:
+        nonlocal word, current, used
+        if not word:
+            return
+
+        cells = _display_width(word)
+
+        if used + cells > limit:
+            if current.strip():
+                flush()
+
+            if cells <= limit:
+                current += word
+                used += cells
+                word = ""
+
+                return
+
+        append_hard(word)
+        word = ""
+
+    for ch in line:
+        if ch.isspace():
+            flush_word()
+            if current and used + 1 <= limit:
+                current += " "
+                used += 1
+        elif _CJK_IDEOGRAPH_RE.match(ch):
+            flush_word()
+            cells = _display_width(ch)
+
+            if used + cells <= limit:
+                current += ch
+                used += cells
+            elif current.strip():
+                # Keep closing punctuation off the start of the new row by
+                # dragging the preceding ideograph down with it.
+                carry = ""
+
+                if ch in _CLOSING_PUNCTUATION and _CJK_IDEOGRAPH_RE.match(current[-1]):
+                    carry = current[-1]
+                    current = current[:-1]
+
+                rows.append(current.rstrip())
+                current, used = indent + carry, indent_cells + _display_width(carry)
+        else:
+            word += ch
+
+    flush_word()
+    rows.append(current.rstrip())
+
+    return rows
+
+
 def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
     """Stable TUI panel width wide enough for the title and content (incl. borders)."""
     term_cols = shutil.get_terminal_size((100, 20)).columns
-    longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+    longest = max([_display_width(title)] + [_display_width(line) for line in content_lines] + [min_width - 4])
     inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
     return inner + 2  # leading/trailing space inside the borders
 
 
 def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews)."""
-    kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = textwrap.wrap(text, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
-    return wrapped or [""]
+    """Wrap panel text in terminal cells; ``keep_ws`` preserves whitespace (command/detail previews)."""
+    limit = max(8, width)
+
+    rows: list[str] = []
+
+    for raw in str(text).split("\n"):
+        if keep_ws:
+            rows.extend(_hard_wrap_cells(raw, limit))
+        else:
+            rows.extend(_wrap_line_cells(raw, limit, limit, subsequent_indent))
+
+    return rows or [""]
 
 
 _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)
 
 
 def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-    lines.extend(((border_style, "│ "), (content_style, text.ljust(max(0, box_width - 2))), (border_style, " │\n")))
+    lines.extend(((border_style, "│ "), (content_style, _pad_display(text, max(0, box_width - 2))), (border_style, " │\n")))
 
 
 def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:

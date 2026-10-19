@@ -233,14 +233,11 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       // `/resume <id|title>` (and `/sessions <id>`) load a cold session and
-      // CLOSE the current one, so guard it while a turn is in-flight to avoid
-      // corrupting streaming/busy state. Bare opens the overlay to browse.
+      // normally CLOSE the current one; while a turn is in-flight keep it
+      // running in the background instead, like `new` above. Bare opens the
+      // overlay to browse.
       if (trimmed) {
-        if (ctx.session.guardBusySessionSwitch(t('slashCmd.session.sessions.busyGuardAction'))) {
-          return
-        }
-
-        return ctx.session.resumeById(trimmed)
+        return ctx.session.resumeById(trimmed, { keepCurrent: getUiState().busy })
       }
 
       patchOverlayState({ sessions: true })

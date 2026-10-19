@@ -578,7 +578,7 @@ export interface SlashHandlerContext {
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
-    resumeById: (id: string) => Promise<void> | void
+    resumeById: (id: string, opts?: { keepCurrent?: boolean }) => Promise<void> | void
     setSessionStartedAt: StateSetter<number>
   }
   slashFlightRef: MutableRefObject<number>

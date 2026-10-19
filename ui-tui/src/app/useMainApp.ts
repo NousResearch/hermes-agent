@@ -1519,16 +1519,11 @@ export function useMainApp(gw: GatewayClient) {
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
-      // Resuming a cold session from the overlay CLOSES the current one, so it
-      // must respect the busy guard just like the `/resume` slash path.
-      // (Switching between live sessions and `+ new` keep the current session
-      // running, so those stay unguarded — that's the orchestrator's purpose.)
+      // Resuming a cold session normally CLOSES the current one, which would
+      // corrupt a streaming turn. While busy, keep the current session running
+      // in the background instead (same as `+ new`) rather than refusing.
       resumeById: (id: string) => {
-        if (session.guardBusySessionSwitch(t('session.lifecycle.switchSessions'))) {
-          return
-        }
-
-        session.resumeById(id)
+        void session.resumeById(id, { keepCurrent: getUiState().busy })
       },
       setStickyPrompt
     }),

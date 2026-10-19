@@ -230,6 +230,20 @@ def test_key_sources_attributes_each_leaf_to_its_file(home):
     assert sources["agent.max_turns"] == ["10-a.yaml"]
 
 
+def test_key_sources_empty_section_claims_no_leaf(home):
+    """A drop-in ``display: {}`` sets nothing at load, so it must own nothing at save.
+
+    ``_deep_merge`` treats an empty mapping as a no-op — the config.yaml siblings survive — so
+    attributing the section itself to the drop-in made the bulk-save guard delete a whole section
+    the drop-in never overrode.
+    """
+    d = _drop_in_dir(home)
+    (d / "10-a.yaml").write_text("display: {}\nagent:\n  toolsets: []\n", encoding="utf-8")
+    sources = config_d.config_d_key_sources()
+    assert "display" not in sources
+    assert "agent.toolsets" in sources  # an empty LIST is a real value, not a no-op
+
+
 # ── Loader integration: hermes_cli.config.load_config ────────────────────────
 
 def test_load_config_applies_drop_ins_preserving_siblings(home):
@@ -641,6 +655,28 @@ def test_save_config_never_persists_drop_in_keys(home):
     assert "custom_new_key" in text        # the actual edit landed
     # The drop-in still wins at load time after the save.
     assert config_mod.load_config()["display"]["skin"] == "dropin_skin"
+
+
+def test_save_config_keeps_a_section_an_empty_drop_in_never_overrode(home):
+    """The bulk-save guard must not delete a section a drop-in only mentions as ``{}``.
+
+    ``load_config`` merges an empty mapping as a no-op, so config.yaml's own ``display.*`` values
+    are still the effective ones; stripping the whole section on save silently deleted the user's
+    display config every time the dashboard (or any `load_config` -> mutate -> save flow) wrote.
+    """
+    (home / "config.yaml").write_text(
+        "display:\n  skin: user_skin\n  show_reasoning: true\nagent:\n  max_turns: 9\n",
+        encoding="utf-8")
+    d = _drop_in_dir(home)
+    (d / "10-a.yaml").write_text("display: {}\n", encoding="utf-8")
+    cfg = config_mod.load_config()
+    assert cfg["display"]["skin"] == "user_skin"  # the drop-in overrides nothing
+    config_mod.save_config(cfg)
+    text = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "skin: user_skin" in text
+    assert "show_reasoning: true" in text
+    assert "max_turns: 9" in text
+    assert config_mod.load_config()["display"]["skin"] == "user_skin"
 
 
 def test_set_config_value_on_drop_in_overridden_key(home, capsys):

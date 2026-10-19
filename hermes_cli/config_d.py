@@ -211,6 +211,24 @@ def apply_config_d_overlay(config: dict, config_path: Optional[Path] = None) -> 
     return _deep_merge(config, drop_ins) if drop_ins else config
 
 
+def _override_leaves(mapping: dict, prefix: str = "") -> list[str]:
+    """Dotted leaves a drop-in REALLY sets, in file order; an empty dict claims nothing.
+
+    ``_deep_merge`` merges ``{}`` as a no-op (the sibling keys in config.yaml survive), so
+    attributing the section itself to the drop-in made the save guard strip a whole section the
+    drop-in never overrode — load and save must agree on what a drop-in owns.
+    """
+    leaves: list[str] = []
+    for key, value in mapping.items():
+        dotted = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            if value:
+                leaves.extend(_override_leaves(value, dotted))
+        else:
+            leaves.append(dotted)
+    return leaves
+
+
 def config_d_key_sources() -> dict[str, list[str]]:
     """``{dotted leaf key: [drop-in filenames setting it]}`` — who overrides what.
 
@@ -218,22 +236,23 @@ def config_d_key_sources() -> dict[str, list[str]]:
     ``hermes config set`` to name the file overriding a just-written value, and by the bulk-save
     guard.
 
+    Names the leaves through ``_override_leaves`` rather than ``managed_scope._flatten_keys``:
+    that helper also collapses an empty mapping to the SECTION's own name, which made the save
+    guard strip a section a ``display: {}`` drop-in never overrode.
+
     A drop-in that FAILS to parse is reported under its own sentinel key rather than skipped: the
     save guard must still know a file in config.d claims authority over this profile, or a bulk
     save would freeze that file's intended value into config.yaml — the exact failure
     strip_config_d_keys_for_save exists to prevent. The parse warning has already been logged by
     _load_drop_in_file, so this only records the attribution.
     """
-    # managed_scope, not hermes_cli.config: this runs on the config.d failure path, and
-    # reaching for the config module here would re-enter the cycle described above.
-    from hermes_cli import managed_scope
     sources: dict[str, list[str]] = {}
     for path in config_d_files(get_config_d_dir()):
         parsed = _load_drop_in_file(path)
         if parsed is None:
             sources.setdefault(UNPARSEABLE_DROP_IN_KEY, []).append(path.name)
             continue
-        for key in managed_scope._flatten_keys(parsed):
+        for key in _override_leaves(parsed):
             sources.setdefault(key, []).append(path.name)
     return sources
 

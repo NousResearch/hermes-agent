@@ -187,6 +187,20 @@ each operation's previous content reflects earlier operations in that batch.
 Older Hermes versions can omit `previous_content`. Providers that require exact
 identity should skip destructive mirroring when it is absent.
 
+### Conversation provenance
+
+`MemoryManager` strips slash-skill scaffolding to the user's instruction before
+recall, turn sync, and turn-start hooks. Bare skill invocations and Bot Mode's
+generated `[Group chat: "…"]` prompts are excluded from those hooks. Room prompts
+combine peer messages and participation rules; their user role is a transport
+detail, not evidence that a human said those words.
+
+Provider transcript snapshots (`sync_turn`, `on_session_end`, and both pre-compress
+checkpoint versions) also omit each generated room exchange, including its
+assistant replies, tool results, and continuation nudges. Genuine direct user
+turns in the same session remain eligible. Filtering applies only to provider
+input copies; the model's conversation history and cached prompt stay unchanged.
+
 ### Oversized prefetch results
 
 External `prefetch()` results are returned in full by default, preserving the

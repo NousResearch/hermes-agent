@@ -5675,6 +5675,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 _protect_fenced,
                 text,
             )
+        # 1b-i) A run of two or more backticks is never a MarkdownV2 delimiter — Telegram has no
+        #     multi-backtick code span — except the triple runs the block below handles. The inline
+        #     pass consumes only the fragment it can match, so the rest of such a run stayed raw and
+        #     paired with a later run across the message: every line between the two landed inside
+        #     one <code> entity, rendering a paragraph as monospace with its markdown shown
+        #     literally. Escape every backtick of a run that is not exactly three.
+        text = re.sub(
+            r'(?<!\\)(`{2,})',
+            lambda m: m.group(1) if len(m.group(1)) == 3 else _ph('\\`' * len(m.group(1))),
+            text,
+        )
         # 1b) Whatever triple-backtick run is still bare is literal text, not a fence: a run quoted
         #     inside a line, an inline "```x```" span, or an opener with no closing fence. Two such
         #     runs on DIFFERENT lines must not pair — the inline pass below would render every line
@@ -5693,10 +5704,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             text = "".join(_parts)
 
         # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        #    Content may contain escaped backticks ("`\`\`\``") — the naive `[^`]+` pattern stopped at
+        #    the first one, stashed a fragment and left the rest raw (see 1b-i), which is how a
+        #    quoted-backtick example broke the whole message. Spans stay on one line: a lone backtick
+        #    with no same-line partner is escaped literal text, the only rendering that cannot spear a
+        #    multi-line <code> entity out of the message.
+        #    Escape \ and ` inside inline code per MarkdownV2 spec.
         text = re.sub(
-            r'(`[^`]+`)',
-            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            r'(?<![\\`])`((?:[^`\n]|\\`)+)`(?!`)',
+            lambda m: _ph('`' + m.group(1).replace('\\', '\\\\').replace('`', '\\`') + '`'),
             text,
         )
 

@@ -25,6 +25,39 @@ from plugins.platforms.telegram.adapter import (
 )
 
 
+def _unpaired_backtick_runs(payload: str) -> list[str]:
+    """Backtick runs in *payload* that Telegram cannot pair into a code span.
+
+    Escape-aware (``\\`` `` ` `` is a literal backtick, not a delimiter) and run-aware
+    (a run of N is closed by the next run of exactly N).  Any leftover run is the
+    failure mode behind "the message renders as one monospace blob": Telegram pairs
+    the stray run with whatever run comes next, so everything between them —
+    markdown included — lands inside a <code> entity.
+    """
+    runs: list[str] = []
+    i, n = 0, len(payload)
+    while i < n:
+        if payload[i] == "\\":
+            i += 2
+            continue
+        if payload[i] == "`":
+            j = i
+            while j < n and payload[j] == "`":
+                j += 1
+            runs.append(payload[i:j])
+            i = j
+            continue
+        i += 1
+    stack: list[str] = []
+    for run in runs:
+        if stack and stack[-1] == run:
+            stack.pop()
+        else:
+            stack.append(run)
+    return stack
+
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -205,6 +238,34 @@ class TestFormatMessageCodeBlocks:
         # unbalanced fence — only the real block's two fences remain.
         assert result.count("```") == 2
         assert "y" in result
+
+    def test_escaped_backtick_span_does_not_leak_a_delimiter(self, adapter):
+        r"""A code span holding ``\`` must not shed a raw delimiter into the message.
+
+        The inline pass matched `` `\` `` and stashed that fragment, leaving the rest of
+        the run raw; those leftovers then paired with the next span's delimiter and
+        swallowed every line between the two into one <code> entity — the whole
+        message rendered monospace with its markdown shown literally.
+        """
+        text = "字面 `\\`\\`\\`` 然后 `abc` 结束\n**加粗行**\n正文第二行\n"
+        result = adapter.format_message(text)
+        assert _unpaired_backtick_runs(result) == []
+        assert "*加粗行*" in result
+        assert "正文第二行" in result
+
+    def test_stray_double_backtick_run_does_not_swallow_a_later_span(self, adapter):
+        r"""A `` run left raw pairs with the next span's delimiter across lines.
+
+        GFM uses a run of two backticks as a code-span delimiter; MarkdownV2 has no
+        such form, and the inline pass consumed only part of the run. Escaping the
+        whole run is the rendering that cannot spear a <code> entity out of the
+        message.
+        """
+        text = "标题：``quoted run`` 后面还有 `code` 结束\n**加粗行**\n正文第二行\n"
+        result = adapter.format_message(text)
+        assert _unpaired_backtick_runs(result) == []
+        assert "*加粗行*" in result
+        assert "正文第二行" in result
 
     def test_fence_with_trailing_whitespace_on_close(self, adapter):
         r"""A closing fence with trailing spaces must not double up the ```."""

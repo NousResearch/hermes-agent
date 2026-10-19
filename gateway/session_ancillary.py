@@ -202,9 +202,11 @@ async def read(connection, ref, params, *, kind):
     authorize(connection, ref, params, 'session:read')
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
-        _require_current_route(authority, ref)
         if kind == 'control':
+            # Persisted per session id, never the route's live objects: readable after a messaging
+            # route moved on to another conversation.
             return {'control': control_snapshot(authority, ref)}
+        _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
@@ -394,7 +396,9 @@ def control_snapshot(authority, ref):
         _safe_goal_snapshot, _safe_loop_snapshot, _safe_heartbeat_snapshot,
         _snapshot_revision, _snapshot_updated_at,
     )
+    # Compression carries goal/loop/heartbeat to the continuation: read the current segment.
     target = physical_target(authority, ref)
+    target = authority.db.get_compression_tip(target) or target
     states = []
     for kind, cls in [('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]:
         raw = authority.db.get_meta(kind + ':' + target)

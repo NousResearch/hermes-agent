@@ -116,6 +116,55 @@ async def test_authenticated_chat_completion_stamps_selected_transfer_target():
 
 
 @pytest.mark.asyncio
+async def test_authenticated_chat_completion_never_runs_after_core_fence(tmp_path, monkeypatch):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = ChatExecutionStore(tmp_path)
+    generation = store.start_local_worker("selected-conversation", "prior-session")
+    assert generation == 1
+    assert store.worker_finished("selected-conversation", generation)
+    assert store.retire_for_handoff("selected-conversation", generation, "handoff")["status"] == "retired"
+    adapter = _make_adapter(api_key="sk-secret")
+    agent = MagicMock()
+    agent.session_id = "selected-conversation"
+    app = _create_runs_app(adapter)
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    async with TestClient(TestServer(app)) as cli:
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            response = await cli.post("/v1/chat/completions", json={"messages": [
+                {"role": "user", "content": "Continue work"}]}, headers={
+                    "Authorization": "Bearer sk-secret", "X-Hermes-Session-Id": "selected-conversation"})
+            assert response.status != 200
+    agent.run_conversation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_run_never_executes_when_worker_admission_refuses(tmp_path, monkeypatch):
+    from gateway.chat_execution_recovery import ChatExecutionStore
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _make_adapter(api_key="sk-secret")
+    agent = MagicMock()
+    agent.session_id = "selected-conversation"
+    with patch.object(ChatExecutionStore, "start_local_worker", return_value=None):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=agent):
+                admitted = await cli.post("/v1/runs", json={"input": "Continue work",
+                    "session_id": "selected-conversation"}, headers={"Authorization": "Bearer sk-secret"})
+                assert admitted.status == 202
+                run_id = (await admitted.json())["run_id"]
+                for _ in range(40):
+                    response = await cli.get(f"/v1/runs/{run_id}",
+                        headers={"Authorization": "Bearer sk-secret"})
+                    status = (await response.json())["status"]
+                    if status in ("completed", "failed"):
+                        break
+                    await asyncio.sleep(0.05)
+                assert status == "failed"
+    agent.run_conversation.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_native_api_transfer_provenance_revoked_after_key_rotation(api, owner):
     from gateway.session_api_turn import prepare_api_execution
     from gateway.session_contract import SessionRef

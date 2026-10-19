@@ -1,6 +1,8 @@
 """Accepted Desktop prompts that stop before worker admission release their journal claim."""
 
 import threading
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +62,54 @@ def test_registered_prompt_early_exit_allows_physical_retirement(monkeypatch, tm
                                              "params": {"session_id": "sid"}})
             assert stopped["result"]
         assert session.get("_run_thread") in threads
+        session["_run_thread"].target()
+        assert store.retire_for_handoff("session-key", 1, "handoff")["status"] == "retired"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_registered_prompt_worker_launch_refusal_settles_accepted_claim(monkeypatch, tmp_path):
+    store = ChatExecutionStore(tmp_path)
+    assert store.start_local_worker("session-key", "prior-turn") == 1
+    assert store.worker_finished("session-key", 1)
+    threads = []
+
+    class DeferredThread:
+        def __init__(self, target=None, daemon=None, **_options):
+            self.target = target
+            threads.append(self)
+        def start(self):
+            pass
+        def is_alive(self):
+            return True
+        def join(self, timeout=None):
+            pass
+
+    ready = threading.Event(); ready.set()
+    agent = SimpleNamespace(session_id="actual-session", clear_interrupt=lambda: None)
+    session = {"agent": agent, "agent_ready": ready, "session_key": "session-key",
+               "profile_home": str(tmp_path), "history": [], "history_lock": threading.Lock(),
+               "history_version": 0, "running": False, "attached_images": [],
+               "image_counter": 0, "cols": 80, "slash_worker": None,
+               "show_reasoning": False, "tool_progress_mode": "all"}
+    server._sessions["sid"] = session
+    try:
+        monkeypatch.setattr(server.threading, "Thread", DeferredThread)
+        monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+        monkeypatch.setattr(server, "_wait_agent", lambda *_args: None)
+        monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_args: None)
+        monkeypatch.setattr(server, "_wire_callbacks", lambda *_args: None)
+        monkeypatch.setattr(server, "_register_session_cwd", lambda *_args: None)
+        monkeypatch.setattr(server, "_session_cwd", lambda *_args: str(tmp_path))
+        monkeypatch.setattr(server, "_admit_prompt_turn", lambda *_args: ([], agent))
+        monkeypatch.setattr(server, "_routing_provenance_db", lambda *_args: nullcontext(None))
+        monkeypatch.setattr(server, "_reopen_routed_session_row", lambda *_args: None)
+        monkeypatch.setattr(server, "_start_session_work", lambda *_args, **_kwargs: None)
+        result = server.handle_request({"id": "submit", "method": "prompt.submit",
+                                        "params": {"session_id": "sid", "text": "Continue"}})
+        assert result["result"]["status"] == "streaming"
         session["_run_thread"].target()
         assert store.retire_for_handoff("session-key", 1, "handoff")["status"] == "retired"
     finally:

@@ -1306,12 +1306,11 @@ def _run_prompt_submit(
                         logger.error("Durable Desktop/TUI worker completion refused for %s/%s", key, generation)
                 except Exception:
                     logger.exception("Durable Desktop/TUI worker completion uncertain for %s/%s", key, generation)
-            elif st.terminal_callback is not None and st.receipt_committed:
-                # A hosted delivery has a durable failed terminal receipt and no
-                # physical worker. Its reserved submit can settle with that receipt.
-                for submit_id in chat_submit_ids:
-                    submit_store.abandon_submit(submit_key, submit_id)
-                session.get("_chat_pending_submit_ids", set()).difference_update(chat_submit_ids)
+            elif st.terminal_callback is None or st.receipt_committed:
+                # A direct prompt has no hosted receipt; a hosted delivery must
+                # commit its failed terminal receipt before its claim settles.
+                from tui_gateway.session_auto_continue import _abandon_unadmitted_chat_submits
+                _abandon_unadmitted_chat_submits(session, chat_submit_key or submit_key, chat_submit_ids)
             with correction_lock:
                 session["_chat_correction_closed"] = True
                 corrections = session.pop("_chat_accepted_corrections", [])
@@ -1390,6 +1389,9 @@ def _run_prompt_submit(
                 _reopen_routed_session_row(routing_db, sid, session)
             can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
+        if terminal_callback is None:
+            from tui_gateway.session_auto_continue import _abandon_unadmitted_chat_submits
+            _abandon_unadmitted_chat_submits(session, chat_submit_key or submit_key, chat_submit_ids)
         with session["history_lock"]:
             session["running"] = False
     return can_start

@@ -8,6 +8,10 @@ request_transfer_auth: ContextVar[tuple[str, str]] = ContextVar(
     "api_server_transfer_auth", default=("", ""))
 
 
+class ChatExecutionAdmissionRefused(RuntimeError):
+    """The core journal fenced this API turn before any agent work may start."""
+
+
 def bind_authenticated_request(adapter, request, profile):
     """Room grants and no-key listeners never mint a transfer identity."""
     expected_key = adapter._expected_api_key()
@@ -54,8 +58,7 @@ def admitted_serialized_tool_turn(session_key, session_id, agent):
     store = ChatExecutionStore(home)
     generation = store.start_local_worker(session_key, actual)
     if generation is None:
-        yield False
-        return
+        raise ChatExecutionAdmissionRefused("Durable API chat worker admission refused")
     set_session_run_generation(generation)
     with bind_chat_execution(home, session_key, generation):
         try:

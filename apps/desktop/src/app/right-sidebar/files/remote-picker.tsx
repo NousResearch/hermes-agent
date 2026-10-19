@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { createRemoteDir, readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
@@ -245,7 +246,11 @@ export function RemoteFolderPicker() {
                     <Codicon name={creating ? 'loading' : 'check'} size="0.875rem" spinning={creating} />
                   </Button>
                 </div>
-                {newFolderError && <div className="mt-1 pl-6 text-xs text-destructive">{newFolderError}</div>}
+                {newFolderError && (
+                  <div className="mt-1 pl-6">
+                    <FieldHint error>{newFolderError}</FieldHint>
+                  </div>
+                )}
               </div>
             )}
             {loading ? (

@@ -20,6 +20,72 @@ from utils import base_url_host_matches, base_url_hostname, is_truthy_value
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
 
+# The launch flags that pick the model route: ``/new`` starts on the profile's default route.
+_ROUTE_FLAGS = ("model", "provider", "api_key", "base_url")
+
+
+def _adopt_gateway_toolsets(cli, store):
+    """The profile default the gateway resolved for the opened session, when this process has no list to
+    show (display only), and main's "Unknown toolsets" warning as the gateway judged it against its own
+    plugins."""
+    info = (store.current or {}).get("info") or {}
+    if getattr(cli, "enabled_toolsets", None) is None and isinstance(info.get("enabled_toolsets"), list):
+        cli.enabled_toolsets = list(info["enabled_toolsets"])
+    if info.get("unknown_toolsets"):
+        from agent.i18n import t as _t
+        names = ", ".join(info["unknown_toolsets"])
+        cli._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=names)}[/]")
+
+
+def _gateway_launch(cli):
+    """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
+    explicit_model = getattr(cli, "_explicit_model_override", False)
+    provider = getattr(cli, "_explicit_provider", None)
+    return {"model": cli.model if explicit_model else None,
+            "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
+            "api_key": getattr(cli, "_explicit_api_key", None),
+            "base_url": getattr(cli, "_explicit_base_url", None),
+            # Only a typed -t; the gateway resolves the profile default and the coding posture (#138670).
+            "toolsets": getattr(cli, "enabled_toolsets", None) if getattr(cli, "_explicit_toolsets", False) else None,
+            "reasoning": getattr(cli, "_explicit_reasoning", None),
+            "max_turns": getattr(cli, "_explicit_max_turns", None),
+            "checkpoints": getattr(cli, "_explicit_checkpoints", False) or None,
+            "pass_session_id": getattr(cli, "pass_session_id", False) or None,
+            "ignore_rules": getattr(cli, "ignore_rules", False) or None,
+            "run_budget": getattr(cli, "_explicit_run_budget", None),
+            "verbose": getattr(cli, "verbose", False) or None,
+            "skills": _explicit_launch_skills(cli)}
+
+
+def _explicit_launch_skills(cli):
+    """The `-s/--skills` names, which the gateway renders into the session once at creation (the CLI's
+    own prompt never reaches it). ``skills.auto_load`` names are left out: the gateway's agent loads those."""
+    requested = getattr(cli, "_preload_skills_requested", None) or []
+    if not requested:
+        return None
+    from agent.skill_commands import resolve_auto_load_skills
+    from cli import CLI_CONFIG
+    auto = set() if getattr(cli, "ignore_rules", False) else set(resolve_auto_load_skills(CLI_CONFIG))
+    return [name for name in requested if name not in auto] or None
+
+
+def _record_shell_hook_consent():
+    """Main's first-use shell-hook prompt, on this terminal. The gateway that registers the hooks
+    has no TTY; it reads the allowlist this writes when the session opens (create or resume).
+    ``--accept-hooks`` / ``HERMES_ACCEPT_HOOKS`` / ``hooks_auto_accept`` approve without asking.
+    A remote gateway has its own home and allowlist, and a bypass launch reads no profile hooks,
+    so nothing is asked for either."""
+    from hermes_cli.gateway_chat import env_launch_flags
+    flags = env_launch_flags()
+    if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip() or flags.get("safe_mode") or flags.get("ignore_user_config"):
+        return
+    try:
+        from agent.shell_hooks import record_consent_from_config
+        from hermes_cli.config import load_config
+        record_consent_from_config(load_config())
+    except Exception:  # health: allow BLE001 -- consent is best effort; the gateway skips unapproved hooks
+        logger.warning("shell-hook consent check failed", exc_info=True)
+
 
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
@@ -29,7 +95,9 @@ class CLIInitMixin:
         from cli import CLI_CONFIG, _configure_output_history, _int_or
         self.console = Console()
         self.config = CLI_CONFIG
-        display = CLI_CONFIG["display"]
+        # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
+        from gateway.display_config import local_display_config
+        display = local_display_config(CLI_CONFIG["display"])
         self.compact = compact if compact is not None else display.get("compact", False)
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")
@@ -53,8 +121,11 @@ class CLIInitMixin:
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
+        from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config, set_active
+        self._modern_layout = layout_from_config(display)  # display.cli_layout: modern | classic
+        set_active(self._modern_layout)
         # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
-        _bim = str(display.get("busy_input_mode", "interrupt")).strip().lower()
+        _bim = busy_input_mode_from_config(display)
         self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"
 
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
@@ -159,6 +230,9 @@ class CLIInitMixin:
             _moa_provider_override or provider or _startup_provider_override or _nested_provider
             or _cfg_provider or "auto"
         )
+        # Only a provider the command line chose is gateway launch policy: the config default is the
+        # gateway's to resolve, and a resume compares launch policy against the session's frozen route.
+        self._explicit_provider = _moa_provider_override or provider or _startup_provider_override or None
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.
         # Explicit `-m` still wins. See #86978.
@@ -187,10 +261,14 @@ class CLIInitMixin:
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
         # Key matches the resolved base_url; re-resolved by _ensure_runtime_credentials().
-        _keys = ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+        # This seed can reach /model before the first turn, so openrouter.ai never gets a real OpenAI key here.
+        _keys = [os.getenv("OPENROUTER_API_KEY"), os.getenv("OPENAI_API_KEY")]
         if not (self.base_url and base_url_host_matches(self.base_url, "openrouter.ai")):
             _keys = _keys[::-1]
-        self.api_key = api_key or os.getenv(_keys[0]) or os.getenv(_keys[1])
+        else:
+            from hermes_cli.auth import looks_like_openrouter_key
+            _keys[1] = _keys[1] if looks_like_openrouter_key(_keys[1]) else None
+        self.api_key = api_key or _keys[0] or _keys[1]
 
     def _init_turn_limits(self, max_turns, run_budget):
         """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""
@@ -204,29 +282,22 @@ class CLIInitMixin:
             os.getenv("HERMES_MAX_ITERATIONS"),
         ))
         self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
+        self._explicit_run_budget = run_budget  # `--run-budget`: session.create policy (the gateway runs the turn)
+        # The gateway builds the agent now: the explicit flag (not the resolved value) rides session.create.
+        self._explicit_max_turns = max_turns
 
     def _init_toolsets(self, toolsets):
-        from cli import CLI_CONFIG, validate_toolset
+        from cli import CLI_CONFIG
         self.enabled_toolsets = toolsets
+        # Only a picked list rides session.create; _build_cli_from_args clears this unless -t was typed (the
+        # gateway resolves the profile default and coding posture itself; a stale explicit name is refused, #138670).
+        self._explicit_toolsets = toolsets is not None
         from agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
-
-        if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # MCP server names only resolve after discover_mcp_tools runs; skip them here.
-            mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            # Plugin toolsets register during plugin discovery, which startup runs on a background thread
-            # that has not necessarily landed yet; names it declared (or the previous launch persisted, which
-            # get_plugin_toolset_keys_nowait serves) are not typos (#71650).
-            try:
-                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
-                plugin_ts_names = get_plugin_toolset_keys_nowait()
-            except Exception:
-                plugin_ts_names = set()
-            invalid = [t for t in toolsets
-                       if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
-            if invalid:
-                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
+        # No local "Unknown toolsets" check: plugin toolsets are only known where plugins load. The gateway
+        # refuses an unknown picked name at session.create and reports a stale profile one with the session
+        # (``_adopt_gateway_toolsets``), so this process never discovers plugins to tell them apart (PLG-7).
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
         from cli import CLI_CONFIG
@@ -234,12 +305,15 @@ class CLIInitMixin:
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
+        self._explicit_checkpoints = bool(checkpoints)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+        # The env opt-in is creation policy only: a resume checks just a typed --ignore-rules (the thin client's rule).
+        self._explicit_ignore_rules = bool(ignore_rules)
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
@@ -258,6 +332,7 @@ class CLIInitMixin:
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
+        self._explicit_reasoning = None
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
@@ -266,6 +341,7 @@ class CLIInitMixin:
             else:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
+                self._explicit_reasoning = str(reasoning).strip()
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -295,10 +371,10 @@ class CLIInitMixin:
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
-        self._tool_callbacks_installed = self._tirith_security_checked = False
+        self._tool_callbacks_installed = False
         self._app = None  # prompt_toolkit Application (set in run())
 
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_history: list[dict[str, Any]] = []
         self.session_start = datetime.now()
         # Per-prompt elapsed timer shown in the status bar.
         self._prompt_start_time: Optional[float] = None
@@ -315,8 +391,7 @@ class CLIInitMixin:
         self._init_ui_state()
 
     def _init_session_store(self):
-        """Open the session store early (so /title works before the first message) + opportunistic maintenance."""
-        from cli import _run_checkpoint_auto_maintenance, _run_state_db_auto_maintenance
+        """Open the session store early (so /title works before the first message)."""
         self._session_db = None
         self._session_db_unavailable = False
         try:
@@ -324,8 +399,8 @@ class CLIInitMixin:
             # path a moment later from the REPL thread, and a second writer repeats the full
             # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
             # holds the GIL — that repeat was the post-banner freeze before the first prompt.
-            from hermes_state_registry import acquire
-            self._session_db = acquire()
+            from hermes_cli.gateway_session_store import session_store
+            self._session_db = session_store()  # the gateway is the single writer
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -336,27 +411,77 @@ class CLIInitMixin:
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+            from agent.i18n import t
             failure = describe_storage_failure(e)
             def _present_store_warning():
                 try:
-                    Console(stderr=True).print(
-                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                        "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
-                        "Searching past sessions is also disabled.\n"
-                        f"  Reason: {failure.gloss}.\n"
-                        f"  {failure.action}\n"
-                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
-                    )
+                    Console(stderr=True).print(t(
+                        "cli.session_store.unavailable_rich",
+                        reason=failure.gloss, action=failure.action, details=storage_failure_details(e)))
                 except Exception:
-                    print(
-                        "WARNING: Session store unavailable — this conversation will NOT be "
-                        f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
-                    )
+                    print(t("cli.session_store.unavailable_plain", reason=failure.gloss, action=failure.action))
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
             from gateway.warning_notifications import render_notification
             render_notification(_present_store_warning, platform="cli")
-        _run_state_db_auto_maintenance(self._session_db)
-        _run_checkpoint_auto_maintenance()
+        # No state.db / checkpoint maintenance here: the gateway (the single writer) runs both.
+
+    def _ensure_gateway_session(self):
+        """Create (or resume) this CLI's gateway session and adopt the id it returns, before the banner
+        and the first turn. Idempotent; a store without the gateway facade (tests) is left alone."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if getattr(self, "_gateway_session_open", False) or not isinstance(store, GatewaySessionStore):
+            return
+        launch = _gateway_launch(self)
+        # A resumed row this gateway has not imported yet (a legacy / in-process session) is imported
+        # under the active-session registry lock, which refuses while ANY live lease holds the id —
+        # including this process's own, claimed before the first turn. Hand the slot over around the
+        # attach, then re-claim it for the id the gateway returned (main's exclusivity is kept).
+        held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
+        _record_shell_hook_consent()
+        if held:
+            self._release_active_session()
+        sid = store.open_session(self, launch)
+        self._gateway_session_open = True
+        from hermes_cli import gateway_plugin_commands, tools_config
+        tools_config._gateway_plugin_toolsets = lambda: gateway_plugin_commands.toolsets(self)
+        _adopt_gateway_toolsets(self, store)
+        from hermes_cli.gateway_tools import bind_session
+        bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
+        if sid and sid != self.session_id:
+            self.session_id = sid
+            getattr(self, "_write_terminal_breadcrumb", lambda: None)()
+        if held and not self._claim_active_session("cli", stderr=True):
+            raise RuntimeError("session_already_owned")
+
+    def _new_session_id(self, now, *, branch_of=None, title=None):
+        """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway
+        store it is a session the gateway created: /new is a fresh ``session.create`` on the profile's
+        default model (an explicit -m was for the previous session only) with the run's other launch
+        flags, /branch the child of
+        ``session.mutate branch``. Before this CLI opened its gateway session (or off the gateway) it is
+        main's local mint, which ``_ensure_gateway_session`` replaces on first use, as at startup."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if not isinstance(store, GatewaySessionStore) or not getattr(self, "_gateway_session_open", False):
+            from hermes_state_ids import new_session_id
+            return new_session_id(now)
+        if branch_of:
+            child = store.branch(branch_of, title)
+            # Main's with_session_yolo: a live /yolo carries onto the branch. The gateway's child starts
+            # without the parent's toggle, so set it there too (/branch moves the CLI's own flag over).
+            # Approvals run on the gateway, so this write is not toggle_session_yolo's best-effort persist:
+            # a failure raises before the child shows YOLO locally.
+            from tools.approval import enable_session_yolo, is_session_yolo_enabled
+            if is_session_yolo_enabled(branch_of):
+                store.set_session_yolo(child, True)
+                enable_session_yolo(child)
+            return child
+        # The run's other launch flags hold for every session it opens, as main's one AIAgent did across /new.
+        launch = {key: value for key, value in _gateway_launch(self).items() if key not in _ROUTE_FLAGS}
+        sid = store.create(launch, record_cwd=False)
+        self.session_id = sid
+        return sid
 
     def _init_ui_state(self):
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
@@ -364,6 +489,7 @@ class CLIInitMixin:
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
+        self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete
@@ -431,6 +557,7 @@ class CLIInitMixin:
         self._voice_mode = self._voice_tts = self._voice_recording = False
         self._voice_processing = self._voice_continuous = False
         self._voice_recorder = self._voice_tts_stop = None
+        self._voice_live_text = ""  # live STT partial (stt.streaming) shown in the placeholder
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
@@ -449,7 +576,7 @@ class CLIInitMixin:
         self._resize_recovery_timer = self._status_bar_unsuppress_timer = None  # latter: debounced un-suppress
         self._last_resize_width = None  # width change (reflow, needs viewport clear) vs rows-only
 
-        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_tasks: dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
         # Cache-hit baseline, reset on model switch / compression so the bar shows the current regime.

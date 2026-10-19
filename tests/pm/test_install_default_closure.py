@@ -34,7 +34,6 @@ def install_spy(monkeypatch):
 
     def fake_sync_venv(extras=None, **kwargs):
         calls["sync_extras"] = list(extras or [])
-        return None
 
     def fake_activate(**kwargs):
         calls["activated"].append(kwargs)
@@ -139,3 +138,21 @@ def test_without_refuses_a_required_package(install_spy, capsys):
     assert pm.cli.cmd_install(argparse.Namespace(names=None, tools_only=False, without=["git"])) == 1
     assert "--without accepts only" in capsys.readouterr().out
     assert install_spy["names"] is None
+
+
+def test_default_install_carries_the_computer_use_driver_wherever_it_builds():
+    """Computer use's only OS path ships in the box; a default claimed for a target
+    with no pinned artifact would fail every install there (the bionic KeyError)."""
+    from pm.defaults import default_packages
+    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
+    from pm.store import ALL_TARGETS
+
+    lock = Lockfile(lockfile_path())
+    for target in ALL_TARGETS:
+        defaults = default_packages(lock.names(), target=target, declined_names=frozenset())
+        assert all(lock.artifacts(name, target) for name in defaults), target
+        driver = pm.cli.get_package("cua-driver")
+        assert ("cua-driver" in defaults) == (driver.missing_reason(target) is None), target
+    assert "cua-driver" not in default_packages(
+        lock.names(), target="linux-x64", declined_names=frozenset({"cua-driver"}))

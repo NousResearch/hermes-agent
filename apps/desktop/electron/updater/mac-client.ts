@@ -36,13 +36,16 @@ export function createMacStrategy(deps: MacClientDeps): MacStrategy {
   const legacy = feedContract.darwinFeed(deps.channel, deps.light)
   const channel = deps.feed?.channel ?? legacy.channel
   const updater = new electronUpdater.MacUpdater()
+
   if (deps.feed) {
     // The validated channel sequence, not SemVer precedence, decides whether a
     // pinned build is newer. Build metadata is intentionally precedence-neutral.
     Object.defineProperty(updater, 'currentVersion', {
-      value: new SemVer('0.0.0'), configurable: true
+      value: new SemVer('0.0.0'),
+      configurable: true
     })
   }
+
   updater.autoDownload = false
   updater.autoInstallOnAppQuit = false
   updater.autoRunAppAfterInstall = true

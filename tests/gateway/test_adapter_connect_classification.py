@@ -33,19 +33,19 @@ from gateway.run import (
 # ── Telegram: type-based auth classification ───────────────────────────
 
 
-class InvalidToken(Exception):  # noqa: N818 — name-matched stand-in
+class InvalidToken(Exception):
     pass
 
 
-class Forbidden(Exception):  # noqa: N818
+class Forbidden(Exception):
     pass
 
 
-class NetworkError(Exception):  # noqa: N818
+class NetworkError(Exception):
     pass
 
 
-class TimedOut(Exception):  # noqa: N818
+class TimedOut(Exception):
     pass
 
 
@@ -138,7 +138,11 @@ class TestPhotonSidecarStartupClassification:
     def _make_adapter(self, monkeypatch):
         monkeypatch.setenv("PHOTON_PROJECT_ID", "pid")
         monkeypatch.setenv("PHOTON_PROJECT_SECRET", "psecret")
+        from plugins.platforms.photon import adapter as photon_adapter
         from plugins.platforms.photon.adapter import PhotonAdapter
+
+        # Stand-in for PM's node; the user's PATH node is never picked up.
+        monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
 
         return PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
 

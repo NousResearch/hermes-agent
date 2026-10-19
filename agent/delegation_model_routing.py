@@ -20,7 +20,7 @@ Design rules honored here:
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class ProfileSpec:
     model: str
     reasoning_config: Optional[dict] = None      # parse_reasoning_effort output, None = inherit
     max_iterations: Optional[int] = None
-    fallback: Tuple[FallbackTarget, ...] = ()
+    fallback: tuple[FallbackTarget, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,7 @@ class ProfileRoute:
     api_mode: Optional[str]
     reasoning_config: Optional[dict] = None
     max_iterations: Optional[int] = None
-    fallback: Tuple[FallbackTarget, ...] = ()
+    fallback: tuple[FallbackTarget, ...] = ()
     supports_tools: bool = True
     request_overrides: Optional[dict] = None     # provider request personality (runtime provider)
 
@@ -66,14 +66,14 @@ def _profiles_section(cfg: Optional[dict]) -> Any:
     return ((cfg or {}).get("profiles"))
 
 
-def _parse_fallback(name: str, raw: Any) -> Tuple[FallbackTarget, ...]:
+def _parse_fallback(name: str, raw: Any) -> tuple[FallbackTarget, ...]:
     if raw in (None, ""):
         return ()
     if not isinstance(raw, list):
         raise ValueError(
             f"delegation.profiles.{name}.fallback must be a list of {{provider, model}} entries, "
             f"got {type(raw).__name__}")
-    targets: List[FallbackTarget] = []
+    targets: list[FallbackTarget] = []
     for i, entry in enumerate(raw):
         if not isinstance(entry, dict):
             raise ValueError(
@@ -136,7 +136,7 @@ def _parse_profile(name: str, raw: Any) -> ProfileSpec:
     )
 
 
-def parse_profiles(cfg: Optional[dict]) -> Dict[str, ProfileSpec]:
+def parse_profiles(cfg: Optional[dict]) -> dict[str, ProfileSpec]:
     """Parse+validate ``delegation.profiles`` from the delegation config section.
 
     Returns ``{}`` when no profiles are configured. Raises ``ValueError`` with an actionable
@@ -151,11 +151,11 @@ def parse_profiles(cfg: Optional[dict]) -> Dict[str, ProfileSpec]:
     return {str(name): _parse_profile(str(name), spec) for name, spec in raw.items()}
 
 
-def profile_config_errors(cfg: Optional[dict]) -> List[str]:
+def profile_config_errors(cfg: Optional[dict]) -> list[str]:
     """All profile config problems as messages (for ``hermes config check``); never raises."""
-    errors: List[str] = []
+    errors: list[str] = []
     raw = _profiles_section(cfg)
-    specs: Dict[str, ProfileSpec] = {}
+    specs: dict[str, ProfileSpec] = {}
     if raw and not isinstance(raw, dict):
         errors.append(
             f"delegation.profiles must be a mapping of name -> profile, got {type(raw).__name__}")
@@ -227,8 +227,8 @@ def resolve_profile_route(name: str, cfg: Optional[dict], parent_agent: Any = No
         caps = get_model_capabilities(spec.provider or "", spec.model)
         if caps is not None:
             supports_tools = bool(getattr(caps, "supports_tools", True))
-    except Exception as exc:  # capability metadata is advisory; never block resolution on it
-        logger.debug("Could not load model capabilities for profile '%s': %s", key, exc)
+    except Exception:  # capability metadata is advisory; never block resolution on it
+        logger.debug("Could not load model capabilities for profile '%s'", key, exc_info=True)
 
     return ProfileRoute(
         requested_profile=key,

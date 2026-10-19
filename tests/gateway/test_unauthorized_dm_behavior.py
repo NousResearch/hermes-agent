@@ -120,16 +120,22 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_modern_session_mapping(
     assert runner._is_user_authorized(source) is True
 
 
-def test_simplex_allowlist_accepts_display_name(monkeypatch):
-    """SIMPLEX_ALLOWED_USERS should match the contact's display name as well
-    as the numeric contactId. The SimpleX UI surfaces only display names, so
-    operators naturally put those in the env var — and the adapter sets
-    user_id=contactId for stability. Both forms must work. (#TBD)"""
+@pytest.mark.parametrize(
+    "allowlist, expected",
+    [
+        # Display names are attacker-controlled: another contact can take the
+        # same name, so matching user_name would bypass the allowlist (#44729).
+        ("hujikuji", False),
+        # The stable numeric contactId is the one form a contact cannot forge.
+        ("4", True),
+    ],
+)
+def test_simplex_allowlist_matches_contact_id_not_display_name(monkeypatch, allowlist, expected):
+    """SIMPLEX_ALLOWED_USERS matches only the numeric contactId (user_id),
+    never the contact's display name (user_name)."""
     _clear_auth_env(monkeypatch)
-    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
-    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", allowlist)
 
-    # Register the simplex plugin so the env-var lookup resolves.
     from gateway.platform_registry import platform_registry, PlatformEntry
     platform_registry.register(PlatformEntry(
         name="simplex",
@@ -146,8 +152,6 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
         GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
     )
 
-    # contactId in the allowlist would still work — but the operator chose
-    # the display name. Verify the gateway honors it.
     source = SessionSource(
         platform=simplex,
         user_id="4",            # adapter sets this to the numeric contactId
@@ -155,7 +159,7 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
         user_name="hujikuji",   # adapter sets this to displayName
         chat_type="dm",
     )
-    assert runner._is_user_authorized(source) is True
+    assert runner._is_user_authorized(source) is expected
 
 
 def test_telegram_group_users_legacy_chat_ids_still_authorize(monkeypatch):

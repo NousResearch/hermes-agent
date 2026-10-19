@@ -64,6 +64,9 @@ def fake_routing(monkeypatch):
     monkeypatch.setattr(
         md, "get_model_capabilities", lambda *a, **k: SimpleNamespace(supports_tools=True)
     )
+    # The lifecycle reads config through tools.delegate_tool._load_config (main's seam, as in
+    # test_subagent_lifecycle.py); patch both so the resolver and the lifecycle see the same cfg.
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: dict(PROFILES_CFG))
     monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: dict(PROFILES_CFG))
 
 
@@ -99,6 +102,7 @@ def test_handle_carries_resolved_reasoning_for_profile_and_none_without_profile(
         "api_mode": "chat_completions",
     })
     monkeypatch.setattr(md, "get_model_capabilities", lambda *a, **k: _NS(supports_tools=True))
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: cfg)
     monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: cfg)
 
     calls = []
@@ -157,16 +161,41 @@ def test_unknown_profile_errors_naming_configured_profiles(captured, fake_routin
     assert calls == []
 
 
+_PROFILE_ONLY_KWARGS = ("override_fallback_model", "override_reasoning_config", "override_supports_tools", "requested_profile")
+
+
 def test_no_profile_keeps_construction_kwargs_unchanged(captured, fake_routing):
-    """model_profile=None must be byte-identical to today's behavior: no override_* kwargs
-    appear, and model passes through verbatim."""
+    """model_profile=None must match main's profile-less behavior: the legacy delegation-config
+    bundle (main routes lifecycle launches through _credential_overrides) and NO profile-only
+    kwargs; the raw model passes through verbatim."""
     service, calls = captured
     service.launch(SubagentLaunchRequest(goal="plain", model="raw-model"))
     assert len(calls) == 1
     kwargs = calls[0]
     assert kwargs["model"] == "raw-model"
-    assert not any(k.startswith("override_") for k in kwargs)
-    assert "requested_profile" not in kwargs
+    assert not any(k in kwargs for k in _PROFILE_ONLY_KWARGS)
+
+
+def test_raw_model_never_grafts_onto_default_profile(captured, monkeypatch, fake_routing):
+    """A raw request model is the plugin trust surface: with delegation.default_profile set it must
+    still follow the legacy branches, never pick up the default profile's provider/credentials."""
+    cfg = {**PROFILES_CFG, "default_profile": "small"}
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: cfg)
+    service, calls = captured
+    service.launch(SubagentLaunchRequest(goal="plain", model="raw-model"))
+    assert calls[0]["model"] == "raw-model"
+    assert not any(k in calls[0] for k in _PROFILE_ONLY_KWARGS)
+    assert calls[0]["override_provider"] is None
+    service.launch(SubagentLaunchRequest(goal="defaulted"))
+    assert calls[1]["requested_profile"] == "small"
+    assert calls[1]["model"] == "prof/small-model"
+
+
+def test_provider_and_model_profile_rejected(captured, fake_routing):
+    service, calls = captured
+    with pytest.raises(SubagentLifecycleError, match="model_profile"):
+        service.launch(SubagentLaunchRequest(goal="x", provider="openrouter", model_profile="small"))
+    assert calls == []
 
 
 @pytest.mark.parametrize("profile_iter,budget,expected", [
@@ -193,6 +222,7 @@ def test_profile_max_iterations_clamps_against_configured_budget(
         "api_mode": "chat_completions",
     })
     monkeypatch.setattr(md, "get_model_capabilities", lambda *a, **k: _NS(supports_tools=True))
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: cfg)
     monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: cfg)
 
     service, calls = captured

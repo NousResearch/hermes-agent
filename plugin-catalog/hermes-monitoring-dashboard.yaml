@@ -1,0 +1,19 @@
+name: hermes-monitoring-dashboard
+title: Monitoring Dashboard
+repo: https://github.com/austinpickett/hermes-monitoring-dashboard
+subdir: plugin
+sha: 96d6881d7242e0fd9240a3040ad3266ed6c2492e
+version: "1.0.1"
+description: "Prompt-customizable desktop dashboard with live host metrics, session activity, clocks, calendars, and text widgets. Disclosure — polls ~/monitoring-dashboard on the desktop device through the Desktop native file bridge, and its Reset command moves only the dashboard's own page/panel marker files in that folder to the OS trash (never dashboard.json or the folder); host metrics and session activity stay on the machine."
+maintainer: austinpickett
+tier: community
+category: desktop
+docs_url: https://github.com/austinpickett/hermes-monitoring-dashboard/blob/96d6881d7242e0fd9240a3040ad3266ed6c2492e/plugin/README.md
+image: https://raw.githubusercontent.com/austinpickett/hermes-monitoring-dashboard/96d6881d7242e0fd9240a3040ad3266ed6c2492e/assets/hermes-cyanotype.jpg
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

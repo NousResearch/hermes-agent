@@ -64,6 +64,7 @@ class SessionDetachedResultsMixin:
     # ``caller_history_reservation`` = {token, owner, until} is a lease that expires on its own.
     _CH_SELECT = (
         " AND role = 'user' AND display_kind IN ('async_delegation_complete', 'hidden')"
+        " AND COALESCE(active, 1) = 1"
         " AND json_extract(display_metadata, '$.delegation_id') IS NOT NULL"
         " AND json_extract(display_metadata, '$.caller_history_consumed') IS NULL"
         " AND COALESCE(json_extract(display_metadata, '$.caller_history_reservation.until'), 0) <= ?")

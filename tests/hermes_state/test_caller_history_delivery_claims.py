@@ -105,3 +105,16 @@ def test_token_holder_commits_after_its_lease_expired(tmp_path):
         assert db.claim_caller_history_deliveries("sid") == []
     finally:
         db.close()
+
+
+def test_rewound_delivery_row_is_neither_reserved_nor_claimed(tmp_path):
+    """A row soft-deleted by a rewind (active=0) is no longer history: it must not be re-delivered."""
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("sid", source="api_server")
+        _deliver(db, "sid", "deleg_old")
+        db._execute_write(lambda conn: conn.execute("UPDATE messages SET active = 0 WHERE session_id = 'sid'"))
+        assert db.reserve_caller_history_deliveries("sid", "webui", 60) == []
+        assert db.claim_caller_history_deliveries("sid") == []
+    finally:
+        db.close()

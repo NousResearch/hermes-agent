@@ -265,6 +265,35 @@ def test_a_retry_during_the_run_replays_as_running(registry, sessions, monkeypat
     assert len(turns) == 1, "a mid-flight retry must not start a second agent turn"
 
 
+def test_a_redirect_onto_a_legacy_turn_still_ends_its_id(registry, sessions, monkeypatch):
+    """The live turn may carry no id at all (a legacy submit) and still own the correction's ending."""
+    monkeypatch.setattr(server.threading, "Thread", _REAL_THREAD)
+    release, started = threading.Event(), threading.Event()
+
+    def blocking_run(*a, **k):
+        started.set()
+        release.wait(timeout=10)
+        return {"final_response": "done"}
+
+    agent = types.SimpleNamespace(session_id=KEY, clear_interrupt=lambda: None,
+                                  run_conversation=blocking_run)
+    agent._supports_active_turn_redirect = True
+    agent.redirect = lambda text: True
+    _install(sessions, agent)
+
+    assert _submit(text="a legacy turn")["result"] == {"status": "streaming"}  # no id anywhere
+    try:
+        assert started.wait(timeout=10)
+        ack = _submit(text="actually, the other one", client_turn_id="ct-riding")["result"]
+        assert ack["status"] == "redirected" and ack["state"] == "running"
+    finally:
+        release.set()
+    deadline = time.time() + 10
+    while time.time() < deadline and _status("ct-riding")["result"]["state"] == "running":
+        time.sleep(0.02)
+    assert _status("ct-riding")["result"]["state"] == "terminal", "the riding id never ended"
+
+
 def test_a_redirected_submit_ends_with_the_turn_it_joined(registry, sessions):
     """A steer/redirect has no turn of its own: its id ends when the live turn does."""
     turns: list = []

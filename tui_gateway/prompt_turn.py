@@ -1240,7 +1240,9 @@ def _run_prompt_submit(
                     if not st.error_retained:
                         _clear_inflight_turn(session)
                     _release_hosted_room_turn_slot(session)
-                    if client_turn_id:
+                    # The slot, not the id: a correction that carried an id can ride a turn that
+                    # did not (a legacy submit), and it must end with the turn it joined.
+                    if session.get("_active_client_turns"):
                         _finish_client_turn(session, _client_turn_outcome(status))
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
@@ -1286,7 +1288,7 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
-        if client_turn_id:
+        if session.get("_active_client_turns"):
             _finish_client_turn(session, turn_identity.FAILED)
     return can_start
 

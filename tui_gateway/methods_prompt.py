@@ -890,9 +890,10 @@ def _fail_client_turn(turn) -> None:
 
 
 def _ride_client_turn(session, turn) -> None:
-    """A steered/redirected submit joins the LIVE turn, so it ends when that turn ends."""
+    """A steered/redirected submit joins the LIVE turn, so it is running now and ends with it."""
     if turn is None:
         return
+    turn_identity.mark(turn, turn_identity.RUNNING)
     with session["history_lock"]:
         session.setdefault("_active_client_turns", []).append(turn)
 

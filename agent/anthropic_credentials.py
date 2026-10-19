@@ -46,10 +46,11 @@ _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 # (_read_claude_code_credentials_from_keychain) and, since #98334, mirrors the
 # refresh write into it so the two stores stop diverging on a single-use rotation.
 _CLAUDE_CODE_KEYCHAIN_SERVICE = "Claude Code-credentials"
-# ``security -i`` reads interactive commands line-by-line and truncates each line at
-# 4095 characters, running the truncated first half as-is; for ``add-generic-password -U``
-# that overwrites the item with a partial, unparsable payload (#123184).
-_SECURITY_I_LINE_LIMIT = 4095
+# ``security -i`` reads interactive commands line-by-line and truncates each line — measured
+# on macOS at a ~4,100-character line, storing a partial, unparsable payload with rc 0
+# (#123184). 4000 keeps the stdin path well clear of the measured truncation point; lines
+# past it fall back to argv, which ``security`` accepts at any length.
+_SECURITY_I_LINE_LIMIT = 4000
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -340,6 +341,17 @@ def _keychain_mirror_command(account: str, payload: dict[str, Any]) -> tuple[lis
     return ["security", "-i"], line
 
 
+def _keychain_argv_command(account: str, payload: dict[str, Any]) -> list[str]:
+    """``security add-generic-password`` argv for payloads whose ``security -i`` line would be
+    truncated (#123184). ``subprocess`` runs it without a shell, so the account needs no
+    tokenizer quoting; the secret still travels hex-encoded (``-X``), never as cleartext."""
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8").hex()
+    return [
+        "security", "add-generic-password", "-U",
+        "-a", account, "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-X", encoded,
+    ]
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[dict[str, Any]]:
     """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
     payload = _read_claude_code_keychain_payload()
@@ -593,6 +605,10 @@ def _mirror_claude_code_credentials_to_keychain(
     out. Only the item that held the pair we just spent is updated — a different pair there means a
     different login (``CLAUDE_CONFIG_DIR``) or a rotation Claude Code already made, and clobbering it
     would be the bug in the other direction. Best-effort: never raises, never creates an item.
+
+    The write goes over ``security -i`` stdin while the line fits, else over argv (#123184), and the
+    item is re-read afterwards to verify the refresh token landed — ``security -i`` can truncate a
+    line with rc 0, which would store an unparsable payload and log Claude Code out anyway.
     """
     if platform.system() != "Darwin":
         return
@@ -605,27 +621,35 @@ def _mirror_claude_code_credentials_to_keychain(
         if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
             logger.debug("Keychain mirror skipped: item does not hold the pair that was just rotated")
             return
-        argv, line = _keychain_mirror_command(
-            account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
+        merged = _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms)
+        argv, line = _keychain_mirror_command(account, merged)
         # The line limit is on the line's content; the appended newline doesn't count.
         line_length = len(line.rstrip("\n"))
-        if line_length > _SECURITY_I_LINE_LIMIT:
-            # The secret must stay off argv and ``security -i`` has no line-continuation
-            # syntax, so a payload this large has no safe write — refuse rather than let the
-            # truncated first half clobber the item.
+        if line_length <= _SECURITY_I_LINE_LIMIT:
+            # stdin keeps the secret off argv entirely.
+            result = subprocess.run(
+                argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                check=False,
+            )
+        else:
+            # A line this long is truncated by ``security -i`` — but skipping the write leaves
+            # the already-spent refresh token in the item, and Claude Code reads the Keychain
+            # first, so it logs itself out anyway (#123184 field report). Write via argv
+            # instead: the hex payload is briefly visible to same-user ``ps``, a smaller harm
+            # than a forced logout (the file Hermes just wrote holds the same payload in
+            # cleartext; ``security`` on argv truncates nothing).
             logger.warning(
-                "Keychain mirror skipped: merged payload needs a %d-character `security -i`"
-                " line (limit %d; typically too many mcpOAuth entries to mirror). The Keychain"
-                " item is left untouched but still holds the already-spent refresh token, so"
-                " Claude Code may log itself out",
+                "Keychain mirror: merged payload needs a %d-character `security -i` line"
+                " (limit %d; typically too many mcpOAuth entries) — writing via argv, whose"
+                " hex payload is briefly visible to same-user `ps`",
                 line_length,
                 _SECURITY_I_LINE_LIMIT,
             )
-            return
-        result = subprocess.run(
-            argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            check=False,
-        )
+            result = subprocess.run(
+                _keychain_argv_command(account, merged),
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=10, stdin=subprocess.DEVNULL, check=False,
+            )
     except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
         logger.debug("Keychain mirror skipped (%s)", e)
         return
@@ -634,6 +658,16 @@ def _mirror_claude_code_credentials_to_keychain(
             "Keychain mirror failed (rc=%s): %s",
             result.returncode,
             (result.stderr or "").strip()[:200],
+        )
+        return
+    # ``security`` reports rc 0 even for a truncated write (#123184 field report) — verify the
+    # refresh token actually landed before trusting the mirror.
+    stored = _read_claude_code_keychain_payload() or {}
+    stored_oauth = stored.get("claudeAiOauth")
+    if not isinstance(stored_oauth, dict) or stored_oauth.get("refreshToken") != refresh_token:
+        logger.warning(
+            "Keychain mirror verification failed: the item does not hold the refresh token"
+            " just written (likely a truncated store) — Claude Code may log itself out",
         )
 
 

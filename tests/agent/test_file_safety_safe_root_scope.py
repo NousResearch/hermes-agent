@@ -5,8 +5,10 @@ exported to ``os.environ``, so the shared process's plain env read ignored that
 profile's write limit. These tests pin the resolution order:
 
 1. a scoped value wins over the process env (the routed profile's own limit);
-2. a scope miss falls back to the process env (a deployment-wide limit keeps
-   constraining profiles that set none — the fallback is fail-closed);
+2. a scope miss — or an explicitly empty scoped value, which on its own would
+   resolve to an unrestricted root set — falls back to the process env (a
+   deployment-wide limit keeps constraining profiles that set none, or set the
+   variable to the empty string; the fallback is fail-closed);
 3. an unscoped multiplexed reader (outside any turn scope) still sees the
    process env instead of refusing to classify writes;
 4. single-profile CLI behavior (no scope, multiplex off) is unchanged.
@@ -75,6 +77,23 @@ class TestScopedSafeRootResolution:
         other = tmp_path / "other"
         other.mkdir()
         token = _bind_demo_scope(tmp_path, None)
+        try:
+            assert fs.get_safe_write_roots() == {os.path.realpath(str(launch_limit))}
+            assert fs.is_write_denied(str(other / "f.txt")) is True
+            assert fs.is_write_denied(str(launch_limit / "f.txt")) is False
+        finally:
+            reset_secret_scope(token)
+
+    def test_empty_scoped_value_keeps_process_env_limit(
+        self, tmp_path, multiplex, launch_limit
+    ):
+        other = tmp_path / "other"
+        other.mkdir()
+        # An explicitly empty scoped value must not clear the deployment-wide
+        # limit: an empty HERMES_WRITE_SAFE_ROOT is indistinguishable from a
+        # mis-set one, and dropping to "no roots configured" would disable the
+        # safe-root check entirely for that profile.
+        token = _bind_demo_scope(tmp_path, "")
         try:
             assert fs.get_safe_write_roots() == {os.path.realpath(str(launch_limit))}
             assert fs.is_write_denied(str(other / "f.txt")) is True

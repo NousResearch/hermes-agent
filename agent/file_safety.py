@@ -224,14 +224,15 @@ def _write_safe_root_setting() -> str:
 
     A desktop/gateway-served profile's ``.env`` is only installed as a secret scope,
     never exported to ``os.environ``, so the plain env read saw no limit (or the launch
-    profile's) on every shared-process surface (#136204). A scope miss still falls back
-    to the process env: the limit is a restriction, and a deployment-wide value must
-    keep constraining profiles that don't set their own.
+    profile's) on every shared-process surface (#136204). A scope miss — or an
+    explicitly empty scoped value, which resolves to an unrestricted root set — still
+    falls back to the process env: the limit is a restriction, and a deployment-wide
+    value must keep constraining profiles that don't set their own.
     """
     from agent.secret_scope import current_secret_scope
 
     scoped = (current_secret_scope() or {}).get("HERMES_WRITE_SAFE_ROOT")
-    if scoped is not None:
+    if scoped:
         return scoped
     return os.getenv("HERMES_WRITE_SAFE_ROOT", "")
 

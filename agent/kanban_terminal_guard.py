@@ -43,8 +43,10 @@ would be a false positive. Those paths keep their own failure reporting.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -169,8 +171,6 @@ def reconcile_worker_exit(
         # land leaves the task `running` and must still be reported.
         terminal_attempted = session_called_terminal_tool(result)
 
-        from hermes_cli import kanban_db as kb
-
         with _board_connection() as conn:  # resolves HERMES_KANBAN_DB / board itself
             row = conn.execute(
                 "SELECT status FROM tasks WHERE id = ?", (tid,)
@@ -189,10 +189,15 @@ def reconcile_worker_exit(
                 "completed_flag": bool(completed),
                 "reason": reason,
             }
-            kb._append_event(conn, tid, "protocol_violation", payload)
-            # A failed commit is not a recorded violation: fall through to the
-            # outer handler so the caller sees `error`, never a false `recorded`.
+            inserted = conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "SELECT id, ?, ?, ? FROM tasks WHERE id = ? AND status = 'running'",
+                ("protocol_violation", json.dumps(payload, ensure_ascii=False),
+                 int(time.time()), tid),
+            ).rowcount
             conn.commit()
+            if inserted != 1:
+                return NOT_RUNNING
             logger.info(
                 "kanban exit reconcile: recorded protocol_violation task=%s completed=%s "
                 "reason=%s", tid, completed, reason[:120],

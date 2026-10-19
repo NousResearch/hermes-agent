@@ -153,6 +153,8 @@ def test_commit_failure_is_error_not_recorded(clean_env, tmp_path, monkeypatch):
     _make_task(tmp_path, clean_env, "running")
 
     class _FakeConn:
+        rowcount = 1
+
         def execute(self, *args, **kwargs):
             return self
 
@@ -183,3 +185,44 @@ def test_returns_action_string(clean_env, tmp_path):
     _make_task(tmp_path, clean_env, "running")
     out = reconcile_worker_exit(completed=False, result={"messages": []})
     assert out in {"skipped", "recorded", "not_running", "error"}
+
+
+def test_status_change_before_append_does_not_record(clean_env, tmp_path, monkeypatch):
+    """A reclaim that lands before the write must win: no violation is persisted."""
+    import sqlite3
+
+    import agent.kanban_terminal_guard as guard
+
+    db, task_id = _make_task(tmp_path, clean_env, "running")
+
+    class _RacingConn:
+        def __init__(self, real):
+            self._real = real
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def execute(self, sql, *args):
+            if "INSERT INTO task_events" in sql and "status = 'running'" in sql:
+                # Simulate the dispatcher reclaim committing in the check/write window.
+                other = sqlite3.connect(db)
+                try:
+                    other.execute(
+                        "UPDATE tasks SET status='completed' WHERE id=?", (task_id,)
+                    )
+                    other.commit()
+                finally:
+                    other.close()
+            return self._real.execute(sql, *args)
+
+    @contextlib.contextmanager
+    def _racing_board():
+        conn = sqlite3.connect(db)
+        try:
+            yield _RacingConn(conn)
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(guard, "_board_connection", _racing_board)
+    assert guard.reconcile_worker_exit(completed=False, result={"messages": []}) == "not_running"
+    assert not [e for e in _events(db, task_id) if e["kind"] == "protocol_violation"]

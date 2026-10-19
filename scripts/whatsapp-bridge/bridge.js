@@ -32,6 +32,7 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
+import { createAckWatch } from './ack_watch.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
@@ -160,9 +161,17 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
   });
   return enqueueSend(() =>
     Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+      .then((sent) => {
+        ackWatch.sent(sent?.key?.id);
+        return sent;
+      })
       .finally(() => clearTimeout(timer))
   );
 }
+
+const ackWatch = createAckWatch({
+  staleMs: parseInt(process.env.WHATSAPP_UNACKED_SEND_MS || '120000', 10),
+});
 
 function formatOutgoingMessage(message) {
   // In bot mode, messages come from a different number so the prefix is
@@ -443,6 +452,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      ackWatch.attach(sock);
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,
@@ -1120,8 +1130,11 @@ app.get('/chat/:id', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
+  const { stale, ...acks } = ackWatch.health();
   res.json({
-    status: connectionState,
+    // Anything but "connected" makes the gateway recover the bridge.
+    status: connectionState === 'connected' && stale ? 'sends_unacked' : connectionState,
+    ...acks,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
+import { restoreListedSession } from '@/app/session/hooks/use-session-actions/listed-sessions'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'

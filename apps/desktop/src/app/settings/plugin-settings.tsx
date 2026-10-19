@@ -42,7 +42,8 @@ import {
   $settingsOwner,
   $settingsRequestProfile,
   $settingsScopeProfile,
-  setSettingsScope
+  setSettingsScope,
+  settingsGatewayRequestOwnership
 } from '@/store/settings-scope'
 
 import { desktopPackageName } from '../capabilities/plugins/plugin-packages'
@@ -118,7 +119,9 @@ function useSettingsGatewayRequest(scope: ProfileScope) {
       const profile = owner?.profile?.trim()
 
       return owner && profile
-        ? requestGatewayForAgent<T>(owner.connectionId ?? null, profile, method, params, timeoutMs, signal)
+        ? requestGatewayForAgent<T>(owner.connectionId ?? null, profile, method, params, timeoutMs, signal, {
+            ...settingsGatewayRequestOwnership(owner)
+          })
         : requestGateway<T>(method, params, timeoutMs, signal)
     },
     [requestGateway, scope]

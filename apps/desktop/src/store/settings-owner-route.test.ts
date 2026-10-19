@@ -35,7 +35,12 @@ vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { $settingsOwner, setSettingsScope, settingsRecycleScope } from '@/store/settings-scope'
+import {
+  $settingsOwner,
+  setSettingsScope,
+  settingsGatewayRequestOwnership,
+  settingsRecycleScope
+} from '@/store/settings-scope'
 
 const descriptors = {
   default: {
@@ -157,6 +162,10 @@ it('validates the foreground source while routing a distinct selected-profile de
 
   expect(owner.connectionOwner).toMatchObject({ baseUrl: source.baseUrl, token: source.token })
   expect(owner.connectionOwnerProfile).toBe('default')
+  expect(settingsGatewayRequestOwnership(owner)).toEqual({
+    expectedConnectionOwner: owner.cacheOwner,
+    expectedOwner: { profile: 'default', connectionOwner: owner.connectionOwner }
+  })
   expect(profileScopeKey(owner)).not.toBe(profileScopeKey({ ...owner, cacheOwner: owner.connectionOwner }))
   backend.mockClear()
   await expect(resolveRegistryApiConnection(request, 'local', backend)).resolves.toEqual(target)

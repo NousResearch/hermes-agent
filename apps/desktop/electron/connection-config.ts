@@ -1137,11 +1137,16 @@ export function createSessionRouteBinding(sessionId, profile, connection): strin
     .digest('base64url')
 }
 
-export function bindSessionRowsToRoute(rows, connection) {
-  return rows.map(row => ({
-    ...row,
-    _desktop_route_binding: createSessionRouteBinding(row.id, row.profile, connection)
-  }))
+export function bindSessionRowsToRoute(rows, connection, fallbackProfile?) {
+  return rows.map(row => {
+    const profile = row?.profile || fallbackProfile
+
+    return {
+      ...row,
+      ...(row?.profile ? {} : { profile }),
+      _desktop_route_binding: createSessionRouteBinding(row?.id, profile, connection)
+    }
+  })
 }
 
 function assertSessionRouteBinding(expected, sessionId, profile, connection): void {

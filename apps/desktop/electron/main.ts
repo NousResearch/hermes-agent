@@ -14182,9 +14182,17 @@ ipcMain.handle('hermes:connection:for', async (event, payload) => {
 
   const targetProfile = String(profile ?? '').trim() || 'default'
 
-  return payload && Object.hasOwn(payload, 'expectedOwner')
-    ? resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
-    : resolve(targetProfile)
+  if (payload && Object.hasOwn(payload, 'expectedOwner')) {
+    const connection = await resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
+
+    if (payload.expectedConnectionOwner) {
+      assertConnectionOwner(payload.expectedConnectionOwner, connection)
+    }
+
+    return connection
+  }
+
+  return resolve(targetProfile)
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -16219,7 +16227,7 @@ async function handleHermesApiRequest(request) {
 
     response = connection.gatewayEndpoint
       ? await redialLocalGateway({
-          ensure: () => ensureBackend(routeProfile, ensureOpts),
+          ensure: () => resolveLegacyApiConnection(request, routeProfile, ensureBackend, ensureOpts),
           forget: () => forgetLocalGatewayDescriptor(routeProfile, ensureOpts.request),
           use: send
         })
@@ -16246,7 +16254,7 @@ async function handleHermesApiRequest(request) {
 
   return (request?.method || 'GET').toUpperCase() === 'GET'
     ? tagSessionResponseOwnership(request.path, response, null, rows =>
-        bindSessionRowsToRoute(rows, responseConnection ?? connection)
+        bindSessionRowsToRoute(rows, responseConnection ?? connection, routeProfile || 'default')
       )
     : response
 }

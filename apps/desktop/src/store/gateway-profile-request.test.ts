@@ -409,6 +409,49 @@ describe('requestGatewayForAgent', () => {
     expect($gateway.get()).toBe(primary)
   })
 
+  it('rejects a Settings request when the same registry id now names a different owner', async () => {
+    const primary = makePrimary()
+
+    const capturedOwner = {
+      mode: 'remote',
+      baseUrl: 'https://original.example',
+      token: 'original-token'
+    } as const
+
+    const currentOwner = { ...capturedOwner, token: 'replacement-token' }
+
+    const getConnectionFor = vi.fn(async ({ expectedConnectionOwner }) => {
+      if (expectedConnectionOwner?.token !== currentOwner.token) {
+        throw new Error('Connection owner changed')
+      }
+
+      return currentOwner
+    })
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'source-a' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn()
+    }
+
+    await expect(
+      requestGatewayForAgent('source-a', 'default', 'vault.delete', { name: 'fixture' }, undefined, undefined, {
+        expectedConnectionOwner: capturedOwner,
+        expectedOwner: { profile: 'default', connectionOwner: capturedOwner }
+      })
+    ).rejects.toThrow('Connection owner changed')
+    expect(primary.request).not.toHaveBeenCalled()
+    expect(getConnectionFor).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      expectedConnectionOwner: capturedOwner,
+      expectedOwner: { profile: 'default', connectionOwner: capturedOwner },
+      profile: 'default',
+      priority: 'background'
+    })
+  })
+
   it('routes an explicit local registry descriptor through getConnectionFor', async () => {
     const primary = makePrimary()
 

@@ -78,7 +78,14 @@ describe('VaultSettings', () => {
       {},
       undefined,
       expect.any(AbortSignal),
-      { spawnPriority: 'foreground' }
+      expect.objectContaining({
+        expectedConnectionOwner: expect.objectContaining({ mode: 'local' }),
+        expectedOwner: expect.objectContaining({
+          connectionOwner: expect.objectContaining({ mode: 'local' }),
+          profile: 'default'
+        }),
+        spawnPriority: 'foreground'
+      })
     )
   })
 

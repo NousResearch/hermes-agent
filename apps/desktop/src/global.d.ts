@@ -44,6 +44,7 @@ declare global {
         profile?: null | string
         priority?: 'foreground' | 'background'
         expectedOwner?: { profile: string; connectionOwner: ConnectionOwner }
+        expectedConnectionOwner?: ConnectionOwner
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {

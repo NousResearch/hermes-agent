@@ -141,3 +141,38 @@ def test_structural_exits_keep_pruning_and_second_pass_is_noop(has_summary):
     assert compressor._last_compression_telemetry["failure_class"] == (
         "empty_post_handoff_window" if has_summary else "no_compressible_window"
     )
+
+
+def test_in_place_pruning_recalls_unchanged_rows_once(tmp_path):
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("prune-recall", source="cli")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://example.invalid/v1", model="test/model",
+        quiet_mode=True, session_db=db, session_id="prune-recall",
+        skip_context_files=True, skip_memory=True,
+    )
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent.context_compressor = ContextCompressor(
+        model="test/model", config_context_length=65_536, threshold_tokens_cap=32_768, quiet_mode=True,
+    )
+    messages = _messages()
+    messages[2]["content"] += " Headmarker."
+    messages[-1]["content"] += " Tailmarker."
+    agent._flush_messages_to_session_db(messages)
+    pruned_before = db.search_messages("Archived", role_filter=["tool"], limit=50)
+    try:
+        with patch.object(agent.context_compressor, "_generate_summary") as summarize:
+            result, _ = compress_context(agent, messages, "system", approx_tokens=74_000)
+        summarize.assert_not_called()
+        assert estimate_messages_tokens_rough(result) < estimate_messages_tokens_rough(messages) / 2
+        assert len(db.search_messages("Headmarker", role_filter=["user"])) == 1
+        assert len(db.search_messages("Tailmarker", role_filter=["tool"])) == 1
+        # Pruned originals stay recallable from compacted history.
+        pruned_after = db.search_messages("Archived", role_filter=["tool"], limit=50)
+        assert {m["id"] for m in pruned_before} <= {m["id"] for m in pruned_after}
+    finally:
+        db.close()

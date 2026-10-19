@@ -3649,11 +3649,10 @@ def _commit_compaction(
                     # would build, and count their originals as carried duplicates like compress()'s tail.
                     persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
                     tail_count += len(verbatim_tail)
-                from agent.conversation_compression_archive import coverage_for_commit
+                from agent.conversation_compression_archive import carried_for_commit, coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(
-                    agent._session_db, agent.session_id,
-                    original_messages,
-                    verbatim_tail)
+                    agent._session_db, agent.session_id, original_messages, verbatim_tail)
+                carried_messages = carried_for_commit(agent.context_compressor, carried_messages, compressed)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),

@@ -25,6 +25,8 @@ def finish_pruned_or_defer(
         _raise_if_stale_attempt(compressor)
         # Reuse the summary-neutral boundary verdict: pruning did not prove summary health.
         compressor._last_feasibility_skip = True
+        # No tagged tail: the in-place commit carries unchanged rows by identity (carried_for_commit).
+        compressor._last_compress_pruning_only = True
         logger.info("No new summary needed; retaining pruning of %d tool results", pruned_count)
         return compressor._finalize_compressed(pruned, original, len(original), spare_pending_images, pruned_count)
     compressor._structural_no_op_result(telemetry, failure_class, reason, n_messages)

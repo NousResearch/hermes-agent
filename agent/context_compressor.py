@@ -5152,7 +5152,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Reset per-call result state (callers read it after compress()) and open telemetry."""
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
-        self._last_feasibility_skip = False
+        self._last_feasibility_skip = self._last_compress_pruning_only = False
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None

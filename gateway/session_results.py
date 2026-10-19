@@ -84,8 +84,17 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
             result = load_result(saved[0])
             return dict(current), result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
+    # A turn the owner's restart/stop interrupted: its reason commits as a Hermes transcript notice
+    # in this same write, so a viewer that reconnects after the restart reads why (#134889 GW-21);
+    # the live ``message.complete.warning`` carries the same copy. A retry that finds the row
+    # terminal returns above, so the notice is written once.
+    from gateway.session_settlement_recovery import owner_stop_notice
+    notice = owner_stop_notice(result, outcome, row)
+    write = None if notice is None else (lambda conn, _current: close_discarded_turn(
+        db, conn, row, notice, replace_after=row.get('transcript_mark')))
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers)
+        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers,
+        _terminal_write=write)
     return settled, response
 
 
@@ -99,7 +108,7 @@ def admission_result(db, admission_id):
         return load_result(saved[0]) if saved else None
 
 
-def close_discarded_turn(db, conn, row, notice=None):
+def close_discarded_turn(db, conn, row, notice=None, *, replace_after=None):
     """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
     own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
 
@@ -116,14 +125,23 @@ def close_discarded_turn(db, conn, row, notice=None):
     gets the same boundary (merged onto the call row, whose calls are then pruned).
 
     ``notice`` (an unattended automation turn settled by the owner, GW-10) replaces the hedged copy
-    and is written even on a closed tail: nobody resolved it, so the transcript must say why."""
+    and is written even on a closed tail: nobody resolved it, so the transcript must say why.
+
+    ``replace_after`` (the claim's transcript mark, an owner-stop notice): when the tail is a
+    failed-turn boundary written after that mark, it is THIS turn's own (the agent's core closer
+    wrote "Send it again" for the interrupted turn), so the notice replaces its copy instead of
+    stacking a second boundary (#134889 GW-21). An earlier turn's boundary stays."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
     from hermes_state_local_lineage import local_physical_target
     from hermes_state_runtime import _canonical_chain
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
-    tail = conn.execute("SELECT role, tool_calls FROM messages WHERE session_id=? AND active=1 "
+    tail = conn.execute("SELECT role, tool_calls, id, display_kind FROM messages WHERE session_id=? AND active=1 "
                         "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
+    if (notice is not None and type(replace_after) is int and tail is not None and tail[0] == 'assistant'
+            and tail[3] == FAILED_TURN_DISPLAY_KIND and tail[2] > replace_after):
+        conn.execute("UPDATE messages SET content=?, display_metadata=NULL WHERE id=?", (notice, tail[2]))
+        return True
     if notice is None and (tail is None or not (
             tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]')))):
         return False

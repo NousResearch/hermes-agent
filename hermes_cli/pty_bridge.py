@@ -13,7 +13,6 @@ import errno
 import fcntl  # windows-footgun: ok — POSIX-only module by design (see docstring)
 import math
 import os
-import select
 import signal
 import struct
 import sys
@@ -168,11 +167,11 @@ class PtyBridge:
         """
         if self._closed:
             return None
-        try:
-            readable, _, _ = select.select([self._fd], [], [], timeout)
-        except (OSError, ValueError):
+        from tools.environments.fd_wait import make_fd_waiter
+        wait = make_fd_waiter(self._fd)
+        if wait is None:
             return None
-        if not readable:
+        if not wait(int(timeout * 1000)):
             return b""
         try:
             data = os.read(self._fd, 65536)
@@ -181,7 +180,7 @@ class PtyBridge:
             if exc.errno in {errno.EIO, errno.EBADF}:
                 return None
             # The fd is deliberately non-blocking. Readiness can disappear
-            # between select() and os.read() when close/output races occur.
+            # between the readiness check and os.read() when close/output races occur.
             if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
                 return b""
             raise
@@ -270,11 +269,15 @@ class PtyBridge:
         # Exiting children flush their pending terminal output first; on macOS a process stays in
         # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
         # task no longer consumes the output, so read and drop while waiting.
+        from tools.environments.fd_wait import make_fd_waiter
+        wait = make_fd_waiter(self._fd)
+        if wait is None:
+            time.sleep(timeout)
+            return
         try:
-            readable, _, _ = select.select([self._fd], [], [], timeout)
-            if readable and os.read(self._fd, 65536):
+            if wait(int(timeout * 1000)) and os.read(self._fd, 65536):
                 return
-        except (OSError, ValueError):
+        except OSError:
             pass
         time.sleep(timeout)  # nothing read, EOF (b"") or EIO: don't spin on a readable dead fd
 

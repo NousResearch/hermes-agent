@@ -1359,19 +1359,19 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
             if fd is not None:
-                import select as _select
+                from tools.environments.fd_wait import make_fd_waiter
                 session._reader_selectable = True
+                _wait = make_fd_waiter(fd)
+            else:
+                _wait = None
             idle_after_exit = 0
             drained_after_request = 0
             while True:
-                if fd is not None:
-                    try:
-                        # Once a finish is requested, read only what is already buffered: the exited
-                        # child's tail, never an orphaned grandchild's future writes.
-                        wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
-                        ready, _, _ = _select.select([fd], [], [], wait_s)
-                    except (ValueError, OSError):
-                        break  # fd already closed
+                if _wait is not None:
+                    # Once a finish is requested, read only what is already buffered: the exited
+                    # child's tail, never an orphaned grandchild's future writes.
+                    wait_ms = 0 if session._reader_finish_requested.is_set() else 200
+                    ready = _wait(wait_ms)
                     if not ready:
                         if session._reader_finish_requested.is_set():
                             break

@@ -304,6 +304,31 @@ def open_rfb_stream(env: Any, profile: str) -> subprocess.Popen:
     return streams.open_stream(env, ["python3", "-c", _RELAY, f"{rdir}/rfb.sock"], user=_user_for(env))
 
 
+def open_rfb_stream_marker(marker: dict[str, Any], profile: str) -> subprocess.Popen:
+    """Popen carrying RFB bytes straight from the marker's recorded container: the restart/eviction path.
+
+    The container outlives the creating process's active-env registry entry, and the terminal planner
+    cannot re-attach a session-scoped container (``persist_across_processes`` is off for one, so an
+    acquire builds a DUPLICATE container instead of reusing the recorded one). The marker exists
+    precisely for this: it names the container that hosts the screen, so exec into that one."""
+    docker = marker.get("docker") or "docker"
+    container = marker["container"]
+    rdir = marker.get("dir") or f"/tmp/hermes-bot-desktop/{profile}"  # no-tmp: ok — inside the sandbox container, not the host filesystem
+    user: Optional[str] = None
+    try:
+        probe = subprocess.run([docker, "exec", container, "id", "-u", DESKTOP_USER],
+                               capture_output=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
+        if probe.returncode == 0:
+            user = DESKTOP_USER
+    except (OSError, subprocess.SubprocessError):
+        pass
+    argv = [docker, "exec", "-i"]
+    if user:
+        argv += ["-u", user]
+    argv += [container, "python3", "-c", _RELAY, f"{rdir}/rfb.sock"]
+    return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+
 def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tuple[str, list[str]]:
     """``(command, args)`` for ``StdioServerParameters``: the backend's exec prefix running ``cua-driver mcp`` on
     the sandbox display."""

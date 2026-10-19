@@ -545,9 +545,16 @@ def open_rfb_stream() -> subprocess.Popen:
     """Popen whose stdin/stdout carry RFB bytes for a sandbox-hosted screen (``in_sandbox()`` only)."""
     from tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=False)
-    if env is None:
-        raise RuntimeError("the sandbox hosting this screen is not running")
-    return sandbox_host.open_rfb_stream(env, _profile_name())
+    if env is not None:
+        return sandbox_host.open_rfb_stream(env, _profile_name())
+    # No registry entry in this process (gateway restart, session-scoped eviction) but the container
+    # the marker names is still up: exec into THAT one. A create=True acquire here built a duplicate
+    # container instead (session-scoped sandboxes have persist_across_processes off), and the
+    # resulting RuntimeError escaped the display bridge's ``except OSError`` as a black pane.
+    marker = sandbox_host._read_marker()
+    if marker and marker.get("container") and sandbox_host.marker_sandbox_alive(marker):
+        return sandbox_host.open_rfb_stream_marker(marker, _profile_name())
+    raise RuntimeError("the sandbox hosting this screen is not running")
 
 
 def geometry() -> str:

@@ -80,11 +80,15 @@ async def display_ws(ws: WebSocket) -> None:
     # accept surfaces in the browser as an opaque HTTP 403 and the renderer cannot tell "re-observe"
     # (4401) from "screen is gone" (4001).
     if not _ws_request_is_allowed(ws):
+        _log.warning("display ws: upgrade refused by host/origin/client policy (client=%s host=%s origin=%s)",
+                     getattr(ws.client, "host", None), ws.headers.get("host"), ws.headers.get("origin"))
         await ws.close(code=_CLOSE_NOT_ALLOWED)
         return
     await ws.accept()
     info = _consume_display_ticket(ws)
     if info is None:
+        _log.warning("display ws: ticket missing/expired/used (client=%s) — mint and consume must share a process",
+                     getattr(ws.client, "host", None))
         await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing, expired or used")
         return
     await _bridge(ws, info)
@@ -130,7 +134,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
     try:
         reader, writer, relay = await _open_rfb(Path(profile_home))
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         _log.warning("display ws: cannot reach RFB endpoint for %s: %s", profile_home, exc)
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
         return

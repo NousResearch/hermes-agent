@@ -116,7 +116,7 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
                     f"or a real contributor name.")
     platforms = frontmatter.get("platforms")
     if platforms:
-        valid = {"linux", "macos", "windows", "darwin"}
+        valid = {"linux", "macos", "windows", "darwin", "android"}
         items = platforms if isinstance(platforms, list) else [platforms]
         bad = [p for p in items if str(p).lower() not in valid]
         if bad:
@@ -180,7 +180,7 @@ def _check_files(frontmatter: dict[str, Any], skill_dir: Path) -> Iterator[LintF
         detail = "; ".join(f"{k}: {v}" for k, v in offenders.items())
         yield _warn("platforms-gating",
                     f"scripts use POSIX-only primitives ({detail}) but no 'platforms:' frontmatter is "
-                    f"declared. Fix cross-platform or gate with platforms: [linux, macos].")
+                    f"declared. Fix cross-platform or gate with platforms: [linux, macos, android].")
     for fname in _FORBIDDEN_FILES:
         if (skill_dir / fname).exists():
             yield _warn("forbidden-file",

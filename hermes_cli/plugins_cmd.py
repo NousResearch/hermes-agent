@@ -692,12 +692,15 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
     return (entry[5], entry[3]) if entry else None
 
 
-def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
+def cmd_enable(name: str, allow_tool_override: Optional[bool] = None, config_only: bool = False) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
     Non-bundled plugins request consent for declared capabilities. The legacy
     ``allow_tool_override`` grant changes only with an explicit True/False flag;
     None leaves it unchanged. Bundled plugins are trusted.
+    
+    On Android/Termux, use --config-only to skip Rust crate compilation and only
+    update the config file (much faster, avoids 7+ minute builds on device).
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -733,6 +736,9 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     if source != "bundled":
         _enable_consent(console, key, allow_tool_override)
     if changed:  # after consent: register() sees the grants; same saved-list edit as the Desktop toggle
+        if config_only:
+            console.print(f"[dim]Plugin enabled in config only (--config-only). Rust crates not compiled.[/dim]")
+            return
         _toggle_plugin_toolset(key, enable=True)
 
 
@@ -750,7 +756,7 @@ def _enable_consent(console, key: str, allow_tool_override: Optional[bool]) -> N
         _resolve_tool_override_grant(console, key, allow_tool_override)
 
 
-def cmd_disable(name: str) -> None:
+def cmd_disable(name: str, config_only: bool = False) -> None:
     """Remove a plugin from the enabled allow-list (and add to disabled)."""
     console = _console()
     key = _resolve_plugin_key(name)
@@ -759,6 +765,9 @@ def cmd_disable(name: str) -> None:
     toolset_key = _saved_list_toolset_key(key)  # resolve while the plugin still loads
     if not _activate_key(key, enable=False, console=console):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
+        return
+    if config_only:
+        console.print(f"[dim]Plugin disabled in config only (--config-only). Toolset not updated.[/dim]")
         return
     _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
     from hermes_cli.plugins_activation import gateway_reload_hint, reload_running_gateway

@@ -136,10 +136,18 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     _enable_override_group.add_argument(
         "--no-allow-tool-override", action="store_true",
         help="Enable without granting built-in tool override (skip prompt).")
+    plugins_enable.add_argument(
+        "--config-only", action="store_true",
+        help="Only update the config file, skip Rust crate compilation. "
+        "Useful on Android/Termux where compilation is slow.")
 
     plugins_disable = plugins_subparsers.add_parser(
         "disable", help="Disable a plugin without removing it")
     plugins_disable.add_argument("name", help="Plugin name to disable")
+    plugins_disable.add_argument(
+        "--config-only", action="store_true",
+        help="Only update the config file, skip toolset updates. "
+        "Useful on Android/Termux for faster operations.")
 
     plugins_capabilities = plugins_subparsers.add_parser(
         "capabilities", help="Show declared vs granted capabilities per plugin",

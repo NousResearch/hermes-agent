@@ -156,7 +156,7 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
         return f"Blocked: content contains invisible unicode character {codepoint} (possible injection)."
     return (f"Blocked: content matches threat pattern '{pid}'. "
             f"Content is injected into the system prompt and must not contain "
-            f"injection or exfiltration payloads.")
+            f"injection or exfiltration payloads. Pattern: {pid}")
 
 
 __all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "scan_for_threats"]

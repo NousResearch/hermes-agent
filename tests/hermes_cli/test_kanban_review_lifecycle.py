@@ -425,14 +425,9 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
 def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """B2 regression: a fresh PR-URL comment must not block reviewer spawns.
-
-    A task parked in ``review`` with a PR link younger than 24h is the
-    CANONICAL review handoff (worker opened a PR then requested review) —
-    the review-lane dispatch must still claim/spawn it. The same comment on
-    a ready-lane task is a duplicate-work signal and stays deferred.
-    Rate-limit cooldown still applies in the review lane.
-    """
+    """The first review handoff remains eligible, while a human comment after a
+    completed review cannot relaunch the reviewer. Explicit reopen starts a new cycle.
+    Rate-limit cooldown still defers the review lane."""
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
 
@@ -453,19 +448,28 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
-        # Ready-lane task with the same fresh PR comment.
-        ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
-        kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
+        assert kbd.check_respawn_guard(conn, review_id, lane="review") == "recent_success"
 
-        assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
+        # A human comment alone does not authorize a repeated review.
+        kb.add_comment(conn, review_id, author="human", body="Please clarify this point.")
+        assert kbd.check_respawn_guard(conn, review_id, lane="review") == "recent_success"
+        assert kb.reopen_review_task(conn, review_id) is True
         assert kbd.check_respawn_guard(conn, review_id, lane="review") is None
 
-        res = kbd.dispatch_once(conn, dry_run=True)
-        spawned_ids = [s[0] for s in res.spawned]
-        guarded = dict(res.respawn_guarded)
-        assert review_id in spawned_ids
-        assert ready_id not in spawned_ids
-        assert guarded.get(ready_id) == "active_pr"
+        # A genuine reviewer event after the explicit reopen starts a new cycle.
+        _now = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at, summary) "
+                "VALUES (?, 'reviewer', 'review_requested', 'review_requested', ?, ?, ?)",
+                (review_id, _now, _now + 10, "Verified after explicit reopen"),
+            )
+            kb._append_event(
+                conn, review_id, "review_requested",
+                {"summary": "Verified after explicit reopen"},
+            )
+        assert kbd.check_respawn_guard(conn, review_id, lane="review") == "recent_success"
 
         # Rate-limit cooldown still defers the review lane.
         _now = int(__import__("time").time())

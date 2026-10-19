@@ -1618,9 +1618,25 @@ def check_respawn_guard(
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    # Review-lane spawns stop here: a recent completed run and a fresh PR URL
-    # are the canonical *inputs* to a review handoff, not duplicate-work signals.
+    # The first review handoff accepts its PR comment. Once the review has
+    # completed, ordinary comments do not restart it; explicit reopen or
+    # changes-requested events authorize another cycle.
     if lane == "review":
+        prior_review = max((t for t, _ in _rows_since(
+            conn, "task_events", task_id, 0,
+            "AND kind IN ('review_requested', 'review_reopened', 'request_changes')", strict=True,
+        )), default=None)
+        completed_review = max((t for t, row in _rows_since(
+            conn, "task_runs", task_id, 0,
+            "AND outcome IN ('review_requested', 'completed')", cols=", outcome",
+        ) if row["outcome"] == "review_requested"), default=None)
+        if prior_review is not None and completed_review is not None:
+            reopened = max((t for t, _ in _rows_since(
+                conn, "task_events", task_id, max(prior_review, completed_review),
+                "AND kind IN ('review_reopened', 'request_changes')", strict=True,
+            )), default=None)
+            if reopened is None:
+                return "recent_success"
         return None
 
     # 3. Completed run within guard window. Exception: an explicit re-queue

@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
 
-BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
+BROWSER_DIALOG_SCHEMA: dict[str, Any] = {
     "name": "browser_dialog",
     "description": (
         "Respond to a native JavaScript dialog (alert / confirm / prompt / "

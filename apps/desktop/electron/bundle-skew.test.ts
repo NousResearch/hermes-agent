@@ -92,6 +92,18 @@ it('coalesces polls, backs off failures, and skips checks while an update owns t
   await other
 })
 
+// Review K132345 P3: main defers the warning on a LIVE marker only (an async
+// owner-liveness judgement), so a dead marker Desktop never deletes cannot
+// suppress it forever.
+it('an asynchronous isUpdating defers only while it answers true', async () => {
+  let updating = true
+  const check = createBundleSkewChecker(STAMP, gitCounting('2\n'), { isUpdating: async () => updating })
+
+  expect(await check(REPO)).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+  updating = false
+  expect(await check(REPO)).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
+})
+
 describe('isFallbackCommit', () => {
   it('matches the all-zero placeholder at any stamp length', () => {
     expect(isFallbackCommit('0'.repeat(40))).toBe(true)

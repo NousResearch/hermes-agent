@@ -16,6 +16,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -26,6 +27,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 interface CreatedWebhook {
   url: string;
@@ -35,13 +37,11 @@ interface CreatedWebhook {
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
-    navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {});
+    void copyTextToClipboard(value).then((copied) => {
+      if (!copied) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
   }, [value]);
   return (
     <Button
@@ -142,8 +142,8 @@ export default function WebhooksPage() {
       void watchRestartOutcome();
     } catch (e) {
       setRestartNeeded(true);
-      setRestartError(String(e));
-      showToast(`Failed to restart: ${e}`, "error");
+      setRestartError(errorMessage(e));
+      showToast(`Failed to restart: ${errorMessage(e)}`, "error");
     } finally {
       setRestarting(false);
     }
@@ -169,7 +169,7 @@ export default function WebhooksPage() {
         showToast(`Webhooks enabled; gateway restart failed${detail}`, "error");
       }
     } catch (e) {
-      showToast(`Failed to enable webhooks: ${e}`, "error");
+      showToast(`Failed to enable webhooks: ${errorMessage(e)}`, "error");
     } finally {
       setEnabling(false);
     }
@@ -208,7 +208,7 @@ export default function WebhooksPage() {
       resetForm();
       loadWebhooks();
     } catch (e) {
-      showToast(`Failed to create: ${e}`, "error");
+      showToast(`Failed to create: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -227,7 +227,7 @@ export default function WebhooksPage() {
         );
         loadWebhooks();
       } catch (e) {
-        showToast(`Error: ${e}`, "error");
+        showToast(`Error: ${errorMessage(e)}`, "error");
       } finally {
         setTogglingName(null);
       }
@@ -243,7 +243,7 @@ export default function WebhooksPage() {
           showToast(`Deleted: "${name}"`, "success");
           loadWebhooks();
         } catch (e) {
-          showToast(`Error: ${e}`, "error");
+          showToast(`Error: ${errorMessage(e)}`, "error");
           throw e;
         }
       },

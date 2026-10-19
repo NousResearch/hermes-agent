@@ -74,7 +74,7 @@ Read these before every investigation step. Violating them invalidates the repor
    ```
 2. Initialize the evidence store:
    ```bash
-   python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list
+   python SKILL_DIR/scripts/evidence-store.py --store evidence.json list
    ```
 3. Copy the forensic report template:
    ```bash
@@ -144,7 +144,7 @@ git log --all --diff-filter=A --name-only --format="%H %ai" -- "*.so" "*.dll" "*
 git log --show-signature --format="%H %ai %aN" > ../signature_check.txt 2>&1
 ```
 
-**Evidence to collect** (add via `python3 SKILL_DIR/scripts/evidence-store.py add`):
+**Evidence to collect** (add via `python SKILL_DIR/scripts/evidence-store.py add`):
 - Each dangling commit SHA → type: `git`
 - Force-push evidence (reflog showing history rewrite) → type: `git`
 - Unsigned commits from verified contributors → type: `git`
@@ -297,7 +297,7 @@ LIMIT 200
 
 After all investigators complete:
 
-1. Run `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
+1. Run `python SKILL_DIR/scripts/evidence-store.py --store evidence.json list` to see all collected evidence.
 2. For each piece of evidence, verify the `content_sha256` hash matches the original source.
 3. Group evidence by:
    - **Timeline**: Sort all timestamped evidence chronologically
@@ -368,7 +368,7 @@ Populate `investigation-report.md` using the template in [forensic-report.md](./
 
 ## Phase 7: Completion
 
-1. Run final evidence count: `python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
+1. Run final evidence count: `python SKILL_DIR/scripts/evidence-store.py --store evidence.json list`
 2. Archive the full investigation directory.
 3. If compromise is confirmed:
    - List immediate mitigations (rotate credentials, pin dependency hashes, notify affected users)

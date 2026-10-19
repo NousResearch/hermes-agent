@@ -1,9 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { SETTINGS_ROUTE } from '@/app/routes'
+import { SETTING_IDS } from '@/app/settings/settings-manifest'
+import { settingsSearchTargetQuery } from '@/app/settings/settings-search'
 import { BrandMark } from '@/components/brand-mark'
+import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -14,16 +18,26 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import { UpdateStatusCard, VersionHero } from '@/components/update-status'
+import { VersionDetails } from '@/components/version-details'
+import type {
+  DesktopUpdateCommit,
+  DesktopUpdateStage,
+  DesktopUpdateStatus,
+  DesktopVersionInfo,
+  UpdaterMechanismClient
+} from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
+import { AlertCircle, Check, Copy, ExternalLink, Terminal } from '@/lib/icons'
+import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
+import { fetchUpdateNoteItems, updateNotesSource, updateNotesUrl, updateReleaseTag } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
   $backendUpdateStatus,
+  $desktopVersion,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
@@ -33,13 +47,123 @@ import {
   applyUpdates,
   checkBackendUpdates,
   checkUpdates,
+  dismissDiscontinuedNotice,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
+  sourceUpdateChannel,
   type UpdateApplyState
 } from '@/store/updates'
 
+import { DiscontinuedNotice } from './retirement-view'
+
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
+}
+
+/** Release notes (stable) or the latest merged PRs (main); undefined while loading. */
+function useUpdateNotes(status: DesktopUpdateStatus | null, updateAvailable: boolean) {
+  const enabled = Boolean(status?.supported && !status.error && updateAvailable)
+  const source = status && enabled ? updateNotesSource(status) : null
+  const [items, setItems] = useState<{ for: DesktopUpdateStatus; items: string[] } | null>(null)
+
+  useEffect(() => {
+    const notesSource = status && enabled ? updateNotesSource(status) : null
+
+    if (!status || !notesSource) {
+      return
+    }
+
+    let live = true
+
+    void fetchUpdateNoteItems(notesSource, status).then(next => live && setItems({ for: status, items: next }))
+
+    return () => {
+      live = false
+    }
+  }, [enabled, status])
+
+  return {
+    items: items?.for === status ? items.items : undefined,
+    kind: source?.kind,
+    url: source && status ? updateNotesUrl(source, status) : null
+  }
+}
+
+type UpdateNotesView = ReturnType<typeof useUpdateNotes>
+
+/** The dialog's change list: fetched notes when they exist, else the commit changelog; plus the onward link. */
+function UpdateChangeList({
+  commitGroups,
+  copyText,
+  notes: fetched,
+  rollback
+}: {
+  commitGroups: readonly CommitGroup[]
+  copyText?: () => string
+  notes: UpdateNotesView
+  rollback: boolean
+}) {
+  const { t } = useI18n()
+  const u = t.updates
+  // A rollback brings no new changes; the "improvements" fallback would claim some.
+  const notes = rollback ? null : fetched
+  const pending = Boolean(notes?.url) && notes?.items === undefined
+
+  const shown: readonly CommitGroup[] =
+    rollback || pending
+      ? []
+      : notes?.items?.length
+        ? [{ id: 'new', items: notes.items, label: u.changeLogNew }]
+        : commitGroups
+
+  return (
+    <div className="grid gap-3">
+      {pending && <Loader className="mx-auto size-5" label={u.checking} type="lemniscate-bloom" />}
+      {shown.map((group, index) => (
+        <div key={group.id}>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+            {index === 0 && copyText && (
+              <CopyButton
+                appearance="icon"
+                buttonSize="icon-xs"
+                className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                iconClassName="size-3"
+                label={u.copyFullLog}
+                side="left"
+                text={copyText}
+              />
+            )}
+          </div>
+          <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
+            {group.items.map(item => (
+              <li className="flex items-start gap-2" key={item}>
+                <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
+                <span className="line-clamp-2 leading-snug" title={item}>
+                  {item}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {notes?.url && (
+        <a
+          className="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
+          href={notes.url}
+          onClick={event => {
+            event.preventDefault()
+            void window.hermesDesktop?.openExternal?.(event.currentTarget.href)
+          }}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <ExternalLink className="size-3" />
+          {notes.kind === 'release' ? u.releaseNotes : t.settings.about.channel.allChanges}
+        </a>
+      )}
+    </div>
+  )
 }
 
 export function UpdatesOverlay() {
@@ -52,6 +176,7 @@ export function UpdatesOverlay() {
   const backendStatus = useStore($backendUpdateStatus)
   const backendChecking = useStore($backendUpdateChecking)
   const backendApply = useStore($backendUpdateApply)
+  const desktopVersion = useStore($desktopVersion)
 
   const isBackend = target === 'backend'
   const status = isBackend ? backendStatus : clientStatus
@@ -109,19 +234,35 @@ export function UpdatesOverlay() {
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
-        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
+        {phase === 'applying' && (
+          <ApplyingView apply={apply} isBackend={isBackend} statusMechanism={status?.mechanism} />
+        )}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
+          <ManualView
+            command={apply.command ?? null}
+            isBackend={isBackend}
+            message={apply.message}
+            onDone={() => handleClose(false)}
+          />
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
-        {phase === 'error' && (
+        {phase === 'error' ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+        ) : null}
 
-        {phase === 'idle' && (
+        {phase === 'idle' && !isBackend && status?.retirement?.state === 'discontinued' && (
+          <DiscontinuedNotice
+            onDismiss={() => {
+              dismissDiscontinuedNotice(status.retirement!)
+              handleClose(false)
+            }}
+            retirement={status.retirement}
+          />
+        )}
+        {phase === 'idle' && (isBackend || !status?.retirement) && (
           <IdleView
             behind={behind}
             checking={checking}
@@ -132,6 +273,7 @@ export function UpdatesOverlay() {
             status={status}
             target={target}
             updateAvailable={updateAvailable}
+            version={desktopVersion}
           />
         )}
       </DialogContent>
@@ -148,7 +290,8 @@ function IdleView({
   onRetryCheck,
   status,
   target,
-  updateAvailable
+  updateAvailable,
+  version
 }: {
   behind: number
   checking: boolean
@@ -159,9 +302,11 @@ function IdleView({
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   updateAvailable: boolean
+  version: DesktopVersionInfo | null
 }) {
   const { t } = useI18n()
   const u = t.updates
+  const notes = useUpdateNotes(status, updateAvailable)
 
   if (!status && checking) {
     return (
@@ -186,50 +331,107 @@ function IdleView({
     )
   }
 
-  if (!status.supported) {
+  // The channel is chosen in Settings (with its confirm step); here it is named, with a way there.
+  const changeChannel = (
+    <button
+      className="text-primary underline-offset-2 hover:underline"
+      onClick={() => {
+        setUpdateOverlayOpen(false)
+        window.location.hash = `#${SETTINGS_ROUTE}?${settingsSearchTargetQuery({ view: 'about', setting: SETTING_IDS.about.updates })}`
+      }}
+      type="button"
+    >
+      {t.settings.about.channel.change}
+    </button>
+  )
+
+  // Only where Settings shows a selector: a custom branch or an older runtime gets the label alone.
+  const details = version ? (
+    <VersionDetails channelAction={sourceUpdateChannel(status) ? changeChannel : undefined} version={version} />
+  ) : null
+
+  // App-installer check-unknown (OS checker unavailable): NOT "no updates"
+  // and NOT a generic error — the OS also installs updates automatically on
+  // restart (it re-reads the .appinstaller feed on every launch), so the
+  // honest view names that path. Only this mechanism gets it.
+  if (status.mechanism === 'app-installer' && status.error && !status.updateAvailable) {
     return (
-      <CenteredStatus
-        body={status.message ?? u.unsupportedMessage}
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title={u.notAvailableTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
+          version={version}
+        />
+        <div className="flex flex-col items-center gap-2 text-center">
+          <AlertCircle className="size-6 text-muted-foreground" />
+          <p className="text-sm font-medium">{u.checkUnknownTitleAppInstaller}</p>
+          <p className="max-w-prose text-sm leading-5 text-muted-foreground">{u.checkUnknownBodyAppInstaller}</p>
+        </div>
+        <Button onClick={onRetryCheck} size="sm">
+          {u.tryAgain}
+        </Button>
+        {details}
+      </div>
     )
   }
 
-  if (status.error) {
+  // Everything that is NOT the install pitch — unsupported, check error, and
+  // already-latest — is exactly the About page's state: render the shared
+  // hero + status card so the two surfaces cannot drift. The card owns the
+  // check/retry actions (its "Check now" covers the old Try-again button).
+  if (!status.supported || status.error || !updateAvailable) {
     return (
-      <CenteredStatus
-        action={
-          <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            {u.tryAgain}
-          </Button>
-        }
-        body={u.connectionRetry}
-        icon={<ErrorIcon />}
-        title={u.checkFailedTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
+          version={version}
+        />
+        <UpdateStatusCard target={target} />
+        <SyncStatusCard />
+        {details}
+      </div>
     )
   }
 
-  if (!updateAvailable) {
-    return (
-      <CenteredStatus
-        body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-        icon={<BrandMark className="size-12" />}
-        title={u.allSetTitle}
-      />
-    )
-  }
+  const groups = buildCommitChangelog(commits, {
+    labels: {
+      new: u.changeLogNew,
+      fixed: u.changeLogFixed,
+      faster: u.changeLogFaster,
+      improved: u.changeLogImproved,
+      other: u.changeLogOther
+    },
+    fallback: { label: u.changeLogFallbackLabel, item: u.changeLogFallbackItem }
+  })
 
-  const groups = buildCommitChangelog(commits)
+  // Notes are their own summary and link onward, so the commit count tail would mismatch them.
   const shownItems = totalItems(groups)
-  const remaining = Math.max(0, behind - shownItems)
+  const remaining = notes.items?.length ? 0 : Math.max(0, behind - shownItems)
 
   // Name what's being updated. In remote mode the overlay acts on the connected
   // backend, not the local client — say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
-  // instead of generic filler.
-  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+  // instead of generic filler. On a release-feed channel (stable), name the
+  // release tag instead of commit vocabulary.
+  // A stable release this checkout already contains is a move back, never "a new update".
+  const rollbackTag = rollbackRelease(status)
+  const channelCopy = t.settings.about.channel
+
+  const { title, body } = rollbackTag
+    ? { title: channelCopy.rollbackTitle(rollbackTag), body: channelCopy.rollbackBody(rollbackTag) }
+    : resolveUpdateCopy({
+        target,
+        shownItems,
+        channel: status?.channel === 'stable' ? 'stable' : 'main',
+        latestTag: updateReleaseTag(status),
+        mechanism: status?.mechanism,
+        copy: u
+      })
+
+  const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -240,25 +442,16 @@ function IdleView({
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3">
-        {groups.map(group => (
-          <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
-            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
-              {group.items.map(item => (
-                <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
-                  <span className="leading-snug">{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
+      <UpdateChangeList
+        commitGroups={groups}
+        copyText={commits.length > 0 ? handleCopyFullLog : undefined}
+        notes={notes}
+        rollback={Boolean(rollbackTag)}
+      />
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">
-          {u.updateNow}
+          {rollbackTag ? channelCopy.rollbackAction(rollbackTag) : u.updateNow}
         </Button>
         <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}
@@ -266,14 +459,27 @@ function IdleView({
       </div>
 
       {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
+
+      <SyncStatusCard />
     </div>
   )
 }
 
-function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+function ManualView({
+  command,
+  isBackend,
+  message,
+  onDone
+}: {
+  command: string | null
+  isBackend: boolean
+  message?: string
+  onDone: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
+  const guidance: string | undefined = message && message !== command ? message : undefined
 
   const handleCopy = () => {
     if (!command) {
@@ -294,7 +500,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
 
-          <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
+          <DialogTitle className="text-center text-xl">
+            {isBackend ? u.manualUnavailableTitle : u.manualTitle}
+          </DialogTitle>
           <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>
 
@@ -311,7 +519,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
+        <DialogDescription className="text-center text-sm">
+          {guidance ?? (isBackend ? u.manualBodyBackend : u.manualBody)}
+        </DialogDescription>
       </div>
 
       <button
@@ -337,7 +547,11 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>
+      {!guidance && (
+        <p className="text-center text-xs text-muted-foreground">
+          {isBackend ? u.manualPickedUpBackend : u.manualPickedUp}
+        </p>
+      )}
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
@@ -372,11 +586,22 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
   )
 }
 
-function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
+function ApplyingView({
+  apply,
+  isBackend,
+  statusMechanism
+}: {
+  apply: UpdateApplyState
+  isBackend: boolean
+  statusMechanism?: UpdaterMechanismClient
+}) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
-  const body = isBackend ? u.applyingBodyBackend : u.applyingBody
+  const isWindowsPackage = statusMechanism === 'app-installer' || statusMechanism === 'microsoft-store'
+
+  const body = isWindowsPackage ? u.applyingBodyAppInstaller : isBackend ? u.applyingBodyBackend : u.applyingBody
+
   const currentMessage = apply.message.trim()
   const recentLog = apply.log.slice(-4)
 

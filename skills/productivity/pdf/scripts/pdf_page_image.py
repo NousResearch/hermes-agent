@@ -6,7 +6,7 @@ When neither is available, exits 0 with {"rendered": false, "missing": [...]}
 so callers can branch instead of crashing.
 
 Typical uses: visual verification with a vision model, and exporting
-image-only (scanned) pages for hand-off to the ocr-and-documents skill.
+image-only (scanned) pages for hand-off to the references/ocr-extraction.md in this skill.
 """
 from __future__ import annotations
 

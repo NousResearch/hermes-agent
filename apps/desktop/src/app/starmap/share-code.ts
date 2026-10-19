@@ -20,7 +20,7 @@ const trim = (s: string): string => (s.length > MAX_LABEL ? s.slice(0, MAX_LABEL
 const KINDS = ['skill', 'memory'] as const
 const STATES = ['active', 'archived', 'disabled', 'draft'] as const
 const MEM_SOURCES = ['none', 'memory', 'profile'] as const
-const CREATED_BY = ['none', 'agent', 'user'] as const
+const CREATED_BY = ['none', 'agent', 'user', 'learn'] as const
 
 const REC_BITS = 12 // time position resolution: 1/4096 of the span — sub-pixel here.
 const REC_MAX = (1 << REC_BITS) - 1

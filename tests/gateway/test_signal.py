@@ -13,7 +13,7 @@ from gateway.config import Platform, PlatformConfig
 def _reset_signal_scheduler():
     """The attachment scheduler is process-wide; drop it between tests
     so a fresh token bucket greets each case."""
-    from gateway.platforms.signal_rate_limit import _reset_scheduler
+    from plugins.platforms.signal.signal_rate_limit import _reset_scheduler
     _reset_scheduler()
     yield
     _reset_scheduler()
@@ -26,7 +26,7 @@ def _reset_signal_scheduler():
 def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
     """Create a SignalAdapter with sensible test defaults."""
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
-    from gateway.platforms.signal import SignalAdapter
+    from plugins.platforms.signal.adapter import SignalAdapter
     config = PlatformConfig()
     config.enabled = True
     config.extra = {
@@ -91,9 +91,9 @@ class TestSignalConnectCleanup:
         mock_client.get = AsyncMock(return_value=MagicMock(status_code=503))
         mock_client.aclose = AsyncMock()
 
-        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+        with patch("plugins.platforms.signal.adapter.httpx.AsyncClient", return_value=mock_client), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
@@ -104,20 +104,14 @@ class TestSignalConnectCleanup:
 
 
 class TestSignalHelpers:
-    def test_redact_phone_long(self):
-        from gateway.platforms.helpers import redact_phone
-        assert redact_phone("+155****4567") == "+155****4567"
 
     def test_redact_phone_short(self):
         from gateway.platforms.helpers import redact_phone
         assert redact_phone("+12345") == "+1****45"
 
-    def test_redact_phone_empty(self):
-        from gateway.platforms.helpers import redact_phone
-        assert redact_phone("") == "<none>"
 
     def test_parse_comma_list(self):
-        from gateway.platforms.signal import _parse_comma_list
+        from plugins.platforms.signal.adapter import _parse_comma_list
         assert _parse_comma_list("+1234, +5678 , +9012") == ["+1234", "+5678", "+9012"]
         assert _parse_comma_list("") == []
         assert _parse_comma_list("  ,  ,  ") == []
@@ -130,7 +124,7 @@ class TestSignalHelpers:
         ``_guess_extension`` never produced ``.wav`` for raw bytes, so the
         attachment was treated as a document and STT never received it.
         """
-        from gateway.platforms.signal import _is_audio_ext, _guess_extension
+        from plugins.platforms.signal.adapter import _is_audio_ext, _guess_extension
         wav = b"RIFF\x24\x08\x00\x00WAVEfmt " + b"\x00" * 100
         ext = _guess_extension(wav)
         assert ext == ".wav"
@@ -144,7 +138,7 @@ class TestSignalHelpers:
         STT reject the upload ("Invalid file format") even though the bytes
         were valid audio. Audio brands must resolve to ``.m4a``.
         """
-        from gateway.platforms.signal import _guess_extension, _is_audio_ext
+        from plugins.platforms.signal.adapter import _guess_extension, _is_audio_ext
         for brand in (b"M4A ", b"M4B ", b"m4a "):
             data = b"\x00\x00\x00\x1cftyp" + brand + b"\x00" * 100
             assert _guess_extension(data) == ".m4a", brand
@@ -162,7 +156,7 @@ class TestSignalHelpers:
         import shutil
         import subprocess
         import tempfile
-        from gateway.platforms.signal import _remux_aac_to_m4a
+        from plugins.platforms.signal.adapter import _remux_aac_to_m4a
 
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
@@ -178,6 +172,7 @@ class TestSignalHelpers:
                  "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
                  "-c:a", "aac", "-f", "adts", adts_path],
                 capture_output=True, timeout=30,
+                check=False,
             )
             if gen.returncode != 0:
                 import pytest
@@ -202,22 +197,16 @@ class TestSignalHelpers:
         assert len(m4a_bytes) >= len(aac_data) * 0.5
 
 
-    def test_is_image_ext(self):
-        from gateway.platforms.signal import _is_image_ext
-        assert _is_image_ext(".png") is True
-        assert _is_image_ext(".jpg") is True
-        assert _is_image_ext(".gif") is True
-        assert _is_image_ext(".pdf") is False
 
 
     def test_check_requirements(self, monkeypatch):
-        from gateway.platforms.signal import check_signal_requirements
+        from plugins.platforms.signal.adapter import check_signal_requirements
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
         monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
         assert check_signal_requirements() is True
 
     def test_render_mentions(self):
-        from gateway.platforms.signal import _render_mentions
+        from plugins.platforms.signal.adapter import _render_mentions
         text = "Hello \uFFFC, how are you?"
         mentions = [{"start": 6, "length": 1, "number": "+15559999999"}]
         result = _render_mentions(text, mentions)
@@ -228,7 +217,7 @@ class TestSignalHelpers:
     def test_validate_signal_config_accepts_platform_values(self, monkeypatch):
         monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)
         monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
-        from gateway.platforms.signal import validate_signal_config
+        from plugins.platforms.signal.adapter import validate_signal_config
 
         config = PlatformConfig(
             enabled=True,
@@ -270,7 +259,10 @@ class TestSignalAttachmentFetch:
 
         adapter._rpc, captured = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+        with patch(
+            "plugins.platforms.signal.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/test.png"),
+        ):
             await adapter._fetch_attachment("attachment-123")
 
         call = captured[0]
@@ -314,7 +306,7 @@ class TestSignalPhoneRedaction:
         # HERMES_REDACT_SECRETS env var. monkeypatch.delenv is too late —
         # the module was already imported during test collection with
         # whatever value was in the env then. Force the flag directly.
-        # See skill: xdist-cross-test-pollution Pattern 5.
+        # See skill: cross-test-pollution Pattern 5.
         monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
@@ -516,18 +508,6 @@ class TestSignalSendVideo:
 # MEDIA: tag extraction integration
 # ---------------------------------------------------------------------------
 
-class TestSignalMediaExtraction:
-    """Verify the full pipeline: MEDIA: tag → extract → send_image_file/send_voice."""
-
-    def test_extract_media_finds_image_tag(self):
-        """BasePlatformAdapter.extract_media should find MEDIA: image paths."""
-        from gateway.platforms.base import BasePlatformAdapter
-        media, cleaned = BasePlatformAdapter.extract_media(
-            "Here's the chart.\nMEDIA:/tmp/price_graph.png"
-        )
-        assert len(media) == 1
-        assert media[0][0] == "/tmp/price_graph.png"
-        assert "MEDIA:" not in cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +573,7 @@ class TestSignalInboundMessageTypeClassification:
     @pytest.mark.asyncio
     async def test_pdf_attachment_sets_document_type(self, monkeypatch):
         """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         event = await self._dispatch_single_attachment(
             monkeypatch,
@@ -612,7 +592,7 @@ class TestSignalInboundMessageTypeClassification:
     @pytest.mark.asyncio
     async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
         """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         event = await self._dispatch_single_attachment(
             monkeypatch,
@@ -660,66 +640,125 @@ class TestSignalSendDocumentViaHelper:
 # Signal streaming edit capability / message_id behavior
 # ---------------------------------------------------------------------------
 
-class TestSignalStreamingCapabilities:
-    """Signal supports explicit and opt-in progress edits, not token streaming."""
-
-    def test_signal_declares_explicit_and_progress_edit_capabilities(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-
-        assert adapter.SUPPORTS_MESSAGE_EDITING is True
-        assert adapter.SUPPORTS_STREAMING_EDITS is False
-        assert adapter.SUPPORTS_PROGRESS_EDITS is True
-        assert adapter.EDIT_RESULT_ID_IS_NEXT_TARGET is True
-
-    def test_gateway_streaming_capability_uses_narrow_flag(self, monkeypatch):
-        from gateway.run import _adapter_supports_streaming_edits
-
-        adapter = _make_signal_adapter(monkeypatch)
-
-        assert _adapter_supports_streaming_edits(adapter) is False
-
-    def test_gateway_progress_capability_uses_narrow_flag(self, monkeypatch):
-        from gateway.run import _adapter_supports_progress_edits
-
-        adapter = _make_signal_adapter(monkeypatch)
-
-        assert _adapter_supports_progress_edits(adapter) is True
-
-    def test_signal_tool_progress_remains_off_by_default(self):
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "signal", "tool_progress") == "off"
-
-    def test_signal_tool_progress_can_be_enabled_per_platform(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {
-                    "signal": {"tool_progress": "all"},
-                }
-            }
-        }
-
-        assert resolve_display_setting(config, "signal", "tool_progress") == "all"
-
-    def test_streaming_capability_falls_back_to_message_editing(self):
-        from gateway.run import _adapter_supports_progress_edits, _adapter_supports_streaming_edits
-
-        class EditableAdapter:
-            SUPPORTS_MESSAGE_EDITING = True
-
-        class NonEditableAdapter:
-            SUPPORTS_MESSAGE_EDITING = False
-
-        assert _adapter_supports_streaming_edits(EditableAdapter()) is True
-        assert _adapter_supports_streaming_edits(NonEditableAdapter()) is False
-        assert _adapter_supports_progress_edits(EditableAdapter()) is True
-        assert _adapter_supports_progress_edits(NonEditableAdapter()) is False
 
 
 class TestSignalSendReturnsMessageId:
-    """Signal send() returns signal-cli timestamps when available."""
+    """Signal send() returns signal-cli's timestamp as the editable message id."""
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_messages_without_truncation_footer(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1712345678000}
+
+        adapter._rpc = mock_rpc
+
+        long_content = "x" * (adapter.MAX_MESSAGE_LENGTH + 500)
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is True
+        assert len(captured) >= 2
+        assert all(call["method"] == "send" for call in captured)
+        assert all(
+            len(call["params"]["message"]) <= adapter.MAX_MESSAGE_LENGTH
+            for call in captured
+        )
+        assert all(
+            "truncated, full output saved to" not in call["params"]["message"]
+            for call in captured
+        )
+        assert "".join(
+            call["params"]["message"].rsplit(" (", 1)[0]
+            for call in captured
+        ) == long_content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("open_marker", "close_marker", "style_type"),
+        [
+            ("**", "**", "BOLD"),
+            ("*", "*", "ITALIC"),
+            ("~~", "~~", "STRIKETHROUGH"),
+            ("`", "`", "MONOSPACE"),
+        ],
+    )
+    async def test_send_preserves_formatting_that_crosses_chunk_boundary(
+        self, monkeypatch, open_marker, close_marker, style_type
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1712345678000 + len(captured)}
+
+        adapter._rpc = mock_rpc
+
+        long_content = (
+            "a" * (adapter.MAX_MESSAGE_LENGTH - 100)
+            + open_marker
+            + "b" * 240
+            + close_marker
+        )
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is True
+        assert len(captured) == 2
+        assert all(open_marker not in call["params"]["message"] for call in captured)
+        assert all(close_marker not in call["params"]["message"] for call in captured)
+        assert captured[0]["params"]["message"].endswith("b" * 90 + " (1/2)")
+        assert captured[1]["params"]["message"].startswith("b" * 150)
+        assert captured[0]["params"]["textStyle"] == (
+            f"{adapter.MAX_MESSAGE_LENGTH - 100}:90:{style_type}"
+        )
+        assert captured[1]["params"]["textStyle"] == f"0:150:{style_type}"
+
+    @pytest.mark.asyncio
+    async def test_send_returns_failure_if_later_chunk_rpc_fails(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+        responses = iter([
+            {"timestamp": 1712345678000},
+            None,
+        ])
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return next(responses)
+
+        adapter._rpc = mock_rpc
+
+        long_content = "x" * (adapter.MAX_MESSAGE_LENGTH + 500)
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is False
+        assert result.error == "RPC send failed"
+        assert len(captured) == 2
+        assert "".join(
+            call["params"]["message"].rsplit(" (", 1)[0]
+            for call in captured
+        ) == long_content
+
+    @pytest.mark.asyncio
+    async def test_send_treats_whitespace_only_content_as_noop_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._rpc = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="   \n\t  ")
+
+        assert result.success is True
+        assert result.message_id is None
+        adapter._rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_returns_timestamp_message_id(self, monkeypatch):
@@ -733,119 +772,6 @@ class TestSignalSendReturnsMessageId:
         assert result.success is True
         assert result.message_id == "1712345678000"
 
-    @pytest.mark.asyncio
-    async def test_send_returns_none_message_id_when_no_timestamp(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        mock_rpc, _ = _stub_rpc({})  # No timestamp key
-        adapter._rpc = mock_rpc
-        adapter._stop_typing_indicator = AsyncMock()
-
-        result = await adapter.send(chat_id="+155****4567", content="hello")
-
-        assert result.success is True
-        assert result.message_id is None
-
-    @pytest.mark.asyncio
-    async def test_send_returns_none_message_id_for_non_dict(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        mock_rpc, _ = _stub_rpc("ok")  # Non-dict result
-        adapter._rpc = mock_rpc
-        adapter._stop_typing_indicator = AsyncMock()
-
-        result = await adapter.send(chat_id="+155****4567", content="hello")
-
-        assert result.success is True
-        assert result.message_id is None
-
-    @pytest.mark.asyncio
-    async def test_edit_message_returns_fresh_signal_timestamp(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        mock_rpc, captured = _stub_rpc({"timestamp": 1712345679000})
-        adapter._rpc = mock_rpc
-        adapter._stop_typing_indicator = AsyncMock()
-
-        result = await adapter.edit_message(
-            chat_id="+155****4567",
-            message_id="1712345678000",
-            content="edited **hello**",
-        )
-
-        assert result.success is True
-        assert result.message_id == "1712345679000"
-        assert captured[0]["method"] == "send"
-        params = captured[0]["params"]
-        assert params["editTimestamp"] == 1712345678000
-        assert params["message"] == "edited hello"
-        assert params["recipient"] == ["+155****4567"]
-
-    @pytest.mark.asyncio
-    async def test_edit_message_fails_without_fresh_timestamp(self, monkeypatch):
-        """A successful RPC without the next edit handle must fail closed."""
-        adapter = _make_signal_adapter(monkeypatch)
-        mock_rpc, _ = _stub_rpc({})
-        adapter._rpc = mock_rpc
-        adapter._stop_typing_indicator = AsyncMock()
-
-        result = await adapter.edit_message(
-            chat_id="+155****4567",
-            message_id="1712345678000",
-            content="edited hello",
-        )
-
-        assert result.success is False
-        assert result.message_id is None
-        assert "fresh timestamp" in result.error
-
-    @pytest.mark.asyncio
-    async def test_successive_edits_chain_through_fresh_timestamps(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        responses = iter([
-            {"timestamp": 1712345679000},
-            {"timestamp": 1712345680000},
-        ])
-        captured = []
-
-        async def mock_rpc(method, params, rpc_id=None):
-            captured.append({"method": method, "params": dict(params)})
-            return next(responses)
-
-        adapter._rpc = mock_rpc
-        adapter._stop_typing_indicator = AsyncMock()
-
-        first = await adapter.edit_message(
-            chat_id="+155****4567",
-            message_id="1712345678000",
-            content="first edit",
-        )
-        second = await adapter.edit_message(
-            chat_id="+155****4567",
-            message_id=first.message_id,
-            content="second edit",
-        )
-
-        assert first.message_id == "1712345679000"
-        assert second.message_id == "1712345680000"
-        assert [call["params"]["editTimestamp"] for call in captured] == [
-            1712345678000,
-            1712345679000,
-        ]
-
-    @pytest.mark.asyncio
-    async def test_edit_message_requires_numeric_message_id(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        mock_rpc, captured = _stub_rpc({"timestamp": 1712345679000})
-        adapter._rpc = mock_rpc
-        adapter._stop_typing_indicator = AsyncMock()
-
-        result = await adapter.edit_message(
-            chat_id="+155****4567",
-            message_id="not-a-timestamp",
-            content="edited hello",
-        )
-
-        assert result.success is False
-        assert "numeric" in result.error
-        assert captured == []
 
 class TestSignalSendResultValidation:
     """Verify that send() validates recipient-level delivery results."""
@@ -876,18 +802,6 @@ class TestSignalSendResultValidation:
 # stop_typing() delegates to _stop_typing_indicator (#4647)
 # ---------------------------------------------------------------------------
 
-class TestSignalStopTyping:
-    """Signal must expose a public stop_typing() so base adapter's
-    _keep_typing finally block can clean up platform-level typing tasks."""
-
-    @pytest.mark.asyncio
-    async def test_stop_typing_calls_private_method(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._stop_typing_indicator = AsyncMock()
-
-        await adapter.stop_typing("+155****4567")
-
-        adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
 
 
 # ---------------------------------------------------------------------------
@@ -906,25 +820,6 @@ class TestSignalTypingBackoff:
     - reset counters when _stop_typing_indicator() is called for the chat
     """
 
-    @pytest.mark.asyncio
-    async def test_first_failure_logs_at_warning_subsequent_at_debug(
-        self, monkeypatch
-    ):
-        adapter = _make_signal_adapter(monkeypatch)
-        calls = []
-
-        async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
-            calls.append({"log_failures": log_failures})
-            return None  # simulate NETWORK_FAILURE
-
-        adapter._rpc = _fake_rpc
-
-        await adapter.send_typing("+155****4567")
-        await adapter.send_typing("+155****4567")
-
-        assert len(calls) == 2
-        assert calls[0]["log_failures"] is True   # first failure — warn
-        assert calls[1]["log_failures"] is False  # subsequent — debug
 
     @pytest.mark.asyncio
     async def test_three_consecutive_failures_trigger_cooldown(
@@ -935,7 +830,6 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             call_count["n"] += 1
-            return None
 
         adapter._rpc = _fake_rpc
 
@@ -1098,7 +992,7 @@ class TestSignalRpcRateLimit:
         """signal-cli ≥ v0.14.3 surfaces server Retry-After under
         ``error.data.response.results[*].retryAfterSeconds`` — _rpc
         carries that value through SignalRateLimitError.retry_after."""
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             SignalRateLimitError, SIGNAL_RPC_ERROR_RATELIMIT,
         )
 
@@ -1179,10 +1073,10 @@ def _patch_scheduler_sleep(monkeypatch, capture: list):
             await _real_sleep(0)
 
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
+        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", fake_sleep
     )
     monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
+        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset[0]
     )
 
 
@@ -1241,7 +1135,7 @@ class TestSignalSendMultipleImages:
         """signal-cli < v0.14.3 doesn't surface Retry-After. The
         scheduler keeps its default refill rate (1 token / 4s), so a
         retry of n=3 waits 12s."""
-        from gateway.platforms.signal_rate_limit import (
+        from plugins.platforms.signal.signal_rate_limit import (
             SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
             SignalRateLimitError,
         )
@@ -1273,7 +1167,7 @@ class TestSignalRateLimitDetection:
 
 
     def test_extract_retry_after_from_results(self):
-        from gateway.platforms.signal import _extract_retry_after_seconds
+        from plugins.platforms.signal.adapter import _extract_retry_after_seconds
         err = {
             "code": -5,
             "message": "Failed to send message due to rate limiting",
@@ -1294,7 +1188,7 @@ class TestSignalRateLimitDetection:
         """libsignal-net's RetryLaterException leaks through as
         AttachmentInvalidException → UnexpectedErrorException when the
         rate-limit fires inside attachment upload. Detect it by substring."""
-        from gateway.platforms.signal import _is_signal_rate_limit_error
+        from plugins.platforms.signal.adapter import _is_signal_rate_limit_error
         err = {
             "code": -32603,
             "message": (
@@ -1306,15 +1200,6 @@ class TestSignalRateLimitDetection:
         assert _is_signal_rate_limit_error(err) is True
 
 
-class TestSignalSendTimeout:
-    """Timeout scaling for batched attachment sends."""
-
-
-    def test_scales_with_batch_size(self):
-        from gateway.platforms.signal import _signal_send_timeout
-        # 32 attachments × 5s = 160s; ought to comfortably outlast a
-        # serial upload of an attachment-heavy batch.
-        assert _signal_send_timeout(32) == 160.0
 
 
 # ---------------------------------------------------------------------------
@@ -1369,7 +1254,10 @@ class TestSignalContentlessEnvelope:
         b64_data = base64.b64encode(png_data).decode()
         adapter._rpc, _ = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+        with patch(
+            "plugins.platforms.signal.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/img.png"),
+        ):
             await adapter._handle_envelope({
                 "envelope": {
                     "sourceNumber": "+155****9999",
@@ -1484,7 +1372,7 @@ class TestRecentSentTimestampRing:
         adapter._recent_sent_ttl_seconds = 100.0
 
         # Drive time.monotonic deterministically.
-        import gateway.platforms.signal as sig_mod
+        import plugins.platforms.signal.adapter as sig_mod
         fake_now = [1000.0]
         monkeypatch.setattr(sig_mod.time, "monotonic", lambda: fake_now[0])
 

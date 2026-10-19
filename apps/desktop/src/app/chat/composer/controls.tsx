@@ -5,39 +5,24 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import {
-  AudioLines,
-  Ear,
-  EarOff,
-  iconSize,
-  Layers3,
-  Loader2,
-  Square,
-  SteeringWheel,
-  Volume2,
-  VolumeX
-} from '@/lib/icons'
+import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { recordAction } from '@/store/desktop-metrics'
+import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
+import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { ReasoningPill } from './reasoning-pill'
+import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
+import { VoiceFan } from './voice-fan'
+import { VoiceMenu } from './voice-menu'
 
-export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
-export const GHOST_ICON_BTN = cn(
-  ICON_BTN,
-  'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-)
-// Send/voice-conversation primary: solid foreground-on-background circle
-// (reads as black-on-white in light mode, white-on-black in dark mode) to
-// match the reference composer's high-contrast CTA. Keeps the pill itself
-// neutral and lets the action visually dominate the row.
-export const PRIMARY_ICON_BTN = cn(
-  'size-(--composer-control-primary-size,var(--composer-control-size)) shrink-0 rounded-full p-0',
-  'bg-foreground text-background hover:bg-foreground/90',
-  'disabled:bg-foreground/30 disabled:text-background disabled:opacity-100'
-)
+// Re-exported: `context-menu.tsx` and other row neighbours have always reached
+// for these here, and the row is where they read as belonging.
+export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 
 interface ConversationProps {
   active: boolean
@@ -55,48 +40,105 @@ export function ComposerControls({
   busy,
   busyAction,
   canSubmit,
+  cardWaiting = false,
   compactModelPill = false,
   conversation,
   disabled,
+  foldVoice = false,
   hasComposerPayload,
+  hideModelPill = false,
+  minimal = false,
   state,
   voiceStatus,
   onDictate,
   onQueue,
+  onSteer,
   onToggleAutoSpeak
 }: {
   autoSpeak: boolean
   busy: boolean
-  busyAction: 'steer' | 'queue' | 'stop'
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop'
   canSubmit: boolean
+  /** A card parked on the session takes typed text as its answer, so queueing that text would leave the card waiting. */
+  cardWaiting?: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
+  foldVoice?: boolean
   hasComposerPayload: boolean
+  hideModelPill?: boolean
+  minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
   onQueue: () => void
+  onSteer?: () => void
   onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const hudMode = useStore($hudMode)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
-  const busyLabel = busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop
+  // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
+  // a waiting card). Stop only when the composer is empty and a turn is running.
+  const showStop = busy && !hasComposerPayload
+
+  const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
+
+  // A waiting card takes the draft as its answer through Send, whatever the busy action.
+  const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
+
+  // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
+  // voice toggles fold into one menu there and leave the row to the input. A
+  // narrow tile hits the same wall from the other direction and folds for the
+  // same reason — same controls, same state, different budget. Below that
+  // even the menu goes: at `minimal` the row is the send button and nothing
+  // else, which is the one thing that must survive every width.
+  const foldedVoice = hudMode || foldVoice
+
+  const voiceControls = foldedVoice ? (
+    <VoiceMenu
+      autoSpeak={autoSpeak}
+      disabled={disabled}
+      onDictate={onDictate}
+      onStartConversation={conversation.onStart}
+      onToggleAutoSpeak={onToggleAutoSpeak}
+      state={state}
+      voiceStatus={voiceStatus}
+    />
+  ) : (
+    // One mic in the row; hovering it fans the other voice toggles out of it.
+    <VoiceFan
+      autoSpeak={autoSpeak}
+      disabled={disabled}
+      onDictate={onDictate}
+      onToggleAutoSpeak={onToggleAutoSpeak}
+      state={state}
+      voiceStatus={voiceStatus}
+    />
+  )
 
   return (
-    <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
-      <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
-      <WakeWordButton disabled={disabled} />
-      {busyAction === 'steer' ? (
-        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
+    <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+      {minimal ? null : (
+        <>
+          {hideModelPill ? null : (
+            <>
+              <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
+            </>
+          )}
+          {voiceControls}
+        </>
+      )}
+      {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
+      {showQueueButton ? (
+        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
           <Button
             aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}
@@ -111,61 +153,118 @@ export function ComposerControls({
         </Tip>
       ) : null}
       {showVoicePrimary ? (
-        <Tip label={c.startVoice}>
-          <Button
-            aria-label={c.startVoice}
-            className={PRIMARY_ICON_BTN}
-            disabled={disabled}
-            onClick={() => {
-              triggerHaptic('open')
-              conversation.onStart()
-            }}
-            size="icon"
-            type="button"
-          >
-            <AudioLines className={iconSize.sm} />
-          </Button>
-        </Tip>
+        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
       ) : (
         <Tip
           label={
-            busy ? (
-              <TipKeybindLabel
-                actionId={
-                  busyAction === 'steer'
-                    ? 'composer.steer'
-                    : busyAction === 'queue'
-                      ? 'composer.queue'
-                      : 'composer.send'
-                }
-                text={busyLabel}
-              />
+            showStop ? (
+              <TipKeybindLabel actionId="composer.send" text={c.stop} />
             ) : (
-              <TipKeybindLabel actionId="composer.send" text={c.send} />
+              <TipKeybindLabel actionId="composer.send" text={sendLabel} />
             )
           }
+          placement="control"
         >
           <Button
-            aria-label={busy ? busyLabel : c.send}
+            aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
+            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
             type="submit"
           >
-            {busy ? (
-              busyAction === 'queue' ? (
-                <Layers3 className={iconSize.sm} />
-              ) : busyAction === 'steer' ? (
-                <SteeringWheel className={iconSize.sm} />
-              ) : (
-                <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-              )
+            {showStop ? (
+              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
             ) : (
               <Codicon name="arrow-up" size="0.875rem" />
             )}
           </Button>
         </Tip>
       )}
+      {/* The way out of HUD mode, riding the controls row rather than floating
+          above the bar. The old chip lived in a 26px transparent strip reserved
+          over the composer (--hud-chip-strip), which under glass is bare
+          untinted material with a hidden button in it — a band of chrome above
+          the surface, paid for in every state, for a control that is invisible
+          until hovered. Here it costs no reserved space and sits with the other
+          things you can press. */}
+      {hudMode ? <HudWindowButtons /> : null}
     </div>
+  )
+}
+
+// Queue is the secondary mid-turn action: never while the primary button already queues or stops, and
+// never while a card waits (its Send answers the card).
+function queueButtonVisible(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  hasPayload: boolean,
+  cardWaiting: boolean
+): boolean {
+  return busy && busyAction !== 'stop' && busyAction !== 'queue' && hasPayload && !cardWaiting
+}
+
+function composerSendLabel(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  c: { redirect: string; queueMessage: string; send: string; steer: string; stop: string }
+): string {
+  return busy ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction] : c.send
+}
+
+function renderSteerButton(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  onSteer: (() => void) | undefined,
+  disabled: boolean,
+  label: string
+) {
+  return busy && busyAction !== 'steer' && onSteer ? (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className={GHOST_ICON_BTN}
+        disabled={disabled}
+        onClick={onSteer}
+        size="icon"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="debug-step-over" size="0.875rem" />
+      </Button>
+    </Tip>
+  ) : null
+}
+
+function HudWindowButtons() {
+  const { t } = useI18n()
+
+  return (
+    <>
+      <Tip label={t.titlebar.resetHudLayout} placement="toolbar">
+        <Button
+          aria-label={t.titlebar.resetHudLayout}
+          className={cn(GHOST_ICON_BTN, 'p-0')}
+          onClick={resetHudLayout}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="discard" size="0.875rem" />
+        </Button>
+      </Tip>
+      <Tip label={t.titlebar.exitHud} placement="toolbar">
+        <Button
+          aria-label={t.titlebar.exitHud}
+          className={cn(GHOST_ICON_BTN, 'p-0')}
+          onClick={closeHud}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="screen-normal" size="0.875rem" />
+        </Button>
+      </Tip>
+    </>
   )
 }
 
@@ -199,7 +298,7 @@ function ConversationPill({
       {/* Keep the ear visible during voice chat — shown paused, since the
           conversation holds the mic (the one time wake must not listen). */}
       <WakeWordButton disabled={disabled} pausedForVoice />
-      <Tip label={muted ? c.unmuteMic : c.muteMic}>
+      <Tip label={muted ? c.unmuteMic : c.muteMic} placement="control">
         <Button
           aria-label={muted ? c.unmuteMic : c.muteMic}
           aria-pressed={muted}
@@ -279,39 +378,6 @@ function ConversationIndicator({
   )
 }
 
-// Pure-TTS toggle: type normally, but have every assistant reply read aloud —
-// no dictation, no full conversation loop. Filled/accent when on, mirroring the
-// muted-mic pressed state above. Driven by (and persisted to) `voice.auto_tts`.
-function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disabled: boolean; onToggle: () => void }) {
-  const { t } = useI18n()
-  const c = t.composer
-  const label = active ? c.stopSpeakingReplies : c.speakReplies
-
-  return (
-    <Tip label={label}>
-      <Button
-        aria-label={label}
-        aria-pressed={active}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          active && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
-        )}
-        disabled={disabled}
-        onClick={() => {
-          triggerHaptic(active ? 'close' : 'open')
-          onToggle()
-        }}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        {active ? <Volume2 className={iconSize.sm} /> : <VolumeX className={iconSize.sm} />}
-      </Button>
-    </Tip>
-  )
-}
-
 // "Hey Hermes" wake-word toggle. ALWAYS rendered — the ear never hides. A
 // user must always be able to click it to turn passive listening on; if the
 // backend can't start (missing STT/TTS, deps still installing, no mic
@@ -337,15 +403,11 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
   const tooltip = !pausedForVoice && wake.notice ? `${label} — ${wake.notice}` : label
 
   return (
-    <Tip label={tooltip}>
+    <Tip label={tooltip} placement="control">
       <Button
         aria-label={label}
         aria-pressed={wake.listening && !pausedForVoice}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          wake.listening && !pausedForVoice && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
-        )}
+        className={cn(GHOST_ICON_BTN, 'p-0', wake.listening && !pausedForVoice && ACTIVE_ICON_BTN)}
         disabled={disabled || pausedForVoice || wake.pending}
         onClick={() => {
           triggerHaptic(wake.listening ? 'close' : 'open')
@@ -356,58 +418,6 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
         variant="ghost"
       >
         {wake.listening && !pausedForVoice ? <Ear className={iconSize.sm} /> : <EarOff className={iconSize.sm} />}
-      </Button>
-    </Tip>
-  )
-}
-
-function DictationButton({
-  disabled,
-  state,
-  status,
-  onToggle
-}: {
-  disabled: boolean
-  state: ChatBarState['voice']
-  status: VoiceStatus
-  onToggle: () => void
-}) {
-  const { t } = useI18n()
-  const c = t.composer
-  const active = state.active || status !== 'idle'
-
-  const aria =
-    status === 'recording' ? c.stopDictation : status === 'transcribing' ? c.transcribingDictation : c.voiceDictation
-
-  return (
-    <Tip label={aria}>
-      <Button
-        aria-label={aria}
-        aria-pressed={active}
-        className={cn(
-          GHOST_ICON_BTN,
-          'p-0',
-          'data-[active=true]:bg-accent data-[active=true]:text-foreground',
-          status === 'recording' && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary',
-          status === 'transcribing' && 'bg-primary/10 text-primary'
-        )}
-        data-active={active}
-        disabled={disabled || !state.enabled || status === 'transcribing'}
-        onClick={() => {
-          triggerHaptic(active ? 'close' : 'open')
-          onToggle()
-        }}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        {status === 'recording' ? (
-          <Square className={cn('fill-current', iconSize.xs)} />
-        ) : status === 'transcribing' ? (
-          <Loader2 className={cn('animate-spin', iconSize.sm)} />
-        ) : (
-          <Codicon name="mic" size="0.875rem" />
-        )}
       </Button>
     </Tip>
   )

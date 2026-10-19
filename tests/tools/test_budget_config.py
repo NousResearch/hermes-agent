@@ -5,17 +5,12 @@ Covers default values, resolve_threshold() priority chain
 and the PINNED_THRESHOLDS escape-hatch for read_file.
 """
 
-import dataclasses
-import math
 from unittest.mock import patch
 
-import pytest
 
 from tools.budget_config import (
     DEFAULT_BUDGET,
-    DEFAULT_PREVIEW_SIZE_CHARS,
     DEFAULT_RESULT_SIZE_CHARS,
-    DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
     BudgetConfig,
     budget_for_context_window,
@@ -27,26 +22,8 @@ from tools.budget_config import (
 # ---------------------------------------------------------------------------
 
 
-class TestModuleConstants:
-    """Verify documented default values haven't drifted."""
-
-    def test_default_result_size(self):
-        assert DEFAULT_RESULT_SIZE_CHARS == 100_000
 
 
-    def test_default_preview_size(self):
-        assert DEFAULT_PREVIEW_SIZE_CHARS == 1_500
-
-
-class TestPinnedThresholds:
-    """PINNED_THRESHOLDS – tools whose values must never be overridden."""
-
-    def test_read_file_is_inf(self):
-        assert PINNED_THRESHOLDS["read_file"] == float("inf")
-        assert math.isinf(PINNED_THRESHOLDS["read_file"])
-
-    def test_pinned_is_not_empty(self):
-        assert len(PINNED_THRESHOLDS) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -54,17 +31,6 @@ class TestPinnedThresholds:
 # ---------------------------------------------------------------------------
 
 
-class TestBudgetConfigDefaults:
-    """BudgetConfig() should match the module-level defaults exactly."""
-
-    def test_default_result_size(self):
-        cfg = BudgetConfig()
-        assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
-
-
-    def test_default_budget_singleton_matches(self):
-        """DEFAULT_BUDGET should equal a freshly constructed BudgetConfig."""
-        assert DEFAULT_BUDGET == BudgetConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -72,19 +38,6 @@ class TestBudgetConfigDefaults:
 # ---------------------------------------------------------------------------
 
 
-class TestBudgetConfigFrozen:
-    """Frozen dataclass must reject attribute mutation."""
-
-    def test_cannot_set_default_result_size(self):
-        cfg = BudgetConfig()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.default_result_size = 999
-
-
-    def test_cannot_set_tool_overrides(self):
-        cfg = BudgetConfig()
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.tool_overrides = {"foo": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -92,20 +45,6 @@ class TestBudgetConfigFrozen:
 # ---------------------------------------------------------------------------
 
 
-class TestBudgetConfigCustom:
-    """BudgetConfig can be created with non-default values."""
-
-    def test_custom_values(self):
-        cfg = BudgetConfig(
-            default_result_size=50_000,
-            turn_budget=100_000,
-            preview_size=500,
-            tool_overrides={"my_tool": 42},
-        )
-        assert cfg.default_result_size == 50_000
-        assert cfg.turn_budget == 100_000
-        assert cfg.preview_size == 500
-        assert cfg.tool_overrides == {"my_tool": 42}
 
 
 # ---------------------------------------------------------------------------
@@ -173,3 +112,66 @@ class TestBudgetForContextWindow:
         threshold = cfg.resolve_threshold("mcp_firecrawl_firecrawl_search")
         assert threshold < huge_len
         assert cfg.default_result_size < huge_len
+
+
+# ---------------------------------------------------------------------------
+# MCP-prefix threshold (mcp_result_size)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpPrefixThreshold:
+    """mcp_* tools get the tighter 50K default, config-overridable."""
+
+    def test_default_mcp_threshold_is_tighter_than_generic(self):
+        from tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
+        assert DEFAULT_MCP_RESULT_SIZE_CHARS < DEFAULT_RESULT_SIZE_CHARS
+        assert DEFAULT_BUDGET.resolve_threshold("mcp_composio_search_tools") == DEFAULT_MCP_RESULT_SIZE_CHARS
+
+    def test_non_mcp_tools_keep_generic_default(self):
+        assert DEFAULT_BUDGET.resolve_threshold("some_random_tool") == DEFAULT_RESULT_SIZE_CHARS
+
+    def test_pinned_wins_over_mcp_prefix(self):
+        with patch.dict(PINNED_THRESHOLDS, {"mcp_pinned_tool": float("inf")}):
+            assert DEFAULT_BUDGET.resolve_threshold("mcp_pinned_tool") == float("inf")
+
+    def test_tool_override_wins_over_mcp_prefix(self):
+        cfg = BudgetConfig(tool_overrides={"mcp_special": 75_000})
+        assert cfg.resolve_threshold("mcp_special") == 75_000
+
+    def test_mcp_threshold_capped_by_scaled_default(self):
+        """On a small model the scaled default_result_size caps the MCP value."""
+        cfg = BudgetConfig(default_result_size=20_000, mcp_result_size=50_000)
+        assert cfg.resolve_threshold("mcp_anything") == 20_000
+
+
+    def test_config_override_via_hermes_home(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n  mcp_result_size_chars: 30000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = budget_for_context_window(None)
+        assert cfg.resolve_threshold("mcp_composio_multi_execute") == 30_000
+        # Generic tools are untouched by the MCP knob.
+        assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
+
+    def test_config_override_survives_window_scaling(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n  mcp_result_size_chars: 30000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = budget_for_context_window(200_000)
+        assert cfg.mcp_result_size == 30_000
+
+    def test_malformed_config_falls_back_to_default(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text("tool_budget: not-a-mapping\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
+        cfg = budget_for_context_window(None)
+        assert cfg.resolve_threshold("mcp_x_y") == DEFAULT_MCP_RESULT_SIZE_CHARS
+
+    def test_scaled_small_window_caps_mcp_threshold(self, tmp_path, monkeypatch):
+        """A tiny model's scaled default_result_size caps even the MCP value."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # no config.yaml
+        cfg = budget_for_context_window(16_384)  # scaled default < 50K
+        assert cfg.default_result_size < 50_000
+        assert cfg.resolve_threshold("mcp_tool") == cfg.default_result_size

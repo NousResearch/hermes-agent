@@ -1,0 +1,27 @@
+name: agentplaybooks-tools
+repo: https://github.com/matebenyovszky/agentplaybooks
+sha: 819c3491d83c0371b678e2ccd7e95679b8a7d288
+subdir: packages/hermes-portable/agentplaybooks-tools
+description: >-
+  Connect AgentPlaybooks skills and hosted MCP/OpenAPI tools to Hermes, with guided authentication and
+  API-key setup. Requires Node.js 20+ and @agentplaybooks/cli@0.5.0; the CLI is installed separately.
+  Disclosure — skill-only; the separately installed apb CLI does the work. `apb connect
+  --target=hermes --apply` and `apb sync --target=hermes --apply` edit the selected Hermes profile's
+  config.yaml (adding the hosted playbook MCP endpoint and merged MCP definitions, so that playbook's
+  remote tools become available to the agent); local writes require --apply; hosted operations contact
+  agentplaybooks.ai after `apb login`, and `apb push --apply` uploads your project's configuration
+  (secret references, not values).
+maintainer: matebenyovszky
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+version: "0.1.0"
+docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/819c3491d83c0371b678e2ccd7e95679b8a7d288/packages/hermes-portable/agentplaybooks-tools
+image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/819c3491d83c0371b678e2ccd7e95679b8a7d288/public/plugin-catalog/hermes-tools.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

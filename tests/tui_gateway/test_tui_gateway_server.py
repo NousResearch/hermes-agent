@@ -10151,6 +10151,8 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
 
 
 def test_config_set_model_global_persists(monkeypatch):
+    from hermes_cli.config import get_config_path, read_user_config_raw
+
     class _Agent:
         provider = "openrouter"
         model = "old/model"
@@ -10169,20 +10171,14 @@ def test_config_set_model_global_persists(monkeypatch):
         api_mode="anthropic_messages",
         warning_message="",
     )
-    seen = {}
-    saved_values = {}
-
-    def _switch_model(**kwargs):
-        seen.update(kwargs)
-        return result
+    switch = Mock(return_value=result)
+    config_path = get_config_path()
 
     server._sessions["sid"] = _session(agent=_Agent())
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", switch)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    # persist_model_selection uses targeted per-key writes (#48305) so it
-    # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
+    config_path.write_text("model:\n  model_slots:\n    fast: keep\n", encoding="utf-8")
 
     resp = server.handle_request(
         {
@@ -10197,10 +10193,12 @@ def test_config_set_model_global_persists(monkeypatch):
     )
 
     assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
-    assert seen["is_global"] is True
-    assert saved_values["model.default"] == "anthropic/claude-sonnet-4.6"
-    assert saved_values["model.provider"] == "anthropic"
-    assert saved_values["model.base_url"] == "https://api.anthropic.com"
+    assert switch.call_args.kwargs["is_global"] is True
+    saved_values = read_user_config_raw(config_path)["model"]
+    assert saved_values["default"] == "anthropic/claude-sonnet-4.6"
+    assert saved_values["provider"] == "anthropic"
+    assert saved_values["base_url"] == "https://api.anthropic.com"
+    assert saved_values["model_slots"] == {"fast": "keep"}
 
 
 def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):
@@ -12421,7 +12419,7 @@ def test_rollback_restore_resolves_number_and_file_path():
         def list_checkpoints(self, cwd):
             return [{"hash": "aaa111"}, {"hash": "bbb222"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             calls["args"] = (cwd, target, file_path)
             return {"success": True, "message": "done"}
 
@@ -12476,7 +12474,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             return {"success": True, "message": "restored"}
 
     history = [
@@ -12533,7 +12531,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             return {"success": True, "message": "restored"}
 
     handoff = {
@@ -12594,7 +12592,7 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             return {"success": True, "message": "restored"}
 
     carrier = {
@@ -19178,7 +19176,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     turns = []
     emitted = []
 
-    def _fake_run_prompt_submit(rid, sid, session, text):
+    def _fake_run_prompt_submit(rid, sid, session, text, **_kwargs):
         turns.append(text)
         with session["history_lock"]:
             session["running"] = False

@@ -9,6 +9,7 @@ under the owning profile's scope and the session's frozen launch policy (cwd, te
 route, toolsets), so a session that never ran a turn (no resident agent) works the same.
 """
 from functools import partial
+import asyncio
 import contextlib
 import logging
 import threading
@@ -19,21 +20,21 @@ from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
-# Strong references to the running side-agent threads (dropped as each one finishes).
-_RUNNING = set()
 _RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_mode', 'command', 'args',
                  'credential_pool', 'max_tokens', 'capabilities')
 
 
 def handlers(connection):
-    return {'prompt.background': partial(background, connection), 'prompt.btw': partial(btw, connection)}
+    return {'prompt.background': partial(background, connection), 'prompt.btw': partial(btw, connection),
+            'preview.restart': partial(preview_restart, connection)}
 
 
-def _admit(connection, ref, params, prefix):
+def _admit(connection, ref, params, prefix, required='text', optional=()):
     """Shared admission: ``(live, policy, text, task_id)`` or a refusal before any work starts."""
-    text = params.get('text')
-    if (set(params) - {'session_id', 'profile', 'text'} or not isinstance(ref.session_id, str)
-            or not ref.session_id or not isinstance(text, str) or not text.strip()):
+    text = params.get(required)
+    if (set(params) - {'session_id', 'profile', required, *optional} or not isinstance(ref.session_id, str)
+            or not ref.session_id or not isinstance(text, str) or not text.strip()
+            or any(params.get(key) is not None and not isinstance(params[key], str) for key in optional)):
         raise RuntimeStoreError('invalid_params')
     authority = connection.authority
     if ref.session_id not in authority.sessions:
@@ -57,12 +58,16 @@ def _side_scope(authority, policy, task_id):
     identity (approval key, HERMES_SESSION_ID) for the side agent's thread."""
     from gateway.session_authorities import owner_scope
     from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_policy import policy_scope
+    from gateway.session_policy import bind_turn_workspace, policy_scope, unbind_turn_workspace
     with owner_scope(authority, hydrate_secrets=True), policy_scope(policy, authority=authority):
         tokens = set_session_vars(session_key=task_id, session_id=task_id, cwd=policy.cwd)
         try:
+            # The session's workspace, as its own turns get it (#140665): mounted at /workspace in a
+            # per-task container, or the session's own persistent workspace container (same digest).
+            bind_turn_workspace(policy, task_id)
             yield
         finally:
+            unbind_turn_workspace(task_id)
             clear_session_vars(tokens)
 
 
@@ -72,27 +77,88 @@ def _resolve_runtime(authority, policy):
     return _resolve_policy_agent_runtime(authority.runner, policy)
 
 
-def _spawn(authority, ref, task_id, event_type, body, extra=None):
-    """Run ``body()`` on a daemon thread; publish its text (or ``error: <exc>``) on the session."""
+def _side_agent(authority, policy, live, task_id, **overrides):
+    """A fresh ``AIAgent`` on the session's frozen route (call inside ``_side_scope``)."""
+    from agent.skill_utils import parse_config_string_list
+    from gateway.run import _checkpoint_agent_kwargs
+    from run_agent import AIAgent
+    runner = authority.runner
+    model, runtime = _resolve_runtime(authority, policy)
+    config = policy.config(authority)
+    from gateway.session_worker_construct import session_routing
+    pr = session_routing(authority, policy)
+    refresh_fallback = getattr(runner, '_refresh_fallback_model', None)
+    kwargs = dict(
+        model=model, **{key: runtime.get(key) for key in _RUNTIME_KEYS if key in runtime},
+        **_checkpoint_agent_kwargs(config),
+        max_iterations=policy.max_turns, quiet_mode=True, verbose_logging=False,
+        enabled_toolsets=list(policy.current_toolsets(config)),
+        disabled_toolsets=parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')) or None,
+        reasoning_config=policy.current_reasoning_config(runner, live.route),
+        service_tier=policy.current_service_tier(runner, live.route),
+        request_overrides=dict(runtime.get('request_overrides') or {}),
+        providers_allowed=pr.get('only'), providers_ignored=pr.get('ignore'), providers_order=pr.get('order'),
+        provider_sort=pr.get('sort'), provider_require_parameters=pr.get('require_parameters', False),
+        provider_data_collection=pr.get('data_collection'),
+        # Its own session in the owning profile's store, like the sidecar's ``bg_*`` rows.
+        session_id=task_id, platform=policy.platform, session_db=authority.db,
+        fallback_model=refresh_fallback() if callable(refresh_fallback) else None,
+        load_soul_identity=not policy.ignore_rules, skip_memory=policy.ignore_rules,
+        side_agent=True)
+    kwargs.update(overrides)
+    return AIAgent(**kwargs)
+
+
+def _abandoned(holder):
+    abandoned = getattr(holder[0], 'abandoned', None) if holder else None
+    return bool(abandoned and abandoned())
+
+
+def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
+    """Run ``body()`` on a daemon thread; publish its text (or ``error: <exc>``) on the session.
+
+    The thread is owner work until it unwinds: the authority's ``_side_agents`` ledger is counted by
+    the restart wait, the shutdown drain, the SessionDB close gate and idle exit
+    (``session_runtime_workers.uncounted_runtime_work``), and profile retirement interrupts
+    ``holder[0]`` (the side agent, once built) and joins the thread."""
+    from gateway.session_runtime_workers import persist_work_count
     extra = extra or {}
+    ledger = getattr(authority, '_side_agents', None)
+    if ledger is None:
+        ledger = authority._side_agents = {}
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
     def run():
+        # The whole target: a BaseException the agent re-raises (cancellation, exit) must not
+        # leave a dead thread counted as owner work.
         try:
-            text = body()
-        except Exception as exc:
-            logger.warning('Side agent %s failed', task_id, exc_info=True)
-            text = f'error: {getattr(exc, "reason", None) or exc}'
-        try:
+            try:
+                text = body()
+            except Exception as exc:
+                logger.warning('Side agent %s failed', task_id, exc_info=True)
+                text = f'error: {getattr(exc, "reason", None) or exc}'
             live = authority.sessions.get(ref.session_id)
-            if live is not None:
+            if live is not None and not _abandoned(holder):
                 live.event_stream.publish(ref.session_id, {'task_id': task_id, **extra, 'text': str(text or '')},
                                           event_type=event_type)
         finally:
-            _RUNNING.discard(thread)
+            ledger.pop(thread, None)
+            if loop is not None:
+                # gateway_state.json's active_agents drops back, recounted on the owner loop.
+                with contextlib.suppress(RuntimeError):  # the loop already closed
+                    loop.call_soon_threadsafe(persist_work_count, authority)
 
     thread = threading.Thread(target=run, name=f'side-agent-{task_id}', daemon=True)
-    _RUNNING.add(thread)
-    thread.start()
+    ledger[thread] = holder
+    try:
+        thread.start()
+    except BaseException:
+        ledger.pop(thread, None)
+        raise
+    persist_work_count(authority)
     return {'task_id': task_id}
 
 
@@ -100,43 +166,21 @@ async def background(connection, ref, params):
     """``/bg <prompt>``: a fresh agent on the session's route runs the prompt to completion."""
     live, policy, text, task_id = _admit(connection, ref, params, 'bg')
     authority = connection.authority
-    runner = authority.runner
+    holder = [None]
 
     def body():
-        from agent.skill_utils import parse_config_string_list
-        from gateway.run import _checkpoint_agent_kwargs
-        from run_agent import AIAgent
+        from tui_gateway.methods_prompt import _final_response_text
         with _side_scope(authority, policy, task_id):
-            model, runtime = _resolve_runtime(authority, policy)
-            config = policy.config(authority)
-            pr = getattr(runner, '_provider_routing', None) or {}
-            refresh_fallback = getattr(runner, '_refresh_fallback_model', None)
-            agent = AIAgent(
-                model=model, **{key: runtime.get(key) for key in _RUNTIME_KEYS if key in runtime},
-                **_checkpoint_agent_kwargs(config),
-                max_iterations=policy.max_turns, quiet_mode=True, verbose_logging=False,
-                enabled_toolsets=list(policy.current_toolsets(config)),
-                disabled_toolsets=parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')) or None,
-                reasoning_config=policy.current_reasoning_config(runner, live.route),
-                service_tier=policy.current_service_tier(runner, live.route),
-                request_overrides=dict(runtime.get('request_overrides') or {}),
-                providers_allowed=pr.get('only'), providers_ignored=pr.get('ignore'), providers_order=pr.get('order'),
-                provider_sort=pr.get('sort'), provider_require_parameters=pr.get('require_parameters', False),
-                provider_data_collection=pr.get('data_collection'),
-                # Its own session in the owning profile's store, like the sidecar's ``bg_*`` rows.
-                session_id=task_id, platform=policy.platform, session_db=authority.db,
-                fallback_model=refresh_fallback() if callable(refresh_fallback) else None,
-                load_soul_identity=not policy.ignore_rules, skip_memory=policy.ignore_rules,
-                side_agent=True)
+            agent = holder[0] = _side_agent(authority, policy, live, task_id)
             try:
                 result = agent.run_conversation(user_message=text, task_id=task_id)
             finally:
                 # AIAgent.close() is the owner boundary (memory, tool subprocesses, clients).
                 with contextlib.suppress(Exception):
                     agent.close()
-        return result.get('final_response', str(result)) if isinstance(result, dict) else str(result)
+        return _final_response_text(result)
 
-    return _spawn(authority, ref, task_id, 'background.complete', body)
+    return _spawn(authority, ref, task_id, 'background.complete', body, holder=holder)
 
 
 async def btw(connection, ref, params):
@@ -151,6 +195,8 @@ async def btw(connection, ref, params):
     from gateway.session_local_recovery import transcript_target
     target = None if snapshot else transcript_target(authority, ref)
 
+    handle = _SideQuestionStop()
+
     def body():
         from agent.side_question import answer_side_question
         history = snapshot or authority.db.get_messages_as_conversation(target)
@@ -158,6 +204,85 @@ async def btw(connection, ref, params):
             model, runtime = _resolve_runtime(authority, policy)
             main_runtime = {'model': model, 'session_id': ref.session_id,
                             **{key: runtime.get(key) for key in ('provider', 'base_url', 'api_key', 'api_mode')}}
-            return answer_side_question(text, history, parent_agent=agent, main_runtime=main_runtime) or ''
+            return answer_side_question(text, history, parent_agent=agent, main_runtime=main_runtime,
+                                        on_fork=handle.set_fork, should_stop=handle.stopped.is_set) or ''
 
-    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text})
+    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text}, holder=[handle])
+
+
+class _SideQuestionStop:
+    """``/btw``'s holder: retirement and shutdown interrupt its cache-parity fork, and once stopped
+    the read-only one-shot fallback (an uncancellable aux call of up to 180 s that writes nothing)
+    no longer holds owner work, so it cannot keep a retiring profile's reservation."""
+
+    def __init__(self):
+        self.stopped = threading.Event()
+        self._lock = threading.Lock()
+        self._fork = None
+
+    def set_fork(self, fork):
+        with self._lock:
+            self._fork = fork
+        if fork is not None and self.stopped.is_set():
+            self.hard_interrupt('Profile runtime is stopping')
+
+    def hard_interrupt(self, message=None):
+        self.stopped.set()
+        with self._lock:
+            fork = self._fork
+        if fork is not None:
+            from agent.interrupt_compat import request_hard_interrupt
+            request_hard_interrupt(fork, message)
+
+    def abandoned(self):
+        """Stopped with no fork running: what is left publishes nothing and writes nothing."""
+        with self._lock:
+            return self.stopped.is_set() and self._fork is None
+
+
+async def preview_restart(connection, ref, params):
+    """Desktop preview pane "restart dev server": a hidden terminal+file agent brings the preview
+    URL's server back up (rules: ``tui_gateway/methods_prompt.py`` ``_PREVIEW_RESTART_RULES``).
+    Detached like ``/bg``; progress rides ``preview.restart.progress``, the answer
+    ``preview.restart.complete`` ``{task_id, text}``. Context is the session's stored transcript."""
+    live, policy, url, task_id = _admit(connection, ref, params, 'preview', required='url',
+                                        optional=('cwd', 'context'))
+    authority = connection.authority
+    cwd, context = (str(params.get(key) or '').strip() for key in ('cwd', 'context'))
+    from gateway.session_local_recovery import transcript_target
+    target = transcript_target(authority, ref)
+    holder = [None]
+
+    def progress(text):
+        if (text := str(text or '').strip()) and (stream := authority.sessions.get(ref.session_id)) is not None:
+            stream.event_stream.publish(ref.session_id, {'task_id': task_id, 'text': text},
+                                        event_type='preview.restart.progress')
+
+    def body():
+        from tui_gateway.agent_callbacks import _preview_restart_history
+        from tui_gateway.methods_prompt import (_final_response_text, _preview_restart_prompt,
+                                                _validated_preview_cwd)
+        preview_cwd = _validated_preview_cwd(cwd)
+        history = _preview_restart_history(authority.db.get_messages_as_conversation(target) if target else [])
+        prompt = _preview_restart_prompt(url, cwd, context, bool(history))
+        with _side_scope(authority, policy, task_id):
+            if preview_cwd:
+                from tools.terminal_tool import register_task_env_overrides
+                register_task_env_overrides(task_id, {'cwd': preview_cwd})
+            try:
+                progress('Starting hidden restart agent')
+                # Deliberately NOT closed via AIAgent.close(): it would kill the background
+                # server this task exists to leave running.
+                agent = _side_agent(authority, policy, live, task_id, enabled_toolsets=['terminal', 'file'],
+                                    disabled_toolsets=None, session_db=None, skip_memory=True,
+                                    tool_start_callback=lambda _id, name, _args: progress(f'Running {name}'))
+                holder[0] = agent
+                result = agent.run_conversation(user_message=prompt, task_id=task_id,
+                                                conversation_history=history or None)
+            finally:
+                with contextlib.suppress(Exception):
+                    from tools.terminal_tool import clear_task_env_overrides
+                    clear_task_env_overrides(task_id)
+        return _final_response_text(result)
+
+    return _spawn(authority, ref, task_id, 'preview.restart.complete', body, holder=holder)

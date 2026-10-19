@@ -787,12 +787,13 @@ def transitions(env: dict) -> None:
 # The candidate manifest is written after the smokes (decision 23): the smoke
 # results it records are the candidate calls' own workflow results — each
 # call's stable-phase-result only succeeds when its selected groups' smokes
-# did, so a failed smoke leaves no accepted manifest behind.
-CALL_SMOKE_JOBS = {
-    "candidates-darwin-arm64": "smoke-darwin-arm64",
-    "candidates-darwin-x64": "smoke-darwin-x64",
-    "candidates-win32-arm64": "smoke-win32-arm64",
-    "candidates-win32-x64": "smoke-win32-x64",
+# did, so a failed smoke leaves no accepted manifest behind. The Windows MSIX
+# smokes run in the bundle call, beside assembly, not after each per-arch build.
+SMOKE_CALLS = {
+    "smoke-darwin-arm64": "candidates-darwin-arm64",
+    "smoke-darwin-x64": "candidates-darwin-x64",
+    "smoke-win32-arm64": "candidates-win32-bundle",
+    "smoke-win32-x64": "candidates-win32-bundle",
 }
 CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
                       "termux", "windows-universal")
@@ -816,10 +817,10 @@ def candidate_manifest(env: dict) -> None:
     runs = lane_set.jobs_to_run(lanes)
     # A call whose package is not a target (the Store variant is not install-smoked) has no smoke.
     built = lane_set.targets(lanes)
-    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call] and SMOKE_TARGETS[job] in built}
-    smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
+    calls = {job: call for job, call in SMOKE_CALLS.items() if runs[call] and SMOKE_TARGETS[job] in built}
+    smoke = {job: {"result": "skipped"} for job in SMOKE_CALLS}
     if lane_set.runs_smokes(lanes):
-        ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}
+        ran = {job: {"result": (needs.get(call) or {}).get("result")} for job, call in calls.items()}
         require_success(ran, list(ran))
         smoke.update(ran)
     # Every call the claim built, smoked or not (Termux has no smoke): a green call never stands in

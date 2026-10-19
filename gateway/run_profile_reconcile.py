@@ -12,12 +12,18 @@ verb (``hermes_cli/profiles.py`` create/delete fire it through the control socke
 ``_profile_reconcile_watcher`` every ``_PROFILE_RESCAN_INTERVAL_SECS`` as the safety net. A served profile whose ``config.yaml``/``.env``
 changed since its adapters were last built is re-scanned too: creators make the profile first and add the
 bot token afterwards, and without this an adapter-less profile would stay adapter-less forever.
+
+The same watcher tick (on every gateway, multiplexed or not) re-syncs a home's shell hooks when its
+``shell-hooks-allowlist.json`` (or ``config.yaml``) changed: a non-TTY gateway skips unconsented hooks, so consent recorded
+afterwards must register them without a restart (#132993). That re-runs hook registration only, never
+an adapter rebuild.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -32,6 +38,13 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
 _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
+
+
+def _stat_signature(path: Path) -> Optional[tuple]:
+    try:
+        return file_signature(os.stat(path))
+    except OSError:
+        return None
 
 
 def profile_serve_signature(home: Path) -> tuple:
@@ -54,6 +67,7 @@ class GatewayProfileReconcileMixin:
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
     _profile_probe_timeout_warned: Optional[set[str]] = None
+    _hook_consent_signatures: Optional[dict[str, Optional[tuple]]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -79,20 +93,56 @@ class GatewayProfileReconcileMixin:
     # ── watcher ───────────────────────────────────────────────────────────────────────────────────
 
     async def _profile_reconcile_watcher(self, interval: float = _PROFILE_RESCAN_INTERVAL_SECS) -> None:
-        """Supervised safety net: rescan ``profiles/`` every ``interval`` seconds (creators signal the
-        control socket for an immediate rescan). Returns at once, never respawned, when multiplexing is off."""
-        if not self._multiplex_on():
-            return
+        """Supervised safety net, every ``interval`` seconds: re-sync shell hooks whose consent changed
+        (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
+        socket for an immediate rescan)."""
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
                 return
             try:
-                await self.reconcile_served_profiles(reason="watcher")
+                await self._sync_hooks_on_consent_change()
+                if self._multiplex_on():
+                    await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("Served-profile reconcile failed; retrying next cycle", exc_info=True)
+
+    async def _sync_hooks_on_consent_change(self) -> None:
+        """Re-sync the shell hooks of each home (launch + served) whose consent allowlist or config
+        changed since the last tick, under that home's scope: hooks consented since start register, revoked ones stop
+        firing. A home seen for the first time syncs once (consent may have landed after startup
+        registered). Hook registration only: adapters and sessions are never touched."""
+        from hermes_constants import get_process_hermes_home
+        homes = {Path(h) for h in (get_process_hermes_home(), *(self._served_profile_homes or {}).values())}
+        self._hook_consent_signatures = await asyncio.to_thread(
+            self._resync_changed_hook_consent, homes, self._hook_consent_signatures or {})
+
+    def _resync_changed_hook_consent(self, homes, seen: dict) -> dict:
+        """Blocking half of ``_sync_hooks_on_consent_change``; returns the signatures it applied. The
+        key covers ``config.yaml`` too: a sync that read an empty/unreadable config applied nothing,
+        so its recovery must re-run it. A failed sync is left unrecorded and retried next tick."""
+        from agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
+        from gateway.run import _load_gateway_config, _profile_runtime_scope
+        from gateway.run_turn import GatewayTurnMixin
+        current = {}
+        for home in (h.resolve() for h in homes):
+            sig = tuple(_stat_signature(home / name) for name in (ALLOWLIST_FILENAME, "config.yaml"))
+            if seen.get(str(home), ()) == sig:
+                current[str(home)] = sig
+                continue
+            load = partial(_load_gateway_config, home / "config.yaml")
+            scope = (_profile_runtime_scope(home) if self._multiplex_on()
+                     else GatewayTurnMixin._standalone_launch_scope())
+            try:
+                with scope:
+                    sync_from_config(load)
+            except Exception:  # health: allow BLE001 -- one home's failure never blocks the others
+                logger.warning("shell-hook re-sync failed for %s; retrying next cycle", home, exc_info=True)
+                continue
+            current[str(home)] = sig
+        return current
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 
@@ -252,6 +302,8 @@ class GatewayProfileReconcileMixin:
             if isinstance(configs, dict):
                 configs.pop(name, None)
         if added:
+            from gateway.run_runtime import recover_served_native_rows
+            await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
         return result

@@ -1,3 +1,5 @@
+import { usageFromTick } from '@hermes/shared'
+
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
@@ -143,8 +145,11 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
       payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
 
     // A canonical frame's own place in the session's event order fences absence-based retirement.
-    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions,
-      pendingSnapshotFence(event.replay_epoch, event.seq))
+    reconcilePendingSubmissions(
+      storedId,
+      (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq)
+    )
   }
 }
 
@@ -535,16 +540,18 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // Live usage tick emitted while a turn is mid-flight (see tui_gateway
     // _start_usage_ticker) so the status-bar context window tracks growth
     // during the turn instead of only jumping at message.complete.
-    if (payload?.usage && sessionId) {
+    const usage = usageFromTick(payload)
+
+    if (usage && sessionId) {
       // Per-session twin first: a focused secondary tile reads this cache,
       // while the primary-only global mirrors the active session.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...usage }
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => ({ ...current, ...usage }))
       }
     }
 

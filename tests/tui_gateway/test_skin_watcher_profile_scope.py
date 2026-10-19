@@ -7,6 +7,8 @@ outside the TUI (``hermes -p work config set display.skin …``) must still repa
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -31,7 +33,12 @@ def _skins(peer):
 
 
 def _write_skin(home, name):
-    (home / "config.yaml").write_text(f"display:\n  skin: {name}\n", encoding="utf-8")
+    # Atomic replace, like the real config writers: skin names share lengths (ares/mono), and an
+    # in-place same-size rewrite inside one coarse kernel timestamp tick keeps (mtime, size, ino,
+    # ctime), so the server's raw-config cache would serve the previous skin.
+    tmp = home / "config.yaml.tmp"
+    tmp.write_text(f"display:\n  skin: {name}\n", encoding="utf-8")
+    os.replace(tmp, home / "config.yaml")
 
 
 @pytest.fixture

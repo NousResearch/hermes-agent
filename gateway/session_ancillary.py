@@ -257,7 +257,8 @@ async def reload_mcp(connection, ref, params):
     session's MCP servers then change as a new policy generation when it is idle (``session``: applied,
     unchanged or busy); other sessions take theirs when next attached. A configured server that did not
     connect is named: a refusal when nothing took effect (no server registered or removed, no session
-    generation), else ``unavailable`` beside the success."""
+    generation), else ``unavailable`` beside the success. A call naming ``rev``, the revision the session
+    already holds, is that same nothing-left-to-load, answered as success with ``loaded_rev``."""
     if set(params) - {'session_id', 'confirm', 'rev', 'profile'}:
         raise RuntimeStoreError('invalid_params')
     if 'session:control' not in connection.actor.capabilities:
@@ -279,7 +280,12 @@ async def reload_mcp(connection, ref, params):
     multiplex = bool(getattr(runner.config, 'multiplex_profiles', False))
     runner._mcp_reload_refresh_cached_agents(multiplex, served_profile_name(connection.authority.profile_id))
     session = await _commit_session_mcp(connection, ref, params)
-    if failed and session != 'applied' and not (result.get('removed') or result['added']):
+    held_rev = await asyncio.to_thread(_held_mcp_rev, connection, ref) if params.get('rev') else ''
+    # Refuse only a reload whose own work did not take effect: a call that names the revision the session
+    # already holds has nothing left to load, and refusing it leaves a client that acknowledges on
+    # ``reloaded`` retrying a parked server at poll rate with no way to close the handshake (#141769).
+    if (failed and session != 'applied' and not (result.get('removed') or result['added'])
+            and params.get('rev') != held_rev):
         raise RuntimeStoreError('mcp_servers_unavailable', field='mcp_servers',
                                 detail=f'did not connect: {", ".join(failed)}')
     changed = ', '.join(f'{k}: {", ".join(v)}' for k, v in result.items() if v) or 'no server changes'
@@ -290,7 +296,24 @@ async def reload_mcp(connection, ref, params):
     selected = {'session_servers': await asyncio.to_thread(_session_servers, connection.authority, ref.session_id,
                                                            ready)} if session else {}
     return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed}){note}{unavailable}',
+            **({'loaded_rev': held_rev} if held_rev else {}),
             **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
+
+
+def _held_mcp_rev(connection, ref):
+    """The ``mcp_rev`` this session's committed policy already holds — the value ``config.get mtime`` shipped
+    the client — or ``''`` when the call names no live local session."""
+    sid = getattr(ref, 'session_id', None)
+    live = connection.authority.sessions.get(sid) if sid else None
+    if live is None or live.source is None:
+        return ''
+    from pathlib import Path
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_config import mcp_revision
+    from gateway.session_policy import policy_for_source
+    from hermes_cli.config import load_config
+    with _profile_runtime_scope(Path(connection.authority.profile_id)):
+        return mcp_revision(policy_for_source(connection.authority.runner, live.source), load_config())
 
 
 def _session_servers(authority, sid, ready):

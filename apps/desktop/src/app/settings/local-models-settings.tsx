@@ -14,6 +14,7 @@ import {
 } from '@/store/local-runtime-jobs'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
+import { LocalModelDownloadActions, LocalModelDownloadProgress } from './local-model-download-progress'
 import { isActiveStatus } from './local-models-actions'
 import { LocalModelsBrowseSection } from './local-models-browse'
 import { LocalModelsHardwareSection } from './local-models-hardware-section'
@@ -21,7 +22,7 @@ import { LocalModelsModelsSection } from './local-models-models-section'
 import { LocalModelsOwnerProvider, useScopedLocalModelsOwner } from './local-models-owner'
 import { LocalModelsQuickstart } from './local-models-quickstart'
 import { LocalModelsRuntimeSection } from './local-models-runtime-section'
-import { SettingsContent, SettingsSkeleton } from './primitives'
+import { ListRow, SettingsContent, SettingsSkeleton } from './primitives'
 import { ActiveProfileNote } from './profile-scope'
 
 export function LocalModelsSettings(): ReactElement {
@@ -79,10 +80,6 @@ function ScopedLocalModelsSettings(): ReactElement {
     }
   }, [jobs, navigate])
 
-  if (!status || !catalog) {
-    return <SettingsSkeleton sections={[{ rows: 2 }, { rows: 4 }]} />
-  }
-
   const lastError = jobs.find(j => j.status === 'error')
 
   // Until something is servable (runtime + at least one model), the pane
@@ -90,15 +87,15 @@ function ScopedLocalModelsSettings(): ReactElement {
   // its progress has a home even after a remount.
   const qJob = runningQuickstart ?? null
 
-  const needsSetup = !status.runtime_installed || status.models.length === 0
+  const needsSetup = status && (!status.runtime_installed || status.models.length === 0)
   // The setup hero is reserved for an automatic recommendation. A
   // spilled model remains visible below, but setup must not silently choose it.
-  const heroModel = catalog.find(c => c.recommended && c.fits) ?? null
+  const heroModel = catalog?.find(c => c.recommended && c.fits) ?? null
 
   // An active runtime install/update or model download needs the FULL pane
   // (its row lives there with its controls) — the setup hero must not hide
   // it on a remount.
-  const otherActiveJob = jobs.some(
+  const otherActiveJobs = jobs.filter(
     j => (j.kind === 'runtime-install' || j.kind === 'model-download') && isActiveStatus(j.status)
   )
 
@@ -106,7 +103,12 @@ function ScopedLocalModelsSettings(): ReactElement {
     (job: LocalRuntimeJob): boolean => job.kind === 'runtime-install' && job.status === 'error'
   )
 
-  if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob && !installStarting && !failedInstall) {
+  if (
+    (qJob || (needsSetup && !configure && heroModel)) &&
+    !otherActiveJobs.length &&
+    !installStarting &&
+    !failedInstall
+  ) {
     return (
       <LocalModelsQuickstart
         heroModel={heroModel}
@@ -114,6 +116,27 @@ function ScopedLocalModelsSettings(): ReactElement {
         lastError={lastError}
         onConfigure={() => setConfigure(true)}
       />
+    )
+  }
+
+  // Saved jobs are authoritative for recovery; machine probes and catalog
+  // recommendations must not delay their controls.
+  if (!status || !catalog) {
+    return otherActiveJobs.length ? (
+      <SettingsContent>
+        <ActiveProfileNote className="mb-5" />
+        {otherActiveJobs.map(job => (
+          <ListRow
+            action={<LocalModelDownloadActions job={job} owner={owner} />}
+            below={<LocalModelDownloadProgress job={job} />}
+            description={job.detail}
+            key={job.job_id}
+            title={job.target}
+          />
+        ))}
+      </SettingsContent>
+    ) : (
+      <SettingsSkeleton sections={[{ rows: 2 }, { rows: 4 }]} />
     )
   }
 

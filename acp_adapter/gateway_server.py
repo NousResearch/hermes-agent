@@ -662,15 +662,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise
         finally:
             self._submitting.discard(session_id)
-        admission_id = receipt["admission_id"]
-        self._admissions[session_id] = admission_id
-        if receipt.get("status") == "terminal":
-            # A retry of an un-acked submit whose turn already settled: report that turn once.
-            await self._settled_receipt(client, held_id, session_id, receipt)
-        elif receipt.get("status") == "unknown":
-            # A retry of an un-acked submit the owner lost in a restart: never a second turn.
-            self._admissions.pop(session_id, None)
-            raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+        admission_id = await self._admission_from_receipt(client, held_id, session_id, receipt)
+        if admission_id is None:
+            return PromptResponse(stop_reason='end_turn')
         self._inflight[(session_id, admission_id)] = None
         try:
             await self._after_ack(session_id, admission_id, link, resumes)
@@ -708,6 +702,28 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
+
+    async def _admission_from_receipt(self, client, held_id, session_id, receipt):
+        """The admission a ``prompt.submit`` receipt names, or None when the owner admitted nothing."""
+        if receipt.get("voice_stopped") is True:
+            # TUI-26: a bare stop phrase typed into this LOCAL session's voice chat ended the chat on
+            # the owner and admitted nothing, so no turn will settle: the prompt ends here.
+            self._pending_cancels.discard(session_id)
+            if self._conn:
+                from agent.i18n import t
+                await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
+                    t('cli.voice.stop_phrase_typed') + '\n'))
+            return None
+        admission_id = receipt["admission_id"]
+        self._admissions[session_id] = admission_id
+        if receipt.get("status") == "terminal":
+            # A retry of an un-acked submit whose turn already settled: report that turn once.
+            await self._settled_receipt(client, held_id, session_id, receipt)
+        elif receipt.get("status") == "unknown":
+            # A retry of an un-acked submit the owner lost in a restart: never a second turn.
+            self._admissions.pop(session_id, None)
+            raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+        return admission_id
 
     async def _run_slash(self, held_id, session_id, text):
         """Run a slash command's local half: ``(answered, text to submit)``; answered ends the prompt."""

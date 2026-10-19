@@ -140,7 +140,9 @@ def build_gateway_parser(
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
-    _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    _flag(gateway_restart, "--force",
+        help="Restart even when chat work is active or recent (also HERMES_RESTART_FORCE=1); "
+             "also overrides the served-profile guard")
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

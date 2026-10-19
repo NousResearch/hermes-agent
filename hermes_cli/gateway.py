@@ -13,6 +13,7 @@ import os
 import shutil
 import signal
 import socket
+import re
 import shlex
 import subprocess
 import sys
@@ -5465,6 +5466,55 @@ def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
     sys.exit(1)
 
 
+RESTART_QUIET_S = 300
+
+
+def _last_inbound_age_s() -> float | None:
+    """Seconds since the gateway last logged an inbound chat message; None when unknown.
+
+    Reads the tail of ``gateway.log`` (the gateway keeps no structured last-inbound field)."""
+    try:
+        path = get_hermes_home() / "logs" / "gateway.log"
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - 262144))
+            tail = fh.read().decode("utf-8", "replace")
+        stamps = re.findall(
+            r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ INFO gateway\.run: inbound message:", tail, re.M)
+        if not stamps:
+            return None
+        return time.time() - time.mktime(time.strptime(stamps[-1], "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return None
+
+
+def _refuse_restart_while_busy(force: bool) -> None:
+    """Interactive ``hermes gateway restart`` guard: a restart while agents are mid-turn refuses every
+    new chat message (``runtime_draining``) until they finish, up to 30 min. Refuse (exit 2) while work
+    is active or a chat message arrived within ``RESTART_QUIET_S``; ``--force`` / ``HERMES_RESTART_FORCE=1``
+    bypasses. Non-interactive callers (service managers, ``hermes update``, Desktop) are never blocked,
+    and a stale or dead snapshot never blocks."""
+    if force or os.environ.get("HERMES_RESTART_FORCE") == "1" or not sys.stdin.isatty():
+        return
+    from gateway.status import (derive_gateway_busy, parse_active_agents, read_runtime_status,
+                                runtime_status_is_stale, runtime_status_pid_is_live)
+    record = read_runtime_status()
+    if runtime_status_is_stale(record) or not runtime_status_pid_is_live(record):
+        return
+    if derive_gateway_busy(gateway_running=True, gateway_state=record.get("gateway_state"),
+                           active_agents=record.get("active_agents")):
+        count = parse_active_agents(record.get("active_agents"))
+        print(f"✗ Gateway busy: {count} active work unit(s) (gateway_state.json updated {record.get('updated_at')}).\n"
+              "  Restarting now refuses every new chat message until they finish (up to 30 min) and drops\n"
+              "  messages during the reconnect gap. Wait for idle, or pass --force / HERMES_RESTART_FORCE=1.")
+        sys.exit(2)
+    age = _last_inbound_age_s()
+    if age is not None and age < RESTART_QUIET_S:
+        print(f"✗ Gateway handled a chat message {int(age)} s ago (quiet period {RESTART_QUIET_S} s): someone is likely\n"
+              "  mid-conversation; a restart drops or refuses their next messages. Wait for quiet, or pass --force /\n"
+              "  HERMES_RESTART_FORCE=1.")
+        sys.exit(2)
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
@@ -5473,6 +5523,7 @@ def _cmd_restart(args):
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
+    _refuse_restart_while_busy(force)
     # `--all` targets the ONE host multiplexer and _restart_all does its own ownership check with
     # the right one-liner; running the generic named-profile guard first made that branch
     # unreachable for `-p X gateway restart --all` (it printed a bare `gateway restart` instead).

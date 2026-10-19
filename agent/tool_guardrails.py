@@ -50,6 +50,10 @@ _STALL_GUARD_CYCLE_HISTORY = 64
 # aren't worth it, errors never are. The args preview keeps WHAT was called if compression evicts the original.
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
 _RESULT_STUB_ARGS_PREVIEW_CHARS = 120
+# Hash body for every harness refusal: the refusal text carries a repeat counter that rises per call
+# (``already_searched``/``already_read``), so hashing the body as-is makes an unchanged refusal look
+# like fresh output and both loop detectors restart at 1. See ``_result_hash``.
+_GUARDRAIL_REFUSAL_HASH_BODY = '{"guardrail_refusal":true}'
 
 # Tools whose "failure" is normal work output (red test run, empty grep, page timeout).
 # same_tool_failure (DIFFERENT commands) never halts these; only an exact-args replay with
@@ -626,6 +630,13 @@ def _result_hash(result: str | None, tool_name: str = "") -> str:
     parsed = safe_json_loads(result or "")
     if parsed is None:
         return _sha256(result or "")
+    # A harness REFUSAL (repeated read/search) is the same non-result on every replay, but the body
+    # carries a repeat counter -- ``already_searched: 7`` / ``already_read: 9`` -- that rises per call.
+    # Hashed as-is, each refusal looked like NEW output, so the no-progress counter and the identical
+    # call streak restarted at 1 every call and neither hard stop could fire: a worker replayed one
+    # search until an external timeout. The call signature already says WHAT was refused.
+    if is_guardrail_refusal(parsed):
+        return _sha256(_GUARDRAIL_REFUSAL_HASH_BODY)
     if tool_name == "execute_code":
         parsed = _without_execute_code_metadata(parsed)
     return _sha256(_canonical_json(parsed))

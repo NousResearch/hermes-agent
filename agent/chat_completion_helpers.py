@@ -3264,9 +3264,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:
-                    # A dropped stream is never repaired: closing its prefix yields valid
-                    # JSON that silently lacks every key and digit not yet streamed.
-                    if finish_reason is None:
+                    # Dropped or length-truncated arguments can lack keys and digits:
+                    # closing their JSON prefix must not turn it into an executable call.
+                    if finish_reason in (None, FINISH_REASON_LENGTH):
                         has_truncated_tool_args = True
                     else:
                         # Repair before flagging (GLM via Ollama); "{}" = unrepairable.

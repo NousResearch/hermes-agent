@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
+    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug` gönderin."
   deny:
     stale: "❌ Komut reddedildi (onay geçersizdi)."
     no_pending: "Reddedilecek bekleyen komut yok."
@@ -445,6 +446,9 @@ gateway:
     state_no: "Hayır"
     queued: "**Sıradaki devam:** {count}"
     platforms: "**Bağlı platformlar:** {platforms}"
+  discard:
+    nothing: "Atılacak bir şey yok: bu sohbette yeniden başlatmada kaybolan bir tur yok."
+    done: "🗑️ Kaybolan {count} tur atıldı; yeniden çalıştırılmadı. Kaydedilen mesajların şimdi yanıtlanacak."
   stop:
     stopped_pending: "⚡ Durduruldu. Ajan henüz başlamamıştı — bu oturuma devam edebilirsin."
     stopped: "⚡ Durduruldu. Bu oturuma devam edebilirsin."
@@ -1530,6 +1534,8 @@ slash:
     description: "Paylaşılan bir profil arşivini yeni profil olarak içe aktar"
   stop:
     description: "Çalışan tüm arka plan süreçlerini sonlandır"
+  discard:
+    description: "Hermes yeniden başlarken kaybolan bir turu at, böylece bu sohbetin kuyruğu yeniden çalışsın"
   pause:
     description: "Yeni işleri genel olarak duraklat (acil durdurma); '/pause off' devam ettirir"
   deny:
@@ -1683,6 +1689,21 @@ slash:
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
+  modern:
+    thought_for: "{seconds} sn düşündü"
+    thought: "Düşündü"
+    working: "Çalışıyor…"
+    preparing: "{what} hazırlanıyor…"
+    hint_steer: "yönlendir"
+    hint_queue: "sıraya al"
+    hint_interrupt: "kes"
+    hint_stop: "durdur"
+    hint_commands: "komutlar"
+    hint_files: "dosyalar"
+    hint_shell: "kabuk"
+    placeholder_busy_steer: "bu turu yönlendirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_interrupt: "bu turu değiştirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_queue: "bu turdan sonrası için mesaj sıraya almak üzere yazın"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Faturalandırma yüklenemedi"
@@ -2226,6 +2247,7 @@ cli:
     queue_heading: "Kuyruk · {count} sırada · /queue list{controls}"
     more_queued: "+{count} tane daha"
     transcript_unavailable: "Canlı transkript henüz kullanılamıyor."
+    control_pending: "Gönderiliyor…"
     steer_prompt: "Yönlendir: "
     roster_empty: "Canlı alt ajan veya arka plan süreci yok. Sonuçlar konuşmaya gelir."
     entry_gone: "Bu kayıt artık canlı değil."
@@ -2364,6 +2386,14 @@ cli:
     move_out_of_range: "Kuyruk taşıma aralık dışında. Geçerli boyut: {size}"
     moved: "Kuyruk öğesi {source}, {destination} konumuna taşındı."
     usage_add: "Kullanım: /queue add <prompt>"
+    gateway_refused: "Ağ geçidi bunu kuyruğa almadı: {error}. Hiçbir şey kuyruğa alınmadı; tur bitince yeniden gönderin."
+    submit_unknown: "Ağ geçidi yanıt vermedi ({error}); istem zaten kuyrukta olabilir. Yeniden göndermeden önce /queue list ile kontrol edin."
+    move_gateway_fifo: "Ağ geçidi kuyruktaki istemleri gönderilme sırasıyla çalıştırır; bunun yerine birini düzenleyin veya kaldırın."
+    remove_refused: "Kuyruk öğesi {index} kaldırılamadı: {error}"
+    edit_refused: "Kuyruk öğesi {index} düzenlenemedi: {error}"
+    already_started: "Kuyruk öğesi {index} zaten başladı; gönderildiği gibi çalışıyor."
+    started_stopped: "Kuyruk öğesi {index} zaten başlamıştı; ağ geçidi onu durdurdu."
+    change_unknown: "Ağ geçidi kuyruk öğesi {index} için yanıt vermedi ({error}); yeniden denemeden önce /queue list ile kontrol edin."
   reload:
     env_reloaded: ".env yeniden yüklendi ({count} değişken güncellendi)"
   steer:
@@ -3004,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   Varsayılan tarayıcı arka ucuna geri döner"
       usage_status: "status       Geçerli tarayıcı modunu gösterir"
       usage_use: "use [off]    Browser Use moduna (CLI 3.0) geçer / yerleşik araçlara döner"
+      remote_gateway: "/browser connect ve /browser disconnect ağ geçidi ana makinesindeki bir Chromium tarayıcısını yönetir — yalnızca yerel ağ geçidine bağlıyken kullanılabilir."
+      checking: "{url} adresinde Chromium tarayıcısı uzaktan hata ayıklaması denetleniyor..."
+      new_sessions_only: "Yeni oturumlara uygulanır — bu oturum mevcut araçlarını korur (/new ile yeni başlatın)."
+      status_gateway_default: "🌐 Tarayıcı: ağ geçidinin varsayılan tarayıcı arka ucu (canlı CDP bağlantısı yok)"
     heartbeat:
       label: "Heartbeat'ler"
       paused: "⏸ Heartbeat duraklatıldı: {prompt}"

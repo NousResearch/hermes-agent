@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Щоб завантажити повні журнали, використайте `hermes debug share` з CLI."
     share_hint: "Поділіться цими посиланнями з командою Hermes для отримання підтримки."
     report_label: "Звіт"
+    local_refused: "`/debug local` залишає звіт на машині, де працює Hermes, тому недоступна з чату. Надішліть `/debug`, щоб завантажити короткий звіт."
   deny:
     stale: "❌ Команду відхилено (схвалення застаріло)."
     no_pending: "Немає команди для відхилення."
@@ -445,6 +446,9 @@ gateway:
     state_no: "Ні"
     queued: "**Черга продовжень:** {count}"
     platforms: "**Підключені платформи:** {platforms}"
+  discard:
+    nothing: "Нічого відкидати: у цьому чаті немає ходу, втраченого під час перезапуску."
+    done: "🗑️ Відкинуто втрачених ходів: {count}; їх не виконано повторно. Зараз буде відповідь на збережені повідомлення."
   stop:
     stopped_pending: "⚡ Зупинено. Агент ще не починав — можна продовжити цей сеанс."
     stopped: "⚡ Зупинено. Можна продовжити цей сеанс."
@@ -1530,6 +1534,8 @@ slash:
     description: "Імпортувати спільний архів профілю як новий профіль"
   stop:
     description: "Зупинити всі фонові процеси, що виконуються"
+  discard:
+    description: "Відкинути хід, втрачений під час перезапуску Hermes, щоб черга цього чату продовжилася"
   pause:
     description: "Призупинити нову роботу глобально (аварійна зупинка); '/pause off' відновлює"
   deny:
@@ -1683,6 +1689,21 @@ slash:
   quit:
     description: "Вийти з CLI (--delete також видаляє історію сеансу)"
 cli:
+  modern:
+    thought_for: "Міркував {seconds} с"
+    thought: "Міркував"
+    working: "Працюю…"
+    preparing: "Готую {what}…"
+    hint_steer: "спрямувати"
+    hint_queue: "у чергу"
+    hint_interrupt: "перервати"
+    hint_stop: "стоп"
+    hint_commands: "команди"
+    hint_files: "файли"
+    hint_shell: "shell"
+    placeholder_busy_steer: "пишіть, щоб спрямувати цей хід · Tab ставить у чергу на потім"
+    placeholder_busy_interrupt: "пишіть, щоб перенаправити цей хід · Tab ставить у чергу на потім"
+    placeholder_busy_queue: "пишіть, щоб поставити повідомлення в чергу після цього ходу"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Не вдалося завантажити дані оплати"
@@ -2226,6 +2247,7 @@ cli:
     queue_heading: "Черга · {count} у черзі · /queue list{controls}"
     more_queued: "+{count} ще"
     transcript_unavailable: "Транскрипт у реальному часі ще недоступний."
+    control_pending: "Надсилання…"
     steer_prompt: "Скерувати: "
     roster_empty: "Немає активних субагентів чи фонових процесів. Результати з'являться в розмові."
     entry_gone: "Цей запис більше не активний."
@@ -2364,6 +2386,14 @@ cli:
     move_out_of_range: "Переміщення в черзі поза межами діапазону. Поточний розмір: {size}"
     moved: "Елемент черги {source} переміщено на {destination}."
     usage_add: "Використання: /queue add <prompt>"
+    gateway_refused: "Шлюз не поставив це в чергу: {error}. Нічого не поставлено; надішліть знову, коли хід закінчиться."
+    submit_unknown: "Шлюз не відповів ({error}), тож запит, можливо, уже в черзі. Перевірте /queue list, перш ніж надсилати знову."
+    move_gateway_fifo: "Шлюз виконує запити в черзі в порядку надсилання; натомість відредагуйте або видаліть один."
+    remove_refused: "Не вдалося видалити елемент черги {index}: {error}"
+    edit_refused: "Не вдалося змінити елемент черги {index}: {error}"
+    already_started: "Елемент черги {index} уже запущено; він виконується в надісланому вигляді."
+    started_stopped: "Елемент черги {index} уже було запущено; шлюз зупинив його."
+    change_unknown: "Шлюз не відповів щодо елемента черги {index} ({error}); перевірте /queue list, перш ніж пробувати знову."
   reload:
     env_reloaded: "Перезавантажено .env (оновлено змінних: {count})"
   steer:
@@ -3004,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   Повернутися до бекенду браузера за замовчуванням"
       usage_status: "status       Показати поточний режим браузера"
       usage_use: "use [off]    Перемкнутися в режим Browser Use (CLI 3.0) / назад до вбудованих інструментів"
+      remote_gateway: "/browser connect і /browser disconnect керують браузером Chromium на хості шлюзу — доступно лише з локальним шлюзом."
+      checking: "Перевірка віддаленого налагодження браузера Chromium за адресою {url}..."
+      new_sessions_only: "Застосовується до нових сеансів — цей зберігає поточні інструменти (/new, щоб почати новий)."
+      status_gateway_default: "🌐 Браузер: типовий браузер шлюзу (немає активного CDP-з'єднання)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat призупинено: {prompt}"

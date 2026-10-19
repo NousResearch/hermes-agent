@@ -438,6 +438,21 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     assert agent2.reasoning_config == {"enabled": False}
 
 
+def test_an_explicit_level_the_session_already_inherits_is_still_committed(make_agent):
+    """``/reasoning high`` (the rebuilt agent) or a model pick's ``--reasoning high`` while the session runs
+    high by inheritance: still the owner's reasoning mutation, so a later profile change can't move it. An
+    implicit re-derivation (/new, a one-turn restore) of the same level commits nothing."""
+    from types import SimpleNamespace
+    from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+    agent, client = make_agent([])
+    agent.connection.state(SID).info["reasoning_effort"] = "high"
+    GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": True, "effort": "high"},
+                 push_reasoning=True)
+    _apply_reasoning_after_switch(SimpleNamespace(agent=agent), "high", persist_global=False)
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    assert [p["payload"] for m, p in client.calls if m == "session.mutate"] == [{"effort": "high"}] * 2
+
+
 def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(make_agent):
     """Building the agent with the CLI's config-resolved effort (no /reasoning pick) commits nothing:
     a resumed `-q --resume` must keep the session's frozen --reasoning, not the profile default."""
@@ -732,10 +747,10 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
 
 
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
-    """/model, /model --once and /new's reset to the config default call main's
-    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
-    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
-    next turn reads the committed model from the session, not the old one."""
+    """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
+    the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
+    and the agent main rebuilds for the next turn reads the committed model from the session.
+    ``/model --once`` is not this path: that pick is one admission's ``model_override``."""
     agent, client = make_agent([], model="old-model", provider="openrouter")
     agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
                        base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)
@@ -884,3 +899,97 @@ def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
     assert closed == []
     agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
     assert closed == ["clarify"]
+
+
+def test_ctrl_c_during_the_first_api_call_keeps_mains_estimate_marker(make_agent):
+    """T4: Ctrl+C while the turn's first request is in flight. The gateway agent counted the attempt
+    (``api_calls: 1`` in the turn result) but no response priced the ask, so main's in-process bar kept
+    the previous turn's anchor and estimated the ask (``~``). The stand-in must not anchor after the ask."""
+    from agent.usage_anchor import anchored_context_tokens
+    usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)  # no response: cumulative calls unchanged
+    agent, client = make_agent([frame("message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"})],
+                               result={"final_response": "", "api_calls": 1, "interrupted": True, "messages": []})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 2
+    agent.run_conversation("story", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    anchor = agent._turn_base_usage_anchor
+    assert anchor["base_count"] == 2  # the unanswered ask is the estimated delta: main's `~`
+    assert anchored_context_tokens(agent._session_messages, anchor, charge_stale_thinking=False) == 700
+
+
+def test_a_voice_stopped_reply_returns_without_waiting_for_a_turn():
+    """TUI-26: the owner answers a typed stop phrase in a LOCAL voice chat (turned on by another
+    viewer) with ``{voice_stopped: true}`` and admits nothing, so no ``message.complete`` will ever
+    come: the classic CLI returns at once with the stop notice instead of pumping forever."""
+    from agent.i18n import t
+
+    class Client(FakeClient):
+        async def rpc(self, method, *, _timeout=None, **params):
+            if method == "prompt.submit":
+                self.calls.append((method, params))
+                return {"voice_stopped": True}
+            return await super().rpc(method, _timeout=_timeout, **params)
+
+    client = Client([])
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    conn.state(SID)
+    try:
+        printed = []
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._print_fn = printed.append
+        done = {}
+        worker = threading.Thread(target=lambda: done.setdefault("r", agent.run_conversation(
+            "stop", conversation_history=[{"role": "user", "content": "hi"}])), daemon=True)
+        worker.start()
+        worker.join(8)
+        assert not worker.is_alive(), "run_conversation hung waiting for a turn that was never admitted"
+        result = done["r"]
+        assert result["voice_stopped"] is True and not result["failed"] and result["final_response"] == ""
+        assert result["messages"] == [{"role": "user", "content": "hi"}], "nothing was admitted"
+        assert "prompt.receipt" not in [m for m, _ in client.calls]
+        assert any(t("cli.voice.stop_phrase_typed") in line for line in printed), printed
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("mode", ["steer", "interrupt"])
+def test_a_voice_stopped_correction_is_consumed_not_requeued(make_agent, mode):
+    """TUI-26 (Greptile): a bare stop typed while a turn runs reaches ``session.steer`` /
+    ``session.redirect``; the owner ends the LOCAL voice chat and answers ``{voice_stopped: true}``.
+    The classic CLI must take the text as consumed: re-queuing it would submit ``stop`` again once
+    voice is already off, and that becomes an agent turn."""
+    import queue
+
+    from cli import HermesCLI
+
+    agent, client = make_agent([])
+    agent._generation = 7
+    agent._supports_active_turn_redirect = True
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method in {"session.steer", "session.redirect"}:
+            client.calls.append((method, params))
+            return {"voice_stopped": True}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    printed = []
+    agent._print_fn = printed.append
+    shell = object.__new__(HermesCLI)
+    shell.busy_input_mode = mode
+    shell.agent = agent
+    shell._pending_input, shell._interrupt_queue = queue.Queue(), queue.Queue()
+    agent._turn_ask_index = 3  # the running turn's ask; a consumed stop must leave it alone
+    shell._tui_enter_while_busy("stop", [], "stop")
+    assert shell._pending_input.empty() and shell._interrupt_queue.empty(), "consumed stop was re-queued"
+    sent = [m for m, _ in client.calls if m.startswith("session.")]
+    assert sent == [{"steer": "session.steer", "interrupt": "session.redirect"}[mode]]
+    assert agent._turn_ask_index == 3, "the running turn's history changed for a consumed stop"

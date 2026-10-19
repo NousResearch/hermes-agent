@@ -122,6 +122,8 @@ def _ssl_ctx(use_tls: bool) -> Optional[ssl.SSLContext]:
 class IRCAdapter(BasePlatformAdapter):
     """Async IRC adapter implementing the BasePlatformAdapter interface."""
 
+    serial_receive_loop = True  # the read loop awaits each PRIVMSG before reading the next line
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("irc"))
         extra = getattr(config, "extra", {}) or {}
@@ -588,6 +590,8 @@ def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
         name="irc",
+        dashboard_description="Relay messages between an IRC channel (or DMs) and Hermes.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
         label="IRC",
         adapter_factory=IRCAdapter,
         check_fn=check_requirements,

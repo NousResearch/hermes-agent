@@ -139,14 +139,27 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     return default if not allowed or default in allowed else min(allowed)
 
 
+# A classic CLI on a gateway session reads plugin toolsets from the gateway instead of loading plugins
+# (installed by ``_ensure_gateway_session``): ``() -> ([(key, label, description)], {portable MCP})`` or
+# None (off the gateway: this process's own registry).
+_gateway_plugin_toolsets = None
+
+
+def _projected_plugin_toolsets():
+    provider = _gateway_plugin_toolsets
+    return provider() if provider is not None else None
+
+
 def _get_effective_configurable_toolsets():
     """CONFIGURABLE_TOOLSETS + plugin toolsets (appended after built-ins; a plugin key already built-in is skipped)."""
     result = list(CONFIGURABLE_TOOLSETS)
     seen = {ts_key for ts_key, _, _ in result}
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        for entry in get_plugin_toolsets():
+        projected = _projected_plugin_toolsets()
+        if projected is None:
+            from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+            discover_plugins()  # idempotent — ensures plugins are loaded
+        for entry in projected[0] if projected is not None else get_plugin_toolsets():
             if entry[0] not in seen:
                 seen.add(entry[0])
                 result.append(entry)
@@ -158,6 +171,8 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
+        if (projected := _projected_plugin_toolsets()) is not None:
+            return {key for key, _, _ in projected[0]}
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait
@@ -403,8 +418,10 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
         if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
-        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
-        portable = get_portable_mcp_server_names_nowait()
+        projected = _projected_plugin_toolsets()
+        if projected is None:
+            from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+        portable = projected[1] if projected is not None else get_portable_mcp_server_names_nowait()
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
         logger.debug("Failed to include portable MCP servers", exc_info=True)

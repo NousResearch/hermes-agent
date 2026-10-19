@@ -10,6 +10,7 @@ Covers the pieces added when boards became a first-class concept:
 * ``connect(board=)`` isolation — writes on one board don't leak.
 * ``create_board`` / ``list_boards`` / ``remove_board`` round trip.
 * CLI surface: ``hermes kanban boards list/create/switch/rm``.
+* ``hermes kanban boards doctor`` — read-only board/worktree health audit.
 * ``_default_spawn`` injects ``HERMES_KANBAN_BOARD`` into worker env.
 """
 
@@ -429,3 +430,102 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+# ---------------------------------------------------------------------------
+# Boards doctor
+# ---------------------------------------------------------------------------
+
+def _git_repo(path: Path) -> Path:
+    path.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(path)], check=True,
+                   capture_output=True, text=True)
+    (path / "README").write_text("fixture\n", encoding="utf-8")
+    (path / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "README", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(path), "-c", "user.name=Test", "-c",
+                    "user.email=test@example.invalid", "commit", "-m", "init"],
+                   check=True, capture_output=True, text=True)
+    return path
+
+
+def _doctor_json(tmp_path: Path, workdir: Path | None = None):
+    env = {"HERMES_HOME": str(tmp_path)}
+    if workdir is not None:
+        env["HERMES_KANBAN_BOARD"] = "doctor-board"
+        created = _cli(["boards", "create", "doctor-board", "--default-workdir", str(workdir)], env_extra=env)
+        assert created.returncode == 0, created.stderr
+    result = _cli(["boards", "doctor", "--json"], env_extra=env)
+    return result, json.loads(result.stdout)
+
+
+class TestBoardsDoctor:
+    def test_healthy_repo(self, tmp_path):
+        repo = _git_repo(tmp_path / "repo")
+        result, payload = _doctor_json(tmp_path / "home", repo)
+        assert result.returncode == 0
+        assert payload["schema"] == "boards-doctor/v1"
+        assert payload["healthy"] is True
+        board = next(item for item in payload["boards"] if item["slug"] == "doctor-board")
+        assert next(item for item in board["checks"] if item["check"] == "clean_main")["status"] == "ok"
+
+    def test_dirty_main_is_unhealthy(self, tmp_path):
+        repo = _git_repo(tmp_path / "repo")
+        (repo / "README").write_text("dirty\n", encoding="utf-8")
+        result, payload = _doctor_json(tmp_path / "home", repo)
+        assert result.returncode == 1
+        board = next(item for item in payload["boards"] if item["slug"] == "doctor-board")
+        clean = next(item for item in board["checks"] if item["check"] == "clean_main")
+        assert clean["status"] == "fail"
+        assert clean["detail"]["dirty_count"] == 1
+
+    def test_invalid_repo_skips_following_checks(self, tmp_path):
+        result, payload = _doctor_json(tmp_path / "home", tmp_path / "not-repo")
+        assert result.returncode == 1
+        board = next(item for item in payload["boards"] if item["slug"] == "doctor-board")
+        checks = board["checks"]
+        assert checks[0]["status"] == "fail"
+        assert [item["status"] for item in checks[1:]] == ["skip", "skip", "skip"]
+
+    def test_no_default_workdir_is_skipped(self, tmp_path):
+        result = _cli(["boards", "doctor", "--json"], env_extra={"HERMES_HOME": str(tmp_path)})
+        payload = json.loads(result.stdout)
+        assert result.returncode == 0
+        assert payload["summary"]["boards_skipped"] == 1
+        assert payload["boards"][0]["checks"][0]["status"] == "skip"
+
+    def test_stale_done_worktree_is_warning(self, tmp_path, monkeypatch):
+        repo = _git_repo(tmp_path / "repo")
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_HOME", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_WORKSPACES_ROOT"):
+            monkeypatch.delenv(var, raising=False)
+        kb._INITIALIZED_PATHS.clear()
+        kb.create_board("doctor-board", default_workdir=str(repo))
+        worktree = repo / ".worktrees" / "t_done"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b",
+                        "wt/t_done", str(worktree)], check=True,
+                       capture_output=True, text=True)
+        with kbc.connect_closing(board="doctor-board") as conn:
+            task_id = kb.create_task(conn, title="done", workspace_kind="worktree",
+                                     workspace_path=str(worktree), branch_name="wt/t_done")
+            conn.execute("UPDATE tasks SET status='done' WHERE id=?", (task_id,))
+            conn.commit()
+        result, payload = _doctor_json(home, repo)
+        assert result.returncode == 0
+        board = next(item for item in payload["boards"] if item["slug"] == "doctor-board")
+        hygiene = next(item for item in board["checks"] if item["check"] == "worktree_hygiene")
+        assert hygiene["status"] == "warn"
+        assert hygiene["detail"]["stale_worktrees"][0]["task_id"] == task_id
+
+    def test_human_output_reports_failure(self, tmp_path):
+        repo = _git_repo(tmp_path / "repo")
+        (repo / "README").write_text("dirty\n", encoding="utf-8")
+        env = {"HERMES_HOME": str(tmp_path / "home")}
+        created = _cli(["boards", "create", "doctor-board", "--default-workdir", str(repo)], env_extra=env)
+        assert created.returncode == 0, created.stderr
+        result = _cli(["boards", "doctor"], env_extra=env)
+        assert result.returncode == 1
+        assert "SLUG" in result.stdout
+        assert "doctor-board" in result.stdout
+        assert "FAIL" in result.stdout

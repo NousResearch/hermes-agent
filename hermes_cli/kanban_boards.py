@@ -160,6 +160,13 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_doctor(args: argparse.Namespace) -> int:
+    """Read-only audit of every registered board's git workspace."""
+    from hermes_cli import kanban_boards_doctor as doctor
+
+    return doctor.run(args)
+
+
 def _cmd_boards_export(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_transfer
     from hermes_cli.sizefmt import format_bytes
@@ -214,6 +221,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "doctor": _cmd_boards_doctor,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

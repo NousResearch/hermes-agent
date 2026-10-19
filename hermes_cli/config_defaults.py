@@ -459,10 +459,10 @@ DEFAULT_CONFIG = {
         # Windows browser holding its cookies) gives a fresh, signed-out browser plus a note saying why.
         # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
-        # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
-        # copied (the session runs on a fresh browser). When on, the agent ASKS first; on approval it
-        # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # so a new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
+        # Windows only: a running Chrome/Edge/Brave locks its cookie DB (the last snapshot is reused;
+        # with none yet, a fresh browser runs). When on, the agent ASKS first; on approval it runs
+        # `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost) so a
+        # new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
         # browser only locks the password/autofill DBs, which are skipped (cookies still copy).
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
@@ -1654,12 +1654,12 @@ DEFAULT_CONFIG = {
             # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
             # since rich messages are hard to copy as plain text.
             "rich_messages": False,
-            # Experimental rich draft previews while streaming DMs; off because Telegram
-            # Desktop/macOS can overlay draft frames until the chat redraws.
+            # Experimental rich DM stream previews; off: Telegram Desktop/macOS overlays draft frames.
             "rich_drafts": False,
             # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
+            "dm_topic_auto_transfer": False,  # /topic mode: root-DM message opens a fresh topic
         },
     },
 

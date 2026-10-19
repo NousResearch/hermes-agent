@@ -1,0 +1,24 @@
+# Catalog entry for NousResearch/hermes-agent: plugin-catalog/git-review.yaml
+# Pinned to the merge commit of v0.1.12 (release published 2026-10-19). Bump sha and version together.
+name: git-review
+repo: https://github.com/mister-ideas/git-review
+sha: e9ca37e75235732cda7d955068a2f601424e649c
+title: Git Review
+description: "Read-only Git review pane for Hermes Desktop: shows what the agent's last turn, uncommitted, staged or unstaged work, or any selection of commits changed, in unified or split layout, and cites changed lines into the composer as @line: references. It never fetches, stages, commits or checks out. Disclosure — the backend runs read-only git subprocesses (rev-parse, status, diff, log, show, cat-file, ls-files, for-each-ref, branch, remote, rev-list, hash-object) with timeouts and output caps, external diff and textconv drivers disabled; the only network use is the optional PR/MR badge, which runs the user's own gh or glab CLI for the checked-out branch (the plugin itself makes no network requests); it reads files and history inside authorized repositories only (the focused workspace, configured repos/roots and the latest agent selection), this profile's config.yaml, and the cwd column of the sessions table in state.db (read-only); it writes only $HERMES_HOME/plugin-data/git-review/select.sqlite3 (agent selection requests) and Desktop plugin storage (display settings, turn baselines), never into a repository; while the pane is open it polls the local backend every 3 s (agent selections) and 5 s (live diffs); no background processes, credentials or telemetry."
+maintainer: mister-ideas
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "0.1.12"
+docs_url: https://github.com/mister-ideas/git-review#readme
+image: https://raw.githubusercontent.com/mister-ideas/git-review/e9ca37e75235732cda7d955068a2f601424e649c/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/mister-ideas/git-review/e9ca37e75235732cda7d955068a2f601424e649c/docs/pane-unified.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/e9ca37e75235732cda7d955068a2f601424e649c/docs/pane-split.png
+  - https://raw.githubusercontent.com/mister-ideas/git-review/e9ca37e75235732cda7d955068a2f601424e649c/docs/pane-narrow.png
+capabilities:
+  provides_tools:
+    - git_review_select
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -27,6 +27,7 @@ import pytest
 import run_agent
 from agent import chat_completion_helpers as helpers
 from agent import chat_completion_stream_monitor as stream_monitor
+from agent.error_classifier import FailoverReason, classify_api_error
 
 # The contract is "bounded", not any particular number of kills: the window lives in
 # agent/chat_completion_stream_monitor.py. On the unfixed tree the loop never ends.
@@ -147,6 +148,65 @@ def test_the_patience_window_is_per_attempt(monkeypatch):
     clock.now += 11.0  # past THIS attempt's patience, reader still not unwinding
     call._note_stale_kill(False, 5.0)
     assert call._attempt_is_wedged(), "the patience window never expired for a wedged attempt"
+
+
+def test_the_bounds_floor_is_the_loops_own_windows(monkeypatch):
+    """The bound must hold on the loop's own clock: with a read patience far SHORTER than
+    the stale budget, three silent windows govern, and the abandon lands on wall clock even
+    though the read timeout never fired (it never did in #141098)."""
+    clock = _Clock()
+    monkeypatch.setattr(stream_monitor, "time", clock)
+    call, _touches, _waits = _wedged_call(patience=0.01)  # read timeout: tiny
+    call._stream_stale_timeout = 10.0  # three windows = 30s
+
+    call._note_stale_kill(True, 5.0)
+    clock.now += 20.0  # two windows in: still inside
+    call._note_stale_kill(False, 5.0)
+    assert not call._attempt_is_wedged(), "the read timeout governed instead of the windows"
+
+    clock.now += 11.0  # past the third window
+    call._note_stale_kill(False, 5.0)
+    assert call._attempt_is_wedged(), "the bound did not hold on the loop's own clock"
+
+
+def test_a_wedged_attempt_claims_no_liveness_from_the_heartbeat():
+    """The 30s heartbeat touches activity independently of the kill path, so pin the whole
+    property: before abandonment it claims liveness, after it claims none, and the status
+    line stops promising a reconnect."""
+    call, touches, waits = _wedged_call(patience=0.0)
+    call._stream_stale_timeout = 0.0  # no window floor: the re-kill abandons immediately
+
+    call._heartbeat(5)
+    assert len(touches) == 1, "the heartbeat must claim liveness while the attempt is alive"
+
+    call._note_stale_kill(True, 5.0)  # first kill: counted, reconnect notice
+    call._note_stale_kill(False, 5.0)  # abandoned on the re-kill
+    assert call._attempt_is_wedged()
+
+    before = len(touches)
+    call._heartbeat(5)
+    assert len(touches) == before, "a wedged attempt still refreshed the activity heartbeat"
+    assert "reconnecting" in waits[0], "the first kill must still show the reconnect notice"
+    assert "abandoning" in waits[-1], "the abandonment must replace the reconnect notice"
+
+
+def test_the_wedge_error_classifies_as_a_transport_failure_for_fallback():
+    """Raised as a plain unknown error the turn would replay the same wedged route until its
+    retry budget is gone; the message carries the give-up phrases so the classifier lands on
+    ``timeout`` + fallback, exactly like ``_check_stale_giveup``'s error."""
+    call, _touches, _waits = _wedged_call(patience=0.0)
+    call._stream_stale_timeout = 0.0  # no window floor: the re-kill abandons immediately
+    call._note_stale_kill(True, 5.0)
+    call._note_stale_kill(False, 5.0)
+    assert call._attempt_is_wedged()
+
+    with pytest.raises(RuntimeError) as caught:
+        call._raise_wedged_stream()
+
+    verdict = classify_api_error(caught.value, provider="custom", model="m")
+    assert verdict.reason == FailoverReason.timeout, f"classified as {verdict.reason}"
+    assert verdict.should_fallback is True, "the fallback chain would never be walked"
+    assert verdict.retryable is False, "a wedged route must not be retried on the spot"
 
 
 # ── end to end: the kill cannot reach the reader, the call must end anyway ──

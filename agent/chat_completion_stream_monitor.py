@@ -1,6 +1,7 @@
 """Display and heartbeat phase of the request-local streaming monitor."""
 
 import logging
+import math
 import time
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -12,27 +13,43 @@ from agent.sleep_clock import SleepWatch
 
 logger = logging.getLogger(__name__)
 
+# Stale windows a wedged attempt may be re-killed for before it is abandoned. The
+# patience window below is at least this many of the loop's own windows, so the
+# verdict never *depends* on the read timeout firing (in #141098 it never did).
+_STALE_REKILL_WINDOWS = 3
+
 
 class StreamingWaitMonitor:
     def _stale_kill_patience(self) -> float:
         """Wall-clock window a wedged attempt's re-kills may keep re-arming before it is
-        abandoned: its own read timeout. That timeout is the last thing that legitimately
-        ends a parked read by itself, so a re-kill only proves wedging once it has passed;
-        and a short stale budget re-fires many times inside one read timeout, so the bound
-        is wall clock, never a kill count (#141098)."""
+        abandoned: the later of ``_STALE_REKILL_WINDOWS`` stale windows and the attempt's
+        own read timeout.
+
+        The floor keeps the bound on the loop's own clock — three silent windows is
+        evidence by itself — and the read timeout keeps it from preempting the one
+        mechanism that can still end a parked read on its own (#141098: the timeout
+        never fired, which is exactly why a window tied to it alone would be a premise
+        the incident already disproved).
+        """
         try:
-            return float(self._stream_timeouts()[1])
+            stale = float(self._stream_stale_timeout)
+        except (TypeError, ValueError):
+            stale = 0.0
+        windows = _STALE_REKILL_WINDOWS * stale if math.isfinite(stale) else 0.0
+        try:
+            return max(float(self._stream_timeouts()[1]), windows)
         except (AttributeError, IndexError, TypeError, ValueError):
-            return 120.0  # a monitor without the wire's timeouts (the bare mixin in tests)
+            return max(120.0, windows)
 
     def _note_stale_kill(self, counted: bool, elapsed: float) -> None:
         """Book one stale kill of the current attempt; keep its display/liveness honest.
 
-        The first kill of an attempt is the one that counts toward the cross-call breaker
-        and claims liveness. A re-kill means the previous kill did NOT unblock the reader —
-        there is no progress to report, so it must not refresh the activity heartbeat
-        either, or the kanban wedge reclaim never sees the worker (#141098). Past the
-        patience window the attempt is abandoned: no further kill can change its outcome.
+        The first kill of an attempt is the one that counts toward the cross-call breaker,
+        claims liveness and shows the reconnect notice. A re-kill means the previous kill
+        did NOT unblock the reader: it reports nothing new, and it must not refresh the
+        activity heartbeat (the kanban wedge reclaim reads that heartbeat as liveness) or
+        the "reconnecting" status. Past the patience window the attempt is abandoned: no
+        further kill can change its outcome.
         """
         with self.stream_attempt_lock:
             attempt = int(self.stream_attempt_state["current"])
@@ -49,33 +66,47 @@ class StreamingWaitMonitor:
             self._abandon_stale_attempt(elapsed)
             return
         self.last_chunk_time["t"] = time.time()  # another full stale window before the next kill
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
         if counted:
+            self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
             self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
     def _abandon_stale_attempt(self, elapsed: float) -> None:
         """A wedged attempt whose kills never unwound the reader: stop killing and stop
-        claiming liveness. The worker path raises from ``run()``; the inline path leaves
-        the activity heartbeat to go stale so the external reclaim owns the worker."""
+        claiming liveness, and say so instead of re-announcing a reconnect.
+
+        The worker path raises from ``run()``. The inline path cannot be interrupted —
+        the caller is parked in the read on its own thread — so there the verdict ends
+        the re-kill loop, the status churn and the heartbeats, and the read timeout (or
+        a turn-level watchdog outside this file) remains the only exit.
+        """
         state = self._stale_rekill_state
         logger.error(
-            "Stale stream: attempt %s was re-killed %d times over %.0fs — past its %.0fs read "
-            "patience without the reader unwinding; abandoning it (the socket shutdown is not "
+            "Stale stream: attempt %s was re-killed %d times over %.0fs — past its %.0fs patience "
+            "window without the reader unwinding; abandoning it (the socket shutdown is not "
             "unblocking the worker). model=%s",
             state["attempt"], state["count"], time.time() - state["since"],
             self._stale_kill_patience(), self.api_kwargs.get("model", "unknown"),
         )
         self._stale_wedged = True
+        self.agent._emit_diagnostic_wait(
+            f"⚠ no output from provider for {int(elapsed)}s — abandoning this attempt")
 
     def _attempt_is_wedged(self) -> bool:
         return bool(getattr(self, "_stale_wedged", False))
 
     def _raise_wedged_stream(self) -> None:
-        """Fail the call so the retry/fallback path runs instead of looping forever."""
+        """Fail the call so the retry/fallback path runs instead of looping forever.
+
+        The message carries the same two phrases as ``_check_stale_giveup``'s error because
+        the classifier keys on them (``agent/error_classifier.py``, "consecutive stale
+        attempts" + "aborting this call"): that verdict is ``timeout`` with
+        ``_ABORT_FALLBACK``, so the caller walks its fallback chain instead of replaying the
+        same wedged route until its retry budget is gone.
+        """
         state = self._stale_rekill_state
         raise RuntimeError(
-            f"Provider stream is wedged: the stale watchdog killed attempt {state['attempt']} "
-            f"{state['count']} times without the read unwinding — aborting this call so the "
+            f"Provider stream is wedged: {state['count']} consecutive stale attempts on the same "
+            f"read (attempt {state['attempt']}, no chunks received) — aborting this call so the "
             "retry/fallback path can run. Switch models or start a new session, then retry."
         )
 
@@ -152,6 +183,10 @@ class StreamingWaitMonitor:
     def _heartbeat(self, waiting_secs: int) -> None:
         """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
         local prefill) can exceed the gateway timeout."""
+        if self._attempt_is_wedged():
+            # A wedged attempt claims no liveness from ANY source, this 30s heartbeat
+            # included — the kanban wedge reclaim reads that heartbeat as progress (#141098).
+            return
         if waiting_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).

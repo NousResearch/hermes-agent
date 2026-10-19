@@ -9,7 +9,40 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { clampRectToWorkArea, resolvePetOverlayBounds } from './pet-overlay'
+import {
+  clampRectToWorkArea,
+  petOverlayClickThrough,
+  resolvePetOverlayBounds,
+  shouldPopInOnOverlayClosed
+} from './pet-overlay'
+
+test('petOverlayClickThrough is off on Linux, where forward:true never re-arms the sprite', () => {
+  assert.equal(petOverlayClickThrough('darwin'), true)
+  assert.equal(petOverlayClickThrough('win32'), true)
+  assert.equal(petOverlayClickThrough('linux'), false)
+})
+
+// ─── quit-path pop-in suppression (#55920) ──────────────────────────────────
+//
+// The overlay's 'closed' handler echoes pop-in so a pet whose window went away
+// on its own (⌘W) comes back inside the app. During a quit that echo is a bug:
+// popInPet() persists $petOverlayActive=false, so restorePetOverlay() on the
+// next boot skips restoration and the pet silently reverts to in-window.
+
+test('the overlay close echo pops the pet back in while the app is alive', () => {
+  assert.equal(shouldPopInOnOverlayClosed({ appQuitting: false, mainWindowAlive: true }), true)
+})
+
+test('a quit suppresses the pop-in echo, so the popped-out state survives for the next boot', () => {
+  // before-quit teardown and the non-macOS primary-window close both latch the
+  // quit flag before closePetOverlay() fires the overlay's 'closed' handler.
+  assert.equal(shouldPopInOnOverlayClosed({ appQuitting: true, mainWindowAlive: true }), false)
+})
+
+test('no live main window means no echo, quit or not', () => {
+  assert.equal(shouldPopInOnOverlayClosed({ appQuitting: false, mainWindowAlive: false }), false)
+  assert.equal(shouldPopInOnOverlayClosed({ appQuitting: true, mainWindowAlive: false }), false)
+})
 
 // A laptop panel left behind after a bigger external monitor is unplugged.
 const LAPTOP = [{ workArea: { x: 0, y: 0, width: 1366, height: 728 } }]
@@ -30,14 +63,8 @@ const PET_BOUNDS = { x: 200, y: 150, width: 300, height: 400 }
 test('resolvePetOverlayBounds returns null for missing or garbage input', () => {
   assert.equal(resolvePetOverlayBounds(null, LAPTOP, ANCHOR_ON_LAPTOP), null)
   assert.equal(resolvePetOverlayBounds(undefined, LAPTOP, ANCHOR_ON_LAPTOP), null)
-  assert.equal(
-    resolvePetOverlayBounds({ x: NaN, y: 0, width: 100, height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP),
-    null
-  )
-  assert.equal(
-    resolvePetOverlayBounds({ x: 0, y: 0, width: 'wide', height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP),
-    null
-  )
+  assert.equal(resolvePetOverlayBounds({ x: NaN, y: 0, width: 100, height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP), null)
+  assert.equal(resolvePetOverlayBounds({ x: 0, y: 0, width: 'wide', height: 100 }, LAPTOP, ANCHOR_ON_LAPTOP), null)
 })
 
 test('resolvePetOverlayBounds returns requested unchanged with no displays to validate against', () => {

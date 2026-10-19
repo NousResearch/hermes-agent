@@ -15,6 +15,7 @@ Core invariant these tests pin:
   never left to resolve against whatever the process cwd happens to be.
 """
 
+import json
 import os
 from pathlib import Path, PurePosixPath
 
@@ -22,7 +23,7 @@ import pytest
 
 import tools.file_tools as ft
 import tools.file_tools_paths as ftp
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 
 @pytest.fixture
@@ -49,7 +50,7 @@ def test_relative_terminal_cwd_anchors_to_absolute_not_process_cwd(_isolated_cwd
     make it absolute deterministically. We assert the resolved path is
     absolute and stable regardless of where os.getcwd() points.
     """
-    workspace, decoy = _isolated_cwd
+    _workspace, _decoy = _isolated_cwd
     # Poison config: literal relative '.'
     monkeypatch.setenv("TERMINAL_CWD", ".")
 
@@ -71,7 +72,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
     worktree) must override a stale relative TERMINAL_CWD so edits land where
     the agent is actually working.
     """
-    workspace, decoy = _isolated_cwd
+    workspace, _decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", ".")
     terminal_tool.record_session_cwd("default", str(workspace))
 
@@ -82,7 +83,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
 
 def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     """An absolute TERMINAL_CWD is the resolution base (no live tracking)."""
-    workspace, decoy = _isolated_cwd
+    workspace, _decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", str(workspace))
 
     resolved = ftp._resolve_path_for_task("target.py", task_id="default")
@@ -137,7 +138,7 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
 
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
-    workspace, decoy = _isolated_cwd
+    _workspace, _decoy = _isolated_cwd
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
     resolved = ftp._resolve_path_for_task("target.py", task_id="default")
@@ -259,8 +260,6 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     landed in a different directory than everything the tool reported. The fix
     rewrites headers to the resolved absolute paths before apply.
     """
-    import json
-
     workspace, decoy = _isolated_cwd
     task_id = "sess-v4a"
 
@@ -301,3 +300,55 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("header,safe_root,content,dest", [
+    ("*** Delete File: local.yaml", False, "shared: true\n", None),
+    # A trailing separator or "." must still name the link, not fall back to its target.
+    ("*** Delete File: local.yaml/", False, "shared: true\n", None),
+    ("*** Delete File: local.yaml/.", False, "shared: true\n", None),
+    ("*** Move File: local.yaml -> old.yaml", False, "shared: true\n", "old.yaml"),
+    ("*** Update File: local.yaml\n@@\n-shared: true\n+shared: false\n*** Move File: local.yaml -> old.yaml",
+     False, "shared: false\n", "old.yaml"),
+    # The link lives outside HERMES_WRITE_SAFE_ROOT but points inside it: guarding
+    # only the target would let the delete remove an entry outside the root.
+    ("*** Delete File: local.yaml", True, "shared: true\n", None),
+])
+def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
+        _isolated_cwd, monkeypatch, header, safe_root, content, dest):
+    """Delete and Move act on the directory entry. Resolving a symlinked header to its
+    target deleted or renamed the real file and left the link dangling; an Update still
+    edits the target's content through the link. The write guards cover the entry too."""
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+    from tools.registry import registry
+
+    workspace, _decoy = _isolated_cwd
+    task_id = "sess-v4a-link"
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+    env = LocalEnvironment(cwd=str(workspace))
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ShellFileOperations(env))
+    (workspace / "safe").mkdir()
+    target, link = workspace / "safe" / "base.yaml", workspace / "local.yaml"
+    target.write_text("shared: true\n", encoding="utf-8")
+    link.symlink_to("safe/base.yaml")
+    if safe_root:
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(workspace / "safe"))
+
+    out = json.loads(registry.dispatch(
+        "patch", {"mode": "patch", "patch": f"*** Begin Patch\n{header}\n*** End Patch\n"}, task_id=task_id))
+
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_text(encoding="utf-8-sig") == content
+    if safe_root:
+        assert not out.get("success") and "HERMES_WRITE_SAFE_ROOT" in json.dumps(out), out
+        assert link.is_symlink()
+        return
+    assert out.get("success"), out
+    assert not os.path.lexists(link)
+    assert str(link) in out["files_modified"]
+    if dest:
+        assert os.readlink(workspace / dest) == "safe/base.yaml"

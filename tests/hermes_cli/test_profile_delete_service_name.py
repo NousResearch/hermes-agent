@@ -34,7 +34,7 @@ def two_homes(tmp_path, monkeypatch):
     return launch, victim, host_unit, victim_unit
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_delete_from_a_pinned_multiplexer_targets_the_victims_unit_only(two_homes, monkeypatch):
     launch, victim, host_unit, victim_unit = two_homes
     calls: list[list[str]] = []

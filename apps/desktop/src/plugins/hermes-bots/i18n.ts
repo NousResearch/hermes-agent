@@ -23,455 +23,22 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
- * the resolution chain (active locale → this plugin's `en` → the key) the
- * same way a missing string in any locale does. Nouns match core: ボット /
+ * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; canonical hosted
+ * groups additionally cover Arabic and Russian. Missing legacy keys still
+ * resolve through this plugin's English bundle. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { bind, type Bound } from './i18n-bind'
+import { type BotsMessages } from './i18n-messages'
 import { getPluginCtx } from './shared'
 
-type BotsMessages = {
-  /** Left rail: the bot + group-chat roster. */
-  editor: {
-    fullConfigHint: string
-    liveCapabilities: string
-    editSoul: string
-    remoteCapabilitiesHint: string
-    skillsEnabled: (enabled: number, total: number) => string
-    toolsetsEnabled: (enabled: number, total: number) => string
-    mcpServers: string
-    providerCustom: string
-    modelCustom: string
-    backToDropdowns: string
-    inheritLaunch: string
-    enterManually: string
-    gatewayDefault: string
-    modelNameExample: string
-    modelSwitchFailed: string
-    newDescription: string
-    name: string
-    title: string
-    description: string
-    createOn: string
-    general: string
-    capabilities: string
-    skills: string
-    tools: string
-    cloneFrom: string
-    freshProfile: string
-    inheritedModel: string
-    soul: string
-    shareKeys: string
-    shareKeysHint: string
-    createEmpty: string
-    nameTakenHint: string
-    nameFirstHint: string
-    newerDesktop: string
-    newerGateway: string
-    emptySkillsHint: string
-    defaultToolsHint: string
-    catalog: string
-    catalogInstalled: string
-    mcpHint: string
-    creating: string
-    createBot: string
-    auto: string
-    autoHint: string
-    unlock: string
-    lockFace: string
-    lockedHint: string
-    unlockedHint: string
-    noImageModel: string
-    checkingImage: string
-    chooseImage: string
-    editDescription: (name: string, profile: string) => string
-    nameTaken: (name: string) => string
-    nameTakenOn: (name: string, target: string) => string
-    currentConnection: (name: string) => string
-    remoteHint: (target: string) => string
-    cloneFromOn: (target: string) => string
-    catalogHint: (source: string) => string
-    sectionsFailed: (sections: string) => string
-    updated: (name: string) => string
-    created: (name: string) => string
-    createdOn: (name: string, target: string) => string
-  }
-  roster: {
-    search: string
-    searchPlaceholder: string
-    newBotOrGroup: string
-    groupChats: string
-    emptyTitle: string
-    emptyDesc: string
-    noMatchQuery: (query: string) => string
-    noMatchQueryOn: (query: string, gateway: string) => string
-    noMatchFiltersOn: (gateway: string) => string
-    noMatchFilters: string
-    clearFilters: string
-    allHidden: string
-    allHiddenDesc: string
-    showHidden: string
-    noHiddenMatch: string
-    hiddenFromRoster: string
-    pinned: string
-    needsAttention: string
-    needsInput: string
-    /** The kind filter's three options, in menu order. */
-    botsAndGroups: string
-    botsOnly: string
-    groupsOnly: string
-    /** The activity filter's four options, in menu order. */
-    anyActivity: string
-    activeNow: string
-    recentlyActive: string
-    older: string
-    /** How a row's owning gateway is doing — see `botSourceStatus`. */
-    gatewayRemoved: string
-    onDemand: string
-    ready: string
-    statusUnknown: string
-    unavailable: string
-    retryNow: string
-    rosterUnavailable: (reason: string) => string
-    waitingForGateway: string
-  }
-  /** User-made roster sections (folders the user files bots into). */
-  sections: {
-    newSection: string
-    newTitle: string
-    renameTitle: string
-    nameLabel: string
-    namePlaceholder: string
-    create: string
-    rename: string
-    moveUp: string
-    moveDown: string
-    unassigned: string
-    options: (name: string) => string
-    headingTip: string
-    emptyHint: string
-    moveTo: string
-    newSectionEllipsis: string
-    removeFromSection: string
-    deleted: (name: string, count: number) => string
-    undo: string
-  }
-  /** Creating, editing and removing a bot. */
-  bot: {
-    newTitle: string
-    editTitle: string
-    editMenu: string
-    helpPromptPlaceholder: string
-    descriptionHint: string
-    newChatWith: string
-    /** Re-opens the forever-chat on purpose. A plain row click only returns to
-     *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
-    openBotChat: string
-    /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */
-    pinToTop: string
-    unpin: string
-    pinnedToast: (name: string) => string
-    unpinnedToast: (name: string) => string
-    hide: string
-    unhide: string
-    hiddenToast: (name: string) => string
-    unhiddenToast: (name: string) => string
-    groupsMenu: (groups: string) => string
-    manageGroups: string
-    metadataLoadFailed: string
-    loadFailed: string
-    groupsLoadFailed: string
-    thisDevice: string
-    /** Roster badge tooltips per attention class; `attentionFallback` when the class is unknown. */
-    attentionFallback: string
-    attentionProviderAuth: string
-    attentionQuota: string
-    attentionMissingConfig: string
-    attentionBlocked: string
-    duplicate: string
-    duplicateFailed: string
-    deleteTitle: string
-    removeFromAllGroups: string
-    createFirstHint: string
-    createFailed: string
-    advanced: string
-    advancedHint: string
-    advancedFailed: string
-    openAnotherChatUnsupported: string
-    remoteConnectionsUnsupported: string
-    /** Bot-open failure toasts (canonical-chat.ts notifyBotOpenFailure). The
-     *  raw RPC/connection error travels in the toast `detail`, never here. */
-    openNeedsUpdateTitle: string
-    openNeedsUpdateMessage: (connectionLabel: string) => string
-    openUnreachableTitle: string
-    openUnreachableMessage: string
-    openChatFailedTitle: (botName: string) => string
-    openChatFailedMessage: string
-    openGateways: string
-    /** Stands under the bot's name in a chat it has not spoken in yet. */
-    chatEmpty: string
-    /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
-    kickoff: string
-  }
-  /** Avatar picker: shapes, blobs, pets, uploads, generation. */
-  avatar: {
-    classicShapes: string
-    blobFromName: string
-    unlockFollowsName: string
-    randomize: string
-    /** The picker's four tabs, in order. */
-    tabBot: string
-    tabGenerate: string
-    upload: string
-    tabPet: string
-    removeImage: string
-    removeBackToShape: string
-    describePlaceholder: string
-    describeHint: string
-    matchTheName: string
-    pickPet: string
-    petLoadFailed: string
-    imageTooLarge: string
-    generationFailed: string
-    savedLocally: string
-    savedLocallyDescriptionFailed: string
-    generate: string
-    generating: string
-  }
-  /** Group chats: the room, its composer, threads and activity feed. */
-  group: {
-    newTitle: string
-    manageDesc: string
-    manageTitle: string
-    settingsTitle: string
-    settingsDesc: string
-    nameLabel: string
-    holdDetection: string
-    holdDetectionHint: string
-    compressHistory: string
-    compressHistoryHint: (member: string) => string
-    compressing: (member: string) => string
-    compressDone: (member: string, compressed: number, detail: string) => string
-    compressNothing: (member: string) => string
-    compressFailed: (member: string, error: string) => string
-    searchToAdd: string
-    searchToAddPlaceholder: string
-    removeFromSelection: string
-    disbandTitle: string
-    deleteTitle: string
-    deleteAction: string
-    composerPlaceholder: string
-    slashCommandsUnsupported: string
-    attachHint: string
-    newThread: string
-    reply: string
-    replyInThread: string
-    replyInThreadPlaceholder: string
-    openThread: string
-    collapseThread: string
-    collapseThreadLabel: string
-    activity: string
-    noActivityYet: string
-    showActivity: string
-    hideActivity: string
-    stop: string
-    stopHint: string
-    allHeldStatus: (count: number) => string
-    heldMembersStatus: (members: string) => string
-    holdReleaseHint: string
-    needsYourInput: string
-    noMembersToSend: (group: string) => string
-    pictureGenerationFailed: string
-    nameTaken: (name: string) => string
-    memberCount: (count: number) => string
-    /** The reader's own lines in a room: the transcript speaker and the roster preview. */
-    you: string
-    /** How many of a room's members are reachable right now. */
-    availableCount: (available: number, total: number) => string
-    settingsHint: (group: string) => string
-    settingsLabel: (group: string) => string
-    disbandHint: (group: string) => string
-    disbandLabel: (group: string) => string
-    disbandAction: string
-    disbanding: string
-    disbandDone: string
-    disbanded: (group: string) => string
-    /** Wraps the bolded group name, so the name can lead the sentence in
-     *  languages that put it there — see core's cron.deleteDesc* pair. */
-    disbandDescPrefix: string
-    disbandDescSuffix: (count: number) => string
-    stopped: (group: string) => string
-    removeAttachment: string
-    threadFallback: string
-    replyCount: (replies: number) => string
-    dropToThread: string
-    dropToRoom: string
-    waitingForAnswer: string
-    memberThinking: (name: string) => string
-    roomWorking: string
-    messageRoom: (group: string) => string
-    newThreadPlaceholder: (group: string) => string
-    everyoneMeta: string
-    commandApproval: string
-    answerFailed: (handle: string, error: string) => string
-    wantsToRunCommand: (handle: string) => string
-    asks: (handle: string) => string
-    answerTo: (member: string) => string
-  }
-  /** Skills hub + MCP setup surfaces embedded in the bot editor. */
-  tools: {
-    installHint: (name: string) => string
-    installed: (name: string) => string
-    installFailed: (name: string) => string
-    searchHint: string
-    resizeHint: string
-    addServerFailed: string
-    noTarget: string
-    setKeyFailed: (name: string) => string
-    configured: (name: string) => string
-    authenticated: (name: string) => string
-    testFailed: string
-    completeSignIn: string
-    needsSetup: (name: string) => string
-    setUpDone: string
-    saveTest: string
-    authorizing: string
-    working: string
-    setupFailed: string
-    signIn: string
-    setUp: string
-    skillsHub: string
-    filterSkills: string
-    searchHub: string
-    noMcpServers: string
-  }
-
-  /** Bot Screen: the bot's headless desktop on the gateway host, live in a pane. */
-  screen: {
-    title: string
-    menu: string
-    unsupportedTitle: string
-    unsupportedBody: string
-    notInstalledTitle: string
-    notInstalledBody: string
-    installHint: string
-    install: string
-    installing: string
-    installCancelled: string
-    installFailed: string
-    noPackageManager: string
-    portalTitle: string
-    portalOpen: string
-    heroStopped: string
-    heroNotInstalled: string
-    heroConnecting: string
-    heroStale: string
-    heroSuppressed: string
-    heroOpenLive: string
-    heroInstall: string
-    heroStart: string
-    portalWatching: string
-    portalYouControl: string
-    portalOtherControls: string
-    portalStopped: string
-    portalNotInstalled: string
-    portalUnsupported: string
-    portalUnavailable: string
-    unavailableTitle: string
-    autoOpenMenu: string
-    autoOpenOnToast: (name: string) => string
-    autoOpenOffToast: (name: string) => string
-    stoppedTitle: string
-    stoppedBody: string
-    start: string
-    attaching: string
-    streamLost: string
-    reconnect: string
-    takeOver: string
-    handBack: string
-    handBackForce: string
-    handBackForceHint: string
-    openNeedsUpdate: string
-    youControl: string
-    otherControls: string
-    agentControls: string
-    controlTaken: string
-  }
-
-  /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,
-   *  Daily/Hourly, the job verbs) resolves against core's `cron` section. */
-  cron: {
-    untitled: string
-    nameNul: string
-    instructionNul: string
-    minutesFromNow: string
-    hoursFromNow: string
-    daysFromNow: string
-    stopAfter: string
-    runsHint: string
-    detailDescription: string
-    status: string
-    active: string
-    paused: string
-    schedule: string
-    rawSchedule: string
-    repeat: string
-    nextRun: string
-    overdueSince: string
-    lastRun: string
-    lastResult: string
-    workdir: string
-    succeeded: string
-    failed: string
-    deliveryFailed: string
-    blockedConfig: string
-    legacyUnsafe: string
-    filterHint: string
-    needsRosterFirst: string
-    staleNotice: string
-    readFailure: string
-    createDesc: (bot: string) => string
-    instruction: string
-    whenToRun: string
-    dayOfMonth: string
-    sendResultsTo: string
-    runHistoryOnly: string
-    botChatTarget: (bot: string) => string
-    continuity: string
-    onceIn: (when: string) => string
-    everyNDays: (days: number) => string
-    everyNHours: (hours: number) => string
-    everyNMinutes: (minutes: number) => string
-    /** The frequency picker's eight options, in menu order. */
-    freqOnce: string
-    freqHourly: string
-    freqDaily: string
-    freqWeekdays: string
-    freqWeekly: string
-    freqMonthly: string
-    freqInterval: string
-    freqAdvanced: string
-    unitMinutes: string
-    unitHours: string
-    unitDays: string
-    /** One-line plain-language read-back of the picker's current state. */
-    runsOnce: (count: number, unit: string) => string
-    runsHourly: string
-    runsDaily: (time: string) => string
-    runsWeekdays: (time: string) => string
-    runsWeekly: (day: string, time: string) => string
-    runsMonthly: (day: string, time: string) => string
-    runsInterval: (count: number, unit: string) => string
-    runsRaw: string
-    timesTotal: (count: number) => string
-  }
-}
-
 const en: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
@@ -503,8 +70,12 @@ const en: BotsMessages = {
     inheritedModel: 'inherited from launch profile',
     soul: 'SOUL.md (optional — replaces the generated persona)',
     shareKeys: 'Share keys & accounts with the main profile',
+    shareKeysOn: target => `Share keys & accounts with the default profile on ${target}`,
     shareKeysHint:
       'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+    needsModel:
+      'No model provider is ready for it yet, so it skipped its introduction. Pick a provider and model under Advanced.',
+    configureModel: 'Configure model',
     createEmpty: 'Create empty (skip bundled skills)',
     nameTakenHint: 'That name is taken — pick another before configuring capabilities.',
     nameFirstHint: 'Name the bot first — a draft profile is created when you open this tab (discarded if you cancel).',
@@ -610,6 +181,7 @@ const en: BotsMessages = {
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
     openBotChat: 'Open Bot Chat',
+    openingChat: 'Opening chat…',
     pinToTop: 'Pin to top',
     unpin: 'Unpin',
     pinnedToast: name => `${name} pinned to top`,
@@ -809,12 +381,22 @@ const en: BotsMessages = {
     portalNotInstalled: 'Not installed on host',
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
+    portalUnavailableManaged: 'Screen is not available on this managed Hermes release yet',
+    managedNotIncludedTitle: 'Screen isn’t included on this bot',
+    managedNotIncludedBody:
+      'Hermes Cloud includes Screen on bots with 8 GB of memory or more. It can’t be installed on a smaller bot.',
     unavailableTitle: 'Screen needs a newer Hermes',
     autoOpenMenu: 'Open Screen when the bot uses it',
     autoOpenOnToast: name => `${name}’s Screen opens when it starts using its desktop`,
     autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
+    placementSandbox: backend => `Screen runs inside the ${backend} sandbox, with the terminal`,
+    imageSwitchTitle: 'New sandbox image available',
+    imageSwitchBody: (current, target) =>
+      `Your sandbox still runs ${current}, which has no desktop. Switching to ${target} recreates the container the next time the bot uses its terminal: files in /root and /workspace stay on this machine, packages installed inside the container are reinstalled on demand.`,
+    imageSwitchApprove: 'Switch image',
+    imageSwitchKeep: 'Keep current image',
     start: 'Start screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
@@ -896,6 +478,7 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
@@ -928,8 +511,12 @@ const ja: BotsMessages = {
     inheritedModel: '起動時のプロファイルから継承',
     soul: 'SOUL.md（任意 — 生成された人格を置き換えます）',
     shareKeys: 'メインプロファイルとキー・アカウントを共有',
+    shareKeysOn: target => `${target} の default プロファイルとキー・アカウントを共有`,
     shareKeysHint:
       'サブスクリプション、OAuth ログイン、API キーをコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+    needsModel:
+      'まだ使用できるモデルプロバイダーがないため、自己紹介をスキップしました。「詳細設定」でプロバイダーとモデルを選んでください。',
+    configureModel: 'モデルを設定',
     createEmpty: '空のプロファイルを作成（同梱スキルを除外）',
     nameTakenHint: 'その名前は使用済みです。機能を設定する前に別の名前を選んでください。',
     nameFirstHint:
@@ -1035,6 +622,7 @@ const ja: BotsMessages = {
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
+    openingChat: 'チャットを開いています…',
     pinToTop: '先頭にピン留め',
     unpin: 'ピン留めを解除',
     pinnedToast: name => `${name}を先頭にピン留めしました`,
@@ -1237,12 +825,22 @@ const ja: BotsMessages = {
     portalNotInstalled: 'ホストに未インストール',
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
+    portalUnavailableManaged: 'この管理された Hermes リリースではまだ Screen を利用できません',
+    managedNotIncludedTitle: 'このボットには Screen が含まれていません',
+    managedNotIncludedBody:
+      'Hermes Cloud では、メモリが 8 GB 以上のボットに Screen が含まれます。これより小さいボットにはインストールできません。',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
     autoOpenMenu: 'ボットが画面を使い始めたら Screen を開く',
     autoOpenOnToast: name => `${name} がデスクトップを使い始めると Screen が開きます`,
     autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
+    placementSandbox: backend => `画面は ${backend} サンドボックス内（ターミナルと同じ場所）で動作します`,
+    imageSwitchTitle: '新しいサンドボックスイメージがあります',
+    imageSwitchBody: (current, target) =>
+      `サンドボックスはまだ ${current} で動作しており、デスクトップがありません。${target} に切り替えると、ボットが次にターミナルを使うときにコンテナが再作成されます。/root と /workspace のファイルはこのマシンに残り、コンテナ内にインストールしたパッケージは必要に応じて再インストールされます。`,
+    imageSwitchApprove: 'イメージを切り替える',
+    imageSwitchKeep: '現在のイメージを使い続ける',
     start: '画面を起動',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
@@ -1324,6 +922,7 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1354,8 +953,11 @@ const zh: BotsMessages = {
     inheritedModel: '继承启动时的配置档案',
     soul: 'SOUL.md（可选，将替换生成的人格）',
     shareKeys: '与主配置档案共享密钥和账户',
+    shareKeysOn: target => `与 ${target} 上的 default 配置档案共享密钥和账户`,
     shareKeysHint:
       '订阅、OAuth 登录和 API 密钥保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+    needsModel: '它还没有可用的模型提供商，因此跳过了自我介绍。请在“高级”中选择提供商和模型。',
+    configureModel: '配置模型',
     createEmpty: '创建空配置（跳过内置技能）',
     nameTakenHint: '此名称已被占用，请先选择其他名称再配置能力。',
     nameFirstHint: '请先为机器人命名，打开此标签页时将创建草稿配置档案（取消时会丢弃）。',
@@ -1454,6 +1056,7 @@ const zh: BotsMessages = {
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
+    openingChat: '正在打开聊天…',
     pinToTop: '置顶',
     unpin: '取消置顶',
     pinnedToast: name => `已将 ${name} 置顶`,
@@ -1650,12 +1253,21 @@ const zh: BotsMessages = {
     portalNotInstalled: '主机未安装',
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
+    portalUnavailableManaged: '此托管 Hermes 版本尚不支持屏幕',
+    managedNotIncludedTitle: '此机器人不包含屏幕',
+    managedNotIncludedBody: 'Hermes Cloud 为内存 8 GB 及以上的机器人提供屏幕，较小的机器人无法安装。',
     unavailableTitle: '屏幕需要更新版的 Hermes',
     autoOpenMenu: '机器人使用屏幕时自动打开',
     autoOpenOnToast: name => `${name} 开始使用桌面时会自动打开屏幕`,
     autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
+    placementSandbox: backend => `屏幕运行在 ${backend} 沙箱内，与终端同处`,
+    imageSwitchTitle: '有新的沙箱镜像',
+    imageSwitchBody: (current, target) =>
+      `沙箱仍在运行 ${current}，其中没有桌面。切换到 ${target} 后，机器人下次使用终端时会重建容器：/root 和 /workspace 中的文件保留在本机，容器内安装的软件包会按需重新安装。`,
+    imageSwitchApprove: '切换镜像',
+    imageSwitchKeep: '保留当前镜像',
     start: '启动屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
@@ -1737,6 +1349,7 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1767,8 +1380,11 @@ const zhHant: BotsMessages = {
     inheritedModel: '繼承啟動時的設定檔',
     soul: 'SOUL.md（選填，將取代產生的人格）',
     shareKeys: '與主要設定檔共用金鑰和帳戶',
+    shareKeysOn: target => `與 ${target} 上的 default 設定檔共用金鑰和帳戶`,
     shareKeysHint:
       '訂閱、OAuth 登入和 API 金鑰保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+    needsModel: '它還沒有可用的模型提供者，因此略過了自我介紹。請在「進階」中選擇提供者和模型。',
+    configureModel: '設定模型',
     createEmpty: '建立空白設定（略過內建技能）',
     nameTakenHint: '此名稱已被使用，請先選擇其他名稱再設定功能。',
     nameFirstHint: '請先為機器人命名，開啟此分頁時將建立草稿設定檔（取消時會捨棄）。',
@@ -1867,6 +1483,7 @@ const zhHant: BotsMessages = {
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
+    openingChat: '正在開啟聊天…',
     pinToTop: '釘選到頂端',
     unpin: '取消釘選',
     pinnedToast: name => `已將 ${name} 釘選到頂端`,
@@ -2063,12 +1680,21 @@ const zhHant: BotsMessages = {
     portalNotInstalled: '主機未安裝',
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
+    portalUnavailableManaged: '此託管 Hermes 版本尚不支援螢幕',
+    managedNotIncludedTitle: '此機器人不包含螢幕',
+    managedNotIncludedBody: 'Hermes Cloud 為記憶體 8 GB 以上的機器人提供螢幕，較小的機器人無法安裝。',
     unavailableTitle: '螢幕需要較新版的 Hermes',
     autoOpenMenu: '機器人使用螢幕時自動開啟',
     autoOpenOnToast: name => `${name} 開始使用桌面時會自動開啟螢幕`,
     autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
+    placementSandbox: backend => `畫面在 ${backend} 沙箱內執行，與終端同處`,
+    imageSwitchTitle: '有新的沙箱映像',
+    imageSwitchBody: (current, target) =>
+      `沙箱仍在執行 ${current}，其中沒有桌面。切換到 ${target} 後，機器人下次使用終端時會重建容器：/root 和 /workspace 中的檔案保留在本機，容器內安裝的套件會按需重新安裝。`,
+    imageSwitchApprove: '切換映像',
+    imageSwitchKeep: '保留目前映像',
     start: '啟動螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',
@@ -2150,32 +1776,16 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
-
-// Bind the message SHAPE to a plugin translator: string leaves resolve now,
-// function leaves forward their args through t(path, …).
-type Bound<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => string
-    ? (...args: A) => string
-    : T[K] extends object
-      ? Bound<T[K]>
-      : string
-}
-
-function bind<T extends object>(t: PluginTranslate, template: T, prefix = ''): Bound<T> {
-  const out = {} as Record<string, unknown>
-
-  for (const [key, value] of Object.entries(template)) {
-    const path = prefix ? `${prefix}.${key}` : key
-    out[key] =
-      typeof value === 'function'
-        ? (...args: unknown[]) => t(path, ...args)
-        : value && typeof value === 'object'
-          ? bind(t, value as object, path)
-          : t(path)
-  }
-
-  return out as Bound<T>
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es }
 }
 
 export type BotsText = Bound<BotsMessages>

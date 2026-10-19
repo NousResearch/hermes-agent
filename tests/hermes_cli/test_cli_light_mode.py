@@ -191,6 +191,7 @@ class TestSkinConfigHook:
         assert skin.get_color("banner_text") == "#FFF8DC"
 
 
+@pytest.mark.platforms("linux")
 class TestOsc11DrainGuard:
     """Regression: a late-arriving OSC 11 reply must not leak into
     prompt_toolkit's input buffer (#40250).
@@ -397,7 +398,7 @@ def repo_root():
     return pathlib.Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.skipif(_sys.platform == "win32", reason="POSIX PTY test")
+@pytest.mark.platforms("posix")  # POSIX PTY test
 class TestOsc11Da1Fence:
     def test_herdr_style_da1_only_returns_none_without_leak(self, repo_root):
         """Terminal answers DA1 instantly but swallows OSC 11 (herdr)."""

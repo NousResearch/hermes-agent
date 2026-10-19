@@ -6,7 +6,6 @@ from typing import Any, Dict, List
 from agent.context_engine import ContextEngine
 from agent.context_compressor import ContextCompressor
 
-
 # ---------------------------------------------------------------------------
 # A minimal concrete engine for testing the ABC
 # ---------------------------------------------------------------------------
@@ -32,22 +31,22 @@ class StubEngine(ContextEngine):
         self.context_length = context_length
         self.threshold_tokens = int(context_length * 0.20)
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", 0)
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: list[dict[str, Any]], current_tokens: int | None = None) -> list[dict[str, Any]]:
         self._compress_called = True
         self.compression_count += 1
         # Trivial: just return as-is
         return messages
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": "stub_search",
@@ -56,17 +55,13 @@ class StubEngine(ContextEngine):
             }
         ]
 
-    def handle_tool_call(self, name: str, args: Dict[str, Any]) -> str:
+    def handle_tool_call(self, name: str, args: dict[str, Any]) -> str:
         self._tools_called.append(name)
         return json.dumps({"ok": True, "tool": name})
-
 
 # ---------------------------------------------------------------------------
 # ABC contract tests
 # ---------------------------------------------------------------------------
-
-
-
 
 # ---------------------------------------------------------------------------
 # Default method behavior
@@ -74,8 +69,6 @@ class StubEngine(ContextEngine):
 
 class TestDefaults:
     """Verify ABC default implementations work correctly."""
-
-
 
     def test_default_get_status(self):
         engine = StubEngine()
@@ -86,7 +79,6 @@ class TestDefaults:
         assert status["threshold_tokens"] == 100000
         assert 0 < status["usage_percent"] <= 100
 
-
     def test_on_session_reset(self):
         engine = StubEngine()
         engine.last_prompt_tokens = 999
@@ -95,15 +87,9 @@ class TestDefaults:
         assert engine.last_prompt_tokens == 0
         assert engine.compression_count == 0
 
-
-
 # ---------------------------------------------------------------------------
 # StubEngine behavior
 # ---------------------------------------------------------------------------
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # ContextCompressor session reset via ABC
@@ -130,7 +116,6 @@ class TestCompressorSessionReset:
         assert c._context_probe_persistable is False
         assert c._previous_summary is None
 
-
 # ---------------------------------------------------------------------------
 # Plugin slot (PluginManager integration)
 # ---------------------------------------------------------------------------
@@ -149,12 +134,3 @@ class TestPluginContextEngineSlot:
 
         assert mgr._context_engine is engine
         assert mgr._context_engine.name == "stub"
-
-
-
-
-
-
-
-
-

@@ -1,6 +1,5 @@
 """Tests for agent/skill_utils.py."""
 
-from unittest.mock import patch
 
 import pytest
 
@@ -304,11 +303,10 @@ class TestParseFrontmatterBOM:
         import sys
 
         expected = sys.platform == "darwin"
-        with patch("agent.skill_utils.is_termux", return_value=False):
-            plain_fm, _ = parse_frontmatter(self.SKILL)
-            bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
-            assert skill_matches_platform(plain_fm) is expected
-            assert skill_matches_platform(bom_fm) is expected
+        plain_fm, _ = parse_frontmatter(self.SKILL)
+        bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
+        assert skill_matches_platform(plain_fm) is expected
+        assert skill_matches_platform(bom_fm) is expected
 
 
 

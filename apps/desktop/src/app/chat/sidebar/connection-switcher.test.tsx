@@ -76,7 +76,7 @@ afterEach(() => {
   $connectionsRegistry.set(null)
   $activeConnectionId.set('local')
   $pendingConnectionId.set(null)
-  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
 })
 
 describe('ConnectionSwitcher', () => {
@@ -185,7 +185,7 @@ describe('ConnectionSwitcher', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     expect(globalThis.document.activeElement).toBe(result)
 
-    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0 })
+    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
     result.focus()
     fireEvent.keyDown(result, { key: 'f', metaKey: true })
     expect(globalThis.document.activeElement).toBe(search)

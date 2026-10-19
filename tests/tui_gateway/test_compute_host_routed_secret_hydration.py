@@ -14,7 +14,7 @@ from tui_gateway import server
 from tui_gateway.compute_host import ComputeHost
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_routed_session_build_sees_the_profiles_external_secret_source(monkeypatch, tmp_path):
     """Two routed homes A→B→A, each with a ``secrets.command`` helper that is the ONLY holder of its
     provider key. Inside each build the scope resolves that profile's key and not the other's."""

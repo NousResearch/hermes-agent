@@ -24,7 +24,7 @@ def _resolve_git_dir(start: Path) -> Optional[Path]:
             return dotgit
         if dotgit.is_file():
             try:
-                line = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+                line = dotgit.read_text(encoding="utf-8-sig", errors="replace").strip()
             except OSError:
                 return None
             if line.startswith("gitdir:"):
@@ -53,7 +53,7 @@ def current_git_branch(cwd: Optional[str] = None) -> str:
     git_dir = _resolve_git_dir(base)
     if git_dir is not None:
         try:
-            head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+            head = (git_dir / "HEAD").read_text(encoding="utf-8-sig", errors="replace").strip()
         except OSError:
             head = ""
         if head.startswith("ref:"):

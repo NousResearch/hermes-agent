@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 
 def _make_voice_cli(**overrides):
     """Create a minimal HermesCLI with only voice-related attrs initialized.
@@ -372,7 +374,7 @@ class TestVoiceStopAndTranscribeReal:
             cli._voice_stop_and_transcribe()
 
         messages = [call.args[0] for call in mock_print.call_args_list]
-        assert any("Transcribing..." in message for message in messages)
+        assert any(t("cli.voice.transcribing") in message for message in messages)
         assert all("Hugging Face" not in message for message in messages)
         mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
 
@@ -568,7 +570,6 @@ class TestVoiceFullDuplexListener:
             # turn fully done
             cli._voice_tts_done.set()
             probes["done"] = should_stop()
-            return None
 
         cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
         cli._voice_tts_done.set()
@@ -600,7 +601,7 @@ class TestVoiceFullDuplexListener:
             lambda path, model=None: {"success": True, "transcript": "stop"},
         )
         monkeypatch.setattr(
-            "tools.voice_mode.is_voice_stop_phrase",
+            "tools.voice_mode_transcript.is_voice_stop_phrase",
             lambda text: text.strip().lower() == "stop",
         )
 

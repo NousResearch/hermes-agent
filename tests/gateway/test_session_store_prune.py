@@ -19,10 +19,8 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionStore
-
 
 def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch):
     """SessionStore must honor runtime HERMES_HOME when opening the default DB.
@@ -46,7 +44,6 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
         if store._db is not None:
             store._db.close()
 
-
 def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
     """Build a SessionStore bypassing SQLite/disk-load side effects."""
     config = GatewayConfig(
@@ -63,7 +60,6 @@ def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
     store._loaded = True
     return store
 
-
 def _entry(key: str, age_days: float, *, suspended: bool = False,
            session_id: str | None = None) -> SessionEntry:
     now = datetime.now()
@@ -76,7 +72,6 @@ def _entry(key: str, age_days: float, *, suspended: bool = False,
         chat_type="dm",
         suspended=suspended,
     )
-
 
 class TestPruneBasics:
 
@@ -98,7 +93,6 @@ class TestPruneBasics:
 
         assert removed == 0
         assert "long-lived" in store._entries
-
 
     def test_prune_skips_entries_with_active_processes(self, tmp_path):
         """Sessions with active bg processes aren't pruned even if old.
@@ -150,7 +144,6 @@ class TestPruneBasics:
         assert removed == 1
         assert "active" not in store._entries
 
-
     def test_prune_is_thread_safe(self, tmp_path):
         """Prune acquires _lock internally; concurrent update_session is safe."""
         store = _make_store(tmp_path)
@@ -183,7 +176,6 @@ class TestPruneBasics:
             if i % 2 == 1:  # fresh
                 assert f"s{i}" in store._entries
 
-
 class TestPrunePersistsToDisk:
     def test_prune_rewrites_sessions_json(self, tmp_path):
         """After prune, sessions.json on disk reflects the new dict."""
@@ -209,15 +201,9 @@ class TestPrunePersistsToDisk:
         saved_post = json.loads((tmp_path / "sessions.json").read_text())
         assert {k for k in saved_post if not k.startswith("_")} == {"fresh"}
 
-
 class TestGatewayConfigSerialization:
 
     def test_session_store_max_age_days_roundtrips(self):
         cfg = GatewayConfig(session_store_max_age_days=30)
         restored = GatewayConfig.from_dict(cfg.to_dict())
         assert restored.session_store_max_age_days == 30
-
-
-
-
-

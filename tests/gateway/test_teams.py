@@ -177,7 +177,7 @@ def _bind_mock_sdk(feature, importer, target_globals, **kwargs):
     return True
 
 
-with patch("tools.lazy_deps.ensure_and_bind", _bind_mock_sdk):
+with patch("pm.extras.ensure_and_bind", _bind_mock_sdk):
     assert _teams_mod.check_teams_requirements() is True
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 
@@ -189,7 +189,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
-from plugins.platforms.teams.summary_writer import TeamsSummaryWriter  # noqa: E402
+from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config
@@ -321,7 +321,7 @@ class TestTeamsConnect:
         # locked-down env): the lazy-installer can't rebind the globals, so
         # App stays None and connect() must fail without calling it.
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind",
+            "pm.extras.ensure_and_bind",
             lambda *_a, **_k: False,
         )
         adapter = TeamsAdapter(_make_config(
@@ -341,7 +341,7 @@ class TestTeamsConnect:
         monkeypatch.setattr(_teams_mod, "ClientOptions", None)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind",
+            "pm.extras.ensure_and_bind",
             lambda *_a, **_k: False,
         )
         adapter = TeamsAdapter(_make_config(

@@ -32,7 +32,6 @@ from agent.codex_runtime import run_codex_app_server_turn
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
-
 def _make_turn():
     return SimpleNamespace(
         interrupted=False,
@@ -44,7 +43,6 @@ def _make_turn():
         final_text="CODEX_ASSISTANT",
         should_retire=False,
     )
-
 
 def _make_agent(session_db=None, session_id="sess-codex"):
     agent = MagicMock()
@@ -61,7 +59,6 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent.session_id = session_id
     return agent
 
-
 def test_codex_success_flushes_and_reports_persisted():
     """Codex success turn must self-persist and return agent_persisted=True."""
     agent = _make_agent(session_db=None)  # no DB -> flush is a no-op, still True
@@ -76,7 +73,6 @@ def test_codex_success_flushes_and_reports_persisted():
     assert isinstance(result["messages"][-1]["timestamp"], float)
     # With the agent as sole persister, the gateway must SKIP its DB write.
     assert result["agent_persisted"] is True
-
 
 def test_codex_user_interrupt_is_reported_and_cleared():
     agent = _make_agent(session_db=None)
@@ -104,7 +100,6 @@ def test_codex_user_interrupt_is_reported_and_cleared():
     assert result["interrupt_message"] == "new correction"
     agent.clear_interrupt.assert_called_once_with()
     assert agent._interrupt_requested is False
-
 
 def test_codex_turn_persists_each_message_exactly_once():
     """The user turn (flushed at turn start) must not be duplicated; the
@@ -168,5 +163,3 @@ def test_codex_turn_persists_each_message_exactly_once():
         if db is not None:
             db.close()
         shutil.rmtree(tmp, ignore_errors=True)
-
-

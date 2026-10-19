@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import (
@@ -42,7 +42,8 @@ def _entry(*, origin=True) -> SessionEntry:
 
 def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
-    runner.session_store = SimpleNamespace()
+    # The scheduler's synchronous profile check reads the store; dispatch reads the async facade.
+    runner.session_store = SimpleNamespace(lookup_by_session_key=lambda _key: None)
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )
@@ -119,7 +120,9 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         manager,
     )
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    # The runner publishes process-wide; expose this standalone manager through the legacy slot so
+    # the real publisher stamps it while this integration test still exercises the scheduler.
+    with patch("hermes_cli.plugins._plugin_manager", manager):
         runner._install_plugin_message_injector()
         assert (
             context.inject_message(
@@ -418,7 +421,6 @@ def test_scheduler_rejects_submission_failure():
 
     def _reject(coro, _target_loop, **_kwargs):
         coro.close()
-        return None
 
     with patch("gateway.run.safe_schedule_threadsafe", side_effect=_reject):
         assert (
@@ -435,7 +437,8 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     runner = _runner(_entry())
     manager = PluginManager()
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    # The runner publishes process-wide; expose this standalone manager through the legacy slot.
+    with patch("hermes_cli.plugins._plugin_manager", manager):
         runner._install_plugin_message_injector()
         assert manager.has_gateway_message_injector is True
 
@@ -452,3 +455,31 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     assert manager.has_gateway_message_injector is True
     assert manager.inject_gateway_message(value="kept") is True
     newer_injector.assert_called_once_with(value="kept")
+
+
+@pytest.mark.asyncio
+async def test_under_a_session_authority_injection_enters_the_durable_fifo(monkeypatch):
+    """With an authority serving the scope, a plugin turn is committed as a trusted producer
+    admission into the session's FIFO; it never runs on the in-process adapter lane, and a
+    refused admission is reported as not routed instead of falling back to that lane."""
+    import gateway.session_authorities as authorities
+    from hermes_state_runtime import RuntimeStoreError
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    entry = _entry()
+    runner = _runner(entry, adapter)
+    authority = SimpleNamespace(admit_automation=AsyncMock())
+    monkeypatch.setattr(authorities, "active_authority", lambda _runner: authority)
+
+    assert await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="check the deployment", plugin_id="notify-plugin") is True
+    adapter.handle_message.assert_not_awaited()
+    admitted_adapter, event, identity = authority.admit_automation.await_args.args
+    assert admitted_adapter is adapter and event.internal is True and event.message_id == identity
+    assert event.metadata == {"gateway_session_key": entry.session_key, "gateway_session_id": entry.session_id}
+    assert event.text == "check the deployment" and "notify-plugin" in identity
+
+    authority.admit_automation.side_effect = RuntimeStoreError("not_found")
+    assert await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="again", plugin_id="notify-plugin") is False
+    adapter.handle_message.assert_not_awaited()

@@ -64,6 +64,7 @@ def test_resolve_chat_cwd_fails_closed_and_reaches_the_tui_env(monkeypatch, tmp_
 
     monkeypatch.setattr(
         tui_launch, "_make_tui_argv", lambda *_a, **_k: (["node", "fake-tui.js"], tmp_path))
+    monkeypatch.setattr(tui_launch, "_apply_tui_python_env", lambda _env: None)
 
     assert chat_workspaces.resolve_chat_cwd("") is None
     with pytest.raises(HTTPException) as exc:

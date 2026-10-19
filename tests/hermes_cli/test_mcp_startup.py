@@ -44,7 +44,9 @@ def _agent_args(**overrides) -> Namespace:
     return Namespace(**base)
 
 
-def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
+def test_prepare_agent_startup_backgrounds_blocking_mcp_for_rl(monkeypatch):
+    """``hermes rl`` builds its agent in this process: discovery runs off-thread, never blocking.
+    (Chat turns run in the gateway; see the next test.)"""
     stop = threading.Event()
     calls = {"mcp": 0}
 
@@ -62,7 +64,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
         ),
     )
     monkeypatch.setitem(
@@ -88,7 +90,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
 
     try:
         start = time.monotonic()
-        main_mod._prepare_agent_startup(_agent_args())
+        main_mod._prepare_agent_startup(_agent_args(command="rl"))
         elapsed = time.monotonic() - start
         assert elapsed < 2.0
         deadline = time.monotonic() + 3.0
@@ -100,6 +102,22 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         assert thread.is_alive()
     finally:
         stop.set()
+
+
+@pytest.mark.parametrize("command", [None, "chat"])
+def test_chat_client_never_spawns_mcp_servers_the_gateway_owns(monkeypatch, command):
+    """A chat/`-q` client only proxies turns to the gateway: spawning every MCP server here doubled
+    them and held the discovery lock the cold-starting gateway waited on before READY."""
+    calls = {"background": 0, "inline": 0}
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: False)
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery",
+                        lambda **_kwargs: calls.__setitem__("background", calls["background"] + 1))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
+        discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool_discovery", types.SimpleNamespace(
+        discover_mcp_tools=lambda **_k: calls.__setitem__("inline", calls["inline"] + 1)))
+    main_mod._prepare_agent_startup(_agent_args(command=command))
+    assert calls == {"background": 0, "inline": 0}
 
 
 def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
@@ -129,7 +147,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
         ),
     )
     monkeypatch.setitem(
@@ -171,7 +189,7 @@ def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
         ),
     )
     monkeypatch.setitem(
@@ -282,7 +300,7 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        types.SimpleNamespace(read_raw_config=lambda: {}),
+        types.SimpleNamespace(read_raw_config=dict),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -465,3 +483,38 @@ def test_lazy_only_discovery_counts_as_usable_at_both_startup_sites(monkeypatch,
     assert calls["mcp"] == (2 if retried else 1)
     assert any("zero connected" in w for w in warnings) is retried
     assert any("retrying discovery thread" in w for w in warnings) is retried
+
+
+def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monkeypatch, tmp_path):
+    """#76954: ``hermes mcp add`` against a running Desktop backend. Discovery already ran and left
+    ``github`` live, so the re-entry every agent build makes returned early and the new server's
+    tools never reached a new session. It must run discovery again, and only while something
+    configured is still unconnected."""
+    from tools import mcp_tool
+    from tools import mcp_tool_config as _config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("mcp_servers:\n  github:\n    url: https://mcp.example.test/gh\n")
+    configured = {"github": {"url": "https://mcp.example.test/gh"}}
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: dict(configured))
+    monkeypatch.setitem(mcp_tool._servers, "github", object())
+    monkeypatch.setitem(mcp_tool._server_scope_keys, "github", None)
+    monkeypatch.setattr(mcp_startup, "_any_mcp_connected", lambda: True)
+    runs: list = []
+    monkeypatch.setattr(mcp_startup, "_discover_mcp_tools_without_interactive_oauth", lambda: runs.append(1))
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, info=lambda *_a, **_k: None,
+                                   warning=lambda *_a, **_k: None)
+
+    def build_agent():
+        mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+        thread = mcp_startup._current_home_thread()
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    build_agent()  # backend start
+    build_agent()  # new session, config unchanged: github is live, nothing to do
+    assert len(runs) == 1
+
+    configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
+    build_agent()
+    assert len(runs) == 2

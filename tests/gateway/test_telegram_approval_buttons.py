@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
 from gateway.platforms.base import unauthorized_action_notice, utf16_len
 
 # ---------------------------------------------------------------------------
@@ -143,7 +144,7 @@ class TestTelegramExecApproval:
             allow_permanent=False,
         )
 
-        assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
+        assert buttons == [t(f"platform.telegram.approval.action_{c}") for c in ("once", "session", "deny")]
 
 
 
@@ -168,7 +169,7 @@ class TestTelegramExecApproval:
         )
 
         assert captured_rows == [
-            ["✅ Allow Once", "❌ Deny"],
+            [t("platform.telegram.approval.action_once"), t("platform.telegram.approval.action_deny")],
         ]
 
 

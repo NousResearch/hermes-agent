@@ -43,7 +43,13 @@ describe('approval mode statusbar item', () => {
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /manual/i }))
 
     await waitFor(() => {
-      expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'approvals.mode', value: 'manual' })
+      // The menu shows the "work" profile, so the write must name it (#125969); an unscoped
+      // `config.set` would edit whichever profile the backend was launched with instead.
+      expect(requestGateway).toHaveBeenCalledWith('config.set', {
+        key: 'approvals.mode',
+        value: 'manual',
+        profile: 'work'
+      })
       expect(screen.getByRole('button', { name: /manual/i })).toBeTruthy()
     })
   })

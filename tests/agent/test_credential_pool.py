@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -995,7 +995,7 @@ def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypa
 
 def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
+    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=UTC).isoformat()
     token = _jwt_with_claims({
         "sub": "test-user",
         "scope": ["inference:invoke"],
@@ -1054,7 +1054,7 @@ def test_nous_runtime_api_key_rejects_opaque_agent_key():
         agent_key="opaque-agent-key",
         agent_key_expires_at=datetime.fromtimestamp(
             time.time() + 3600,
-            tz=timezone.utc,
+            tz=UTC,
         ).isoformat(),
         extra={"scope": "inference:invoke"},
     )
@@ -1291,8 +1291,8 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
 
     # Write config.yaml with a custom_providers entry
     config_path = tmp_path / "hermes" / "config.yaml"
-    import yaml
-    config_path.write_text(yaml.dump({
+    import hermes_yaml as yaml
+    config_path.write_text(yaml.safe_dump({
         "custom_providers": [
             {
                 "name": "Together.ai",
@@ -1317,9 +1317,9 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    import yaml
+    import hermes_yaml as yaml
     config_path = tmp_path / "hermes" / "config.yaml"
-    config_path.write_text(yaml.dump({
+    config_path.write_text(yaml.safe_dump({
         "custom_providers": [
             {
                 "name": "Together.ai",

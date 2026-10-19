@@ -1,7 +1,7 @@
 """Behavioral tests for Windows-specific compatibility fixes.
 
 Host-independent tests run everywhere; tests that need a real Windows host
-are marked ``windows_only`` (they mock only dependencies such as
+are marked ``platforms("windows")`` (they mock only dependencies such as
 ``subprocess.run`` / ``os.kill``, never ``sys.platform``).
 """
 
@@ -72,11 +72,11 @@ class TestConfigureWindowsStdio:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestTerminatePidRoutingOnWindows:
     """``gateway.status.terminate_pid`` must use taskkill /T /F on Windows.
 
-    ``windows_only``: this used to patch the module-level ``_IS_WINDOWS``
+    ``platforms("windows")``: this used to patch the module-level ``_IS_WINDOWS``
     flag on Linux, which selected the taskkill branch on a host where
     ``taskkill`` does not exist and ``gateway/status`` cannot even import its
     ``msvcrt`` branch. On the Windows runner the flag is genuinely True, so
@@ -178,7 +178,7 @@ class TestTerminatePidRoutingOnWindows:
 
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestPidExistsOSErrorWidening:
     """gateway.status._pid_exists itself must widen Windows errors correctly.
 
@@ -187,7 +187,7 @@ class TestPidExistsOSErrorWidening:
     gone PID instead of ``ProcessLookupError``. The function must catch the
     wider ``OSError`` to match POSIX semantics.
 
-    ``linux_only``: the subject is the POSIX fallback branch and its
+    ``platforms("linux")``: the subject is the POSIX fallback branch and its
     ``os.kill`` error handling, exercised with the errno values Windows
     produces. Gating to Linux is what makes ``_IS_WINDOWS`` genuinely False
     here instead of forced false by a patch.
@@ -246,7 +246,7 @@ class TestTzdataDependencyDeclared:
         # specifier in between (==X.Y.Z, >=X.Y.Z,<W, etc.) and either quote
         # style on the marker.
         pattern = re.compile(
-            r'"tzdata[^"]*;\s*sys_platform\s*==\s*[\'"]win32[\'"]\s*"'
+            r'"tzdata[^"]*;\s*sys_platform\s*==\s*[\'"]win32[\'"][^"]*"'
         )
         assert pattern.search(source), (
             "tzdata must be a Windows-only dep in pyproject.toml dependencies "
@@ -275,11 +275,11 @@ class TestSubprocessCompatHelpers:
         # name (fallback) — both are acceptable behaviours.
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_detach_flags_exclude_detached_process(self):
         """DETACHED_PROCESS must stay OUT of every detach bundle.
 
-        ``windows_only`` (with ``IS_WINDOWS`` no longer patched): the helpers
+        ``platforms("windows")`` (with ``IS_WINDOWS`` no longer patched): the helpers
         return 0 off Windows, so on Linux the old flag patch was the only
         thing making the bit assertions reachable at all.
 
@@ -303,7 +303,7 @@ class TestSubprocessCompatHelpers:
             "DETACHED_PROCESS must not be in the no-breakaway fallback either."
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_detach_flags_includes_breakaway_from_job(self):
         """CREATE_BREAKAWAY_FROM_JOB is load-bearing for the GUI-driven update path.
 
@@ -325,7 +325,7 @@ class TestSubprocessCompatHelpers:
             "can respawn the gateway after Electron exits."
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_detach_flags_without_breakaway_drops_only_that_bit(self):
         """Fallback retry payload for restrictive job objects.
 
@@ -375,9 +375,9 @@ class TestLocalEnvironmentWindowsTempDir:
 class TestLocalEnvironmentPathInjectionGated:
     """Sane PATH completion must stay POSIX-only."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_path_is_left_unchanged(self):
-        """``windows_only``: the assertion is that a real Windows ``PATH``
+        """``platforms("windows")``: the assertion is that a real Windows ``PATH``
         (``;``-separated, drive-lettered) comes back untouched. On Linux the
         old ``_IS_WINDOWS`` patch made the function return early without ever
         meeting a genuine Windows PATH."""
@@ -406,11 +406,11 @@ class TestGitBashPathNormalization:
             assert _normalize_git_bash_path(None) is None
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_translation(self):
         """On native Windows, /c/Users/... becomes C:\\Users\\...
 
-        ``windows_only``: the function's whole job is producing native
+        ``platforms("windows")``: the function's whole job is producing native
         Windows paths, which is only meaningful where ``os.sep`` is ``\\``.
         """
         from hermes_cli import worktree_ops as cli_mod
@@ -440,6 +440,7 @@ class TestWindowlessGatewayRestartSpec:
     hidden-console respawn spec (normalized interpreter + stable cwd + env
     overlay)."""
 
+    @pytest.mark.platforms("linux")
     def test_noop_on_non_windows(self):
         import hermes_cli.gateway_windows as gw
 
@@ -457,13 +458,13 @@ class TestWindowlessGatewayRestartSpec:
         assert cwd == ""
         assert env == {}
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_keeps_console_python_and_preserves_tail(self):
         """On Windows the console interpreter is kept (hidden-console launch,
         NOT a pythonw swap — #54220/#56747) while every subsequent argument
         is preserved verbatim.
 
-        ``windows_only``: faking this on Linux needed two more fakes to hold
+        ``platforms("windows")``: faking this on Linux needed two more fakes to hold
         it up — a pre-import so the lazy ``hermes_cli.gateway`` import didn't
         re-run ``gateway/status``'s ``import msvcrt`` branch, and a mock of
         ``get_hermes_home`` because the real one's ``Path.resolve()`` consults
@@ -509,7 +510,7 @@ class TestWindowlessGatewayRestartSpec:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestGatewayRunRestartWatcherOuterPopenFallback:
     """The Windows ``/restart`` watcher in ``gateway.run`` spawns an outer
     detached ``python -c <watcher>`` process with
@@ -523,7 +524,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
     Behavioral: drives the real coroutine with a mocked ``subprocess.Popen``
     rather than asserting on source text.
 
-    ``windows_only``: this used to run on Linux behind a ``sys.platform``
+    ``platforms("windows")``: this used to run on Linux behind a ``sys.platform``
     patch, and the breakaway-bit assertions had to be skipped there anyway
     (``_subprocess_compat`` caches ``IS_WINDOWS`` at import, so the flags
     were all 0) — i.e. the most important assertions in the class never
@@ -571,11 +572,11 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         # argv is identical across primary and fallback, and every current
         # watcher parameter survives:
-        #   [watcher_python, "-c", <script>, str(pid), str(restart_after_s), *cmd_argv]
+        #   [python, "-I", "-c", <bootstrap + watcher script>, str(pid), str(restart_after_s), *cmd_argv]
         assert argv1 == argv2
-        assert argv1[1] == "-c"
-        assert argv1[3] == str(os.getpid())
-        assert float(argv1[4]) >= 5.0  # restart deadline preserved
+        assert argv1[1:3] == ["-I", "-c"]
+        assert argv1[4] == str(os.getpid())
+        assert float(argv1[5]) >= 5.0  # restart deadline preserved
         assert argv1[-2:] == ["gateway", "restart"]
 
         # Scrubbed env preserved and identical on both calls.

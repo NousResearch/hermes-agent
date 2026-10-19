@@ -4,10 +4,12 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $activeSessionId,
+  $currentBranch,
   $currentCwd,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
   releaseWorkspaceCwdOwner,
+  setCurrentBranch,
   setCurrentCwd
 } from '@/store/session'
 
@@ -19,11 +21,13 @@ import type { GatewayEventContext } from './types'
 // still carries a real cwd.
 function sessionInfoEvent({
   activeSessionId,
+  branch,
   cwd,
   explicitSid = '',
   storedSessionId = ''
 }: {
   activeSessionId: null | string
+  branch?: string
   cwd: string
   explicitSid?: string
   storedSessionId?: string
@@ -49,7 +53,7 @@ function sessionInfoEvent({
     fromActiveSource: () => true,
     isActiveEvent: !!sessionId && sessionId === activeSessionId,
     occurredAt: Date.now() / 1000,
-    payload: { cwd, stored_session_id: storedSessionId },
+    payload: { branch, cwd, stored_session_id: storedSessionId },
     scheduleConfigRefresh: vi.fn(),
     sessionId
   } as unknown as GatewayEventContext
@@ -60,12 +64,14 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
+    setCurrentBranch('')
   })
 
   afterEach(() => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
+    setCurrentBranch('')
   })
 
   // #55831 / the "workspace pane visible with no agent selected" report: with
@@ -107,6 +113,43 @@ describe('handleSessionInfoEvent workspace ownership', () => {
 
     expect($currentCwd.get()).toBe('/repo/mine')
     expect($workspaceCwdOwner.get()).toBe('selected-session')
+  })
+
+  // #92888: a background Kanban worker's runtime update reaches the pane's
+  // active-runtime path while the default Bot Chat stays selected. It names the
+  // worker's own stored session and its PR worktree; neither the path nor the
+  // branch may move onto the composer, while the selected chat's own update
+  // still publishes both.
+  it("keeps another session's worktree cwd and branch off the selected chat's composer", () => {
+    $selectedStoredSessionId.set('default-bot-chat')
+    setCurrentCwd('/repo/main-checkout')
+    setCurrentBranch('main')
+
+    handleSessionInfoEvent(
+      sessionInfoEvent({
+        activeSessionId: 'runtime-1',
+        branch: 'kanban/pr-42',
+        cwd: '/repo/.worktrees/pr-42',
+        explicitSid: 'runtime-1',
+        storedSessionId: 'kanban-worker'
+      })
+    )
+
+    expect($currentCwd.get()).toBe('/repo/main-checkout')
+    expect($currentBranch.get()).toBe('main')
+
+    handleSessionInfoEvent(
+      sessionInfoEvent({
+        activeSessionId: 'runtime-1',
+        branch: 'feature/mine',
+        cwd: '/repo/main-checkout',
+        explicitSid: 'runtime-1',
+        storedSessionId: 'default-bot-chat'
+      })
+    )
+
+    expect($currentBranch.get()).toBe('feature/mine')
+    expect($workspaceCwdOwner.get()).toBe('default-bot-chat')
   })
 
   it('keeps runtime state identity when a heartbeat only restates cached fields', () => {

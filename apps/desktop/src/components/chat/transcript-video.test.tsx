@@ -23,6 +23,7 @@ describe('video playback speed preference', () => {
     const video = container.querySelector('video')!
 
     expect(video.playbackRate).toBe(1)
+    expect(video.preload).toBe('none')
 
     // The user picks 2x in the native controls' rate menu.
     video.playbackRate = 2
@@ -55,5 +56,39 @@ describe('video playback speed preference', () => {
     store.setVideoPlaybackSpeed(1)
 
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull()
+  })
+
+  // #123018: a transcript row's <video> unmounts and remounts while a turn
+  // streams (render-budget slice recycling, markdown re-parse). The position
+  // is remembered per source, so the remounted player resumes instead of
+  // restarting the clip from the top.
+  it('restores the remembered position and play state after a remount (#123018)', async () => {
+    const { TranscriptVideo } = await loadComponent()
+    const { container, unmount } = render(<TranscriptVideo src="file:///tmp/clip.mp4" />)
+    const video = container.querySelector('video')!
+
+    // The user watches 42s in and pauses.
+    Object.defineProperty(video, 'currentTime', { configurable: true, writable: true, value: 42 })
+    Object.defineProperty(video, 'paused', { configurable: true, writable: true, value: true })
+    fireEvent.pause(video)
+
+    unmount()
+
+    const next = render(<TranscriptVideo src="file:///tmp/clip.mp4" />)
+    const remounted = next.container.querySelector('video')!
+
+    expect(remounted.currentTime).toBe(42)
+  })
+
+  it('drops the oldest remembered source once the map passes its bound', async () => {
+    const { rememberVideoPosition, recallVideoPosition } = await import('./transcript-video')
+
+    for (let i = 0; i < 30; i++) {
+      rememberVideoPosition(`file:///tmp/clip-${i}.mp4`, i, true)
+    }
+
+    // The bound keeps the map small; the oldest entries fall off the front.
+    expect(recallVideoPosition('file:///tmp/clip-0.mp4')).toBeUndefined()
+    expect(recallVideoPosition('file:///tmp/clip-29.mp4')).toEqual({ paused: true, time: 29 })
   })
 })

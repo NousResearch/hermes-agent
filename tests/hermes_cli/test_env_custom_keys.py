@@ -17,7 +17,6 @@ from hermes_cli.web_server import _SESSION_TOKEN, app
 client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 
-
 def _env_rows(monkeypatch, env_on_disk):
     """Drive GET /api/env with a controlled on-disk env mapping."""
     monkeypatch.setattr(_cfg_mod, "load_env", lambda: dict(env_on_disk))
@@ -28,7 +27,6 @@ def _env_rows(monkeypatch, env_on_disk):
     assert resp.status_code == 200
     return resp.json()
 
-
 def test_unknown_env_key_surfaces_as_custom(monkeypatch):
     rows = _env_rows(monkeypatch, {"MY_CUSTOM_THING": "s3cret-value"})
     assert "MY_CUSTOM_THING" in rows, "unknown .env key not surfaced by /api/env"
@@ -36,7 +34,6 @@ def test_unknown_env_key_surfaces_as_custom(monkeypatch):
     assert row["custom"] is True
     assert row["category"] == "custom"
     assert row["is_set"] is True
-
 
 def test_custom_key_is_password_masked(monkeypatch):
     """A custom key could hold anything → treated as a secret (redacted)."""
@@ -46,5 +43,3 @@ def test_custom_key_is_password_masked(monkeypatch):
     # The raw value must never ride in the listing payload.
     assert row["redacted_value"] != "s3cret-value"
     assert "s3cret-value" not in str(row)
-
-

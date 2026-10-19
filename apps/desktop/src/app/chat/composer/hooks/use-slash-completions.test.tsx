@@ -41,11 +41,11 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway) {
+function harness(gateway: HermesGateway, options: { profile?: string } = {}) {
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
   function Probe() {
-    const { adapter } = useSlashCompletions({ gateway })
+    const { adapter } = useSlashCompletions({ gateway, ...options })
     api.search = adapter.search
 
     return null
@@ -93,6 +93,19 @@ describe('useSlashCompletions', () => {
     await act(async () => invalidateSlashCompletions())
     await completions(api, '')
     expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  // A draft has no session yet, so the backend would otherwise scan the LAUNCH
+  // profile's skills; the tile's rail-selected profile must ride along (#124651).
+  it('scopes a sessionless catalog and typed lookup to the routed profile', async () => {
+    const request = vi.fn().mockResolvedValue({ ...CATALOG, items: [] })
+    const api = harness({ request } as unknown as HermesGateway, { profile: 's6probe-b' })
+
+    await completions(api, '')
+    await completions(api, 'b-only')
+
+    expect(request).toHaveBeenCalledWith('commands.catalog', { profile: 's6probe-b' })
+    expect(request).toHaveBeenCalledWith('complete.slash', { text: '/b-only', profile: 's6probe-b' })
   })
 
   // A `/` typed mid-message is a reference dropped into prose, so the trigger

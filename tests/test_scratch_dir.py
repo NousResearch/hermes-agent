@@ -693,3 +693,58 @@ def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_he
             helper.kill()
             helper.wait(timeout=10)
 
+
+def _listening_unix_socket(name: str):
+    """A server socket bound to the relative *name* (tmp_path can exceed the AF_UNIX limit)."""
+    import socket
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(name)
+    server.listen(1)
+    return server
+
+
+@pytest.mark.platforms("posix")  # AF_UNIX sockets
+def test_prune_keeps_listening_unix_sockets_and_still_removes_stale_files(tmp_path, monkeypatch):
+    """A daemon that listens in scratch (the embedded cua-driver's ``hc-<token>.sock``) never
+    writes to its socket again after bind, so the path looks idle a day later. Deleting it
+    leaves the daemon running but unreachable (every connect fails with ENOENT): a listening
+    socket stays, at the top level and deep inside an otherwise idle tree; a stale file goes."""
+    import socket
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    (scratch / "lane" / "run").mkdir(parents=True)
+    stale = scratch / "stale.txt"
+    stale.write_text("old", encoding="utf-8")
+    monkeypatch.chdir(scratch)
+    names = ("hc-0123456789ab.sock", os.path.join("lane", "run", "agent.sock"))
+    servers = [_listening_unix_socket(name) for name in names]
+    try:
+        aged = time.time() - 25 * 3600
+        for path in (stale, *names, os.path.join("lane", "run"), "lane"):
+            os.utime(path, (aged, aged))
+        assert prune_scratch_dir(scratch) == 1
+        assert not stale.exists()
+        for name in names:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(name)
+    finally:
+        for server in servers:
+            server.close()
+
+
+@pytest.mark.platforms("linux")  # the probe reaches a deep socket through /proc/self/fd
+def test_prune_removes_unix_socket_nobody_listens_on(tmp_path, monkeypatch):
+    """A socket whose server died without unlinking it refuses every connection: it is a
+    leftover, so it is pruned like a stale file instead of pinning its tree forever."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    (scratch / "lane").mkdir()
+    monkeypatch.chdir(scratch)
+    names = ("dead.sock", os.path.join("lane", "dead.sock"))
+    for name in names:
+        _listening_unix_socket(name).close()
+    aged = time.time() - 25 * 3600
+    for path in (*names, "lane"):
+        os.utime(path, (aged, aged))
+    assert prune_scratch_dir(scratch) == 2
+    assert not os.path.lexists(names[0]) and not os.path.lexists("lane")

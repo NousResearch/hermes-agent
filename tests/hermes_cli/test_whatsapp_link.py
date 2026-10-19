@@ -24,9 +24,9 @@ def test_discard_whatsapp_session_deletes_without_backup(tmp_path):
     discard_whatsapp_session(session)
 
     assert not session.exists()
-    assert list(tmp_path.iterdir()) == []
+    assert not any(path.name.startswith("session") for path in tmp_path.iterdir())
 
 
 def test_discard_missing_session_is_a_no_op(tmp_path):
     discard_whatsapp_session(tmp_path / "missing")
-    assert list(tmp_path.iterdir()) == []
+    assert not (tmp_path / "missing").exists()

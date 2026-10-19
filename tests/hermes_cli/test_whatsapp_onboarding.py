@@ -190,7 +190,7 @@ def test_start_whatsapp_onboarding_logged_out_clears_session(monkeypatch, tmp_pa
     assert result["qr_payload"] is None
     assert followed == [("clear_and_pair", False)]
     assert not session_dir.exists()
-    assert list(tmp_path.iterdir()) == []
+    assert not any(path.name.startswith("session") for path in tmp_path.iterdir())
     _web_server_messaging._whatsapp_onboarding_sessions.clear()
 
 

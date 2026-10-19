@@ -640,6 +640,12 @@ export class CanonicalDesktopProtocol {
 
   private admissionReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (method === 'prompt.submit') {
+      // TUI-26: a bare stop phrase typed into a LOCAL voice chat ended that chat on the owner and
+      // admitted nothing. An allowlisted no-admission variant: only these fields pass through.
+      if (value.voice_stopped === true && value.admission_id === undefined && value.ref === undefined) {
+        return { voice_stopped: true, session_id: params.session_id, submission_id: params.submission_id ?? params.input_id }
+      }
+
       if (value.ref?.session_id !== params.session_id || typeof value.admission_id !== 'string') {
         throw new Error('Canonical admission receipt destination mismatch')
       }

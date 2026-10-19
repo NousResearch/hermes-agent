@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { jaDesktopCommands } from './ja_desktop_commands'
 import { jaSessionCommands } from './ja_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ja.ts.
@@ -26,7 +27,8 @@ export const jaNotices = {
     mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,
     compactedTurnUnavailable: 'このメッセージはチャットの圧縮時に要約されたため、復元や編集はできなくなりました。',
     staleTurnUnavailable: 'このメッセージはこのチャットの履歴にはもうありません。',
-    sessionCommands: jaSessionCommands
+    sessionCommands: jaSessionCommands,
+    desktopCommands: jaDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Hermes の作業中にコンピューターがスリープしました',

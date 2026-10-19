@@ -1557,6 +1557,31 @@ class TestMacOSTCCGrants:
         doctor_platform.check_macos_tcc_grants()
         assert capsys.readouterr().out == ""
 
+    def test_running_bundle_outranks_installed_and_staging(self, monkeypatch, tmp_path):
+        """Grants bind to the bundle the user launched: the staging artifact must not decide the verdict."""
+        running, installed = tmp_path / "Running.app", tmp_path / "Installed.app"
+        monkeypatch.setattr(doctor_platform, "_running_app_bundle", lambda: running)
+        monkeypatch.setattr(doctor_platform, "_installed_app_bundle", lambda: installed)
+        assert doctor_platform._desktop_app_bundle() == running
+
+    def test_installed_bundle_outranks_the_staging_artifact(self, monkeypatch, tmp_path):
+        installed = tmp_path / "Applications" / "Hermes.app"
+        monkeypatch.setattr(doctor_platform, "_running_app_bundle", lambda: None)
+        monkeypatch.setattr(doctor_platform, "_installed_app_bundle", lambda: installed)
+        assert doctor_platform._desktop_app_bundle() == installed
+
+    def test_running_bundle_ignores_helper_processes(self, monkeypatch, tmp_path):
+        bundle = tmp_path / "Hermes.app"
+        (bundle / "Contents" / "MacOS").mkdir(parents=True)
+        output = "\n".join([
+            f"{bundle}/Contents/Frameworks/Hermes Helper.app/Contents/MacOS/Hermes Helper --type=gpu-process",
+            f"{bundle}/Contents/MacOS/Hermes --enable-features=x",
+        ])
+        monkeypatch.setattr(doctor_platform.sys, "platform", "darwin")
+        monkeypatch.setattr(doctor_platform.shutil, "which", lambda _name: "/bin/ps")
+        monkeypatch.setattr(doctor_platform.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=output))
+        assert doctor_platform._running_app_bundle() == bundle
+
     def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
         self._darwin_bundle(
             monkeypatch, tmp_path,

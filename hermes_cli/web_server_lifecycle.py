@@ -5,6 +5,7 @@ import asyncio
 import logging
 import ipaddress
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -176,8 +177,8 @@ def _eager_reconcile_own_session_db() -> None:
     must never see a second writable ``SessionDB`` from this process (its
     close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
     two-writer corruption vector, #107688 / #100896). Access-mode semantics
-    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
-    #79531 contract holds) live in the routers' own-store opener,
+    (no bootstrap of a missing store; one additive catch-up of a store that lags
+    SCHEMA_SQL, only while no gateway owns it, #79531 / #140315) live in the routers' own-store opener,
     :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
     raises: an unfixable store still gets the per-poll read-probe heal.
     """
@@ -189,7 +190,7 @@ def _eager_reconcile_own_session_db() -> None:
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
-            "reads will retry the heal per poll", exc,
+            "reads will report the store unavailable until owner recovery", exc,
         )
 
 
@@ -235,8 +236,10 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         )
         return
 
+    from hermes_cli.url_utils import format_url_host
+
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
+    _open_url = f"http://{format_url_host(_display_host)}:{actual_port}"
     if initial_profile:
         from urllib.parse import quote
         _open_url += f"/?profile={quote(initial_profile)}"
@@ -291,6 +294,35 @@ def _is_serve_orphaned(
         return False
 
 
+#: Ceiling on the post-orphan graceful unwind before the hard exit takes over.
+#: The desktop is already gone, so nothing escalates for us and this is the
+#: whole budget: comfortably past the 5s exit-flush budget
+#: (``HERMES_TUI_EXIT_FLUSH_BUDGET_S``), still short enough to keep the reap prompt.
+_ORPHAN_EXIT_CEILING_S = 10.0
+
+
+def _request_orphan_shutdown() -> threading.Timer:
+    """Ask this backend to shut itself down, with a hard-exit backstop.
+
+    ``os._exit`` here skipped the flush-on-kill handlers this same process
+    installs before serving (#96095, ``install_exit_flush_signal_handlers``)
+    and every ``atexit`` hook, so an unclean desktop exit dropped the in-memory
+    transcripts that a SIGTERM from a live desktop persists to ``state.db``.
+    Raise SIGTERM instead, and keep the reap guaranteed the way ``cli.py``'s
+    ``_arm_exit_watchdog`` does: a daemon timer that ``os._exit``\\ s if the
+    unwind stalls (it survives ``Py_FinalizeEx``'s non-daemon thread joins).
+    ``raise_signal`` reaches Python's handler on Windows too, where
+    ``os.kill(pid, SIGTERM)`` would terminate the process without running it.
+
+    Returns the armed ceiling timer.
+    """
+    ceiling = threading.Timer(_ORPHAN_EXIT_CEILING_S, os._exit, args=(0,))
+    ceiling.daemon = True
+    ceiling.start()
+    signal.raise_signal(signal.SIGTERM)
+    return ceiling
+
+
 def _start_parent_death_watchdog() -> None:
     """Exit when the exact desktop parent that spawned this backend dies.
 
@@ -334,13 +366,13 @@ def _start_parent_death_watchdog() -> None:
             time.sleep(poll)
         try:
             _log.warning(
-                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); exiting.",
+                "Parent-death watchdog: desktop PID %s appears orphaned (expected_start_marker=%r); shutting down.",
                 desktop_pid,
                 start_marker,
             )
         except Exception:
             pass
-        os._exit(0)
+        _request_orphan_shutdown()
 
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
 
@@ -485,3 +517,57 @@ def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str
         _log.info("Dashboard trusted proxies: %s", ", ".join(trusted))
 
     return trusted
+
+
+def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,
+                          ws_ping: Optional[tuple[float, float]] = None,
+                          timeout_graceful_shutdown: Optional[float] = 3, lifespan: str = "auto"):
+    """uvicorn ``Config`` + ``Server`` for a dashboard or gateway-session listener (FastAPI-free, so
+    the gateway can build its session listener without importing the dashboard app).
+
+    WS keepalive ping runs ON the agent event loop; a GIL-holding worker call can starve it for
+    minutes, so uvicorn misses the pong and drops a healthy local socket (#53773/#48445/#50005).
+    The ping only detects half-open connections (proxy 524, dropped tunnels), impossible on
+    loopback where a dead client sends a real FIN/RST -> WebSocketDisconnect. So: no ping on
+    loopback; non-loopback sits behind a Cloudflare Tunnel (~100s idle) and keeps a config-driven
+    cadence (dashboard.ws_ping_interval/_timeout, #79635) defaulting to 20/20. *ws_ping* overrides
+    both (SSH-isolated Desktop backends).
+    """
+    import uvicorn
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES, _LOOPBACK_HOST_VALUES
+
+    try:
+        dash_cfg = load_config().get("dashboard") or {}
+    except Exception:  # health: allow BLE001 -- same fail-open read as web_server._build_uvicorn_server: a broken config.yaml must not stop the listener
+        dash_cfg = {}
+
+    def _ws_ping_setting(key: str, default: float = 20.0) -> float:
+        try:
+            return float(dash_cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    if ws_ping is None:
+        ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
+            _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    config = uvicorn.Config(
+        served_app, host=host, port=port, log_level="warning",
+        # Off by default so _ws_client_is_allowed sees the real peer, not
+        # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
+        # X-Forwarded-Proto for cookie Secure flags.
+        proxy_headers=auth_required,
+        # Loopback-only unless the operator trusts a bounded upstream proxy, so
+        # spoofed X-Forwarded-* from arbitrary callers is never honoured.
+        forwarded_allow_ips=_dashboard_forwarded_allow_ips(dash_cfg),
+        ws_ping_interval=ws_ping[0],
+        ws_ping_timeout=ws_ping[1],
+        ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
+        # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
+        # mid-turn request orphans the backend past that budget (#76244). 3s
+        # leaves room for lifespan shutdown + cron_stop before the kill.
+        timeout_graceful_shutdown=timeout_graceful_shutdown,
+        lifespan=lifespan,
+    )
+    return config, uvicorn.Server(config)

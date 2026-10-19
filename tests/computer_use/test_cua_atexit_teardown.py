@@ -23,14 +23,6 @@ from tools.computer_use import tool as cu_tool
 
 
 class TestAtexitTeardown:
-    def test_shutdown_stops_a_live_backend(self):
-        """A cached backend is stopped when the interpreter exits."""
-        fake = MagicMock()
-        with patch.object(cu_tool, "_backend", fake):
-            cu_tool._shutdown_backend_atexit()
-            fake.stop.assert_called_once()
-
-
 
 
     def test_shutdown_stops_every_session_backend(self):

@@ -20,10 +20,10 @@ from tools.clarify_gateway import resolve_clarify_timeout
 @pytest.mark.parametrize("stop", ["timeout", "interrupt"])
 def test_abandoned_preflight_cannot_start_a_tool(tmp_path, monkeypatch, mode, stage, stop):
     """Both executors must retire blocked preflight before acknowledging abandonment."""
-    import agent.display as display
+    from agent import display
     import agent.tool_executor as te
     import model_tools
-    import tools.daemon_pool as daemon_pool
+    from tools import daemon_pool
     from tools.registry import ToolRegistry
     from tui_gateway import server
 
@@ -66,35 +66,39 @@ def test_abandoned_preflight_cannot_start_a_tool(tmp_path, monkeypatch, mode, st
         entered.set()
         assert release.wait(20), "test did not release the preflight worker"
 
-    if stage == "pre_hook":
-        def pre_hook(name, args, **kwargs):
-            if kwargs["tool_call_id"] == "abandoned":
-                block_preflight()
-            return None, args
-        monkeypatch.setattr("hermes_cli.plugins._dispatch_pre_tool_call_hooks", pre_hook)
-    elif stage == "tool_started":
-        def on_start(call_id, *args):
-            callbacks["tool_start_callback"](call_id, *args)
-            if call_id == "abandoned":
-                block_preflight()
-        agent.tool_start_callback = on_start
-    elif stage == "checkpoint":
+    def pre_hook(name, args, **kwargs):
+        if kwargs["tool_call_id"] == "abandoned":
+            block_preflight()
+        return None, args
+
+    def on_start(call_id, *args):
+        callbacks["tool_start_callback"](call_id, *args)
+        if call_id == "abandoned":
+            block_preflight()
+
+    def block_checkpoint():
         agent._checkpoint_mgr.enabled = True
         monkeypatch.setattr(agent._checkpoint_mgr, "ensure_checkpoint", lambda *args: block_preflight())
-    elif stage == "snapshot":
-        capture_snapshot = display.capture_local_edit_snapshot
 
-        def snapshot(name, args):
-            if args["content"] == "late side effect":
-                block_preflight()
-            return capture_snapshot(name, args)
-        monkeypatch.setattr(display, "capture_local_edit_snapshot", snapshot)
-    else:
-        def on_progress(event, name=None, preview=None, args=None, **kwargs):
-            if event == "tool.started" and args["content"] == "late side effect":
-                block_preflight()
-            callbacks["tool_progress_callback"](event, name, preview, args, **kwargs)
-        agent.tool_progress_callback = on_progress
+    capture_snapshot = display.capture_local_edit_snapshot
+
+    def snapshot(name, args, *, task_id=None):
+        if args["content"] == "late side effect":
+            block_preflight()
+        return capture_snapshot(name, args, task_id=task_id)
+
+    def on_progress(event, name=None, preview=None, args=None, **kwargs):
+        if event == "tool.started" and args["content"] == "late side effect":
+            block_preflight()
+        callbacks["tool_progress_callback"](event, name, preview, args, **kwargs)
+
+    {
+        "pre_hook": lambda: monkeypatch.setattr("hermes_cli.plugins._dispatch_pre_tool_call_hooks", pre_hook),
+        "tool_started": lambda: monkeypatch.setattr(agent, "tool_start_callback", on_start),
+        "checkpoint": block_checkpoint,
+        "snapshot": lambda: monkeypatch.setattr(display, "capture_local_edit_snapshot", snapshot),
+        "progress": lambda: monkeypatch.setattr(agent, "tool_progress_callback", on_progress),
+    }[stage]()
 
     execute = getattr(agent, "_execute_tool_calls_" + mode)
     call = _tool_call("abandoned")
@@ -178,7 +182,7 @@ def _deterministic_worker_start(monkeypatch):
     generous headroom to reach the dispatch — which is the behavior these
     tests mean to pin.
     """
-    import tools.daemon_pool as daemon_pool
+    from tools import daemon_pool
 
     real_executor = daemon_pool.DaemonThreadPoolExecutor
 
@@ -252,7 +256,7 @@ def _clarify_call(call_id: str = "clarify-1"):
         type="function",
         function=SimpleNamespace(
             name="clarify",
-            arguments='{"question": "Pick one?", "choices": ["A", "B"]}',
+            arguments='{"questions": [{"question": "Pick one?", "choices": ["A", "B"]}]}',
         ),
     )
 
@@ -307,7 +311,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import lifecycle
     import model_tools
 
     agent = _make_agent(tmp_path)
@@ -449,11 +453,11 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
         lambda: clarify_timeout,
     )
 
-    def _callback(question, choices, multi_select=False):
+    def _callback(questions):
         # Must OUTLAST the 1.0s sequential deadline — the test proves the
         # generic timeout never cuts a human clarify wait.
         time.sleep(1.3)
-        return "A"
+        return {"answers": {"q0": "A"}, "outcome": "submitted"}
 
     agent.clarify_callback = _callback
     terminal_events: list[dict] = []
@@ -483,7 +487,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     assert time.monotonic() - started < 10.0
     assert [message["tool_call_id"] for message in messages] == ["clarify-1", "next"]
     payload = json.loads(messages[0]["content"])
-    assert payload["user_response"] == "A"
+    assert payload["responses"][0]["user_response"] == "A"
     assert "timed out" not in messages[0]["content"]
     assert messages[1]["content"] == "second result"
     assert not any(event.get("error_type") == "tool_timeout" for event in terminal_events)

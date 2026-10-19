@@ -37,7 +37,7 @@ from tool_search_livetest_ue import load_epic_tools, _SANITIZE  # reuse loader
 N_REPS = int(os.environ.get("TS_BENCH_REPS", "2"))
 
 
-def _bridge_call_value(call: Dict[str, Any]) -> Any:
+def _bridge_call_value(call: dict[str, Any]) -> Any:
     """Summarize current batch arguments with legacy transcript fallbacks."""
     args = call.get("args") or {}
     if call["name"] == "tool_search":
@@ -66,7 +66,7 @@ WORLD = {
     "Crate_2": "Actor",
 }
 
-def _mentioned_path(kwargs: Dict[str, Any]) -> str:
+def _mentioned_path(kwargs: dict[str, Any]) -> str:
     blob = json.dumps(kwargs)
     for p in WORLD:
         if p in blob:
@@ -115,7 +115,7 @@ def make_mock(sanitized_name: str):
         if any(v in n for v in ("get", "list", "find", "search", "has_", "is_", "can_")):
             return json.dumps({"result": [{"name": "Entry_0", "value": 1.0}]})
         if "capture" in n or "screenshot" in n:
-            return json.dumps({"result": {"image_path": "/tmp/ue_capture_0001.png"}})
+            return json.dumps({"result": {"image_path": "/nonexistent/ue_capture_0001.png"}})
         return json.dumps({"result": {"ok": True}})
     return _h
 
@@ -138,7 +138,7 @@ def register_epic_tools_adversarial() -> int:
 # Substrings match against sanitized full tool names, case-insensitive.
 # ---------------------------------------------------------------------------
 
-SCENARIOS: List[Dict[str, Any]] = [
+SCENARIOS: list[dict[str, Any]] = [
     {
         "id": "V1_static_material",
         "prompt": "Assign the material /Game/Mats/M_Stone to slot 0 of the mesh asset at /Game/Meshes/SM_Rock. Then say done.",
@@ -216,18 +216,18 @@ def run_one(scenario, mode, rep, out_dir: Path):
 
     from tools.registry import registry
     original_dispatch = registry.dispatch
-    call_log: List[Dict[str, Any]] = []
+    call_log: list[dict[str, Any]] = []
 
     def logging_dispatch(name, args, **kw):
         call_log.append({"name": name, "args": args})
         return original_dispatch(name, args, **kw)
     registry.dispatch = logging_dispatch
 
-    usage_log: List[Dict[str, Any]] = []
+    usage_log: list[dict[str, Any]] = []
     started = time.time()
     error = None
     final_response = ""
-    messages_out: List[Dict[str, Any]] = []
+    messages_out: list[dict[str, Any]] = []
     _orig_norm = None
     try:
         from run_agent import AIAgent

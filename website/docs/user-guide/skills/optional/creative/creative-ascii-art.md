@@ -15,13 +15,13 @@ ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/ascii-art` |
-| Path | `optional-skills/creative\ascii-art` |
+| Path | `optional-skills/creative/ascii-art` |
 | Version | `4.0.0` |
 | Author | 0xbyt4, Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `ASCII`, `Art`, `Banners`, `Creative`, `Unicode`, `Text-Art`, `pyfiglet`, `figlet`, `cowsay`, `boxes` |
-| Related skills | [`excalidraw`](./creative-excalidraw.md) |
+| Related skills | [`excalidraw`](../../optional/creative/creative-excalidraw.md) |
 
 ## Reference: full SKILL.md
 
@@ -250,14 +250,14 @@ Large collection of classic ASCII art organized by subject. Art is inside HTML `
 **Step 1 — Fetch the page:**
 
 ```bash
-curl -s 'https://ascii.co.uk/art/cat' -o /tmp/ascii_art.html
+curl -s 'https://ascii.co.uk/art/cat' -o ~/.hermes/cache/scratch/ascii_art.html
 ```
 
 **Step 2 — Extract art from pre tags:**
 
 ```python
-import re, html
-with open('/tmp/ascii_art.html') as f:
+import os, re, html
+with open(os.path.expanduser('~/.hermes/cache/scratch/ascii_art.html')) as f:
     text = f.read()
 arts = re.findall(r'<pre[^>]*>(.*?)</pre>', text, re.DOTALL)
 for art in arts:

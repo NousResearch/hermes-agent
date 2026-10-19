@@ -31,6 +31,7 @@ const gatewayMocks = vi.hoisted(() => {
 
 const reconnectStateMocks = vi.hoisted(() => ({
   reconcileBusyStatesOnReconnect: vi.fn(),
+  resetRouteOwnedTileRuntimeBindings: vi.fn(),
   resetTileRuntimeBindings: vi.fn()
 }))
 
@@ -66,7 +67,6 @@ vi.mock('@/store/session-states', () => reconnectStateMocks)
 
 const {
   activeGateway,
-  touchSecondaryGateways,
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
@@ -76,7 +76,6 @@ const {
   ensureGatewayForProfile,
   openGatewayForAgent,
   openGatewayForProfile,
-  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   requestGatewayForAgent,
@@ -352,16 +351,43 @@ describe('secondary reconnect runtime scope', () => {
     const reopening = openGatewayForAgent('homelab', 'writer')
 
     await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2))
-    expect(reconnectStateMocks.resetTileRuntimeBindings).toHaveBeenCalledWith({
+    // Not the window's ambient gateway: only tiles owned by this route can hold
+    // its runtime ids, so the reset is route-owned rather than window-wide.
+    expect(reconnectStateMocks.resetRouteOwnedTileRuntimeBindings).toHaveBeenCalledWith({
       connectionId: 'homelab',
       profile: 'writer'
     })
-    expect(reconnectStateMocks.resetTileRuntimeBindings.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(reconnectStateMocks.resetTileRuntimeBindings).not.toHaveBeenCalled()
+    expect(reconnectStateMocks.resetRouteOwnedTileRuntimeBindings.mock.invocationCallOrder[0]).toBeLessThan(
       gatewayMocks.connect.mock.invocationCallOrder[1]
     )
 
     finishReconnect()
     await reopening
+  })
+
+  it('does not re-resume unrelated tiles when a background request lease reopens its route', async () => {
+    // The Bot relay drains every registered connection on a 30s tick through
+    // requestGatewayForAgent. A local route is exempt from relay retention, so
+    // each tick dials a fresh socket and disposes it after the RPC. Treating
+    // every such reopen as a window-wide backend restart dropped every open
+    // tile's runtime binding, remounting its composer (caret reset, layout
+    // shift, model pick reverted) every 30 seconds.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))
+    })
+
+    await requestGatewayForAgent('local', 'writer', 'bot_relay.outbox.drain')
+    expect(gatewayMocks.instances[0]?.close).toHaveBeenCalledOnce()
+
+    await requestGatewayForAgent('local', 'writer', 'bot_relay.outbox.drain')
+
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+    expect(reconnectStateMocks.resetTileRuntimeBindings).not.toHaveBeenCalled()
+    expect(reconnectStateMocks.resetRouteOwnedTileRuntimeBindings).toHaveBeenCalledWith({
+      connectionId: 'local',
+      profile: 'writer'
+    })
   })
 
   it('rebinds only Bot runtimes owned by the reconnected profile route', async () => {
@@ -706,38 +732,6 @@ describe('reconnect fail-stop on a removed connection', () => {
   })
 })
 
-describe('touchSecondaryGateways', () => {
-  it('pings only secondaries whose socket is open, so a backend nobody reaches can idle-reap (#103375)', async () => {
-    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-      descriptorFor(connectionId, profile)
-    )
-
-    const touchBackend = vi.fn(async () => ({ ok: true }))
-
-    installDesktop({ getConnectionFor, touchBackend })
-
-    await ensureGatewayForAgent('homelab', 'default')
-    await ensureGatewayForAgent('office', 'default')
-    // openSecondary pings once per successful dial; only the keepalive sweep
-    // is under test here.
-    touchBackend.mockClear()
-
-    touchSecondaryGateways()
-    expect(touchBackend).toHaveBeenCalledTimes(2)
-
-    // The office socket drops and sits in reconnect backoff: still wantOpen,
-    // but nothing on this window uses that backend until it reopens.
-    const office = gatewayMocks.instances[1] as unknown as { connectionState: string }
-    office.connectionState = 'closed'
-    touchBackend.mockClear()
-
-    touchSecondaryGateways()
-
-    expect(touchBackend).toHaveBeenCalledTimes(1)
-    expect(touchBackend).not.toHaveBeenCalledWith(expect.stringContaining('office'))
-  })
-})
-
 describe('secondary stalled-dial budget', () => {
   it('parks a scope after repeated stalled dials instead of redialing forever, and a user action re-arms it (#103375)', async () => {
     vi.useFakeTimers()
@@ -781,6 +775,38 @@ describe('secondary stalled-dial budget', () => {
     expect(getConnectionFor.mock.calls.length).toBe(dialsAfterParking + 1)
   })
 
+  it('parks a scope at once when its local gateway ensure fails permanently, and an explicit open re-arms it', async () => {
+    vi.useFakeTimers()
+
+    // What main's ensureLocalGateway / parseGatewayEnsureOutput / assertLocalGatewayEndpoint throw,
+    // as they cross the IPC boundary. Each re-dial spawns another `hermes gateway ensure`.
+    for (const permanent of [
+      "Error invoking remote method 'hermes:connection:get-for': Error: Gateway incompatible (runtime_protocol). Use hermes gateway status for recovery.",
+      'hermes gateway ensure produced no result (exit 2): invalid choice. Update Hermes or check the profile, then retry.',
+      'Invalid local gateway endpoint'
+    ]) {
+      closeSecondaryGateways()
+      gatewayMocks.instances.length = 0
+      const getConnectionFor = vi.fn().mockResolvedValueOnce(descriptorFor('homelab', 'bot-a')).mockRejectedValue(new Error(permanent))
+      installDesktop({ getConnectionFor })
+
+      await ensureGatewayForAgent('homelab', 'bot-a')
+      const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+      socket.connectionState = 'closed'
+      reconnectSecondaryGateways()
+
+      for (let index = 0; index < 20; index += 1) {
+        await vi.advanceTimersByTimeAsync(20_000)
+      }
+
+      expect(getConnectionFor.mock.calls.length, permanent).toBe(2)
+
+      getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+      await ensureGatewayForAgent('homelab', 'bot-a')
+      expect(getConnectionFor.mock.calls.length, permanent).toBe(3)
+    }
+  })
+
   it('does not let an interleaved fast failure refill the stall budget', async () => {
     vi.useFakeTimers()
 
@@ -810,6 +836,79 @@ describe('secondary stalled-dial budget', () => {
 
     // 3 stalled dials spread across 5 attempts still park the scope.
     expect(getConnectionFor.mock.calls.length).toBeLessThanOrEqual(6)
+  })
+
+  it('background polls against a dying scope do not out-dial the reconnect ladder (#121865)', async () => {
+    vi.useFakeTimers()
+
+    const stalled = () =>
+      new Error('Local backend start for "bot-a" timed out while waiting for a free slot. (background)')
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(stalled())
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    const dialsAfterOpen = getConnectionFor.mock.calls.length
+
+    // The automatic loop runs while a poller (session.control.read against a
+    // cross-profile session) keeps issuing routed RPCs, which default to
+    // spawnPriority 'background'. Each one used to dial straight past the
+    // ladder whenever the socket was down: one dial per poll tick.
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 20 polls inside ONE second of virtual time. How often the ladder itself
+    // dials depends on its full-jitter draws (a near-zero draw redials at once),
+    // so count only the dials a poll makes: timers never fire inside the awaited
+    // request, so every dial seen there is the poll's own, never the ladder's.
+    let pollDials = 0
+
+    for (let index = 0; index < 20; index += 1) {
+      const before = getConnectionFor.mock.calls.length
+      await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+      pollDials += getConnectionFor.mock.calls.length - before
+      await vi.advanceTimersByTimeAsync(50)
+    }
+
+    expect(pollDials).toBe(0)
+    expect(getConnectionFor.mock.calls.length).toBeGreaterThan(dialsAfterOpen)
+  })
+
+  it('a foreground request still dials at once while background polls are cooling down (#121865)', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    // A background poll dials, fails, and opens the cooldown window.
+    await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+    const dialsAfterFailure = getConnectionFor.mock.calls.length
+
+    // A second poll inside the window must not dial.
+    await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+    expect(getConnectionFor.mock.calls.length).toBe(dialsAfterFailure)
+
+    // A user action inside the same window dials immediately.
+    getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+    await requestGatewayForAgent('homelab', 'bot-a', 'session.activate', {}, undefined, undefined, {
+      spawnPriority: 'foreground'
+    }).catch(() => undefined)
+    expect(getConnectionFor.mock.calls.length).toBe(dialsAfterFailure + 1)
   })
 
   it('re-arms a parked scope on the wake/online/focus nudge', async () => {
@@ -898,89 +997,15 @@ describe('secondary stalled-dial budget', () => {
   })
 })
 
-describe('cooperative pool retirement (supersedes #104871)', () => {
-  it('a retired scope parks: no reconnect on socket drop and no redial from the wake/focus nudge; an explicit open re-arms it', async () => {
-    vi.useFakeTimers()
-
-    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-      descriptorFor(connectionId, profile)
-    )
-
-    installDesktop({ getConnectionFor })
-
-    // A bot tile pinned this local child under the registry-local scope; main
-    // pools that child under the bare profile key.
-    await ensureGatewayForAgent('local', 'bot-a')
-    await ensureGatewayForAgent('homelab', 'bot-b')
-    expect(gatewayMocks.instances).toHaveLength(2)
-    const dialsBefore = getConnectionFor.mock.calls.length
-
-    // Main announces the retirement BEFORE it SIGTERMs the child.
-    expect(parkSecondariesForRetiredBackend('bot-a')).toEqual(['conn:local::bot-a'])
-
-    // Then the child exits and the socket drops.
-    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
-    socket.connectionState = 'closed'
-
-    // Neither the recovery nudge (focus / online / wake) nor time redials the
-    // retired scope; the unrelated remote scope is untouched.
-    reconnectSecondaryGateways()
-    await vi.advanceTimersByTimeAsync(0)
-
-    for (let index = 0; index < 20; index += 1) {
-      await vi.advanceTimersByTimeAsync(20_000)
-    }
-
-    expect(getConnectionFor.mock.calls.filter(([args]) => args.profile === 'bot-a')).toHaveLength(
-      getConnectionFor.mock.calls.slice(0, dialsBefore).filter(([args]) => args.profile === 'bot-a').length
-    )
-
-    // Ambient hydration and relay/status RPCs must not undo the park either.
-    const { requestGatewayForAgent } = await import('./gateway')
-    const parkedDials = getConnectionFor.mock.calls.length
-    await expect(openGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
-    await expect(requestGatewayForAgent('local', 'bot-a', 'session.list')).rejects.toThrow(/retired/i)
-    await expect(retainGatewayForAgent('local', 'bot-a')).rejects.toThrow(/retired/i)
-    expect(getConnectionFor.mock.calls.length).toBe(parkedDials)
-
-    // Parked ≠ evicted: the entry survives for its tile, and an explicit open
-    // (a click on the bot) is the one thing that re-arms and redials it.
-    const before = getConnectionFor.mock.calls.length
-    await ensureGatewayForAgent('local', 'bot-a')
-    expect(getConnectionFor.mock.calls.length).toBe(before + 1)
-    expect(getConnectionFor.mock.calls.at(-1)?.[0]).toMatchObject({ connectionId: 'local', profile: 'bot-a' })
-
-    // Once re-armed, the nudge treats it like any other scope again.
-    ;(gatewayMocks.instances.at(-1) as unknown as { connectionState: string }).connectionState = 'closed'
-    reconnectSecondaryGateways()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(getConnectionFor.mock.calls.length).toBe(before + 2)
-  })
-
-  it('touch pings carry the scope turn lease so main can skip leased residents early', async () => {
-    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-      descriptorFor(connectionId, profile)
-    )
-
-    const touchBackend = vi.fn(async () => ({ ok: true }))
-
-    installDesktop({ getConnectionFor, touchBackend })
-
-    await ensureGatewayForAgent('homelab', 'bot-a')
-    touchBackend.mockClear()
-
-    touchSecondaryGateways()
-    expect(touchBackend).toHaveBeenCalledWith('conn:homelab::bot-a', { activeTurn: false })
-  })
-})
-
 describe('rejected secondary authentication', () => {
   it('parks only the rejected source across automatic nudges and recovers on explicit selection', async () => {
     vi.useFakeTimers()
+
     const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
       ...descriptorFor(connectionId, profile),
       authMode: 'oauth'
     }))
+
     const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
     await ensureGatewayForAgent('cloud', 'default')
@@ -1033,10 +1058,12 @@ describe('rejected secondary authentication', () => {
 
 it('keeps background auth rejection after socket disposal until recovery or connection removal', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...descriptorFor(connectionId, profile),
     authMode: 'oauth'
   }))
+
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
@@ -1057,14 +1084,18 @@ it('keeps background auth rejection after socket disposal until recovery or conn
 
 it('does not let a removed connection repopulate the auth rejection', async () => {
   const { requestGatewayForAgent } = await import('./gateway')
+
   const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
     ...descriptorFor(connectionId, profile),
     authMode: 'oauth'
   }))
+
   let rejectTicket!: (error: Error) => void
+
   const ticket = new Promise<never>((_resolve, reject) => {
     rejectTicket = reject
   })
+
   const getGatewayWsUrlFor = vi.fn(() => ticket)
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
   const pending = requestGatewayForAgent('cloud', 'default', 'session.list')

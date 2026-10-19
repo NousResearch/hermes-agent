@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -92,10 +93,19 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
     assert _short_path(str(file_path)) == str(file_path)
 
 
+@pytest.mark.platforms("linux")
 def test_normalize_path_expands_tilde(monkeypatch):
-    monkeypatch.setenv("HOME", "/home/user")
+    # expanduser keys off USERPROFILE on native Windows, HOME elsewhere —
+    # set the var the running host actually consults (host-native rule:
+    # never fake the platform).
+    if sys.platform == "win32":
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\fakeuser")
+        expected_base = r"C:\Users\fakeuser"
+    else:
+        monkeypatch.setenv("HOME", "/home/user")
+        expected_base = "/home/user"
     p = normalize_path("~/x.py")
-    assert p == os.path.abspath("/home/user/x.py")
+    assert p == os.path.abspath(os.path.join(expected_base, "x.py"))
 
 
 def test_find_git_worktree_cache_is_capped(tmp_path: Path, monkeypatch):

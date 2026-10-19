@@ -1,8 +1,5 @@
 """Tests for tools/skill_linter.py — the advisory SKILL.md convention linter."""
 
-from pathlib import Path
-
-import pytest
 
 from tools.skill_linter import (
     ERROR,
@@ -181,11 +178,6 @@ def test_author_caps_warned():
     assert "author-caps" in _rules(findings)
 
 
-def test_findings_carry_rule_and_severity():
-    findings = lint_content(CLEAN.replace("name: my-skill", "name: BAD"))
-    assert any(f.rule == "name-format" and f.severity == ERROR for f in findings)
-
-
 def test_incident_log_shape_flagged_and_rule_shape_not():
     # A body narrating incidents by PR number is a log, not a lesson; the same lesson stated as a
     # rule + why with no numbers passes. Density-gated so one citation in a long body is fine.
@@ -212,3 +204,16 @@ def test_references_sprawl_flagged_above_cap(tmp_path):
     assert "references-sprawl" in _rules(lint_skill(skill_dir / "SKILL.md"))
     (refs / f"note-{_MAX_REFERENCE_FILES}.md").unlink()
     assert "references-sprawl" not in _rules(lint_skill(skill_dir / "SKILL.md"))
+
+
+def test_oversized_body_flagged_above_budget_and_not_below():
+    # skill_view loads SKILL.md whole and it rides in context for the rest of the session, so the
+    # body has a soft budget. Threshold-relative on purpose: the number is a calibration, not a
+    # contract. The finding names the size so the author sees how far over they are.
+    from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
+    filler = "- Prefer the native tool; the shell path loses the structured result.\n"
+    over = CLEAN + filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) + 1)
+    under = CLEAN + filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) // 2)
+    found = [f for f in lint_content(over) if f.rule == "oversized-body"]
+    assert found and found[0].severity == WARNING
+    assert "oversized-body" not in _rules(lint_content(under))

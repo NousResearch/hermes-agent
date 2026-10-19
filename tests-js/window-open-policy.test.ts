@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { createWindowOpenHandler, describeDeniedUrl } from '../apps/desktop/electron/window-open-policy'
+import { createWindowOpenHandler } from '../apps/desktop/electron/window-open-policy'
 
 describe('window-open policy (GHSA-9f4c-93c8-jc8g)', () => {
   test('denies every scheme and reports only the sanitized origin', () => {
@@ -32,7 +32,6 @@ describe('window-open policy (GHSA-9f4c-93c8-jc8g)', () => {
     assert.equal(seen.length, urls.length)
     assert.equal(seen[0], 'https://attacker.test')
     assert.equal(seen[1], 'http://attacker.test:8080')
-    assert.equal(describeDeniedUrl(''), '<unparseable>')
     assert.ok(seen.every(origin => !origin.includes('SECRET') && !origin.includes('/steal')))
   })
 

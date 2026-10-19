@@ -60,6 +60,29 @@ describe('absorbSpokenReplyRewrite', () => {
     expect(absorbSpokenReplyRewrite(spoken, after)).toEqual(spoken)
   })
 
+  it('follows a live-tail rewrite when tool rows change the assistant ordinal', () => {
+    const before = [user('u1'), assistant('narration'), assistant('tool-segment'), assistant('assistant-stream-s')]
+
+    markAssistantIdSpoken('s', before, 'assistant-stream-s')
+
+    // Hydration folds the tool segments into one bubble. The assistant ordinal
+    // moves; the user turn does not.
+    const after = [user('u1'), assistant('42')]
+
+    expect(resolveSpokenReply('s', after)?.id).toBe('42')
+    expect(spokenReplyOf('s')?.id).toBe('42')
+  })
+
+  it('does not mark a later user turn spoken when the live tail vanished', () => {
+    markAssistantIdSpoken('s', [user('u1'), assistant('assistant-stream-s')], 'assistant-stream-s')
+
+    const after = [user('u1'), assistant('durable-1'), user('u2'), assistant('assistant-stream-next')]
+    const spoken = resolveSpokenReply('s', after)
+
+    expect(spoken?.id).not.toBe('assistant-stream-next')
+    expect(after.findLast(message => message.role === 'assistant')?.id).not.toBe(spoken?.id)
+  })
+
   it('keeps the anchor when the spoken id is still in the list', () => {
     const spoken = { id: 'assistant-stream-s', ordinal: 0 }
     const messages = [assistant('assistant-stream-s')]

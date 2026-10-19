@@ -181,7 +181,11 @@ def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
 
     request = client.chat.completions.create.call_args.kwargs
     assert "max_tokens" not in request
-    assert request["extra_body"]["reasoning"] == {"enabled": False}
+    # Task-level ``none`` reaches the wire in the Ollama profile's native disable shape
+    # (top-level reasoning_effort + think=False), not as a pass-through extra_body.reasoning.
+    assert request["reasoning_effort"] == "none"
+    assert request["extra_body"]["think"] is False
+    assert "reasoning" not in request["extra_body"]
 
 
 def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
@@ -371,11 +375,13 @@ def test_fallback_reasoning_requires_independent_route_certification():
     assert "max_tokens" not in uncertified
     assert "max_completion_tokens" not in uncertified
     assert "reasoning" not in uncertified.get("extra_body", {})
+    assert "think" not in uncertified.get("extra_body", {})
     assert "max_tokens" not in certified
-    assert certified["extra_body"]["reasoning"] == {
-        "enabled": False,
-        "effort": "none",
-    }
+    # Ollama's native disable shape (top-level reasoning_effort + think=False) replaces the
+    # pass-through ``extra_body.reasoning`` the certified route used to forward.
+    assert certified["reasoning_effort"] == "none"
+    assert certified["extra_body"]["think"] is False
+    assert "reasoning" not in certified["extra_body"]
 
 
 def test_reasoning_effort_aliases_certify_like_none():

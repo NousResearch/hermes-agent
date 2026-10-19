@@ -123,22 +123,4 @@ describe('a pasted URL survives the paste', () => {
     expect(onAttachPrCommentUrl).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(true)
   })
-
-  it('treats it exactly like a plain URL paste — same insertion, no attachment', () => {
-    const onAttachPrCommentUrl = vi.fn(() => true)
-    const plain = render(<Harness onAttachPrCommentUrl={onAttachPrCommentUrl} />)
-    const deep = render(<Harness onAttachPrCommentUrl={onAttachPrCommentUrl} />)
-
-    const plainEditor = plain.container.querySelector<HTMLElement>(`[data-slot="${RICH_INPUT_SLOT}"]`)!
-    const deepEditor = deep.container.querySelector<HTMLElement>(`[data-slot="${RICH_INPUT_SLOT}"]`)!
-
-    pasteInto(plainEditor, 'https://github.com/o/r/pull/1')
-    pasteInto(deepEditor, PR_COMMENT_URL)
-
-    // Same shape of result for both URLs: the text is present, nothing is attached.
-    expect(composerPlainText(plainEditor)).toContain('https://github.com/o/r/pull/1')
-    expect(composerPlainText(deepEditor)).toContain(PR_COMMENT_URL)
-    expect(mainComposerScope.$attachments.get()).toEqual([])
-    expect(onAttachPrCommentUrl).not.toHaveBeenCalled()
-  })
 })

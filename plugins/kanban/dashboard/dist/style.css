@@ -1353,14 +1353,18 @@
 /* ---------------------------------------------------------------------- */
 
 /* Severity token variables so every diagnostic-coloured surface uses the */
-/* same palette. */
+/* same palette. Chained through the host's theme tokens (the dashboard    */
+/* theme engine writes --color-* on <html>) so the rungs follow the active  */
+/* theme like every other colour here; the literals are only the fallback  */
+/* for hosts that define no tokens. Declared on the consuming elements, not */
+/* .hermes-kanban: diagnostic nodes can render outside that container.     */
 .hermes-kanban-diag,
 .hermes-kanban-attention,
 .hermes-kanban-warning-badge,
 .hermes-kanban-attention-row {
-  --hermes-diag-warning: #ff9e3b;
-  --hermes-diag-error:   #ff6b3d;
-  --hermes-diag-critical: #ff4d4d;
+  --hermes-diag-warning:  var(--color-warning, #ff9e3b);
+  --hermes-diag-error:    var(--color-destructive, #ff6b3d);
+  --hermes-diag-critical: var(--color-destructive, #ff4d4d);
 }
 
 /* Warning-badge severity variants (overrides the base colour). */

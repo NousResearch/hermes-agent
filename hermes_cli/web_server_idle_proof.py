@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from hermes_cli.web_server_idle_exit import turn_in_flight
+from hermes_cli.web_server_idle_exit import busy_ledger
 
 _log = logging.getLogger(__name__)
 
@@ -36,19 +36,20 @@ def pending_human_input() -> Optional[int]:
         return None
 
 
-def idle_proof(turn_probe: Callable[[], Optional[bool]] = turn_in_flight,
+def idle_proof(turn_probe: Callable[[], bool | str | None] = busy_ledger,
                input_probe: Callable[[], Optional[int]] = pending_human_input) -> dict:
-    """``{"idle": True | False | None, "reason": str | None}``.
+    """``{"idle": True | False | None, "reason": str | None}`` plus ``"detail"`` naming the busy ledger.
 
     ``True`` only when no turn is in flight (session table AND cron ledger) and nothing is waiting
     on a human. ``None`` whenever either probe is indeterminate — the caller treats it exactly like
-    busy.
+    busy. ``turn_probe`` may answer with a bool or with :func:`busy_ledger`'s name; the name is
+    surfaced as ``detail`` so a backend that refuses to retire says which work it is protecting.
     """
     turn = turn_probe()
     if turn is None:
         return {"idle": None, "reason": "turn_probe_unavailable"}
     if turn:
-        return {"idle": False, "reason": "turn_in_flight"}
+        return {"idle": False, "reason": "turn_in_flight", "detail": turn if isinstance(turn, str) else None}
     pending = input_probe()
     if pending is None:
         return {"idle": None, "reason": "input_probe_unavailable"}

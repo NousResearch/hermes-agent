@@ -207,7 +207,7 @@ class TestPeerRecordConsistency:
         monkeypatch.setattr(
             store,
             "_record_gateway_session_peer",
-            lambda sid, key, origin, display_name=None: recorded.append(
+            lambda sid, key, origin, display_name=None, **_kw: recorded.append(
                 (sid, key, display_name)
             ),
         )

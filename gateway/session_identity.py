@@ -15,6 +15,7 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from contextlib import suppress
 import weakref
@@ -57,6 +58,11 @@ class RoutingIdentity:
     # Receiving adapter; None for restored/synthetic sources (no live provenance → fail closed).
     # Provenance, not identity: two events from the same bot share one identity.
     transport: Optional[weakref.ref] = field(default=None, compare=False, hash=False)
+    # True when nothing named the receiving bot (no live adapter, no persisted transport_profile,
+    # no explicit hint) and ``transport_profile`` is the primary by default. A hand-built or
+    # pre-column source. Delivery may still fall back to the runtime profile's unique adapter for
+    # these; an identity whose transport is KNOWN (live or restored) never does.
+    transport_inferred: bool = field(default=False, compare=False, hash=False)
 
     @property
     def namespace(self) -> str:
@@ -92,14 +98,21 @@ def clear_identity(source: Any) -> None:
     guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
     per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
     short-circuits the route and the new speaker runs as the old one."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home", "_rejected_route_profile"):
         with suppress(AttributeError):
             delattr(source, attr)
     with suppress(AttributeError):
         source.profile = None
 
 
-def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
+def transport_profile_of(source: Any) -> Optional[str]:
+    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``);
+    None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
+    identity = identity_of(source)
+    return identity.transport_profile if identity is not None and identity.multiplexed else None
+
+
+def replace_source(source: SessionSource, **changes: Any) -> SessionSource:
     """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
     authorization home, identity). A plain ``replace`` silently produces a source the runner
     can only route through heuristics."""
@@ -117,7 +130,7 @@ def _name(value: Any) -> Optional[str]:
 
 
 def canonical_identity(
-    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
 ) -> Optional[RoutingIdentity]:
     """The identity already pinned on *source*, else :func:`resolve_identity` — the one call every
@@ -136,8 +149,48 @@ def canonical_identity(
         return None
 
 
+def restore_identity(
+    source: SessionSource, *, runner: Any, transport_profile: Optional[str],
+) -> Optional[RoutingIdentity]:
+    """Pin the identity of a source rebuilt from durable state (``SessionEntry.origin``, a
+    ``sessions`` row, a cached copy) — no live adapter, so ``transport=None``: the restored row of the
+    transport matrix, where delivery goes through the persisted transport owner or fails closed.
+
+    *transport_profile* is what the routing index persisted at ingress (``SessionEntry.transport_profile``);
+    ``None`` = a row written before the column existed, whose transport is unknown → nothing is pinned
+    and the legacy heuristics (``_is_shared_bot_satellite``) keep deciding. Standalone gateways have
+    nothing to restore (one bot, one home).
+    """
+    transport_name = _name(transport_profile)
+    if transport_name is None:
+        return None
+    if not bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+        return None
+    existing = identity_of(source)
+    if existing is not None:
+        return existing
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import get_process_hermes_home
+
+    primary_profile = _name(getattr(runner, "_primary_profile_name", None)) or "default"
+    runtime_name = _name(getattr(source, "profile", None)) or primary_profile
+    authorization_home = (
+        Path(get_process_hermes_home()) if transport_name == primary_profile
+        else get_profile_dir(transport_name))
+    runtime_home = (
+        authorization_home if runtime_name == transport_name
+        else Path(runner._resolve_profile_home_for_source(source)))
+    source._authorization_profile_home = authorization_home
+    identity = RoutingIdentity(
+        transport_profile=transport_name, runtime_profile=runtime_name,
+        authorization_home=authorization_home, runtime_home=runtime_home,
+        multiplexed=True, transport=None)
+    setattr(source, _IDENTITY_ATTR, identity)
+    return identity
+
+
 def resolve_identity(
-    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
 ) -> RoutingIdentity:
     """Resolve and pin the :class:`RoutingIdentity` of an inbound *source*.
@@ -174,6 +227,7 @@ def resolve_identity(
             source._transport_adapter_ref = weakref.ref(adapter)
         _registered, owner_profile = runner._owning_profile(adapter, platform)
     transport_name = _name(transport_profile) or _name(owner_profile) or primary_profile
+    transport_inferred = adapter is None and _name(transport_profile) is None and _name(owner_profile) is None
     transport_ref = weakref.ref(adapter) if adapter is not None else None
 
     if not multiplexed:
@@ -203,6 +257,7 @@ def resolve_identity(
                 else runner._profile_name_for_source(source, adapter_profile=adapter_profile))
         except ProfileRouteRejected as exc:
             source.profile_route_rejected = True
+            source._rejected_route_profile = exc.profile  # a parked target is retried (producer_scope)
             raise IdentityUnresolved(f"{where}: {exc}") from exc
         source.profile = routed or adapter_profile
 
@@ -215,6 +270,40 @@ def resolve_identity(
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,
-        multiplexed=True, transport=transport_ref)
+        multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred)
     setattr(source, _IDENTITY_ATTR, identity)
     return identity
+
+
+AUTH_SUBJECT_PREFIX = 'auth:v1:'
+
+
+def parse_authenticated_subject(subject):
+    """``(provider, issuer, user)`` of an :func:`authenticated_subject` login form
+    ``auth:v1:[provider, issuer, user]``, else None. The one parser for that format: callers
+    apply their own policy (which logins may be forwarded, which map to a label) to the result."""
+    if not isinstance(subject, str) or not subject.startswith(AUTH_SUBJECT_PREFIX):
+        return None
+    try:
+        parts = json.loads(subject[len(AUTH_SUBJECT_PREFIX):])
+    except ValueError:
+        return None
+    if not (isinstance(parts, list) and len(parts) == 3 and all(isinstance(p, str) for p in parts)):
+        return None
+    return tuple(parts)
+
+
+def authenticated_subject(identity):
+    """Keep private native receipts stable; namespace every dashboard identity.
+
+    Only the private bootstrap stamps profile/instance/capabilities. A dashboard
+    provider named 'local' (or a subject resembling a UID) is not native provenance.
+    Historical remote bare-subject receipts cannot be assigned to a first caller.
+    """
+    subject = str(identity.get('user_id') or 'unbound')
+    if (identity.get('provider') == 'local' and identity.get('profile_id')
+            and identity.get('instance_id') and 'capabilities' in identity):
+        return subject
+    return AUTH_SUBJECT_PREFIX + json.dumps(
+        [identity.get('provider') or '', identity.get('issuer') or '', subject],
+        separators=(',', ':'), ensure_ascii=True)

@@ -106,7 +106,7 @@ and open source LLMs. Summarize the top 3 stories in a concise briefing
 with links. Use a friendly, professional tone. Deliver to telegram.
 ```
 
-Hermes will create the cron job for you using the unified `cronjob` tool.
+Hermes will create the cron job for you using the unified `cronjob_manage` tool.
 
 ### Option B: CLI Slash Command
 

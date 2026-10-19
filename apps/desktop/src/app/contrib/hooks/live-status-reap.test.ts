@@ -65,7 +65,11 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
   // and the first fresh snapshot that does not report it working is the
   // terminal fact that lights the dot.
   it('confirms a parked reconnect completion the poll never saw live', () => {
-    publishSessionState('runtime-p', { ...createClientSessionState('stored-p'), busy: true, storedSessionId: 'stored-p' })
+    publishSessionState('runtime-p', {
+      ...createClientSessionState('stored-p'),
+      busy: true,
+      storedSessionId: 'stored-p'
+    })
     reconcileBusyStatesOnReconnect()
     expect($unreadFinishedSessionIds.get()).toEqual([])
 

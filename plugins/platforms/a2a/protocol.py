@@ -503,3 +503,52 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+
+
+# A forwarded task's identity tuple is what addresses its admission on the OWNER's ledger. The
+# in-memory task store cannot answer tasks/get after a restart, so the tuple is kept on disk beside
+# the conversation log — the same durable fallback `logged_input` gives the input side. The file is
+# keyed on the task id, so writing it is an upsert: repeating it replaces one record, never adds one.
+_MAX_TASK_IDENTITIES = 500
+_TASK_IDENTITY_FIELDS = ("task_id", "context_id", "peer", "agent_slug", "tenant", "input_id")
+
+
+def _task_identity_path(task_id: str) -> Path:
+    safe = "".join(c for c in (task_id or "") if c.isalnum() or c in "-_") or "task"
+    return get_hermes_home() / "a2a_tasks" / f"{safe}.json"
+
+
+def persist_task_identity(rec: dict) -> None:
+    """Record task id -> owner-admission identity on disk. Never raises, and idempotent per task."""
+    try:
+        path = _task_identity_path(rec["task_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {k: rec.get(k) or "" for k in _TASK_IDENTITY_FIELDS}
+        entry["created_iso"] = rec.get("created_iso", "")
+        path.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+        _prune_task_identities()
+    except Exception:
+        pass
+
+
+def load_task_identity(task_id: str) -> Optional[dict]:
+    """The identity a previous process persisted for this task, or None."""
+    try:
+        entry = json.loads(_task_identity_path(task_id).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _prune_task_identities() -> None:
+    """Bound the identity dir to the newest ``_MAX_TASK_IDENTITIES``, like the terminal-task cap."""
+    try:
+        directory = get_hermes_home() / "a2a_tasks"
+        files = sorted(directory.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return
+    for stale in files[_MAX_TASK_IDENTITIES:]:
+        try:
+            stale.unlink()
+        except Exception:
+            pass

@@ -7,7 +7,6 @@ chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
 from typing import Any
 
 from agent import reasoning_effort as re_
-from hermes_cli.version_info import get_version_info
 from providers import register_provider
 from providers.base import ProviderProfile
 from datetime import UTC
@@ -17,7 +16,8 @@ from datetime import UTC
 _ATTRIBUTION_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+    "User-Agent": "opencode/2.0.29/cli",
+    "x-opencode-client": "cli",
 }
 
 

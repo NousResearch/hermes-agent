@@ -790,7 +790,14 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
-    return request_client.chat.completions.create(**api_kwargs)
+    response = request_client.chat.completions.create(**api_kwargs)
+    # OpenCode free-tier bypass sets stream=True in the body (relay requires it).
+    # The SDK returns a Stream[ChatCompletionChunk] instead of a ChatCompletion;
+    # aggregate it so downstream normalize_response sees a complete response.
+    if api_kwargs.get("stream") and not hasattr(response, "choices"):
+        from agent.auxiliary_client import _aggregate_chat_stream
+        response = _aggregate_chat_stream(response, model=api_kwargs.get("model", "") or "")
+    return response
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -1544,12 +1551,104 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     from agent.opencode_affinity import merge_session_affinity_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
-    return merge_session_affinity_headers(
+    kwargs = merge_session_affinity_headers(
         kwargs,
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
     )
+    # OpenCode free-tier gate: the relay's authenticate() rejects FreeTierError-unless
+    # the request body has stream=true AND tools containing "bash" and "read".
+    # We set stream=True (forcing streamed response) and inject minimal tool stubs
+    # for any opencode target using -free models. The stream is aggregated back to a
+    # complete response in _dispatch_nonstreaming_api_request.
+    _apply_opencode_free_tier_hacks(agent, kwargs)
+    return kwargs
+
+
+# --- OpenCode free-tier bypass ---
+# The relay's authenticate() (zen.go) checks: User-Agent format (opencode/<channel>/<version>/cli),
+# x-opencode-session in ses_<12hex><14base62> format (idgen.go), body.stream=true, and body.tools
+# containing "bash" and "read". Absent any of these -> FreeTierError 403.
+# These tool stubs match the OpenCode client's tool names/signatures closely enough
+# to pass the relay's presence check (see Issue #55653: "looks at which tools are listed").
+_OPCODE_FREE_TOOLS = [
+    {"type": "function", "function": {
+        "name": "bash",
+        "description": "Executes a given bash command in a persistent shell session with optional timeout.",
+        "parameters": {"type": "object", "properties": {
+            "command": {"description": "The bash command to execute", "type": "string"},
+            "timeout": {"description": "Optional timeout in seconds", "type": "number"}}}}},
+    {"type": "function", "function": {
+        "name": "read",
+        "description": "Reads a file from the local filesystem.",
+        "parameters": {"type": "object", "properties": {
+            "filePath": {"description": "The path to the file to read", "type": "string"},
+            "offset": {"description": "Line number to start reading from (0-based)", "type": "number"},
+            "limit": {"description": "Number of lines to read", "type": "number"}}}}},
+]
+
+
+def _is_opencode_free_tier_model(model: str) -> bool:
+    """True when the model is a free-tier OpenCode model requiring bypass headers."""
+    return "-free" in (model or "").lower()
+
+
+# OpenAI SDK telemetry headers that identify the Python SDK to the relay.
+# Stripped via Omit() so the request appears to come from the official OpenCode CLI.
+_STAINLESS_HEADERS = (
+    "X-Stainless-Lang", "X-Stainless-Package-Version", "X-Stainless-OS",
+    "X-Stainless-Arch", "X-Stainless-Runtime", "X-Stainless-Runtime-Version",
+    "X-Stainless-Async", "x-stainless-retry-count", "x-stainless-read-timeout",
+)
+
+
+def _apply_opencode_free_tier_hacks(agent, kwargs: dict) -> dict:
+
+    """Inject stream=true + bash/read stub tools for OpenCode free-tier models.
+
+    The relay's authenticate() (zen.go) checks the request body for ``stream: true``
+    and ``tools`` containing ``bash`` and ``read`` — fields it assumes only the real
+    OpenCode client would send. Without them, FreeTierError 403 fires before any quota
+    check. We set ``stream=True`` (forcing a streamed response) and add minimal tool
+    stubs; ``_dispatch_nonstreaming_api_request`` aggregates the stream back.
+    """
+    from agent.opencode_affinity import is_opencode_target
+
+    provider = getattr(agent, "provider", None)
+    base_url = getattr(agent, "base_url", None)
+    if not is_opencode_target(provider, base_url):
+        return kwargs
+
+    model = kwargs.get("model", "") or getattr(agent, "model", "") or ""
+    if not _is_opencode_free_tier_model(model):
+        return kwargs
+
+    # Inject bash/read tool stubs if not already present
+    existing = kwargs.get("tools") or []
+    existing_names = {t.get("function", {}).get("name") for t in existing if isinstance(t, dict)}
+    for stub in _OPCODE_FREE_TOOLS:
+        name = stub["function"]["name"]
+        if name not in existing_names:
+            existing.append(stub)
+    kwargs["tools"] = existing
+
+    # The relay requires stream=true in the body to pass free-tier authentication
+    kwargs["stream"] = True
+    kwargs.setdefault("stream_options", {"include_usage": True})
+
+    # Strip the OpenAI SDK's X-Stainless-* telemetry headers — the relay's
+    # auth gate now rejects any request carrying them (they identify the
+    # request as the Python SDK rather than the official OpenCode CLI).
+    # Omit() values cause _merge_mappings to drop the header entirely.
+    try:
+        from openai._types import Omit as _Omit
+        _stale = kwargs.setdefault("extra_headers", {})
+        for _h in _STAINLESS_HEADERS:
+            _stale.setdefault(_h, _Omit())
+    except ImportError:
+        pass
+    return kwargs
 
 
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

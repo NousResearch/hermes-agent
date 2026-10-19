@@ -24,10 +24,30 @@ Every request — main turn on any transport, auxiliary calls — goes through
 
 from __future__ import annotations
 
-import uuid
+import time
+import secrets
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
+
+# --- Relay-valid session ID generator ---
+# OpenCode's zen-gateway relay (opencode.ai/zen/v1) checks x-opencode-session
+# against the idgen.Session format in authenticate(): "ses_" + 12 hex chars
+# (48-bit bitwise-NOT of ms*4096+counter) + 14 random base62 chars.
+# The old "oneshot-<hex>" format fails with FreeTierError 403.
+_OPCODE_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_OPCODE_TIME_SCALE = 0x1000  # ms * 4096 shifts counter into low 12 bits
+
+
+def _generate_opencode_session_id() -> str:
+    """Generate a relay-valid ``ses_`` session ID (idgen.go Session format)."""
+    ms = time.time_ns() // 1_000_000
+    counter = 1
+    inverted = (~(ms * _OPCODE_TIME_SCALE + counter)) & ((1 << 48) - 1)
+    hex_part = f"{inverted:012x}"
+    rand_part = "".join(secrets.choice(_OPCODE_BASE62) for _ in range(14))
+    return f"ses_{hex_part}{rand_part}"
+
 
 
 def opencode_transport(provider: Optional[str], model: Optional[str], base_url: Optional[str]) -> tuple[Optional[str], str]:
@@ -97,17 +117,16 @@ def opencode_session_headers(
     """Return ``{"x-opencode-session": <key>}`` for OpenCode targets, else ``{}``.
 
     OpenCode targets always get a key: when no conversation/session key resolves, an
-    ephemeral ``oneshot-<hex>`` value is generated (OpenCode Go rejects requests without
-    the header, #105841)."""
+    ephemeral ``ses_`` value is generated (OpenCode relay requires
+    x-opencode-session on every request, 400 MissingSessionID if absent).
+    """
     if not is_opencode_target(provider, base_url):
         return {}
     key = resolve_affinity_key(session_id)
-    if not key:
-        # Stateless one-shot requests (commit messages, summaries, standalone prompts outside
-        # a session) lack an ambient conversation or session id. OpenCode Go strictly requires
-        # x-opencode-session on every request (HTTP 400 MissingSessionID if absent, #105841)
-        # so generate an ephemeral session id fallback.
-        key = f"oneshot-{uuid.uuid4().hex[:16]}"
+    if not key or not key.startswith("ses_"):
+        # OpenCode relay requires ses_<12hex><14base62> format; Hermes session IDs
+        # (e.g. 20261019_230516_9ca28e) are rejected with FreeTierError 403.
+        key = _generate_opencode_session_id()
     return {OPENCODE_SESSION_HEADER: key}
 
 

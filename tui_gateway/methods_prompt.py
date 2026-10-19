@@ -1064,9 +1064,11 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     def _turn_thread():
         try:
+            # The id rides only when there IS one: a legacy submit calls this exactly as before, so
+            # in-process callers (and their test doubles) are unaffected.
             _run_after_agent_ready(
                 rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback,
-                turn_author, client_turn_id=client_turn_id)
+                turn_author, **({"client_turn_id": client_turn_id} if client_turn_id else {}))
         except BaseException:
             # Backstop for a wrapper that DIED before the turn loop took over: this thread returns as
             # soon as the turn is dispatched to its own worker, so a normal (or merely slow) turn must

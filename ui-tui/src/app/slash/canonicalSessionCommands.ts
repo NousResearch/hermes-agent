@@ -4,6 +4,7 @@
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
 import type { SessionStats } from '@hermes/shared/gateway-events'
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
@@ -174,7 +175,32 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
 
       return text ? ctx.transcript.send(text) : ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
     })
-    .catch(ctx.guardedErr)
+    .catch(error => {
+      const busy = rewindBusyText(error, intent)
+
+      if (!busy) {
+        return ctx.guardedErr(error)
+      }
+
+      if (!ctx.stale()) {
+        ctx.transcript.sys(busy)
+      }
+    })
+}
+
+/** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
+function rewindBusyText(error: unknown, intent: 'retry' | 'undo'): null | string {
+  if (!(error instanceof JsonRpcGatewayError)) {
+    return null
+  }
+
+  const data = asRpcResult(error.data)
+
+  if (data?.reason !== 'session_busy') {
+    return null
+  }
+
+  return t(data.field === 'compression' ? 'slashCmd.core.busy.compressing' : 'slashCmd.core.busy.replying', intent)
 }
 
 interface CommittedResult {

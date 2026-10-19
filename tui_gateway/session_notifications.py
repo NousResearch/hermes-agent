@@ -322,6 +322,19 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
         return False
 
 
+def _session_owns_pending_process_notification(session: dict) -> bool:
+    """True while a background process this session started will report back into it (``notify_on_complete`` or
+    ``watch_patterns``) and is still running. The completion reaches the model only through THIS session's
+    notification poller, and closing the session kills the process (``agent_close``), so the reapers must keep it
+    alive. Bounded by the process itself: it releases the session the moment it exits."""
+    keys = {str(session.get("session_key") or ""), _session_lookup_key(session)} - {""}
+    if not keys:
+        return False
+    from tools.process_registry import process_registry
+    return any(proc["status"] == "running" and (proc.get("notify_on_complete") or proc.get("watch_patterns"))
+               for key in keys for proc in process_registry.list_sessions(session_key=key))
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""

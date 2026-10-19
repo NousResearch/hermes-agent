@@ -28,7 +28,7 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
         waits = []
         monkeypatch.setattr(server, "time", SimpleNamespace(sleep=waits.append, time=lambda: 1))
         session = {"history_lock": threading.RLock(), "session_key": key, "running": False}
-        registry = SimpleNamespace(completion_queue=queue.Queue())
+        registry = SimpleNamespace(completion_queue=queue.Queue(), get=lambda _session_id: None)
         monkeypatch.setattr("tools.process_registry.process_registry", registry)
         monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "")
         completed = []

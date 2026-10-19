@@ -854,7 +854,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
         Routing comes from the queued event, never the active foreground message. Returns
         ``True`` on adapter acceptance, ``False`` on retryable adapter failure, ``None`` with no
-        gateway route. Not transactional: a crash after acceptance can replay (at-least-once).
+        gateway route or a refused notice pinned to a permanently-gone session (``_watch_pin_gone``).
+        Not transactional: a crash after acceptance can replay (at-least-once).
         """
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         source = await asyncio.to_thread(self._build_process_event_source, evt)
@@ -931,6 +932,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
+            # Durable callers ran the pre-flight already; a watch notice is classified only once
+            # refused, and one pinned to a gone session is dropped instead of requeued.
+            if not raise_not_accepted and await self._watch_pin_gone(evt, str(exc)):
+                return None
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.

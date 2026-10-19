@@ -138,7 +138,9 @@ def main():
                 (owner / 'config.yaml').write_text(json.dumps(cfg))
                 with daemon(root, owner, env, barrier=False) as (proc, desc):
                     answer = asyncio.run(retry(desc, params))
-                    assert answer['receipt']['status'] == 'unknown', answer
+                    # #134889 KB-8: nobody waits on a card attempt, so the lost turn settles
+                    # interrupted at boot (never replayed) instead of pausing the card session.
+                    assert (answer['receipt']['status'], answer['receipt']['outcome']) == ('terminal', 'interrupted'), answer
                     assert answer['session_id'] == first['target_session_id']
                     with closing(sqlite3.connect((owner / 'state.db').as_uri() + '?mode=ro', uri=True)) as db:
                         frozen = json.loads(db.execute('SELECT value FROM state_meta WHERE key=?',

@@ -46,6 +46,7 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
+import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
@@ -119,6 +120,60 @@ interface CreateAgentDialogProps {
   onConfigureModel?: (bot: RosterRow) => void
   open: boolean
   roster: RosterRow[]
+}
+
+/** The live Capabilities surface needs a real profile. Materialize it whenever
+ *  the tab is showing a valid, untaken name that has no draft yet, not only on
+ *  the tab click: a user who opens the tab first and names the bot after (or
+ *  renames it) otherwise sat on a spinner forever. Debounced so typing a name
+ *  does not mint a draft per keystroke. */
+function useCapabilitiesDraft(ready: boolean, slug: string, draft: null | string, materialize: () => void) {
+  // The timer is keyed on the name, but must run the LATEST callback: a title
+  // or description typed during the wait belongs in the created profile.
+  const latest = useRef(materialize)
+  latest.current = materialize
+
+  useEffect(() => {
+    if (!ready || draft === slug) {
+      return
+    }
+
+    const timer = window.setTimeout(() => latest.current(), 800)
+
+    return () => window.clearTimeout(timer)
+  }, [ready, slug, draft])
+}
+
+/** New Bot's live Capabilities tab: a hint until the name is usable, a spinner
+ *  until its draft profile exists, then the real surface pinned to that draft. */
+function CapabilitiesTab({ connection, draft, hint }: { connection?: string; draft: null | string; hint: null | string }) {
+  const b = useBots()
+  const note = 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)'
+
+  if (hint) {
+    return <div className={note}>{hint}</div>
+  }
+
+  if (!draft) {
+    return (
+      <div className="flex justify-center py-4">
+        <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+      </div>
+    )
+  }
+
+  // The tab list is gated on the same export, so this is only reachable via
+  // persisted tab state on a build that lacks it — a message rather than
+  // rendering `undefined` as a component, which throws.
+  if (!CapabilitiesView) {
+    return <div className={note}>{b.editor.newerDesktop}</div>
+  }
+
+  return (
+    <ResizableFrame>
+      <CapabilitiesView embedded fixedProfile={draft} {...(connection ? { fixedConnection: connection } : {})} />
+    </ResizableFrame>
+  )
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
@@ -306,6 +361,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // switched must not key the preview (or the describe call) either.
   const capSource = cloneFrom === '__none__' || remoteTarget ? 'default' : cloneFrom
 
+  const materializeForCaps = () =>
+    void ensureAgentCreated()
+      .then(created => created && setCreatedForCaps(created))
+      .catch(err => host.notifyError(err, b.bot.createFailed))
+
+  useCapabilitiesDraft(advTab === 'capabilities' && valid && !taken, slug, createdForCaps, materializeForCaps)
+
   const ensureCaps = () => {
     if ((caps && caps.source === capSource) || capsFailed) {
       return
@@ -370,8 +432,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // (its consumers — the taken check, draft discard on cancel, the MCP setup
   // button's profile param — all read a string); flightRef shares the
   // in-flight creation promise so simultaneous MCP setup / Create clicks fire
-  // ONE profiles.create. A settled flight clears its slot: failures retry,
-  // and a null result (form invalid at flight time) isn't sticky.
+  // ONE profiles.create. A failed flight clears its slot so a retry can run.
   const ensureAgentCreated = (): Promise<null | string> => {
     // Renamed since the draft materialized? The old draft is orphaned —
     // discard it and create fresh under the new slug.
@@ -384,11 +445,14 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       return Promise.resolve(createdRef.current)
     }
 
-    const flight = singleFlight(flightRef, async () => {
-      if (!valid || taken) {
-        return null
-      }
+    // Never start a flight for an unusable name: singleFlight only clears its
+    // slot on failure, so a null result would be returned to every later
+    // caller and the draft could never be created once a name is typed.
+    if (!valid || taken) {
+      return Promise.resolve(null)
+    }
 
+    const flight = singleFlight(flightRef, async () => {
       await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -735,12 +799,9 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                   setCapFilter('')
 
                   if (id === 'capabilities') {
-                    // The live surface needs a real profile —
-                    // materialize it now (same lazy-create door
-                    // the MCP setup buttons use).
-                    void ensureAgentCreated()
-                      .then(created => created && setCreatedForCaps(created))
-                      .catch(err => host.notifyError(err, b.bot.createFailed))
+                    // The live surface needs a real profile; a name typed later
+                    // is picked up by useCapabilitiesDraft.
+                    materializeForCaps()
                   } else if (id !== 'general') {
                     ensureCaps()
                   }
@@ -826,33 +887,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                   </label>
                 </div>
               ) : advTab === 'capabilities' ? (
-                !valid || taken ? (
-                  <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                    {taken ? b.editor.nameTakenHint : b.editor.nameFirstHint}
-                  </div>
-                ) : !createdForCaps ? (
-                  <div className="flex justify-center py-4">
-                    <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
-                  </div>
-                ) : CapabilitiesView ? (
-                  <ResizableFrame height={440} minHeight={280}>
-                    <CapabilitiesView
-                      embedded
-                      fixedProfile={createdForCaps}
-                      {...(remoteTarget
-                        ? {
-                            fixedConnection: targetConnection
-                          }
-                        : {})}
-                    />
-                  </ResizableFrame>
-                ) : (
-                  // The tab list is gated on the same export, so this is only
-                  // reachable via persisted tab state on a build that lacks it
-                  // — a message rather than rendering `undefined` as a
-                  // component, which throws.
-                  <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.newerDesktop}</div>
-                )
+                <CapabilitiesTab
+                  connection={remoteTarget ? targetConnection : undefined}
+                  draft={createdForCaps === slug ? createdForCaps : null}
+                  hint={!valid ? b.editor.nameFirstHint : taken ? b.editor.nameTakenHint : null}
+                />
               ) : capsFailed ? (
                 <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.newerGateway}</div>
               ) : !caps ? (
@@ -1136,7 +1175,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
 
 interface CreateGroupChatDialogProps {
   onClose: () => void
-  onCreated?: (group: string) => void
+  onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
   open: boolean
   roster: RosterRow[]
 }
@@ -1207,7 +1246,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       if (!sourceCurrent()) {return}
       const key = registerCanonicalGroup(route, created.room)
       onClose()
-      onCreated?.(key)
+      onCreated?.(key, 'key')
 
       return
     }
@@ -1254,7 +1293,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       message: `“${groupName}” created with ${selected.length} bots`
     })
     onClose()
-    onCreated?.(groupName)
+    onCreated?.(groupName, 'name')
     } catch (error) {
       host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally { creating.current = false }

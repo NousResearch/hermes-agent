@@ -338,8 +338,11 @@ def _require_token(request: Request) -> None:
     A verified native owner (``authenticate_native_http``) is the same-user
     principal the outer seams already accepted; local Desktop runs with no
     static token, so that principal must satisfy route-local policy too.
+    Hosted plugins receive this guard's decision via private IPC and request-local
+    state, not via a forwarded gateway credential or a process-wide bypass.
     """
-    if getattr(request.state, "native_http_principal", None):
+    if (getattr(request.state, "native_http_principal", None)
+            or getattr(request.state, "hosted_http_authenticated", None) is True):
         return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
@@ -395,20 +398,27 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# Imported here, beside the plugin gates that use it, like the other mid-module web_server_*
+# groups. Not an import cycle: web_server_dashboard reaches back into this module only inside
+# functions, so the position is not load-bearing. What is load-bearing is the middleware
+# registration order below (the HTTP gate before the auth middlewares, so it runs after them).
+from hermes_cli.web_server_dashboard import (
+    PluginApiWebSocketGate, _plugin_api_name, _plugin_api_request_refused,
+)
+from hermes_cli.web_server_plugin_profiles import forward_secondary_plugin_request, plugin_request_scope
+
+
 @app.middleware("http")
 async def _plugin_api_runtime_gate(request: Request, call_next):
-    """Block requests to disabled plugin API routes at request time.
+    """Block requests to disabled plugin API routes at request time
+    (:func:`_plugin_api_request_refused`).
 
-    :func:`_mount_plugin_api_routes` gates at import time; a plugin disabled
-    while running keeps its router mounted until restart, so enforce on every
-    ``/api/plugins/{name}/...`` request. Registered BEFORE the auth middlewares
-    (runs AFTER them): an unauthenticated caller must get auth's 401, never this
-    404, or the status code becomes a plugin-name oracle.
+    Registered BEFORE the auth middlewares (runs AFTER them): an unauthenticated
+    caller must get auth's 401, never this 404, or the status code becomes a
+    plugin-name oracle.
     """
     path = request.url.path
-    # parts: ['', 'api', 'plugins', '<name>', ...]
-    parts = path.split("/")
-    plugin_name = parts[3] if path.startswith("/api/plugins/") and len(parts) >= 4 else ""
+    plugin_name = _plugin_api_name(request.scope)
     # Only gate authenticated requests. Unauthenticated ones fall through so
     # auth_middleware / the OAuth gate return 401 first and this route can't
     # be used as a plugin-name oracle. Desktop authenticates with a native ticket.
@@ -419,23 +429,17 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         or _has_valid_session_token(request)
         or _has_valid_query_token(request, path)
     ):
-        try:
-            # Gate: only serve user plugins that are in plugins.enabled and not in plugins.disabled. This
-            # prevents the frontend from loading JS/CSS from plugins the user has not explicitly activated.
-            # (#46435)
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
-        # Source from the cached plugin list; unknown => user plugin (safe default — blocks).
-        plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == plugin_name), None)
-        source = plugin.get("source") if plugin else "user"
-        blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
-        if blocked and source in ("user", "bundled"):
-            return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+        with plugin_request_scope(request.scope):  # a secondary profile's plugins run in its host
+            if await _plugin_api_request_refused(plugin_name):
+                return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+            hosted = await forward_secondary_plugin_request(request, plugin_name)
+        if hosted is not None:
+            return hosted
     return await call_next(request)
+
+
+# The same gate for WebSocket upgrades: ``@app.middleware("http")`` passes those through untouched.
+app.add_middleware(PluginApiWebSocketGate)
 
 
 @app.middleware("http")
@@ -746,7 +750,12 @@ _dashboard_plugins_cache: Optional[list] = None
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
+    """The active scope's dashboard plugins: a secondary profile's are its own (PLG-3)."""
     global _dashboard_plugins_cache
+    from hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins, secondary_profile_home
+    home = secondary_profile_home()
+    if home is not None:
+        return profile_dashboard_plugins(home, force_rescan)
     stale = _dashboard_plugins_cache is None or force_rescan or any(
         not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache
     )

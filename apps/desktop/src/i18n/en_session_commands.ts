@@ -15,5 +15,10 @@ export const enSessionCommands: SessionCommandNotices = {
   queued: (preview: string) => `queued: "${preview}"`,
   queueFailed: 'could not queue the message',
   countOne: (count: string) => `${count} queued message`,
-  countOther: (count: string) => `${count} queued messages`
+  countOther: (count: string) => `${count} queued messages`,
+  queueEditKeptTitle: 'Queued message not changed',
+  queueEditKept: 'It started or was refused before your edit was saved. Your edited text is in the composer.',
+  queueEditUnconfirmedTitle: 'Edit not confirmed',
+  queueEditUnconfirmed:
+    'Hermes could not confirm your edit. Save again to retry the same edit; it is never queued twice.'
 }

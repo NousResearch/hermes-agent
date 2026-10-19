@@ -41,6 +41,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _acp_launch(runner, source) -> bool:
+    """An editor session: ACP shows no reasoning event yet, so its reply keeps the projected block."""
+    from gateway.session_setting_commands import local_policy
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        return getattr(local_policy(runner, source), "source", None) == "acp"
+    except RuntimeStoreError:  # a local route with no restored policy is not an editor launch
+        return False
+
+
 class GatewayTurnPersistenceMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
@@ -143,6 +153,10 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
+        if source.platform == Platform.LOCAL and not _acp_launch(self, source):
+            # Local viewers receive reasoning.delta through their event stream; projecting it into
+            # the final response duplicates it and leaks messaging-platform formatting into Desktop.
+            return response
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
@@ -183,8 +197,12 @@ class GatewayTurnPersistenceMixin:
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
+        the printed answer itself."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return ""
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(
@@ -319,14 +337,50 @@ class GatewayTurnPersistenceMixin:
                 "session intact; the next message retries normally.",
                 session_entry.session_id if session_entry else "?",
             )
+        elif agent_result.get("compression_exhausted") and getattr(source, "platform", None) == Platform.API_SERVER:
+            # The caller addresses an API conversation by its id and every API door re-validates that
+            # binding (``restore_api_session``): a rotated entry would refuse each later request to it
+            # (``admission_conflict``). The caller gets the typed ``compression_exhausted`` result instead.
+            logger.info("Keeping API session %s after compression exhaustion.",
+                        session_entry.session_id if session_entry else "?")
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
-            logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
-            from gateway.session_automation import move_route_wakes
+            if not self._hmwa_defer_exhaustion_reset(session_entry, session_key, source):
+                session_entry = await self._hmwa_rotate_exhausted_session(session_entry, session_key, source)
+            response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
+        return response, session_entry
+
+    def _hmwa_defer_exhaustion_reset(self, session_entry, session_key, source):
+        """True when the reset was handed to the authority drain. A LOCAL session (the Bot Chat a
+        ``hermes peer dm`` lands in) resets its target in the store, which refuses while an admission
+        on it is started (``session_busy``): this turn's own. The drain runs the reset right after it
+        settles this admission, before it claims any successor (the Bot Chat's retry included)."""
+        from gateway.session_ingress import executing_admission
+        if getattr(source, "platform", None) != Platform.LOCAL or not executing_admission.get():
+            return False
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is None:
+            return False
+        authority.deferred_resets[session_key] = lambda: self._hmwa_rotate_exhausted_session(
+            session_entry, session_key, source)
+        return True
+
+    async def _hmwa_rotate_exhausted_session(self, session_entry, session_key, source):
+        """The compression-exhaustion auto-reset itself; returns the route's (fresh) entry."""
+        logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
+        from gateway.session_automation import move_route_wakes, reset_and_rehome_messages
+        # Messages queued behind the exhausted turn still run, on the fresh session (unlike /new).
+        new_entry, release_fresh = await reset_and_rehome_messages(self, session_key, session_entry.session_id)
+        try:
             await move_route_wakes(self, session_key, session_entry.session_id)
             self._evict_cached_agent(session_key)
+            # The /queue overflow behind the deferred head slot is queued user input, like the
+            # re-homed native rows: it survives the boundary the funnel below otherwise clears.
+            queued = list(self._overflow_queue(session_key) or ())
             # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
+            if queued:
+                self._session_state(session_key).conversation.queued_events.extend(queued)
             if new_entry is not None:
                 # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
                 # switches the next message back onto the bloated child and re-triggers exhaustion
@@ -342,8 +396,11 @@ class GatewayTurnPersistenceMixin:
                 await asyncio.to_thread(
                     self._sync_telegram_topic_binding, source, session_entry, reason="compression-exhausted-reset",
                 )
-            response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
-        return response, session_entry
+        finally:
+            # Only now may the fresh session's FIFO claim (it is fenced until here, against every
+            # scheduler): after eviction, scope clear and binding sync.
+            release_fresh()
+        return session_entry
 
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):

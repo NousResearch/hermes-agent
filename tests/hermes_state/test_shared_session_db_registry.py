@@ -673,6 +673,20 @@ class TestCloseAllUnder:
         profile_dir.mkdir(parents=True)
         assert registry.close_all_under(profile_dir) == 0
 
+    def test_strict_refuses_an_unproven_close(self, tmp_path, monkeypatch):
+        """A destructive caller must not continue after SessionDB.close() failed."""
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        db = registry.acquire(profile_dir / "state.db")
+
+        def _raise_close():
+            raise RuntimeError("checkpoint exploded")
+
+        monkeypatch.setattr(db, "close", _raise_close)
+
+        with pytest.raises(registry.TeardownError, match="state.db"):
+            registry.close_all_under(profile_dir, strict=True)
+
     def test_waits_for_admitted_teardown_after_generation_is_gone(self, tmp_path, monkeypatch):
         """Final release admits teardown before close; rmtree still needs that wait."""
         profile_dir = tmp_path / "profiles" / "work"

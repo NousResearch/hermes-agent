@@ -546,6 +546,23 @@ class TestAgentCacheIdleResume:
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
 
+    def test_strict_release_clients_reports_a_failed_client_close(self, monkeypatch):
+        """Callers that replace an owner can refuse an unproven client teardown."""
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        monkeypatch.setattr(agent, "_close_active_children", lambda **_kw: None)
+        monkeypatch.setattr(agent, "_drop_shared_client", lambda _close: None)
+        monkeypatch.setattr(agent, "_close_request_clients", lambda _reason: None)
+
+        def _raise_close():
+            raise RuntimeError("app-server still live")
+
+        monkeypatch.setattr(agent, "_close_codex_session", _raise_close)
+
+        with pytest.raises(RuntimeError, match="Could not prove client teardown"):
+            agent.release_clients(strict=True)
+
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 

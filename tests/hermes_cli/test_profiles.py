@@ -544,6 +544,23 @@ class TestBackfillProfileEnvs:
 class TestDeleteProfile:
     """Tests for delete_profile()."""
 
+    def test_delete_refuses_unproven_session_db_teardown(self, profile_env, monkeypatch):
+        """A failed strict sweep must stop before profile rmtree."""
+        import hermes_state_registry as registry
+
+        profile_dir = create_profile("strict-close", no_alias=True)
+
+        def _fail(*_args, **_kwargs):
+            raise registry.TeardownError("state.db is still open")
+
+        monkeypatch.setattr(registry, "close_all_under", _fail)
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._stop_profile_backends"), \
+             patch("hermes_cli.profiles._notify_multiplexer"):
+            with pytest.raises(registry.TeardownError, match="still open"):
+                delete_profile("strict-close", yes=True)
+
+        assert profile_dir.exists()
 
     def test_rmtree_failure_raises(self, profile_env):
         profile_dir = create_profile("coder", no_alias=True)

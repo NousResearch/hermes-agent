@@ -1506,26 +1506,6 @@ def _apply_in_dir(args) -> None:
     args.no_restore_cwd = True
 
 
-def _import_foreign_resume(args) -> None:
-    """--resume @claude / @codex: import a foreign session and resume it."""
-    _resume_foreign = getattr(args, "resume", None)
-    if not (isinstance(_resume_foreign, str) and _resume_foreign.strip().lower() in ("@claude", "@codex")):
-        return
-    from hermes_cli.foreign_sessions import import_foreign_session, pick_foreign_session
-
-    _picked = pick_foreign_session(_resume_foreign.strip().lower().lstrip("@"))
-    if _picked is None:
-        sys.exit(1)
-    try:
-        _imported_id = import_foreign_session(_picked.source, _picked.path)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    print(f"✓ Imported as {_imported_id} — resuming it now.")
-    print(f"  (later: hermes --resume {_imported_id})")
-    args.resume = _imported_id
-
-
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1553,12 +1533,15 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
 
     _resolve_continue_arg(args, use_tui=use_tui)
 
-    _import_foreign_resume(args)
+    from hermes_cli.main_resume_args import import_foreign_resume, recreate_resumed_tui_worktree
+    import_foreign_resume(args)
 
     resume_val = getattr(args, "resume", None)
     if resume_val:
         # On miss keep the original so _init_agent reports "Session not found" with it.
         args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
+
+    recreate_resumed_tui_worktree(args)
 
     # cd back into a resumed session's recorded cwd (opt out: --no-restore-cwd;
     # --worktree owns its own dir). A missing dir warns and stays put.
@@ -1685,7 +1668,7 @@ def _first_run_setup_guard(args) -> None:
     sys.exit(1)
 
 
-# args attr -> (kwarg, default) passed through to _launch_tui / cli.main.
+# args attr -> (kwarg, default) passed through to _launch_tui / cli.main; only cli.main takes --api-key/--base-url.
 _CHAT_PASSTHROUGH = (
     ("provider", None), ("toolsets", None), ("skills", None), ("verbose", None),
     ("quiet", False), ("query", None), ("image", None), ("resume", None),
@@ -1774,7 +1757,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
-        **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},
+        **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH + (("api_key", None), ("base_url", None))},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 

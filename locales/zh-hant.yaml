@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
+    local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug` 可上傳摘要報告。"
   deny:
     stale: "❌ 指令已拒絕（批准已過期）。"
     no_pending: "沒有待拒絕的指令。"
@@ -445,6 +446,9 @@ gateway:
     state_no: "否"
     queued: "**排隊中的後續：** {count}"
     platforms: "**已連線平台：** {platforms}"
+  discard:
+    nothing: "沒有可捨棄的內容：此聊天沒有在重新啟動時遺失的回合。"
+    done: "🗑️ 已捨棄 {count} 個遺失的回合；未重新執行。現在會回覆你已儲存的訊息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
     stopped: "⚡ 已停止。你可以繼續此工作階段。"
@@ -1530,6 +1534,8 @@ slash:
     description: "將分享的設定檔封存檔匯入為新設定檔"
   stop:
     description: "終止所有執行中的背景程序"
+  discard:
+    description: "捨棄 Hermes 重新啟動時遺失的回合，讓此聊天的佇列繼續執行"
   pause:
     description: "全域暫停新工作（緊急停止）；'/pause off' 恢復"
   deny:
@@ -1683,6 +1689,21 @@ slash:
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
+  modern:
+    thought_for: "思考了 {seconds} 秒"
+    thought: "思考"
+    working: "工作中…"
+    preparing: "正在準備 {what}…"
+    hint_steer: "引導"
+    hint_queue: "排隊"
+    hint_interrupt: "中斷"
+    hint_stop: "停止"
+    hint_commands: "指令"
+    hint_files: "檔案"
+    hint_shell: "終端"
+    placeholder_busy_steer: "輸入以引導本輪 · Tab 排到之後"
+    placeholder_busy_interrupt: "輸入以改變本輪方向 · Tab 排到之後"
+    placeholder_busy_queue: "輸入以排隊一則本輪結束後的訊息"
   billing:
     load_failed: "{label}：{error}"
     load_failed_label: "無法載入帳務資訊"
@@ -2226,6 +2247,7 @@ cli:
     queue_heading: "佇列 · {count} 個排隊中 · /queue list{controls}"
     more_queued: "還有 {count} 個"
     transcript_unavailable: "即時逐字稿尚未可用。"
+    control_pending: "傳送中…"
     steer_prompt: "引導："
     roster_empty: "沒有進行中的子代理或背景程序。結果會出現在對話中。"
     entry_gone: "此項目已不再進行中。"
@@ -2364,6 +2386,14 @@ cli:
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
     moved: "已將佇列項目 {source} 移至 {destination}。"
     usage_add: "用法：/queue add <prompt>"
+    gateway_refused: "閘道未將其加入佇列：{error}。未加入任何內容；請在本輪結束後重新傳送。"
+    submit_unknown: "閘道未回應（{error}），提示可能已在佇列中。重新傳送前請先查看 /queue list。"
+    move_gateway_fifo: "閘道依傳送順序執行佇列中的提示；請改為編輯或刪除其中一則。"
+    remove_refused: "無法移除佇列項目 {index}：{error}"
+    edit_refused: "無法編輯佇列項目 {index}：{error}"
+    already_started: "佇列項目 {index} 已開始執行；將依原樣執行。"
+    started_stopped: "佇列項目 {index} 已開始執行；閘道已將其停止。"
+    change_unknown: "閘道未回應佇列項目 {index}（{error}）；請先查看 /queue list 再重試。"
   reload:
     env_reloaded: "已重新載入 .env（更新了 {count} 個變數）"
   steer:
@@ -3004,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   還原為預設瀏覽器後端"
       usage_status: "status       顯示目前的瀏覽器模式"
       usage_use: "use [off]    切換至 Browser Use 模式（CLI 3.0）／切回內建工具"
+      remote_gateway: "/browser connect 與 /browser disconnect 管理閘道主機上的 Chromium 系瀏覽器 — 僅在連線至本機閘道時可用。"
+      checking: "正在檢查 {url} 的 Chromium 系瀏覽器遠端偵錯..."
+      new_sessions_only: "套用於新工作階段 — 此工作階段保留目前工具（/new 開始新的）。"
+      status_gateway_default: "🌐 瀏覽器：閘道的預設瀏覽器後端（無即時 CDP 連線）"
     heartbeat:
       label: "心跳"
       paused: "⏸ 心跳已暫停：{prompt}"

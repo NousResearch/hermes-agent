@@ -30,7 +30,8 @@ def _claim(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     try:
         process = psutil.Process(pid)
-        if (process.create_time() != birth or not process.is_running()
+        from hermes_cli.process_identity import process_birth
+        if (process_birth(process) != birth or not process.is_running()
                 or process.status() == psutil.STATUS_ZOMBIE
                 or process.username() != psutil.Process().username()):
             raise RuntimeStoreError('permission_denied')

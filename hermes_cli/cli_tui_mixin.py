@@ -16,6 +16,7 @@ import time
 
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
+from hermes_cli.cli_tui_approval_labels import approval_choice_label as _approval_choice_label
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
@@ -46,21 +47,6 @@ _PANEL_RESERVED_BELOW = 6
 # Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
 _RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
-
-# Approval-choice identifiers (protocol tokens, never translated) → catalog keys for their labels.
-_APPROVAL_CHOICE_KEYS = {
-    "once": "cli.tui.approval_once",
-    "session": "cli.tui.approval_session",
-    "always": "cli.tui.approval_always",
-    "yolo": "cli.tui.approval_yolo",
-    "deny": "cli.tui.approval_deny",
-    "view": "cli.tui.approval_view"}
-
-
-def _approval_choice_label(choice: str) -> str:
-    """Localized label for an approval choice id; unknown ids render verbatim."""
-    key = _APPROVAL_CHOICE_KEYS.get(choice)
-    return t(key) if key else choice
 
 
 def _agent_name() -> str:

@@ -594,18 +594,15 @@ def _format_exec_approval_fallback(
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
     steps a surface without buttons needs."""
     from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
+        approval_timeout_seconds, ea_header_text, ea_reason_label_text, ea_text_choices,
+        format_approval_deadline_line)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
-    choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
-    if not smart_denied and allow_session:
-        choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
-        choices.append(t("gateway.exec_approval.text_choice_yolo", prefix=command_prefix))
-        if allow_permanent:
-            choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
-    choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
+    choices = ea_text_choices(
+        command_prefix, allow_permanent=allow_permanent, allow_session=allow_session,
+        smart_denied=smart_denied)
     return (
         t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
           reason_label=ea_reason_label_text(), reason=description)

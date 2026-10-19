@@ -82,3 +82,21 @@ def format_approval_deadline_line(timeout_s: int) -> str:
 
 def format_approval_timed_out_notice(timeout_s: int) -> str:
     return approval_timed_out_notice(format_approval_window(timeout_s))
+
+
+def ea_text_choices(command_prefix: str, *, allow_permanent: bool = True,
+                    allow_session: bool = True, smart_denied: bool = False) -> list[str]:
+    """The typed ``/approve`` choices a text-only surface offers, in prompt order.
+
+    Same capability gates as the button card: a smart-DENY override and a re-ask-every-time caller
+    (``allow_session=False``) leave only once/deny; ``allow_permanent=False`` hides only 'always'.
+    'yolo' rides with 'session' — both are per-session grants, so the same caller controls both.
+    """
+    choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
+    if not smart_denied and allow_session:
+        choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
+        choices.append(t("gateway.exec_approval.text_choice_yolo", prefix=command_prefix))
+        if allow_permanent:
+            choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
+    choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
+    return choices

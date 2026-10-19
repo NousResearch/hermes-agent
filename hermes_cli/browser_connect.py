@@ -720,7 +720,7 @@ def _drop_singleton_leftovers(dst: str) -> None:
 def _snapshot_source(marker: str) -> str | None:
     """Source profile name a completed snapshot was taken from (the done marker's content)."""
     try:
-        with open(marker, encoding="utf-8") as fh:
+        with open(marker, encoding="utf-8-sig") as fh:
             return fh.read().strip() or None
     except OSError:
         return None

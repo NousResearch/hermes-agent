@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
-from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+from agent.retry_utils import capacity_overload_policy, capacity_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
@@ -1377,10 +1377,20 @@ def interruptible_backoff_sleep(
     return None
 
 
-_ZAI_POLICY_NOTES = {
-    "zai_coding_overload_long": " (Z.AI Coding overload adaptive long backoff)",
-    "zai_coding_overload_short": " (Z.AI Coding overload short retry)",
+_CAPACITY_POLICY_LABELS = {
+    "zai_coding_overload": "Z.AI Coding overload",
+    "cloudflare_capacity": "Cloudflare capacity",
 }
+
+
+def _capacity_policy_note(backoff_policy: str | None) -> str:
+    """``" (<provider> adaptive long backoff)"`` / ``" (<provider> short retry)"`` for a ``<policy>_long|short`` label."""
+    for policy, label in _CAPACITY_POLICY_LABELS.items():
+        if backoff_policy == f"{policy}_long":
+            return f" ({label} adaptive long backoff)"
+        if backoff_policy == f"{policy}_short":
+            return f" ({label} short retry)"
+    return ""
 
 
 def reset_hint(api_error: Exception) -> str:
@@ -1405,7 +1415,7 @@ def compute_error_backoff(
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
     jittered backoff, replaced by the adaptive policy for 429s / Z.AI overloads. Retries are
-    buffered (replayed only if every retry fails); a long Z.AI Coding wait or a non-rate-limit
+    buffered (replayed only if every retry fails); a long capacity-overload wait or a non-rate-limit
     ``Retry-After`` over ``LIVE_RETRY_WAIT_CAP_S`` is announced when it starts."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
@@ -1434,10 +1444,10 @@ def compute_error_backoff(
     _wait_reason = ("The free model is busy" if _free_busy
                     else "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited")
     if _adaptive:
-        _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
+        _policy_note = _capacity_policy_note(_backoff_policy)
         _status = (f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
                    f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
-        _announce_now = _backoff_policy == "zai_coding_overload_long"
+        _announce_now = bool(_backoff_policy) and _backoff_policy.endswith("_long")
     else:
         _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
         # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.
@@ -1883,11 +1893,14 @@ def route_classified_error(
         if classified.reason == FailoverReason.rate_limit else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
-    # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect
-    # directly so the long backoff runs, and raise the ceiling to reach it.
-    _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
+    # Provider capacity overloads (Z.AI Coding 1305, Cloudflare Workers AI 3040) need the long backoff:
+    # the endpoint must drain, so the default 2-5s schedule burns every attempt in one window. Z.AI
+    # overloads classify `overloaded`, which `is_rate_limited` excludes, so detect the shape directly
+    # and raise the ceiling to reach the long tier. (``is_zai_coding_overload`` is the historical name
+    # of the flag; it is true for any capacity overload.)
+    _is_zai_coding_overload = capacity_overload_policy(base_url=str(base_url), model=model, error=api_error) is not None
     if _is_zai_coding_overload:
-        max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+        max_retries = max(max_retries, capacity_overload_retry_ceiling())
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)

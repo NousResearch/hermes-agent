@@ -183,7 +183,7 @@ def _workspace_cwd(profile_home, raw: str) -> str:
 
 def _terminal_task_cwd(session: dict | None) -> str:
     """The cwd terminal_tool should use for this TUI session (NOT host-validated: a non-local backend's cwd lives
-    inside the target environment)."""
+    inside the target environment). "" when the backend's own default applies."""
     return _terminal_task_cwd_with_source(session)[0]
 
 
@@ -209,8 +209,14 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
             return raw, "process"
         if backend == "ssh":
             return "~", "process"
+    # A host directory nobody picked (the gateway's launch dir) names nothing inside a sandbox: register no cwd, so
+    # the backend's own default applies, as on the messaging gateway. "" is that "no cwd" answer.
+    if _is_remote_launch_cwd(session):
+        return "", "process"
     if session and session.get("cwd"):
         return str(session["cwd"]), "session"
+    if not _host_cwd_is_terminal_cwd(profile_home):
+        return "", "process"
     return _completion_cwd(), "process"
 
 
@@ -266,10 +272,34 @@ def _persisted_session_cwd(session: dict) -> str | None:
 
 
 def _is_remote_launch_cwd(session: dict | None) -> bool:
-    """An ssh session's cwd that nobody picked: the gateway's launch directory, a path on THIS host. Host-side context
-    discovery reads it from memory, but it is never persisted: a resume adopts a stored ssh cwd as the remote
-    workspace."""
-    return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
+    """A cwd nobody picked for a session whose terminal does not run in host directories: an ssh session's, or a
+    sandbox backend's (modal, daytona, singularity, sprites, ...) when it is a directory on THIS host: the gateway's
+    launch directory (``/opt/data`` in the Docker image). Host-side context discovery reads it from memory, but it
+    never becomes the terminal cwd and is never persisted: a resume adopts a stored cwd as the session's workspace.
+    A sandbox path (``/workspace``) is not a host directory and stays."""
+    if not session or session.get("explicit_cwd"):
+        return False
+    profile_home = session.get("profile_home")
+    if _cwd_is_remote(profile_home):
+        return True
+    cwd = str(session.get("cwd") or "")
+    return bool(cwd) and not _host_cwd_is_terminal_cwd(profile_home) and os.path.isdir(cwd)
+
+
+def _host_cwd_is_terminal_cwd(profile_home) -> bool:
+    """Whether a host directory can be the terminal cwd of a session bound to ``profile_home``: the local backend runs
+    in it, docker mounts it at ``/workspace`` (``docker_mount_cwd_to_workspace``) or creates it (``docker run -w``),
+    and a plugin backend declaring neither ``is_remote`` nor ``is_container`` runs on this host. ssh, modal, daytona,
+    singularity, sprites and the other sandboxes run somewhere the host's directories do not exist."""
+    backend = _bound_terminal_backend(profile_home)
+    if backend in {"local", "docker"}:
+        return True
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    if backend in _BUILTIN_BACKENDS:
+        return False
+    # An unknown or unloaded plugin is treated as remote: sending it a host path is the failure this guards.
+    from agent.terminal_env_registry import provider_flag
+    return not (provider_flag(backend, "is_remote", True) or provider_flag(backend, "is_container", True))
 
 
 def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
@@ -311,11 +341,12 @@ def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
 
 
 def _resumable_stored_cwd(cwd, profile_home) -> str:
-    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
-    own host tree (a host launch directory, never a remote workspace), or a named profile's row holds another
-    profile's (the resume then lands in :func:`_profile_default_cwd` and re-persists it)."""
+    """A session row's stored cwd as a resume may adopt it: empty when the row of a session whose terminal does not
+    run in host directories (ssh, sandboxes) holds a path in Hermes's own host tree (a host launch directory, never a
+    remote workspace), or a named profile's row holds another profile's (the resume then lands in
+    :func:`_profile_default_cwd` and re-persists it)."""
     cwd = str(cwd or "")
-    if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+    if cwd and not _host_cwd_is_terminal_cwd(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
         return ""
     if cwd and _is_other_profiles_cwd(cwd, profile_home):
         return ""

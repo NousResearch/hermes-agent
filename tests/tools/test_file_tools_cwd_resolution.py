@@ -352,3 +352,21 @@ def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
     assert str(link) in out["files_modified"]
     if dest:
         assert os.readlink(workspace / dest) == "safe/base.yaml"
+
+
+@pytest.mark.parametrize("live_cwd", [None, "/home/sprite"], ids=["config-default", "live-env"])
+def test_container_relative_path_without_a_recorded_cwd_uses_the_backend_cwd(_isolated_cwd, monkeypatch, live_cwd):
+    """A container session with no recorded cwd resolves relative paths against the sandbox's own cwd: the
+    process cwd is a host directory (``/opt/data`` in the hosted image) that does not exist in the sandbox."""
+    _workspace, decoy = _isolated_cwd
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "modal", "cwd": "/root"})
+    envs = {}
+    if live_cwd:
+        envs["default"] = type("ModalEnvironment", (), {"cwd": live_cwd})()
+    monkeypatch.setattr(terminal_tool, "_active_environments", envs)
+
+    resolved = ftp._resolve_path_for_task("notes/todo.md", task_id="default")
+
+    assert resolved == PurePosixPath(live_cwd or "/root") / "notes" / "todo.md"
+    assert not str(resolved).startswith(str(decoy))

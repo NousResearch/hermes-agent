@@ -259,9 +259,25 @@ def _resolve_base_dir(
         if _terminal_env_type_for_task(task_id) == "ssh":
             return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
-    root = _authoritative_workspace_root(task_id)
+    root = _authoritative_workspace_root(task_id) or (_container_default_cwd(task_id) if container_paths else None)
     # A backend's relative cwd is anchored to the process cwd once, here.
     return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
+
+
+def _container_default_cwd(task_id: str = "default") -> str | None:
+    """A container backend's own working directory when the session recorded none: the live env's cwd, else the
+    configured one (already sanitized to the backend default). The process cwd is a host directory (``/opt/data``
+    in the Docker image) the sandbox does not have, and terminal commands do not run there."""
+    try:
+        from tools.terminal_tool import _get_env_config
+        from tools.terminal_tool_lifecycle import get_active_env
+
+        for cwd in (getattr(get_active_env(task_id), "cwd", None), _get_env_config().get("cwd")):
+            if isinstance(cwd, str) and posixpath.isabs(cwd):
+                return cwd
+    except Exception:
+        pass
+    return None
 
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:

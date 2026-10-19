@@ -9,7 +9,7 @@ import re
 import uuid
 
 from gateway.config import Platform
-from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
+from gateway.session_api import API_TURN_SOURCES, bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
 from gateway.session_results import admission_result
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
 
@@ -210,9 +210,11 @@ def admit_api_steps(adapter, **kwargs):
         # path bound for its executor, so execution and recovery can rebind it.
         payload['api_turn_v1']['browser_control'] = browser_control
     # Refuse a foreign-surface target before committing any media for it (a refused
-    # admission otherwise retains its image bytes under native-inputs/ forever).
+    # admission otherwise retains its image bytes under native-inputs/ forever). The API server's own
+    # sessions, the first-party clients' (Web, Mobile, Browser Extension) and hosted-room members are
+    # the ones a REST turn may run; every other surface owns its conversation.
     existing = authority.db.get_session(sid)
-    if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
+    if existing is not None and existing['source'] not in API_TURN_SOURCES:
         raise RuntimeStoreError('permission_denied')
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author

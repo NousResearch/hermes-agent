@@ -445,6 +445,84 @@ async def test_session_api_preserves_first_party_sources_and_rejects_invalid_sou
     assert session_db.get_session("hermes-web-legacy-source")["source"] == "hermes_web"
 
 
+# The turn gate, the binding and the peer refresh are the production code; only the model turn
+# behind the authority's drain is a stub.
+TURN_KEY = "session-source-turn-key"
+CLIENT_OWNED_SOURCES = ("api_server", "hermes_browser", "hermes_web", "hermes_mobile")
+FOREIGN_SOURCES = ("cli", "tui", "acp", "telegram", "discord", "slack", "desktop", "dashboard", "cron", "kanban")
+
+
+@pytest.fixture
+def turn_api(api, owner):
+    async def handle(event):
+        from gateway.session_results import execution_result
+
+        execution_result.get()["result"] = {"final_response": "ok", "messages": []}
+        return "ok"
+
+    owner.runner._handle_message = handle
+    api._api_key = TURN_KEY
+    return api
+
+
+async def _post(adapter, path, body):
+    app = web.Application()
+    app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(path, json=body, headers={"Authorization": f"Bearer {TURN_KEY}"})
+        return resp.status, await resp.text()
+
+
+def _sse_events(body):
+    return [block.splitlines()[0].removeprefix("event: ") for block in body.split("\n\n") if block.strip()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", CLIENT_OWNED_SOURCES)
+async def test_session_chat_stream_runs_on_client_owned_sources(turn_api, owner, source):
+    """A session the REST client created under its own label (the side panel's ``hermes_browser``, the
+    full tab's ``hermes_web``, Mobile, or the API server's) takes REST turns and keeps its label."""
+    from hermes_state_runtime import list_session_admissions
+
+    status, _ = await _post(turn_api, "/api/sessions", {"id": "chat-source", "source": source})
+    assert status == 201
+    # The second turn meets a session the authority already holds live (its own binding check).
+    for text in ("hello", "again"):
+        status, body = await _post(turn_api, "/api/sessions/chat-source/chat/stream", {"message": text})
+        assert status == 200
+        assert "run.completed" in _sse_events(body) and "error" not in _sse_events(body), body
+    rows = list_session_admissions(owner.db, session_id="chat-source", pending_only=False)
+    assert [row["payload"]["text"] for row in rows] == ["hello", "again"]
+    # A finished turn refreshes the routing peer (what the gateway runner does after every turn):
+    # that refresh must not relabel the session.
+    owner.runner.session_store.update_session(owner.sessions["chat-source"].route)
+    assert owner.db.get_session("chat-source")["source"] == source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", FOREIGN_SOURCES)
+async def test_session_chat_stream_refuses_sessions_another_surface_owns(turn_api, owner, source):
+    from hermes_state_runtime import list_session_admissions
+
+    owner.db.create_session("foreign-chat", source)
+    status, body = await _post(turn_api, "/api/sessions/foreign-chat/chat/stream", {"message": "hello"})
+    assert status == 200
+    assert "run.completed" not in _sse_events(body)
+    assert '"message": "permission_denied"' in body, body
+    assert not list_session_admissions(owner.db, session_id="foreign-chat", pending_only=False)
+    assert owner.db.get_session("foreign-chat")["source"] == source
+
+
+@pytest.mark.parametrize("source", ("hermes_web", "hermes_browser", "hermes_mobile"))
+def test_declared_conversation_bind_keeps_first_party_label(api, owner, source):
+    owner.db.create_session("declared", source)
+    api._bind_declared_conversation("declared", "declared-conversation-key")
+    row = owner.db.get_session("declared")
+    assert row["source"] == source
+    assert row["session_key"] == "declared-conversation-key"
+
+
 @pytest.mark.asyncio
 async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
     adapter, session_db

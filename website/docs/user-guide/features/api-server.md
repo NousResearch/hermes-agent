@@ -802,7 +802,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
-The public client `source` values are `api_server`, `hermes_web`, `hermes_mobile`, and `hermes_browser`. `POST /api/sessions` defaults to `api_server` when `source` is omitted, while first-party IDs beginning with `hermes-web-` or `hermes-browser-` are categorized automatically. `PATCH /api/sessions/{id}` rejects any other `source` value with `invalid_session_source`. Forks preserve a validated first-party source from their parent and otherwise fall back to `api_server`.
+The public client `source` values are `api_server`, `hermes_web`, `hermes_mobile`, and `hermes_browser`. Sessions stored under any of them take REST turns (chat, runs and responses) and keep their label across turns; a session stored under any other source belongs to another surface and is refused with `permission_denied`, as described under `POST /v1/runs`. `POST /api/sessions` defaults to `api_server` when `source` is omitted, while first-party IDs beginning with `hermes-web-` or `hermes-browser-` are categorized automatically. `PATCH /api/sessions/{id}` rejects any other `source` value with `invalid_session_source`. Forks preserve a validated first-party source from their parent and otherwise fall back to `api_server`.
 
 ```bash
 # fork a session and run one turn

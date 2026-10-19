@@ -46,7 +46,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/codex-runtime` (/codex_runtime) | control | HermesCLI._handle_codex_runtime | slash.exec | slash.exec | slash.exec | per-session setting (gateway handler) |
 | `/commands` | read | messaging-only: unknown command | slash.exec | action: help | slash.exec | messaging-only |
 | `/compress` (/compact) | refused | HermesCLI._manual_compress | canonical route | action: compress | session.mutate compress |  |
-| `/config` | refused | HermesCLI.show_config | slash.exec: refused | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
+| `/config` | refused | HermesCLI.show_config | canonical route | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/context` (/ctx) | read | HermesCLI._show_context_breakdown | slash.exec | slash.exec | slash.exec | TUI session: main's live /context with the category table |
 | `/copy` | refused | HermesCLI._handle_copy_command | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/cron` | refused | HermesCLI._handle_cron_command | slash.exec | unavailable: terminal | slash.exec: refused | TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs; client-local (cli_only) |
@@ -96,14 +96,14 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/redraw` | refused | HermesCLI._cmd_redraw | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/refine` | control | HermesCLI._handle_refine_command | slash.exec | slash.exec | slash.exec |  |
 | `/reload` | refused | HermesCLI._cmd_reload | canonical route | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
-| `/reload-mcp` (/reload_mcp) | refused | HermesCLI._confirm_and_reload_mcp | refused: not available yet | unavailable: advanced | slash.exec: refused |  |
+| `/reload-mcp` (/reload_mcp) | refused | HermesCLI._confirm_and_reload_mcp | canonical route | unavailable: advanced | slash.exec: refused |  |
 | `/reload-skills` (/reload_skills) | refused | HermesCLI._cmd_reload_skills | commands.catalog, skills.reload | unavailable: advanced | slash.exec: refused |  |
 | `/restart` | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | slash.exec: refused | messaging-only |
 | `/resume` | refused | HermesCLI._handle_resume_command | local | picker: session | slash.exec: refused | switches the messaging chat's session; local clients resume by id |
 | `/retry` | refused | HermesCLI._cmd_retry | canonical route | action: retry | session.mutate rewind + resubmit |  |
 | `/review` | control | HermesCLI._handle_review_command | slash.exec | slash.exec | slash.exec |  |
 | `/rollback` | refused | HermesCLI._handle_rollback_command | rollback.diff, rollback.list, rollback.restore | slash.exec: refused | slash.exec: refused | restores filesystem checkpoints |
-| `/save` | refused | HermesCLI.save_conversation | session.save | rpc session.save | slash.exec: refused | writes an export file on the gateway host |
+| `/save` | refused | HermesCLI.save_conversation | canonical route | rpc session.save | slash.exec: refused | writes an export file on the gateway host |
 | `/sessions` | refused | HermesCLI._handle_sessions_command | local | picker: session | slash.exec: refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
 | `/sethome` (/set-home) | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | slash.exec: refused | messaging-only |
 | `/skills` | read (bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused) | HermesCLI._cmd_skills | slash.exec; sidecar: skills.manage | slash.exec | slash.exec | client-local (cli_only) |
@@ -117,7 +117,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/subgoal` | control | HermesCLI._handle_subgoal_command | slash.exec | slash.exec | slash.exec |  |
 | `/subscription` (/upgrade) | refused | HermesCLI._show_subscription | sidecar: subscription.state | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/suggestions` (/suggest) | read (bare only) | HermesCLI._handle_suggestions_command | slash.exec | slash.exec | slash.exec |  |
-| `/timestamps` (/ts) | refused | HermesCLI._handle_timestamps_command | slash.exec: refused | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
+| `/timestamps` (/ts) | refused | HermesCLI._handle_timestamps_command | config.set | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/title` | control | HermesCLI._cmd_title | canonical route | action: title | session.mutate rename (bare: slash.exec) |  |
 | `/tools` | refused | HermesCLI._handle_tools_command | refused: not available yet | slash.exec: refused | session.info | client-local (cli_only) |
 | `/toolsets` | read | HermesCLI.show_toolsets | slash.exec | unavailable: terminal | slash.exec | client-local (cli_only) |
@@ -128,7 +128,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/usage` | read (bare only (`reset` refused)) | HermesCLI._handle_usage_command | canonical route | slash.exec | slash.exec |  |
 | `/verbose` | control | HermesCLI._toggle_verbose | config.set | unavailable: terminal | slash.exec | per-session setting (gateway handler) |
 | `/version` (/v) | read | HermesCLI._cmd_version | slash.exec | slash.exec | slash.exec |  |
-| `/voice` | control | HermesCLI._handle_voice_command | sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | slash.exec | per-session setting (gateway handler) |
+| `/voice` | control | HermesCLI._handle_voice_command | config.get, slash.exec; sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | slash.exec | per-session setting (gateway handler) |
 | `/wake` | refused | HermesCLI._handle_wake_command | local | action: wake | slash.exec: refused | client-local (cli_only) |
 | `/whoami` | read | HermesCLI._handle_whoami_command | slash.exec | slash.exec | slash.exec |  |
 | `/worktree` | refused | HermesCLI._handle_worktree_command | slash.exec: refused | slash.exec: refused | slash.exec: refused | client-local (cli_only) |

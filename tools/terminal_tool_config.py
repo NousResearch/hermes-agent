@@ -1,0 +1,231 @@
+"""Terminal backend configuration: scope-aware TERMINAL_* reads, env-var parsing,
+container-cwd sanity checks, plugin-backend classification, and the ``_quiet``
+best-effort block shared by the terminal_tool_* modules.
+
+Split out of ``tools/terminal_tool.py``; every public/patched name is re-imported there,
+so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
+"""
+
+import logging
+import json
+import os
+import posixpath
+import re
+from contextlib import contextmanager
+from typing import Any, overload
+
+# Log-record parity with the origin module.
+logger = logging.getLogger("tools.terminal_tool")
+
+
+@contextmanager
+def _quiet(label: str, *args, exc=Exception, level: int = logging.DEBUG):
+    """Best-effort block: swallow *exc*, log *label* (``%``-formatted with *args*)
+    at *level* with the traceback. For janitor/advisory work that must never
+    take the terminal tool down."""
+    try:
+        yield
+    except exc:
+        logger.log(level, label, *args, exc_info=True)
+
+
+def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
+    """Parse an env var with *converter*, raising a clear ValueError on bad
+    values (e.g. TERMINAL_TIMEOUT=5m) instead of an opaque crash. TERMINAL_*
+    names are read scope-aware via :func:`_tenv`."""
+    raw = _tenv(name, default) if name.startswith("TERMINAL_") else os.getenv(name, default)
+    try:
+        return converter(raw)
+    except (ValueError, json.JSONDecodeError):
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} (expected {type_label}). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+
+
+def _safe_getcwd() -> str:
+    """``os.getcwd()`` tolerant of a deleted cwd (FileNotFoundError) or a macOS
+    TCC-protected one without Full Disk Access (PermissionError); falls back
+    to TERMINAL_CWD, then the home directory."""
+    try:
+        return os.getcwd()
+    except (FileNotFoundError, PermissionError):
+        return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
+
+
+# Host-cwd shapes that cannot exist inside a container sandbox: POSIX user dirs and ANY Windows
+# drive path (``D:\\...``, ``e:/...``) as they leak toward a Linux ``-w`` flag.
+_HOST_CWD_PREFIXES = ("/Users/", "/home/")
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_host_cwd(path: str) -> bool:
+    return path.startswith(_HOST_CWD_PREFIXES) or bool(_WINDOWS_DRIVE_RE.match(path))
+
+
+def _is_windows_drive_path(path: str) -> bool:
+    """True for any ``D:\\...`` / ``e:/...`` path. Not a username check."""
+    return bool(path) and bool(_WINDOWS_DRIVE_RE.match(path))
+
+
+def _host_path_key(path: str) -> str:
+    """Compare host paths without caring about slash style or drive-letter case.
+
+    A trailing slash is not significant, except we never collapse a drive root
+    (``C:/``) into a bare ``C:`` that would prefix-match every path on that drive.
+    """
+    text = (path or "").replace("\\", "/")
+    if len(text) >= 2 and text[1] == ":":
+        text = text[0].lower() + text[1:]
+    if len(text) > 3:
+        text = text.rstrip("/")
+    return text
+
+
+def translate_mounted_host_path(path: str, host_root: str, container_root: str) -> str | None:
+    """Map *path* onto *container_root* when it is *host_root* or a child of it.
+
+    Returns None when *path* is not under that host directory. Slash style and
+    drive-letter case do not matter; a sibling directory (``proj`` vs ``proj-other``)
+    is not a child.
+    """
+    if not isinstance(path, str) or not isinstance(host_root, str) or not isinstance(container_root, str):
+        return None
+    if not path or not host_root or not container_root:
+        return None
+    key = _host_path_key(path)
+    root = _host_path_key(host_root)
+    if not key or not root:
+        return None
+    mount = container_root.rstrip("/") or "/"
+    if key == root:
+        return mount
+    prefix = root if root.endswith("/") else root + "/"
+    if not key.startswith(prefix):
+        return None
+    return f"{mount}/{key[len(prefix):]}"
+
+
+def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
+    """True when *cwd* was the host workspace (or the assumed ``/workspace`` view of it).
+
+    An explicit in-container path other than that assumption is left alone.
+    """
+    if not mount or not cwd or cwd == mount:
+        return False
+    if _is_unusable_container_cwd(cwd):
+        return True
+    return cwd == "/workspace" and mount != "/workspace"
+
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
+
+
+def _plugin_registry_lookup(env_type: str, fn_name: str, default, *args):
+    """Call ``agent.terminal_env_registry.<fn_name>(env_type, *args)`` for a
+    plugin backend. Fail-soft: *default* for built-in/empty backends, when the
+    registry is unavailable, or when the provider raises — a misbehaving plugin
+    must never take the terminal tool down."""
+    if not env_type or env_type in _BUILTIN_BACKENDS:
+        return default
+    try:
+        import agent.terminal_env_registry as reg
+
+        return getattr(reg, fn_name)(env_type, *args)
+    except Exception:
+        return default
+
+
+def _plugin_env_flag(env_type: str, attr: str, default=False):
+    """Classification flag of a plugin-registered backend (fail-soft, see above)."""
+    return _plugin_registry_lookup(env_type, "provider_flag", default, attr, default)
+
+
+def _is_container_backend(env_type: str) -> bool:
+    """True for built-in container backends and plugins declaring ``is_container``."""
+    return env_type in _CONTAINER_BACKENDS or _plugin_env_flag(env_type, "is_container")
+
+
+def _get_plugin_env_provider(env_type: str):
+    """Return the registered plugin provider for *env_type*, or None."""
+    return _plugin_registry_lookup(env_type, "get_provider", None)
+
+
+@overload
+def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
+@overload
+def coerce_ssh_remote_cwd(cwd: None, env_type: str | None) -> None: ...
+def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
+    """Cwd to send to an SSH backend.
+
+    ``~``-prefixed paths stay literal so the remote shell expands them to the
+    SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
+    in the official Docker image) is a directory on the machine running
+    Hermes: it and anything under it are rewritten onto the remote ``~``, since
+    ``cd`` into the host path exits 126 on the target. A subprocess home that is
+    the OS user's real home is left alone: a remote path may legitimately match
+    it. Other backends are unchanged.
+    """
+    if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
+        return cwd
+    text = cwd.strip()
+    if not text or text.startswith("~"):
+        return text or "~"
+    from hermes_constants import get_real_home, get_subprocess_home
+
+    home = get_subprocess_home()
+    if not home or not posixpath.isabs(text) or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
+        return text
+    rel = posixpath.relpath(posixpath.normpath(text), posixpath.normpath(home))
+    if rel == ".":
+        return "~"
+    return text if rel == ".." or rel.startswith("../") else f"~/{rel}"
+
+
+def _is_mounted_host_cwd(cwd: str, mounted_host: str | None) -> bool:
+    """True when *cwd* is the host directory mounted at ``/workspace``.
+
+    Checked before the ``/Users`` / ``/home`` / drive-letter heuristic: a WSL
+    checkout under ``/mnt/...`` or an absolute path under ``/srv/...`` is
+    ``os.path.isabs`` and would otherwise look like a valid container workdir.
+    """
+    if not cwd or not isinstance(mounted_host, str) or not mounted_host:
+        return False
+    try:
+        left = os.path.normpath(os.path.abspath(os.path.expanduser(cwd)))
+        right = os.path.normpath(os.path.abspath(os.path.expanduser(mounted_host)))
+    except (OSError, ValueError):
+        return False
+    return left == right
+
+
+def _is_unusable_container_cwd(cwd: str, *, mounted_host: str | None = None) -> bool:
+    """True if *cwd* is a host or relative path that can't be a container
+    workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the
+    container fails to start (exit 125). Windows drive paths aren't ``isabs``
+    on POSIX, so they're caught by the prefix check.
+
+    The directory mounted at ``/workspace`` is unusable inside the container
+    even when it matches none of those prefixes. That equality check runs
+    first so ``/mnt/...`` and ``/srv/...`` are not wrapped as ``cd`` targets.
+    """
+    if not cwd:
+        return False
+    if _is_mounted_host_cwd(cwd, mounted_host):
+        return True
+    return _is_host_cwd(cwd) or not os.path.isabs(cwd)
+
+
+def _tenv(name: str, default: str = "") -> str:
+    """Scope-aware read of a ``TERMINAL_*`` variable. Every terminal setting
+    must go through this: under gateway multiplexing the active profile's
+    config arrives via a per-turn scope, and a raw ``os.getenv`` would read
+    whatever a previous turn pinned into the process env (cross-profile leak)."""
+    from tools.terminal_scope import terminal_env
+
+    return terminal_env(name, default)
+
+
+def _tenv_bool(name: str, default: str) -> bool:
+    """Scope-aware boolean ``TERMINAL_*`` read: true/1/yes (case-insensitive)."""
+    return _tenv(name, default).lower() in {"true", "1", "yes"}

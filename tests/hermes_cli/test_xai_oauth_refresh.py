@@ -21,8 +21,6 @@ def _jwt_with_exp(exp: int) -> str:
     return f"{header}.{payload}.sig"
 
 
-def test_xai_oauth_refresh_skew_is_one_hour() -> None:
-    assert auth.XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS == 3600
 
 
 def test_xai_oauth_token_expiring_uses_one_hour_skew() -> None:

@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+
+afterEach(() => {
+  window.getSelection()?.removeAllRanges()
+  document.body.replaceChildren()
+})
 
 const key = (init: Partial<KeyboardEvent> & { key: string }) =>
   ({ altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, type: 'keydown', ...init }) as KeyboardEvent
@@ -54,19 +59,59 @@ describe('mirrorSelection', () => {
     const textarea = document.createElement('textarea')
     textarea.className = 'xterm-helper-textarea'
     el.appendChild(textarea)
+    document.body.appendChild(el)
 
     return { el, textarea }
   }
 
-  it('puts the selection where the OS copy command can find it', () => {
+  it('puts the selection where the OS copy command can find it while the terminal is focused', () => {
     const { el, textarea } = host()
+    textarea.focus()
     mirrorSelection(el, 'npm run check')
 
     expect(textarea.value).toBe('npm run check')
+    expect(textarea.selectionStart).toBe(0)
+    expect(textarea.selectionEnd).toBe('npm run check'.length)
+  })
+
+  it('keeps the text staged but does not steal the document selection when chat owns focus', () => {
+    const { el, textarea } = host()
+    const outside = document.createElement('textarea')
+    document.body.appendChild(outside)
+    outside.focus()
+
+    mirrorSelection(el, 'stale terminal scrap')
+
+    expect(textarea.value).toBe('stale terminal scrap')
+    // No `select()` — caret may sit at the end after the value write, but the
+    // range must stay collapsed so the OS copy command still sees chat text.
+    expect(textarea.selectionStart).toBe(textarea.selectionEnd)
+    expect(document.activeElement).toBe(outside)
+  })
+
+  it('does not clobber a live chat highlight even if the terminal still has focus', () => {
+    const { el, textarea } = host()
+    textarea.focus()
+
+    const outside = document.createElement('span')
+    outside.textContent = 'chat text'
+    document.body.appendChild(outside)
+    const range = document.createRange()
+    range.selectNodeContents(outside)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    mirrorSelection(el, 'terminal scrap')
+
+    expect(textarea.value).toBe('terminal scrap')
+    expect(textarea.selectionStart).toBe(textarea.selectionEnd)
+    expect(selection.toString()).toBe('chat text')
   })
 
   it('clears the mirror when the selection goes away', () => {
     const { el, textarea } = host()
+    textarea.focus()
     mirrorSelection(el, 'something')
     mirrorSelection(el, '')
 

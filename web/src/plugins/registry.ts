@@ -22,6 +22,14 @@ import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import {
+  Dialog, DialogClose, DialogContent, DialogDescription,
+  DialogFooter, DialogHeader, DialogTitle,
+} from "@nous-research/ui/ui/components/dialog";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -29,7 +37,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
-import { registerSlot, PluginSlot } from "./slots";
+import { clearPluginSlots, registerSlot, PluginSlot } from "./slots";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -52,8 +60,37 @@ export function notifyPluginRegistry() {
   _notify();
 }
 
+let _profile = "";
+
+/**
+ * Select the management profile whose plugin bundles the dashboard shows
+ * (PLG-3). Selecting another one forgets every component, load error and slot
+ * the previous profile's bundles registered; subscribers hear of it on the
+ * next microtask, never during the render that switched.
+ */
+export function selectPluginProfile(profile: string): void {
+  if (profile === _profile) return;
+  _profile = profile;
+  _registered.clear();
+  _loadErrors.clear();
+  clearPluginSlots();
+  queueMicrotask(_notify);
+}
+
+export function getPluginProfile(): string {
+  return _profile;
+}
+
+/** Whether the bundle now running was loaded for a profile no longer selected. */
+function _fromOtherProfile(): boolean {
+  const script = typeof document === "undefined" ? null : document.currentScript;
+  const owner = script?.getAttribute("data-hermes-profile");
+  return owner != null && owner !== _profile;
+}
+
 /** Register a plugin component. Called by plugin JS bundles. */
 function registerPlugin(name: string, component: React.ComponentType) {
+  if (_fromOtherProfile()) return;
   _loadErrors.delete(name);
   _registered.set(name, component);
   _notify();
@@ -104,7 +141,9 @@ export const SDK_CONTRACT_VERSION = "1.1.0";
 export function exposePluginSDK() {
   window.__HERMES_PLUGINS__ = {
     register: registerPlugin,
-    registerSlot,
+    registerSlot: (plugin, slot, component) => {
+      if (!_fromOtherProfile()) registerSlot(plugin, slot, component);
+    },
   };
 
   window.__HERMES_PLUGIN_SDK__ = {
@@ -121,6 +160,13 @@ export function exposePluginSDK() {
       useRef,
       useContext,
       createContext,
+      // useToast returns { showToast, toast } where toast is the current
+      // visible toast (or null) and showToast(message, 'success'|'error')
+      // replaces it. useConfirmDelete<TId>({ onDelete }) returns the state
+      // machine (requestDelete / confirm / cancel / isOpen / isDeleting /
+      // pendingId) for single-id delete confirmations.
+      useToast,
+      useConfirmDelete,
     },
 
     // Hermes API client
@@ -148,6 +194,14 @@ export function exposePluginSDK() {
       Badge,
       Button,
       Checkbox,
+      ConfirmDialog,
+      Dialog,
+      DialogClose,
+      DialogContent,
+      DialogDescription,
+      DialogFooter,
+      DialogHeader,
+      DialogTitle,
       Input,
       Label,
       Select,
@@ -156,6 +210,7 @@ export function exposePluginSDK() {
       Tabs,
       TabsList,
       TabsTrigger,
+      Toast,
       PluginSlot,
     },
 

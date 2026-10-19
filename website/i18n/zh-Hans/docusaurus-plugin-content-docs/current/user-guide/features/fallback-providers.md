@@ -50,7 +50,7 @@ fallback_model:
 | AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal`（全新安装）或 `hermes auth add nous`（OAuth） |
-| OpenAI Codex | `openai-codex` | `hermes model`（ChatGPT OAuth） |
+| OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth） |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | 外部进程（编辑器集成） |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
@@ -84,6 +84,7 @@ fallback_model:
 | LM Studio（本地） | `lmstudio` | `LM_API_KEY`（本地可不填）+ `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | 自定义端点 | `custom` | `base_url` + `key_env`（见下文） |
+| Mixture of Agents 预设 | `moa`（`model` = 预设名称） | 已配置且聚合器有凭据的 MoA 预设——备用时运行整个预设（参考模型 + 聚合器），而不是仅运行聚合器 |
 
 ### 自定义端点备用
 
@@ -157,7 +158,7 @@ fallback_model:
 ```yaml
 fallback_model:
   provider: openai-codex
-  model: gpt-5.3-codex
+  model: gpt-5.4
 ```
 
 ### 备用适用范围
@@ -185,19 +186,19 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 | 任务 | 功能说明 | 配置键 |
 |------|-------------|-----------|
 | 视觉 | 图像分析、浏览器截图 | `auxiliary.vision` |
-| 网页提取 | 网页内容摘要 | `auxiliary.web_extract` |
 | 压缩 | 上下文压缩摘要 | `auxiliary.compression` |
 | Skills Hub | 技能搜索与发现 | `auxiliary.skills_hub` |
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
+| 评审 | `/review` 评审子智能体（完整智能体，而非单次 LLM 调用） | `auxiliary.review` |
 | Triage Specifier | `hermes kanban specify` / 看板（kanban）✨ 按钮——将单行 triage 任务扩展为完整规格 | `auxiliary.triage_specifier` |
 
 ### 自动检测链
 
 当任务的提供商设置为 `"auto"`（默认值）时，Hermes 按顺序尝试各提供商，直到找到可用的：
 
-**文本任务（压缩、网页提取等）：**
+**文本任务（压缩等）：**
 
 ```text
 OpenRouter → Nous Portal → 自定义端点 → Codex OAuth →
@@ -224,10 +225,6 @@ auxiliary:
     model: ""                     # 例如 "openai/gpt-4o"
     base_url: ""                  # 直接端点（优先于 provider）
     api_key: ""                   # base_url 的 API 密钥
-
-  web_extract:
-    provider: "auto"
-    model: ""
 
   compression:
     provider: "auto"
@@ -265,14 +262,14 @@ fallback_model:
 
 ### 辅助任务的提供商选项
 
-以下选项仅适用于 `auxiliary:`、`compression:` 和 `fallback_model:` 配置——`"main"` **不是**顶层 `model.provider` 的有效值。对于自定义端点，请在 `model:` 部分使用 `provider: custom`（参见 [AI 提供商](/integrations/providers)）。
+以下选项仅适用于 `auxiliary:`、`compression:` 和 `fallback_model:` 配置——`"main"` **不是**顶层 `model.provider` 的有效值。对于自定义端点，请在 `model:` 部分使用 `provider: custom`（参见 [AI 提供商](../../integrations/providers.md)）。
 
 | 提供商 | 说明 | 要求 |
 |----------|-------------|-------------|
 | `"auto"` | 按顺序尝试各提供商直到找到可用的（默认） | 至少配置一个提供商 |
 | `"openrouter"` | 强制使用 OpenRouter | `OPENROUTER_API_KEY` |
 | `"nous"` | 强制使用 Nous Portal | `hermes auth` |
-| `"codex"` | 强制使用 Codex OAuth | `hermes model` → Codex |
+| `"codex"` | 强制使用 Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
 | `"main"` | 使用主 Agent 当前的提供商（仅限辅助任务） | 已配置活跃的主提供商 |
 | `"anthropic"` | 强制使用 Anthropic 原生 | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
 
@@ -372,7 +369,7 @@ delegation:
   # api_key: "local-key"
 ```
 
-完整配置详情参见[子 Agent 委派](/user-guide/features/delegation)。
+完整配置详情参见[子 Agent 委派](./delegation.md)。
 
 ---
 
@@ -390,7 +387,7 @@ cronjob(
 )
 ```
 
-完整配置详情参见[定时任务（Cron）](/user-guide/features/cron)。
+完整配置详情参见[定时任务（Cron）](./cron.md)。
 
 ---
 
@@ -402,7 +399,6 @@ cronjob(
 | 辅助任务（任意）— auto 用户 | 容量错误时完整自动检测链（主 Agent 模型优先，然后提供商链） | `auxiliary.<task>.provider: auto` |
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |
-| 网页提取 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.web_extract` |
 | 上下文压缩 | 分层（见上文）；所有层不可用时降级为无摘要 | `auxiliary.compression` |
 | Skills Hub | 分层（见上文） | `auxiliary.skills_hub` |
 | MCP 辅助 | 分层（见上文） | `auxiliary.mcp` |

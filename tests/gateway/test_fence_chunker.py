@@ -145,3 +145,44 @@ def test_greedy_pack_overflow_callback():
 # ── canonical table-row splitter delegation ──────────────────────────────────
 
 
+
+
+# ── UTF-16 length units at the Telegram limit (#55844) ──────────────────────
+
+
+def test_emoji_heavy_split_respects_utf16_limit():
+    """Telegram's 4096 limit is UTF-16 code units — emoji count as 2.
+
+    Regression for #55844: the fallback splitter must measure chunks with
+    the platform len_fn, not Python codepoints, or emoji-heavy messages
+    ship oversized chunks that Telegram rejects with MESSAGE_TOO_LONG.
+    """
+    limit = 3996  # gateway's safe limit: 4096 - 100 headroom
+    text = "🚀" * 3000  # 3000 codepoints == 6000 UTF-16 units
+    chunks = split_text_fence_aware(
+        text, limit, utf16_len, prefer_paragraphs=False, balance_fences=True
+    )
+    assert len(chunks) > 1
+    assert all(utf16_len(c) <= limit for c in chunks)
+    assert "".join(chunks) == text
+
+
+def test_mixed_emoji_newline_text_utf16_limit():
+    text = "emoji 🎉🎊 line with some more words attached\n" * 400
+    chunks = split_text_fence_aware(
+        text, 500, utf16_len, prefer_paragraphs=False, balance_fences=True
+    )
+    assert all(utf16_len(c) <= 500 for c in chunks)
+    assert all(c for c in chunks)
+
+
+# ── split_markdown_atoms: empty ``` ``` blocks (main parity) ─────────────────
+
+
+def test_empty_fence_block_atoms_match_main():
+    """An empty fenced block (``` immediately followed by ```) is its own
+    atom and the following text starts a fresh one — main's chunk boundaries."""
+    assert split_markdown_atoms("```\n```\ntext") == ["```\n```", "text"]
+    assert split_markdown_atoms("```\n```\ncode\n```\ntail") == ["```\n```", "code", "```\ntail"]
+    assert split_markdown_atoms("```py\n```\n\n```\n```") == ["```py\n```", "```\n```"]
+    assert split_markdown_atoms("a\n```\ncode\n```\nb") == ["a", "```\ncode\n```", "b"]

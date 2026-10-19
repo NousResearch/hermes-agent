@@ -1,6 +1,7 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import logging
 
 import pytest
 
@@ -34,7 +35,7 @@ class TestTerminalRequirements:
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr(terminal_tool_module, "managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr("tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
@@ -45,8 +46,7 @@ class TestTerminalRequirements:
             lambda: {"env_type": "modal", "modal_mode": "managed"},
         )
         monkeypatch.setattr(
-            terminal_tool_module,
-            "is_managed_tool_gateway_ready",
+            "tools.terminal_tool_backends.is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
@@ -114,6 +114,57 @@ class TestCheckFnTransientFailureSuppression:
         assert reg._check_fn_cached(bad) is False
 
 
+
+    def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):
+        """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member it had previously admitted logs at
+        WARNING naming the tool (#112649 atom 4): core tools are non-deferrable, so a dropped one
+        leaves neither the schema nor the tool_search catalog and the model's "no such tool" is
+        accurate. A core tool whose probe never succeeded (unconfigured browser/image_gen/HA on a
+        stock home) keeps the INFO verdict of ae5666f7fc4 — the live pass counted 13 WARNINGs per
+        process when every unconfigured core tool warned. The WARNING fires once per probe per
+        process, not on every TTL re-probe.
+        """
+        import tools.registry as reg
+
+        state = {"core": True}
+
+        def core_gate():
+            return state["core"]
+
+        def never_gate():
+            return False
+
+        import toolsets
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(toolsets, "_HERMES_CORE_TOOLS",
+                            [*toolsets._HERMES_CORE_TOOLS, "core_probe_tool", "never_probe_tool"])
+        for name, gate in (("core_probe_tool", core_gate), ("never_probe_tool", never_gate)):
+            reg.registry.register(name=name, toolset=name, schema={"name": name},
+                                  handler=lambda **kw: None, check_fn=gate)
+        reg.invalidate_check_fn_cache()
+        try:
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                assert reg._check_fn_cached(core_gate) is True
+                assert reg._check_fn_cached(never_gate) is False
+                state["core"] = False
+                clock["now"] += reg._CHECK_FN_FAILURE_GRACE_SECONDS + reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+                assert reg._check_fn_cached(never_gate) is False
+                clock["now"] += reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+        finally:
+            reg.registry.deregister("core_probe_tool")
+            reg.registry.deregister("never_probe_tool")
+            reg.invalidate_check_fn_cache()
+
+        core = [r for r in caplog.records if "core_gate" in r.getMessage()]
+        never = [r for r in caplog.records if "never_gate" in r.getMessage()]
+        assert [r.levelno for r in core] == [logging.WARNING, logging.INFO]
+        assert "core_probe_tool" in core[0].getMessage()
+        assert never and all(r.levelno == logging.INFO for r in never)
+
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg
 
@@ -133,6 +184,125 @@ class TestCheckFnTransientFailureSuppression:
         # Now move well past the grace window since the last success → honored.
         t["now"] += reg._CHECK_FN_FAILURE_GRACE_SECONDS + 1
         assert reg._check_fn_cached(probe) is False
+
+    def test_profile_scoped_availability_does_not_cross_multiplex_profiles(
+        self, tmp_path
+    ):
+        """Both availability caches must use the active profile as a key."""
+        import tools.registry as reg
+        from agent.secret_scope import (
+            get_secret,
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+
+        profile_a = tmp_path / "profiles" / "a"
+        profile_b = tmp_path / "profiles" / "b"
+        profile_a.mkdir(parents=True)
+        profile_b.mkdir(parents=True)
+        tool_name = "profile_scoped_availability_probe"
+
+        def probe():
+            return bool(get_secret("PROFILE_CACHE_TEST_TOKEN"))
+
+        reg.registry.register(
+            name=tool_name,
+            toolset="profile-cache-test",
+            schema={
+                "name": tool_name,
+                "description": "test-only profile-scoped availability probe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args: "ok",
+            check_fn=probe,
+        )
+        set_multiplex_active(True)
+        try:
+            home_a = set_hermes_home_override(str(profile_a))
+            secrets_a = set_secret_scope({"PROFILE_CACHE_TEST_TOKEN": "token-a"})
+            try:
+                tools_a = get_tool_definitions(
+                    enabled_toolsets=["profile-cache-test"],
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+            finally:
+                reset_secret_scope(secrets_a)
+                reset_hermes_home_override(home_a)
+
+            home_b = set_hermes_home_override(str(profile_b))
+            secrets_b = set_secret_scope({})
+            try:
+                tools_b = get_tool_definitions(
+                    enabled_toolsets=["profile-cache-test"],
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+            finally:
+                reset_secret_scope(secrets_b)
+                reset_hermes_home_override(home_b)
+
+            assert tool_name in {tool["function"]["name"] for tool in tools_a}
+            assert tool_name not in {tool["function"]["name"] for tool in tools_b}
+        finally:
+            set_multiplex_active(False)
+            reg.registry.deregister(tool_name)
+            reg.invalidate_check_fn_cache()
+            _clear_tool_defs_cache()
+
+    def test_unscoped_multiplex_request_bypasses_cache(self, monkeypatch):
+        """An unknown profile must never share another request's cache entry."""
+        import model_tools
+        import tools.registry as reg
+        from agent.secret_scope import set_multiplex_active
+
+        values = iter([True, False])
+        definition_calls = {"n": 0}
+
+        def probe():
+            return next(values)
+
+        def compute_definitions(*_args, **_kwargs):
+            definition_calls["n"] += 1
+            return []
+
+        set_multiplex_active(True)
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", compute_definitions)
+        try:
+            assert reg._check_fn_cached(probe) is True
+            assert reg._check_fn_cached(probe) is False
+            assert not reg._check_fn_cache
+
+            model_tools.get_tool_definitions(quiet_mode=True)
+            model_tools.get_tool_definitions(quiet_mode=True)
+            assert definition_calls["n"] == 2
+            assert not model_tools._tool_defs_cache
+        finally:
+            set_multiplex_active(False)
+            reg.invalidate_check_fn_cache()
+            model_tools._clear_tool_defs_cache()
+
+    def test_profile_scoped_check_cache_is_bounded(self, monkeypatch):
+        """Many multiplex profiles must not grow registry caches forever."""
+        import tools.registry as reg
+
+        scopes = iter(f"/profiles/{index}" for index in range(1_000))
+        monkeypatch.setattr(reg, "check_fn_cache_scope", lambda: next(scopes))
+
+        def available():
+            return True
+
+        for _ in range(1_000):
+            assert reg._check_fn_cached(available) is True
+
+        assert len(reg._check_fn_cache) <= reg._CHECK_FN_CACHE_MAX
+        assert len(reg._check_fn_last_good) <= reg._CHECK_FN_CACHE_MAX
 
     def test_subagent_keeps_file_tools_through_docker_flake(self, monkeypatch):
         """End-to-end: a docker probe that flakes on the 2nd build keeps the
@@ -185,7 +355,7 @@ class TestCheckFnTransientFailureSuppression:
             lambda: {"env_type": "vercel_sandbox", "container_disk": 51200},
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -207,7 +377,7 @@ class TestCheckFnTransientFailureSuppression:
             },
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -232,7 +402,7 @@ class TestCheckFnTransientFailureSuppression:
             },
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -241,3 +411,78 @@ class TestCheckFnTransientFailureSuppression:
 
         assert "terminal" not in names
         assert "execute_code" not in names
+
+
+class TestUnscopedSecretReadLogging:
+    """#100697: with multiplexing on, boot-time check_fns run before any
+    profile secret scope exists, so get_secret fails closed with
+    UnscopedSecretError. That expected signal must not be logged like a
+    crashed check_fn (WARNING + traceback); an unscoped read reported while
+    the scope was *resolved* is a genuinely lost scope and stays loud."""
+
+
+    def test_expected_fail_closed_probe_is_quiet_but_lost_scope_stays_loud(self, caplog):
+        """The verdict comes from the LIVE scope at the catch site (#110635): unscoped caller →
+        expected boot-time miss (DEBUG, no traceback); scoped caller whose probe still hit the
+        fail-closed path → a dropped scope inside the probe (WARNING + traceback)."""
+        import logging
+        import threading
+
+        import tools.registry as reg
+        from agent.secret_scope import (
+            get_secret, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+
+        def probe():
+            return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
+
+        def probe_on_bare_thread():
+            # A bare thread starts with an EMPTY context: the scope the caller holds never reaches
+            # the get_secret inside — the spawn-site bug the loud branch exists to expose.
+            out = []
+            t = threading.Thread(target=lambda: out.append(probe()))
+            t.start()
+            t.join()
+            return out[0]
+
+        set_multiplex_active(True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+                assert reg._run_check_fn_uncached(probe) is False
+                boot = [r for r in caplog.records if r.name == "tools.registry"]
+                caplog.clear()
+                token = set_secret_scope({})
+                try:
+                    assert reg._run_check_fn_uncached(probe_on_bare_thread) is False
+                finally:
+                    reset_secret_scope(token)
+                lost = [r for r in caplog.records if r.name == "tools.registry"]
+        finally:
+            set_multiplex_active(False)
+
+        assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
+        assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)
+
+    def test_uncached_probe_at_boot_is_not_reported_as_a_lost_scope(self, caplog):
+        """#110635: a ``no_cache_check_fn`` probe (the browser vault gate) skips the cache-scope
+        lookup, so on the old branch-derived hint every gateway start under multiplexing logged
+        WARNING + traceback for an EXPECTED fail-closed read. Same probe, cached or uncached,
+        same DEBUG verdict."""
+        import logging
+
+        import tools.registry as reg
+        from agent.secret_scope import get_secret, set_multiplex_active
+
+        def probe():
+            return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
+
+        reg.no_cache_check_fn(probe)
+        set_multiplex_active(True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+                assert reg._check_fn_cached(probe) is False
+        finally:
+            set_multiplex_active(False)
+            reg._NO_CACHE_CHECK_FNS.discard(probe)
+        records = [r for r in caplog.records if r.name == "tools.registry"]
+        assert records and all(r.levelno == logging.DEBUG and r.exc_info is None for r in records)

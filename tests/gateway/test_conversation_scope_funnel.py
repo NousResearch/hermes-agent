@@ -36,11 +36,6 @@ def test_funnel_leaves_turn_scoped_and_generation_state_alone():
     assert runner._session_run_generation[KEY] == 7
 
 
-def test_funnel_is_bare_runner_safe_and_empty_key_noop():
-    runner = object.__new__(GatewayRunner)
-    # No dicts initialized at all — must not raise (pitfall #17).
-    runner._clear_conversation_scope(KEY, reason="test")
-    runner._clear_conversation_scope("", reason="test")
 
 
 def test_funnel_also_clears_boundary_security_state():

@@ -47,15 +47,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          android-version: 34
-          build-tools-version: 34.0.0
-          ndk-version: 26.2.11394342
-          cmake-version: 3.22.1
+          cmdline-tools-version: 9.0
+          accept-android-sdk-licenses: true
 
-      - name: Install Android dependencies
+      - name: Install Android SDK packages
         run: |
-          echo "y" | android update sdk --no-ui --all --filter "platform-tools,platforms;android-34,build-tools;34.0.0"
-          echo "y" | android update sdk --no-ui --all --filter "emulator,tools"
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "emulator" "tools"
 
       - name: Cache Gradle dependencies
         uses: actions/cache@v3

@@ -86,20 +86,28 @@ _PROTOTYPE_WRITE = re.compile(r"\b([A-Za-z_$][\w$]*)\.prototype\.[\w$]+\s*=[^=]"
 _DECLARED_NAME = re.compile(
     r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:class|function)\b(?:\s+([A-Za-z_$][\w$]*))?"
     r"|\b(?:class|function)\s+([A-Za-z_$][\w$]*)")
-# A regex cannot see scope, so a same-named local declaration elsewhere in the file must not excuse
-# a write to a renderer global: these receivers always fail, declared or not.
-_RENDERER_GLOBAL = re.compile(
-    r"^(?:Object|Function|Array|String|Number|Boolean|Symbol|Promise|RegExp|Date|Error|JSON|Map|Set"
+_RENDERER_GLOBAL_NAMES = (
+    r"Object|Function|Array|String|Number|Boolean|Symbol|Promise|RegExp|Date|Error|JSON|Map|Set"
     r"|WeakMap|WeakSet|Proxy|Reflect|Storage|Window|Document|Node|EventTarget|Event|Location|History"
     r"|Navigator|WebSocket|XMLHttpRequest|Request|Response|Headers|URL|Blob|File|FileReader"
-    r"|MutationObserver|Worker|BroadcastChannel|MessagePort|IDB\w*|\w*Element|\w*Event|CSS\w*)$")
+    r"|MutationObserver|Worker|BroadcastChannel|MessagePort|IDB\w*|\w*Element|\w*Event|CSS\w*")
+# A regex cannot see scope, so a same-named local declaration elsewhere in the file must not excuse
+# a write to a renderer global: these receivers always fail, declared or not.
+_RENDERER_GLOBAL = re.compile(rf"^(?:{_RENDERER_GLOBAL_NAMES})$")
+# ...and neither may an alias of one (``const S = window.Storage``, ``{ Storage: S } = window``): a
+# class named ``S`` declared in some other scope of the file would otherwise excuse ``S.prototype``.
+_GLOBAL_ALIAS = re.compile(
+    rf"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:(?:window|globalThis|self)\s*\.\s*)?(?:{_RENDERER_GLOBAL_NAMES})"
+    rf"(?![\w$(])|\b(?:{_RENDERER_GLOBAL_NAMES})\s*:\s*([A-Za-z_$][\w$]*)")
 
 
 def _foreign_prototype_writes(source: str) -> list[int]:
-    """Offsets of ``X.prototype.y =`` where ``X`` is a renderer global or not declared in the file."""
+    """Offsets of ``X.prototype.y =`` where ``X`` is a renderer global, an alias of one, or not
+    declared in the file."""
     declared = {name for names in _DECLARED_NAME.findall(source) for name in names if name}
+    aliases = {name for names in _GLOBAL_ALIAS.findall(source) for name in names if name}
     return [m.start() for m in _PROTOTYPE_WRITE.finditer(source)
-            if m.group(1) not in declared or _RENDERER_GLOBAL.match(m.group(1))]
+            if m.group(1) not in declared or m.group(1) in aliases or _RENDERER_GLOBAL.match(m.group(1))]
 
 
 def desktop_surface_findings(source: str) -> list[tuple[str, int]]:

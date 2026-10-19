@@ -97,11 +97,15 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
 def _dirty_split(path: str) -> tuple[bool, list[str]]:
     """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
     try:
-        result = _git(["status", "--porcelain"], cwd=path, timeout=10)
+        result = _git(["status", "--porcelain", "--untracked-files=normal"], cwd=path, timeout=10)
         if result.returncode != 0:
             return True, []  # fail safe: treat as real work
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         untracked = [line[3:].strip() for line in lines if line.startswith("??")]
+        if len(untracked) == len(lines):
+            from hermes_cli.worktree_retention import hidden_index_edits
+            if hidden_index_edits(path):  # skip-worktree / assume-unchanged edits
+                return True, []
         return len(untracked) != len(lines), untracked
     except Exception:
         return True, []
@@ -146,9 +150,15 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
         # as unpushed forever. A head EXACTLY matching the remote branch has nothing origin lacks.
         if not _ops._worktree_branch_pushed_exact(path, remote_heads, timeout=10):
             return "keep", "unpushed commits not found upstream", []
+        blocked = _ops.removal_blocked(path)
+        if blocked:
+            return "keep", blocked[1], []
         if untracked:
             return "reap-keep-branch", f"pushed to origin (open-PR lane); branch kept; {archive_note}", untracked
         return "reap-keep-branch", "pushed to origin (open-PR lane); branch kept", []
+    blocked = _ops.removal_blocked(path)
+    if blocked:
+        return "keep", blocked[1], []
     if untracked:
         return "reap-archive", f"merged/pushed; {archive_note}", untracked
     return "reap", "clean and fully merged/pushed", []

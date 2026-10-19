@@ -116,7 +116,7 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -130,7 +130,8 @@ def _admit_prompt_turn(
         with session["history_lock"]:
             session["running"] = False
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        if report_ownership_refusal:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
         if session.get("_closing") or (
@@ -621,12 +622,13 @@ def _install_has_prior_sessions(session: dict) -> bool:
         return False
 
 
-def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bool, message: str) -> None:
+def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bool) -> None:
     """Stage the install's first-message onboarding note for THIS turn (#82750).
 
-    The messaging gateway appends the directive to
+    The messaging gateway appends the consent-gated profile-build directive to
     the very first message ever (``_hmwa_first_contact_notes``); the
-    TUI/Desktop surface never did. Stage the same note through
+    TUI/Desktop surface never did, so a fresh install's first Desktop chat
+    skipped the opt-in profile flow entirely. Stage the same note through
     ``agent._gateway_turn_context_notes`` — consumed by
     ``agent.turn_context`` on the user message — never the ephemeral system
     prompt, which must stay byte-stable for the conversation (prompt-cache
@@ -643,8 +645,7 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
             get_hermes_home() / "config.yaml",
             session_history_empty=history_empty,
             install_has_prior_sessions=_install_has_prior_sessions(session),
-            message=message,
-            setup_handoff=bool(session.get("setup_handoff")),
+            onboarding_run_active="setup_beat" in (getattr(agent, "valid_tool_names", None) or ()),
         )
         if not note:
             return
@@ -696,7 +697,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         st.history_version = int(session.get("history_version", 0))
     # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
     # surface — no-op unless this is the install's very first message ever.
-    _stage_first_contact_onboarding_note(session, agent, not st.history, text if isinstance(text, str) else "")
+    _stage_first_contact_onboarding_note(session, agent, not st.history)
+    _stage_onboarding_turn_note(sid, agent, not st.history)
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -723,13 +725,12 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()
-    # Per-turn API-message notes: barge mid-speech, reactions, card retries, HUD surface (per-turn state
+    # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
     from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
-    run_message = _prepend_note(run_message, _pending_tool_retry_notes(session))
     agent._voice_turn_pending = bool(session.pop("voice_turn", False))  # auxiliary.voice_chat route
     return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
 
@@ -794,9 +795,7 @@ def _invoke_agent(
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
     if "prelude" in run_params:
-        from agent.initiate_setup_prompt import initiate_setup_prelude
-        prelude = initiate_setup_prelude(
-            text, _resolve_agent_platform(_session_source(session)), agent.valid_tool_names, st.history)
+        prelude = _onboarding_prelude(agent, st.history)
         if prelude is not None:
             run_kwargs["prelude"] = prelude
     _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
@@ -880,50 +879,20 @@ def _absorb_turn_result(
 
 
 def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
-    """Report committed row addresses, never a text/timestamp search for a matching turn.
-
-    The agent's persistence cursor is re-anchored during compaction. A partial receipt can
-    address its surviving rows, but cannot retire a client's entire streamed turn. Full coverage
-    additionally requires the unchanged pre-turn prefix and no redirected user boundary.
-    """
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    """Committed row addresses of this turn (``agent.persisted_turn_receipt``); the pre-turn
+    prefix is unchanged when every history row kept its committed row id."""
+    from agent.persisted_turn_receipt import committed_row_id, persisted_turn_receipt
 
     messages = st.result.get("messages")
-    start = getattr(st.agent, "_persist_user_message_idx", None)
-    if (not isinstance(messages, list) or type(start) is not int or not 0 <= start < len(messages)
-            or messages[start].get("role") != "user"):
-        return None
-
-    def committed_id(message):
-        row_id = message.get("_row_id")
-        return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
-
-    tail = messages[start:]
-    anchor_id = committed_id(tail[0])
-    if any(before is tail[0] or (anchor_id is not None and anchor_id == committed_id(before))
-           for before in st.history):
-        return None  # preflight returned the old transcript, not a new turn
-    row_ids = [rid for message in tail if (rid := committed_id(message)) is not None]
-    if not row_ids:
-        return None
-    receipt = {"row_ids": row_ids, "complete": False}
-    if (user_row_id := committed_id(tail[0])) is not None:
-        receipt["user_row_id"] = user_row_id
-    last = tail[-1]
-    # Equality only verifies the structurally selected final row's body: it never selects an identity.
-    if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")
-            and last.get("content") == raw and (final_id := committed_id(last)) is not None):
-        receipt["final_assistant_row_id"] = final_id
-    prefix_unchanged = start == len(st.history) and all(
-        committed_id(before) is not None and committed_id(before) == committed_id(after)
-        for before, after in zip(st.history, messages[:start]))
-    receipt["complete"] = bool(
-        prefix_unchanged and type(st.compression_count) is int
-        and st.compression_count == getattr(getattr(st.agent, "context_compressor", None), "compression_count", None)
-        and len(row_ids) == len(tail)
-        and sum(message.get("role") == "user" for message in tail) == 1
-        and "final_assistant_row_id" in receipt)
-    return receipt
+    if not isinstance(messages, list):
+        return None  # no turn suffix to address (failed/preflight turns never staged history)
+    return persisted_turn_receipt(
+        messages, getattr(st.agent, "_persist_user_message_idx", None), st.history,
+        raw, status,
+        compression_unchanged=type(st.compression_count) is int and st.compression_count == getattr(
+            getattr(st.agent, "context_compressor", None), "compression_count", None),
+        prefix_row_matches=lambda before, after: (
+            committed_row_id(before) is not None and committed_row_id(before) == committed_row_id(after)))
 
 
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
@@ -1123,7 +1092,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1133,7 +1102,8 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
         return False
     images, agent = admitted

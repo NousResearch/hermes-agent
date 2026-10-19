@@ -88,6 +88,10 @@ def _refuse(field, detail=None):
     raise RuntimeStoreError('invalid_params', field=field, detail=detail)
 
 
+# ``acp_adapter/edit_approval.py``'s AUTO_APPROVE_* values, in main's ACP mode order.
+EDIT_APPROVAL_POLICIES = ('ask', 'workspace_session', 'session')
+
+
 @dataclass(frozen=True)
 class LocalSessionPolicy:
     source: str
@@ -123,6 +127,9 @@ class LocalSessionPolicy:
     # plain data: an exact retry is judged by them, never by the profile's current ones, and the session's
     # tools run without every toolchain name they cover that the client did not send.
     client_env_rules_json: str | None = None
+    # An ACP session's edit approval (``session.mutate edit_policy``; main's ACP modes): ``ask`` (Default),
+    # ``workspace_session`` (Accept Edits) or ``session`` (Don't Ask). Sensitive paths always ask.
+    edit_approval_policy: str = 'ask'
 
     def client_env(self):
         return None if self.client_env_json is None else json.loads(self.client_env_json)
@@ -934,6 +941,8 @@ def restore_policy(data):
                 or type(policy.coding_posture) is not bool
                 or not _valid_client_env(policy.client_env_json) or type(policy.client_env_remote) is not bool
                 or not _valid_client_env(policy.client_env_rules_json, list)
+                or policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES
+                or (policy.edit_approval_policy != 'ask' and policy.source != 'acp')
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace

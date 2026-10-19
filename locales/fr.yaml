@@ -190,6 +190,7 @@ gateway:
     full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -485,6 +486,9 @@ gateway:
     state_no: "Non"
     queued: "**Suivis en file :** {count}"
     platforms: "**Plateformes connectées :** {platforms}"
+  discard:
+    nothing: "Rien à ignorer : ce chat n'a aucun tour perdu lors d'un redémarrage."
+    done: "🗑️ {count} tour(s) perdu(s) ignoré(s) ; ils n'ont pas été relancés. Vos messages enregistrés vont maintenant recevoir une réponse."
   stop:
     stopped_pending: "⚡ Arrêté. L'agent n'avait pas encore commencé — vous pouvez continuer cette session."
     stopped: "⚡ Arrêté. Vous pouvez continuer cette session."
@@ -1782,6 +1786,8 @@ slash:
     description: "Importer une archive de profil partagée comme nouveau profil"
   stop:
     description: "Tuer tous les processus en arrière-plan en cours"
+  discard:
+    description: "Ignorer un tour perdu au redémarrage de Hermes pour que la file de ce chat reprenne"
   pause:
     description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; '/pause off' reprend"
   deny:
@@ -3309,6 +3315,10 @@ cli:
       usage_disconnect: "disconnect   Revenir au backend de navigateur par défaut"
       usage_status: "status       Afficher le mode de navigateur actuel"
       usage_use: "use [off]    Passer en mode Browser Use (CLI 3.0) / revenir aux outils intégrés"
+      remote_gateway: "/browser connect et /browser disconnect gèrent un navigateur Chromium sur l'hôte de la passerelle — disponible uniquement avec une passerelle locale."
+      checking: "Vérification du débogage distant du navigateur Chromium à {url}..."
+      new_sessions_only: "S'applique aux nouvelles sessions — celle-ci garde ses outils actuels (/new pour en démarrer une)."
+      status_gateway_default: "🌐 Navigateur : backend de navigateur par défaut de la passerelle (pas de connexion CDP en direct)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat en pause : {prompt}"

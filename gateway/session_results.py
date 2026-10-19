@@ -99,7 +99,7 @@ def admission_result(db, admission_id):
         return load_result(saved[0]) if saved else None
 
 
-def close_discarded_turn(db, conn, row):
+def close_discarded_turn(db, conn, row, notice=None):
     """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
     own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
 
@@ -113,7 +113,10 @@ def close_discarded_turn(db, conn, row):
     A turn lost while parked on a tool (an approval or clarify prompt) ends on its assistant
     ``tool_calls`` row with no result. That tail is open too: repair prunes the unanswered call,
     drops the now-empty row and merges the discarded input into the follower's user turn, so it
-    gets the same boundary (merged onto the call row, whose calls are then pruned)."""
+    gets the same boundary (merged onto the call row, whose calls are then pruned).
+
+    ``notice`` (an unattended automation turn settled by the owner, GW-10) replaces the hedged copy
+    and is written even on a closed tail: nobody resolved it, so the transcript must say why."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
     from hermes_state_local_lineage import local_physical_target
@@ -121,9 +124,10 @@ def close_discarded_turn(db, conn, row):
     target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
     tail = conn.execute("SELECT role, tool_calls FROM messages WHERE session_id=? AND active=1 "
                         "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
-    if tail is None or not (tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]'))):
+    if notice is None and (tail is None or not (
+            tail[0] == 'user' or (tail[0] == 'assistant' and tail[1] not in (None, '', '[]')))):
         return False
     db._append_messages_in_transaction(conn, target, [{
-        'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
+        'role': 'assistant', 'content': notice or PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
         'display_kind': FAILED_TURN_DISPLAY_KIND}])
     return True

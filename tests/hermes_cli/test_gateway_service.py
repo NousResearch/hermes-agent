@@ -1742,14 +1742,13 @@ class TestProfileArg:
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda *_a, **_k: None)
 
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
-        # The job is launched through osascript so macOS Local Network Privacy attributes the
-        # gateway's sockets to a platform binary (#71206); JXA system() waits without the
-        # Standard Additions user-cancel polling loop. The real command is the exec'd child,
-        # whose python runs through the PM installation launcher (-I -c bootstrap ...).
+        # Exercise legacy interpreter quoting; managed launchers have separate integration coverage.
+        # The actual gateway is the exec'd child of the Local Network Privacy wrapper (#71206).
         exec_argv = _osascript_exec_argv(program_args)
         assert exec_argv[-4:] == [">>", str(profile_dir / "logs" / "gateway.log"),
                                   "2>>", str(profile_dir / "logs" / "gateway.error.log")]
@@ -1769,6 +1768,7 @@ class TestProfileArg:
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(profile_dir / "bin dir" / "python"))
+        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda *_a, **_k: None)
 
         program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
         argv = _osascript_exec_argv(program_args)

@@ -23,7 +23,9 @@ from pm.environments import install_state_dir, runtime_facts_path, selected_venv
 from pm import paths
 from pm.lock import Facts
 from pm.package import InstallError
-from tests.pm._fixtures import isolated_python
+from tests.pm import _fixtures
+
+isolated_python = _fixtures.isolated_python
 
 # Spawns children with a home it builds itself; the parent's must stay real.
 pytestmark = pytest.mark.real_machine_home
@@ -362,14 +364,18 @@ def test_recorded_extra_spelled_differently_from_its_declaration_survives(source
     assert pm.venv_is_current(project_root=root)
 
 
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("mode", ["script", "module", "command"])
-def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isolated_python, mode):
-    root, store_python, worker_command = source_launch
+def _stage_launch_bootstrap(root, tmp_path, worker_command):
     repository = Path(__file__).resolve().parents[2]
-    # Copy the real bootstrap so it owns this disposable source install. The
-    # other modules remain real checkout imports; only acquisition is injected.
-    shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
+    real_bootstrap = root / "launch_bootstrap_real.py"
+    shutil.copy2(repository / "hermes_bootstrap.py", real_bootstrap)
+    # Re-entry boots before the application. Make the fixture's acquisition
+    # seam available there too; the copied production bootstrap still runs.
+    (root / "hermes_bootstrap.py").write_text(
+        "import launch_test_tools, sys\n"
+        "from importlib.machinery import SourceFileLoader\n"
+        f"SourceFileLoader(__name__, {str(real_bootstrap)!r}).exec_module(sys.modules[__name__])\n",
+        encoding="utf-8",
+    )
     (root / "launch_test_tools.py").write_text(
         "import sys\n"
         "from pathlib import Path\n"
@@ -380,6 +386,14 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
         f"pm.client.runtime_command = lambda *args, **kwargs: {worker_command!r}\n",
         encoding="utf-8",
     )
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("mode", ["script", "module", "command"])
+def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isolated_python, mode):
+    root, store_python, worker_command = source_launch
+    _stage_launch_bootstrap(root, tmp_path, worker_command)
+    repository = Path(__file__).resolve().parents[2]
     entry = root / "launch_probe.py"
     entry.write_text(
         "import launch_test_tools\n"
@@ -459,18 +473,7 @@ def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path,
     """An update whose dependency sync cannot finish (offline, bad lock) must leave a usable
     CLI on the previous generation with a warning — and a metadata query must not even try."""
     root, _store_python, worker_command = source_launch
-    repository = Path(__file__).resolve().parents[2]
-    shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
-    (root / "launch_test_tools.py").write_text(
-        "import sys\n"
-        "from pathlib import Path\n"
-        f"sys.path.insert(1, {str(repository)!r})\n"
-        "import pm.client\n"
-        "from pm import paths\n"
-        f"paths.lockfile_path = lambda: Path({str(tmp_path / 'tool-lock.json')!r})\n"
-        f"pm.client.runtime_command = lambda *args, **kwargs: {worker_command!r}\n",
-        encoding="utf-8",
-    )
+    _stage_launch_bootstrap(root, tmp_path, worker_command)
     entry = root / "launch_probe.py"
     entry.write_text(
         "import launch_test_tools\n"

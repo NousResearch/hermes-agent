@@ -14,6 +14,7 @@ plugin lands in the host log instead of corrupting the wire.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import importlib
 import importlib.metadata
@@ -553,9 +554,11 @@ def describe_profile(profile: Any) -> dict[str, Any]:
 def extract_profiles_main(path: str, module_name: str) -> int:
     """``--extract-profiles``: one-shot, credential-free; prints the profiles as JSON on stdout."""
     import json
+    # A bootstrap re-exec must happen before we duplicate and redirect the wire fds.
+    with contextlib.redirect_stdout(sys.stderr):
+        import hermes_bootstrap
     reader, writer = _take_protocol_streams()
     del reader
-    import hermes_bootstrap
     try:
         payload = {"profiles": [describe_profile(p) for p in capture_profiles(path, module_name)]}
     except Exception as exc:
@@ -566,8 +569,9 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 
 
 def main() -> int:
+    with contextlib.redirect_stdout(sys.stderr):
+        import hermes_bootstrap
     reader, writer = _take_protocol_streams()
-    import hermes_bootstrap
     logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
                         format="%(levelname)s %(name)s: %(message)s")
     runtime = HostRuntime(reader, writer)

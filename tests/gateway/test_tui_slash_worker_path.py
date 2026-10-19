@@ -19,6 +19,8 @@ from tui_gateway import server as tui_server
 class TestPrependToolPaths:
     def test_prepends_managed_venv_and_user_bin(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        # This legacy/minimal-PATH case has no PM tools; the store case is below.
+        monkeypatch.setattr("pm.install._store_path_dirs", list)
         env = {"PATH": "/usr/bin"}
         result = tui_server._prepend_tool_paths(env)
 
@@ -32,6 +34,7 @@ class TestPrependToolPaths:
 
     def test_preserves_existing_path_when_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        monkeypatch.setattr("pm.install._store_path_dirs", list)
         env = {}
         result = tui_server._prepend_tool_paths(env)
 

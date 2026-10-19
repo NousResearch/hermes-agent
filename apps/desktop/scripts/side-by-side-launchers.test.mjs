@@ -51,8 +51,10 @@ test('desktop payload exposes only identity-qualified launchers while preserving
         assert.equal(fs.readFileSync(path.join(payload, file), 'utf8'), `PE bytes for ${name}`)
         assert.ok(file.includes(cliName))
       }
-      assert.equal(fs.existsSync(path.join(payload, 'bin/hermes.exe')), false)
-      assert.equal(fs.existsSync(path.join(payload, 'bin/hermes-acp.exe')), false)
+      // The agent's terminal runs the canonical names; they are never published as aliases.
+      for (const [name, file] of Object.entries(commands)) {
+        assert.equal(fs.readFileSync(path.join(payload, file), 'utf8'), `PE bytes for ${name}`)
+      }
       assert.deepEqual(stamps.stageDesktopLaunchers(payload, { cliName }), manifest)
       const xml = appExecutionAliasExtensions(manifest.launchers)
       assert.ok(xml.includes(`Alias="${cliName}.exe"`))

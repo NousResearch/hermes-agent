@@ -27,13 +27,14 @@ client-level limits when a custom transport is supplied.
 
 import asyncio
 import socket
+import ssl
 from unittest.mock import MagicMock
 
 import httpx
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class _StopConnect(Exception):
@@ -77,7 +78,7 @@ def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
     # Skip the cross-process token lock.
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     # Ensure the adapter reports no statically-configured fallback IPs.
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
 
     if fallback_ips is not None:
         monkeypatch.setattr(adapter, "_fallback_ips", lambda: list(fallback_ips))
@@ -139,6 +140,41 @@ def _assert_updates_pool_never_reuses(instance):
     limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
     assert isinstance(limits, httpx.Limits)
     assert limits.max_keepalive_connections == 0
+
+
+def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
+    """Every client/transport _build_ptb_requests builds verifies with the one cached
+    platform-trust context — a fresh verify=True context per client reloads CAs on the
+    event loop on every reconnect (#133339)."""
+    shared = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    monkeypatch.setattr(tg_adapter, "platform_ssl_context", lambda: shared)
+    for proxy_url in ("http://127.0.0.1:9/", None):
+        instances = _drive_connect(monkeypatch, proxy_url=proxy_url)
+        assert len(instances) >= 2
+        assert all(inst.kwargs["httpx_kwargs"].get("verify") is shared for inst in instances)
+
+    instances = _drive_connect(monkeypatch, proxy_url=None, fallback_ips=["149.154.167.220"])
+    assert len(instances) >= 2
+    for inst in instances:
+        transport = inst.kwargs["httpx_kwargs"]["transport"]
+        assert transport._transport_kwargs.get("verify") is shared
+        asyncio.run(transport.aclose())
+
+    # The DoH discovery client verifies with the same context.
+    from plugins.platforms.telegram import telegram_network as tg_net
+    seen = {}
+
+    def _record_client(**kwargs):
+        seen.update(kwargs)
+        raise _StopConnect
+
+    monkeypatch.setattr(tg_net, "platform_ssl_context", lambda: shared)
+    monkeypatch.setattr(tg_net.httpx, "AsyncClient", _record_client)
+    try:
+        asyncio.run(tg_net.discover_fallback_ips())
+    except _StopConnect:
+        pass
+    assert seen.get("verify") is shared
 
 
 def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):

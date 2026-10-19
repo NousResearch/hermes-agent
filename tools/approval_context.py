@@ -15,7 +15,7 @@ from utils import env_var_enabled, is_truthy_value
 logger = logging.getLogger("tools.approval")
 
 
-def _ctx(name: str, default: "str | None" = "") -> contextvars.ContextVar:
+def _ctx(name: str, default: str | None = "") -> contextvars.ContextVar:
     return contextvars.ContextVar(name, default=default)
 
 
@@ -71,6 +71,46 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.
         logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+
+
+def gateway_approval_surface() -> str:
+    """Surface a gateway-rendered approval reports: ``cli`` for a classic CLI session's turn (main
+    prompted those in the CLI process), else ``gateway``."""
+    from hermes_cli.plugin_session import session_surface
+    return "cli" if session_surface() == "cli" else "gateway"
+
+
+# Launch sources of a local session whose viewer answers per-command prompts (classic CLI, TUI, Desktop, ACP editor).
+_LOCAL_INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "acp"})
+
+
+def is_local_interactive_session() -> bool:
+    """True for a classic CLI, TUI, Desktop or ACP session's turn, read from the launch policy the gateway
+    froze at ``session.create`` (never a per-turn client flag). Kanban, cron and forwarded routes keep
+    their own sources and stay out."""
+    try:
+        from gateway.session_policy import active_policy
+    except ImportError:  # install without the gateway package: no local session can be running
+        return False
+    policy = active_policy()
+    return policy is not None and policy.source in _LOCAL_INTERACTIVE_SOURCES
+
+
+def is_viewer_turn_with_approver() -> bool:
+    """True while the executing turn is one its session's viewer submitted through ``session.submit`` (as the
+    gateway's FIFO drain recorded for this admission) and a viewer that can answer approvals is attached now:
+    a subscriber holding ``session:approve``, the only answer the gateway's approval resolver accepts. A plugin
+    ``inject_message`` turn, a delegation completion, a background-process or watch notice, a /loop tick, a
+    heartbeat or a hosted-room task is never a viewer turn."""
+    try:
+        from gateway.session_ingress import viewer_turn
+    except ImportError:  # install without the gateway package: no admission is executing
+        return False
+    live = viewer_turn.get()
+    if live is None:
+        return False
+    with live.event_stream.lock:
+        return any("session:approve" in member.capabilities for member in live.subscribers.values())
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -146,13 +186,38 @@ def _is_unattended_platform_approval_context() -> bool:
     return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
 
 
+# Platforms where a *registered* gateway notify callback still does not mean a human can answer:
+# the generic TurnRunner lane registers one for every inbound turn
+# (``_run_conversation_with_approval`` registers unconditionally, no platform branch), while the
+# adapter renders no ``send_exec_approval``/``/approve`` surface and the inbound lane is a
+# fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
+# "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
+_NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
+
+
 def _is_single_query_approval_context() -> bool:
     """True for a single-query (-q) session: ``hermes chat -q`` exports
     ``HERMES_INTERACTIVE=1`` (so sudo password prompts work) but nobody is waiting
     to answer approvals; without this marker the gate would wait the full timeout,
     fail closed and push the agent toward workarounds (e.g. execute_code).
-    ``approvals.single_query_mode`` makes the path deterministic."""
+    ``approvals.single_query_mode`` makes the path deterministic. A gateway-admitted turn
+    carries the same fact as the submission's ``finite`` flag (``hermes -z`` / ``chat -q``
+    over the daemon): the viewer detaches on the first prompt, so nobody answers there either."""
+    try:
+        from gateway.session_finite import finite_turn_required
+    except ImportError:  # install without the gateway package: no admitted turn to carry the flag
+        pass
+    else:
+        if finite_turn_required() is True:
+            return True
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
+
+
+def _no_user_can_answer() -> bool:
+    """True in single-query (-q), cron and unattended-platform sessions. `hermes chat -q` still registers the
+    CLI panel callback, so a prompt that only checks for a callback would wait the full timeout for nobody."""
+    return (_is_single_query_approval_context() or _is_cron_approval_context()
+            or _is_unattended_platform_approval_context())
 
 
 def _is_gateway_approval_context() -> bool:
@@ -304,18 +369,6 @@ def _get_unattended_approval_mode() -> str:
     deny — an unattended session never silently runs a flagged action unless the
     operator explicitly trusts it."""
     return _binary_approval_mode("unattended_mode")
-
-
-def _tirith_fail_open() -> bool:
-    """``security.tirith_fail_open`` (default True; True when config is unreadable).
-    False means the operator opted into fail-closed: an un-importable scanner
-    must not silently grant access."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        _sec = (load_config_readonly() or {}).get("security", {}) or {}
-        return bool(_sec.get("tirith_fail_open", True)) if _sec.get("tirith_enabled", True) else True
-    except Exception:
-        return True
 
 
 def _get_approval_transport_config() -> tuple[str, str | None]:

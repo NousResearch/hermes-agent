@@ -14,7 +14,7 @@ class ProviderTransport(ABC):
 
     # Provider stop_reason -> OpenAI finish_reason. ``None`` means the provider
     # already speaks OpenAI vocabulary and map_finish_reason passes through.
-    _STOP_REASON_MAP: Optional[Dict[str, str]] = None
+    _STOP_REASON_MAP: Optional[dict[str, str]] = None
 
     @property
     @abstractmethod
@@ -22,18 +22,18 @@ class ProviderTransport(ABC):
         """The api_mode string this transport handles (e.g. 'anthropic_messages')."""
 
     @abstractmethod
-    def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
+    def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI-format messages to the provider-native structure (e.g. (system, messages) for Anthropic)."""
 
     @abstractmethod
-    def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
+    def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI-format tool definitions to provider-native format."""
 
     @abstractmethod
     def build_kwargs(
-        self, model: str, messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None, **params,
-    ) -> Dict[str, Any]:
+        self, model: str, messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None, **params,
+    ) -> dict[str, Any]:
         """Primary entry point: convert messages/tools and return kwargs ready for the provider SDK."""
 
     @abstractmethod
@@ -44,7 +44,7 @@ class ProviderTransport(ABC):
         """Optional structural validity check; default accepts everything."""
         return True
 
-    def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:
+    def extract_cache_stats(self, response: Any) -> Optional[dict[str, int]]:
         """Optional: ``{'cached_tokens', 'creation_tokens'}`` or None (default)."""
         return None
 

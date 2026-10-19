@@ -1829,20 +1829,50 @@ def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
     return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
 
 
-def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
+def apply_model_selection(model_cfg: Any, result: ModelSwitchResult, *, mask_cleared: bool = False) -> dict:
     """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
-    callers that save a whole config document they are already mutating."""
-    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg))
+    callers that save a whole config document they are already mutating.
+
+    ``mask_cleared``: a key the switch clears that *model_cfg* holds is set to ``None`` instead of
+    removed. For a document saved to Remote Config, where *model_cfg* is the EFFECTIVE block and
+    a removal only drops the profile override, so an upper level's old-endpoint ``api_key`` /
+    ``key_env`` / ``context_length`` would still apply at the new endpoint (contract §5.4: a
+    stored null is "no value"). The same rule :func:`persist_model_selection` applies."""
+    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg),
+                                    mask_cleared=mask_cleared)
 
 
-def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any]) -> dict:
+def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any], *, mask_cleared: bool = False) -> dict:
     model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
     for key, value in updates.items():
-        if value is None:
+        if value is None and not (mask_cleared and key in model_cfg):
             model_cfg.pop(key, None)
         else:
             model_cfg[key] = value
     return model_cfg
+
+
+def remote_model_selection_guard(before: Any, after: Any) -> None:
+    """Remote Config: refuse a whole-document model assignment when any ``model.*`` key it
+    changes is locked by an upper level. A bulk save omits a locked key instead of raising, which
+    would land the rest of the route (a new endpoint with the old provider, say) half-applied;
+    :func:`persist_model_selection` gets the same all-or-nothing refusal from its one keyed write.
+    No-op for the file backend."""
+    from hermes_cli.config_backend import ConfigLockedError, get_config_backend, supports_file_tooling
+    if supports_file_tooling():
+        return
+    from hermes_constants import get_hermes_home
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    backend, home = get_config_backend(), get_hermes_home()
+    for key in sorted(set(before) | set(after)):
+        if before.get(key, _MISSING) != after.get(key, _MISSING):
+            level = backend.locked(home, f"model.{key}")
+            if level:
+                raise ConfigLockedError(f"model.{key}", level)
+
+
+_MISSING = object()
 
 
 def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
@@ -1874,9 +1904,10 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         # still holds is therefore masked with null ("no value"); an absent one is just unset.
         from hermes_cli.config_backend import Changes, write_changes
         held = planned_from if isinstance(planned_from, dict) else {}
+        masked = _merge_selection_updates(held, updates, mask_cleared=True)
         write_changes(path, Changes(
-            set={f"model.{k}": v for k, v in updates.items() if v is not None or k in held},
-            unset=tuple(f"model.{k}" for k, v in updates.items() if v is None and k not in held)))
+            set={f"model.{k}": masked[k] for k in updates if k in masked},
+            unset=tuple(f"model.{k}" for k in updates if k not in masked)))
         return
     with _CONFIG_LOCK:
         config = read_user_config_raw(path)

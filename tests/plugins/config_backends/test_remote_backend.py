@@ -1701,3 +1701,68 @@ def test_model_switch_masks_inherited_endpoint_credentials(plane, monkeypatch):
     model = read_user_config_raw()["model"]
     assert model["base_url"] == "https://new.example/v1"
     assert all(model.get(k) is None for k in ("api_key", "key_env", "api_key_env", "context_length")), model
+
+
+def test_poll_between_read_and_atomic_config_write_sends_only_the_callers_edit(plane, monkeypatch):
+    """Same schedule through ``atomic_config_write`` (``/verbose``, ``/footer``): its no-omission
+    guard read must not become the base the caller's stale document is diffed against."""
+    from gateway import slash_commands as sc
+    plane.profile("default").update(values={"display": {"personality": "concise", "compact": False}}, version=1)
+    backend = get_config_backend()
+    orig = sc.atomic_config_write
+
+    def poll_before_write(path, doc):
+        p = plane.profile("default")
+        p["values"]["display"]["compact"] = True
+        p["version"] += 1
+        assert backend.poll_one(backend._state(plane.home))
+        return orig(path, doc)
+
+    monkeypatch.setattr(sc, "atomic_config_write", poll_before_write)
+    sc._write_raw_config_leaf(plane.home / "config.yaml", ("display", "personality"), "pirate")
+    bodies = [r["body"] for r in plane.patches()]
+    assert len(bodies) == 1 and bodies[0]["set"] == {"display.personality": "pirate"}, bodies
+    assert plane.profile("default")["values"]["display"] == {"personality": "pirate", "compact": True}
+
+
+def _dashboard_switch(monkeypatch, url):
+    import asyncio
+    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_cli.web_models import ModelAssignment
+    from hermes_cli.web_routers import models
+    result = ModelSwitchResult(success=True, new_model="new", target_provider="custom", provider_changed=True,
+                               base_url=url, api_mode="chat_completions", is_global=True)
+    monkeypatch.setattr(models, "_dashboard_code_skew_guard", lambda: None)
+    monkeypatch.setattr(models, "_prepare_main_assignment", lambda *a, **kw: (url, result))
+    return asyncio.run(models.set_model_assignment(ModelAssignment(
+        scope="main", provider="custom", model="new", base_url=url, confirm_expensive_model=True)))
+
+
+_OLD_ROUTE = {"default": "old", "provider": "custom:old", "base_url": "https://old.example/v1",
+              "api_key": "${OLD_KEY}", "key_env": "OLD_KEY", "api_key_env": "OLD_KEY", "context_length": 123456}
+
+
+def test_dashboard_model_switch_masks_inherited_endpoint_credentials(plane, monkeypatch):
+    """POST /api/model/set saves the whole document. Under Remote Config its model block is the
+    effective one, so the endpoint-bound keys it clears must be masked (null), not dropped from
+    the profile, or the old endpoint's key would reach the new endpoint."""
+    from hermes_cli.config import read_user_config_raw
+    url = "https://new.example/v1"
+    plane.upper = {"model": dict(_OLD_ROUTE), "providers": {"known-new": {"base_url": url}}}
+    assert _dashboard_switch(monkeypatch, url)["ok"] is True
+    model = read_user_config_raw()["model"]
+    assert model["base_url"] == url
+    assert all(model.get(k) is None for k in ("api_key", "key_env", "api_key_env", "context_length")), model
+
+
+def test_dashboard_model_switch_refuses_whole_assignment_on_a_locked_route_key(plane, monkeypatch):
+    """A lock on one route key refuses the dashboard assignment entirely (409/403), like
+    persist_model_selection: nothing is sent, so the old route stays whole."""
+    from fastapi import HTTPException
+    url = "https://new.example/v1"
+    plane.upper = {"model": dict(_OLD_ROUTE), "providers": {"known-new": {"base_url": url}}}
+    plane.upper_locks = [{"path": "model.base_url", "level": "tenant"}]
+    with pytest.raises(HTTPException) as exc:
+        _dashboard_switch(monkeypatch, url)
+    assert exc.value.status_code in (403, 409), exc.value
+    assert plane.patches() == []

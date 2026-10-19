@@ -314,6 +314,53 @@ def test_migration_recursion_still_sees_its_private_copy(plane, monkeypatch):
     assert plane.patches() == []
 
 
+class _Transport:
+    def __init__(self):
+        self.frames, self.done = [], threading.Event()
+
+    def write(self, obj):
+        self.frames.append(obj)
+        self.done.set()
+        return True
+
+    def close(self):
+        pass
+
+
+def _configure(server, rid, **params):
+    import json
+    t = _Transport()
+    ret = server.dispatch({"jsonrpc": "2.0", "id": rid, "method": "profiles.configure",
+                           "params": {"name": "default", **params}}, t)
+    if ret is not None:
+        t.write(ret)
+    assert t.done.wait(10), "no terminal response"
+    return json.loads(json.dumps(t.frames[-1]))["result"]
+
+
+def test_profile_editor_reports_mcp_unapplied_when_legacy_disabled_cleanup_is_locked(plane, monkeypatch):
+    """Enabling an MCP server writes ``enabled: true`` AND drops the legacy ``disabled``. When a
+    lock keeps ``disabled: true``, the editor (which honours ``disabled``) still shows the server
+    off, so the edit must not be acknowledged; unlocked, it lands and the editor agrees."""
+    from hermes_cli.config import read_user_config_raw
+    from tui_gateway.methods_profiles import _mcp_entry_enabled
+    plane.upper = {"mcp_servers": {"example": {"command": "unused", "enabled": False}}}
+    plane.profile("default")["values"] = {"mcp_servers": {"example": {"disabled": True}}}
+    plane.upper_locks = [{"path": "mcp_servers.example.disabled", "level": "tenant"}]
+    server = _tui_server(monkeypatch, plane.home)
+
+    locked = _configure(server, 1, enabled_mcp_servers=["example"])
+    assert locked["applied"]["mcp_servers"] is False and locked["ok"] is False, locked
+    assert _mcp_entry_enabled(read_user_config_raw()["mcp_servers"]["example"]) is False
+
+    plane.upper_locks = []
+    backend = get_config_backend()
+    backend.poll_one(backend._state(plane.home))
+    unlocked = _configure(server, 2, enabled_mcp_servers=["example"])
+    assert unlocked["applied"]["mcp_servers"] is True and unlocked["ok"] is True, unlocked
+    assert _mcp_entry_enabled(read_user_config_raw()["mcp_servers"]["example"]) is True
+
+
 def test_profile_editor_reports_a_locked_skills_edit_as_not_applied(plane, monkeypatch):
     """``profiles.configure`` saves its sections through bulk ``save_config``, which omits a
     Remote Config lock instead of raising. The editor must report that section unapplied, not

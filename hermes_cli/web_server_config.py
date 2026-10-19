@@ -517,12 +517,17 @@ def _apply_main_model_assignment(model_cfg: Any, result: "ModelSwitchResult", ap
     dropped so a stale secret cannot shadow it.
 
     Returns a new dict."""
-    from hermes_cli.model_switch import apply_model_selection
+    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
 
-    model_cfg = apply_model_selection(model_cfg, result)
+    before = model_cfg
+    # Remote Config: the caller saves the effective block as a whole document, so a cleared
+    # inherited key must be masked (null), and a locked route key refuses the whole assignment.
+    model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
+    remote_model_selection_guard(before, model_cfg)
     return model_cfg
 
 

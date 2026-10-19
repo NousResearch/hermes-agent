@@ -27,6 +27,11 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     return bool(host) and (host == "ollama.com" or host.endswith(".ollama.com") or "ollama" in host.split("."))
 
 
+def _always_thinks(model: str | None) -> bool:
+    """Models that reject ``reasoning_effort: "none"`` (MiniMax-M3.1-Flash via any OpenAI-compatible host)."""
+    return str(model or "").strip().lower().rsplit("/", 1)[-1] == "minimax-m3.1-flash"
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -71,8 +76,8 @@ class CustomProfile(ProviderProfile):
         if reasoning_config and isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
             if effort == "none" or reasoning_config.get("enabled", True) is False:
-                # See #14820.
-                top_level["reasoning_effort"] = "none"
+                # See #14820. MiniMax-M3.1-Flash always thinks and 400s on "none", so it gets its lowest level.
+                top_level["reasoning_effort"] = "low" if _always_thinks(ctx.get("model")) else "none"
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
             elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):

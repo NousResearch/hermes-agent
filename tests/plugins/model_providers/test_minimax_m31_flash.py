@@ -27,3 +27,16 @@ def test_openai_route_never_disables_thinking():
     extra, _ = profile.build_api_kwargs_extras(
         reasoning_config={"enabled": False}, model="MiniMax-M3", **kwargs)
     assert extra["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("reasoning_config", [{"enabled": False}, {"enabled": True, "effort": "none"}])
+def test_custom_route_never_sends_effort_none(reasoning_config):
+    import providers
+
+    profile = providers.get_provider_profile("custom")
+    _, top = profile.build_api_kwargs_extras(
+        reasoning_config=reasoning_config, model="MiniMax-M3.1-Flash", base_url="https://api.minimaxi.com/v1")
+    assert top == {"reasoning_effort": "low"}
+    _, top = profile.build_api_kwargs_extras(
+        reasoning_config=reasoning_config, model="MiniMax-M3", base_url="https://api.minimaxi.com/v1")
+    assert top == {"reasoning_effort": "none"}

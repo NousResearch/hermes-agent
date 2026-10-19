@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
+    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug` chun an achoimre a uaslódáil."
   deny:
     stale: "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
     no_pending: "Níl aon ordú ag fanacht le diúltú."
@@ -445,6 +446,9 @@ gateway:
     state_no: "Níl"
     queued: "**Tascanna i scuaine:** {count}"
     platforms: "**Ardáin Cheangailte:** {platforms}"
+  discard:
+    nothing: "Níl aon rud le caitheamh amach: níl aon seal caillte ag an gcomhrá seo i n-atosú."
+    done: "🗑️ Caitheadh amach {count} seal caillte; níor ritheadh arís iad. Freagrófar do theachtaireachtaí sábháilte anois."
   stop:
     stopped_pending: "⚡ Stoptha. Ní raibh an gníomhaire tosaithe fós — is féidir leat leanúint leis an seisiún seo."
     stopped: "⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo."
@@ -1530,6 +1534,8 @@ slash:
     description: "Iompórtáil cartlann próifíle roinnte mar phróifíl nua"
   stop:
     description: "Maraigh gach próiseas cúlra atá ag rith"
+  discard:
+    description: "Caith amach seal a cailleadh nuair a atosaíodh Hermes ionas go ritheann scuaine an chomhrá seo arís"
   pause:
     description: "Cuir obair nua ar sos go domhanda (stop éigeandála); atosaíonn '/pause off' í"
   deny:
@@ -1683,6 +1689,21 @@ slash:
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
+  modern:
+    thought_for: "Smaoinigh ar feadh {seconds}s"
+    thought: "Smaoinigh"
+    working: "Ag obair…"
+    preparing: "{what} á ullmhú…"
+    hint_steer: "stiúir"
+    hint_queue: "cuir sa scuaine"
+    hint_interrupt: "cuir isteach air"
+    hint_stop: "stop"
+    hint_commands: "orduithe"
+    hint_files: "comhaid"
+    hint_shell: "blaosc"
+    placeholder_busy_steer: "clóscríobh chun an seal seo a stiúradh · cuireann Tab sa scuaine é"
+    placeholder_busy_interrupt: "clóscríobh chun an seal seo a atreorú · cuireann Tab sa scuaine é"
+    placeholder_busy_queue: "clóscríobh chun teachtaireacht a chur sa scuaine don tréimhse ina dhiaidh"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Níorbh fhéidir an bhilleáil a lódáil"
@@ -2226,6 +2247,7 @@ cli:
     queue_heading: "Scuaine · {count} i scuaine · /queue list{controls}"
     more_queued: "+{count} eile"
     transcript_unavailable: "Níl an traschríbhinn bheo ar fáil fós."
+    control_pending: "Á sheoladh…"
     steer_prompt: "Stiúir: "
     roster_empty: "Níl aon fho-ghníomhairí beo ná próisis chúlra ann. Tagann na torthaí isteach sa chomhrá."
     entry_gone: "Níl an iontráil seo beo a thuilleadh."
@@ -3004,6 +3026,10 @@ cli:
       usage_disconnect: "disconnect   Fill ar inneall brabhsálaí réamhshocraithe"
       usage_status: "status       Taispeáin mód reatha an bhrabhsálaí"
       usage_use: "use [off]    Athraigh go mód Browser Use (CLI 3.0) / ar ais go huirlisí ionsuite"
+      remote_gateway: "Bainistíonn /browser connect agus /browser disconnect brabhsálaí Chromium ar óstach an gheata — ar fáil ach amháin le geata áitiúil."
+      checking: "Ag seiceáil dífhabhtú cianda an bhrabhsálaí Chromium ag {url}..."
+      new_sessions_only: "Baineann sé le seisiúin nua — coinníonn an ceann seo a uirlisí reatha (/new chun ceann a thosú)."
+      status_gateway_default: "🌐 Brabhsálaí: inneall réamhshocraithe brabhsálaí an gheata (gan nasc beo CDP)"
     heartbeat:
       label: "Buillí croí"
       paused: "⏸ Buille croí curtha ar sos: {prompt}"

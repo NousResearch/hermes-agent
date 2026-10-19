@@ -107,6 +107,7 @@ def navigate(task, url):
 
 
 def test_two_real_tasks_keep_pins_and_terminal_cleanup_separate(owned_browser):
+    from hermes_constants import hermes_home_key
     from tools import browser_tool as browser
     from tools.browser_tool_lifecycle import cleanup_browser
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
@@ -116,6 +117,7 @@ def test_two_real_tasks_keep_pins_and_terminal_cleanup_separate(owned_browser):
     tasks.extend([first, second])
     original = set(chrome.targets())
     a, b = navigate(first, url), navigate(second, url)
+    assert browser._active_sessions[first]['home_key'] == hermes_home_key()
     assert a != b and {a, b}.isdisjoint(original)
     supervisor = SUPERVISOR_REGISTRY.get(first)
     assert supervisor is not None and supervisor.target_id == a
@@ -169,3 +171,42 @@ def test_actual_filesystem_failure_still_finalizes_only_its_browser_task(owned_b
             stream.read()
     assert first not in browser._active_sessions
     assert a not in chrome.targets() and b in chrome.targets()
+
+
+def test_real_profile_shutdown_preserves_the_other_profile_supervisor(owned_browser, tmp_path):
+    from hermes_cli.config import atomic_config_write
+    from hermes_constants import hermes_home_key, set_hermes_home_override
+    from tools import browser_tool as browser
+    from tools.browser_tool_lifecycle import cleanup_profile_browsers
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    chrome, url, tasks = owned_browser
+    first_task, second_task = 'profile-a-' + uuid4().hex, 'profile-b-' + uuid4().hex
+    tasks.extend([first_task, second_task])
+    first_home = hermes_home_key()
+    first_page = navigate(first_task, url)
+    first_capture = SUPERVISOR_REGISTRY.capture(first_task)
+    other_home = tmp_path / 'second-profile'
+    other_home.mkdir()
+    atomic_config_write(other_home / 'config.yaml', {
+        'terminal': {'backend': 'local'}, 'lsp': {'enabled': False},
+        'browser': {'allow_private_urls': True, 'cdp_url': chrome.root},
+    })
+    previous = os.environ.get('HERMES_HOME')
+    os.environ['HERMES_HOME'] = str(other_home)
+    token = set_hermes_home_override(other_home)
+    with ExitStack() as resources:
+        resources.callback(restore_home, token, previous)
+        second_home = hermes_home_key()
+        assert second_home != first_home
+        second_page = navigate(second_task, url)
+        second = SUPERVISOR_REGISTRY.get(second_task)
+        second_capture = SUPERVISOR_REGISTRY.capture(second_task)
+        cleanup_profile_browsers(first_home)
+        assert SUPERVISOR_REGISTRY.get(first_task) is None and not first_capture.is_valid()
+        assert SUPERVISOR_REGISTRY.get(second_task) is second and second_capture.is_valid()
+        assert second.evaluate_runtime('location.href')['result'] == url
+        assert first_page not in chrome.targets() and second_page in chrome.targets()
+        assert first_task not in browser._active_sessions and second_task in browser._active_sessions
+        cleanup_profile_browsers(second_home)
+        assert SUPERVISOR_REGISTRY.get(second_task) is None and not second_capture.is_valid()

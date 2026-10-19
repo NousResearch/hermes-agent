@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Для загрузки полных журналов используйте `hermes debug share` из CLI."
     share_hint: "Поделитесь этими ссылками с командой Hermes для получения поддержки."
     report_label: "Отчёт"
+    local_refused: "`/debug local` оставляет отчёт на машине, где работает Hermes, поэтому недоступна из чата. Отправьте `/debug`, чтобы загрузить краткий отчёт."
   deny:
     stale: "❌ Команда отклонена (одобрение устарело)."
     no_pending: "Нет команды для отклонения."
@@ -445,6 +446,9 @@ gateway:
     state_no: "Нет"
     queued: "**Очередь продолжений:** {count}"
     platforms: "**Подключённые платформы:** {platforms}"
+  discard:
+    nothing: "Нечего отбрасывать: в этом чате нет хода, потерянного при перезапуске."
+    done: "🗑️ Отброшено потерянных ходов: {count}; они не выполнялись повторно. Сейчас будут даны ответы на сохранённые сообщения."
   stop:
     stopped_pending: "⚡ Остановлено. Агент ещё не начинал — вы можете продолжить этот сеанс."
     stopped: "⚡ Остановлено. Вы можете продолжить этот сеанс."
@@ -1530,6 +1534,8 @@ slash:
     description: "Импортировать общий архив профиля как новый профиль"
   stop:
     description: "Завершить все запущенные фоновые процессы"
+  discard:
+    description: "Отбросить ход, потерянный при перезапуске Hermes, чтобы очередь этого чата продолжилась"
   pause:
     description: "Приостановить всю новую работу (аварийная остановка); '/pause off' возобновляет"
   deny:
@@ -1683,6 +1689,21 @@ slash:
   quit:
     description: "Выйти из CLI (с --delete также удаляется история сеанса)"
 cli:
+  modern:
+    thought_for: "Размышлял {seconds} с"
+    thought: "Размышлял"
+    working: "Работаю…"
+    preparing: "Готовлю {what}…"
+    hint_steer: "направить"
+    hint_queue: "в очередь"
+    hint_interrupt: "прервать"
+    hint_stop: "стоп"
+    hint_commands: "команды"
+    hint_files: "файлы"
+    hint_shell: "shell"
+    placeholder_busy_steer: "пишите, чтобы направить этот ход · Tab ставит в очередь на потом"
+    placeholder_busy_interrupt: "пишите, чтобы перенаправить этот ход · Tab ставит в очередь на потом"
+    placeholder_busy_queue: "пишите, чтобы поставить сообщение в очередь после этого хода"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Не удалось загрузить данные биллинга"
@@ -2226,6 +2247,7 @@ cli:
     queue_heading: "Очередь · в очереди: {count} · /queue list{controls}"
     more_queued: "+{count} ещё"
     transcript_unavailable: "Живой транскрипт пока недоступен."
+    control_pending: "Отправка…"
     steer_prompt: "Корректировка: "
     roster_empty: "Нет активных подагентов или фоновых процессов. Результаты появятся в разговоре."
     entry_gone: "Эта запись больше не активна."
@@ -3004,6 +3026,10 @@ cli:
       usage_disconnect: "disconnect   Вернуться к браузерному бэкенду по умолчанию"
       usage_status: "status       Показать текущий режим браузера"
       usage_use: "use [off]    Переключиться в режим Browser Use (CLI 3.0) / обратно к встроенным инструментам"
+      remote_gateway: "/browser connect и /browser disconnect управляют браузером Chromium на хосте шлюза — доступно только при подключении к локальному шлюзу."
+      checking: "Проверка удалённой отладки браузера Chromium по адресу {url}..."
+      new_sessions_only: "Применяется к новым сеансам — этот сохраняет текущие инструменты (/new, чтобы начать новый)."
+      status_gateway_default: "🌐 Браузер: стандартный браузер шлюза (нет активного CDP-подключения)"
     heartbeat:
       label: "Heartbeat"
       paused: "⏸ Heartbeat приостановлен: {prompt}"

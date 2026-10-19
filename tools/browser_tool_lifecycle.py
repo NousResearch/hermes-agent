@@ -1404,6 +1404,25 @@ def _cleanup_single_browser_session(task_id: str) -> bool:
     return provider_closed
 
 
+def cleanup_profile_browsers(home_key: str) -> None:
+    """Close one profile home's browser sessions, CDP supervisors and harness daemons, and drop its
+    cached config slots (``/browser connect`` on a multiplexed gateway). Other profiles' browsers stay."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_use_cli import stop_harness_daemons
+
+    with _bt._cleanup_lock:
+        task_ids = [task for task, info in _bt._active_sessions.items() if info.get("home_key") == home_key]
+    for task_id in task_ids:
+        if not cleanup_browser(task_id):
+            raise RuntimeError(f"Browser cleanup remains pending for task {task_id}")
+    SUPERVISOR_REGISTRY.stop_home(home_key)
+    stop_harness_daemons(home_key)
+    for cache in ("_cached_command_timeout", "_cached_snapshot_threshold"):
+        cached = getattr(_bt, cache)
+        if cached is not None:
+            cached.pop(home_key, None)
+
+
 def cleanup_all_browsers() -> None:
     """Clean up all active browser sessions (shutdown) and reset cached lookups."""
     with _bt._cleanup_lock:

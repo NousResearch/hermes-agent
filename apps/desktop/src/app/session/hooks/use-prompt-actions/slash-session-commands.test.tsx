@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -73,6 +74,15 @@ const queuedTexts = () =>
     .map(entry => entry.text)
 
 const canonical = () => $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
+
+// The shared owner's typed refusal of a rewind while a turn runs, as the wire delivers it.
+const BUSY = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
+
+// The same refusal while another writer holds the compression lock: Stop does not end it.
+const COMPRESSING = new JsonRpcGatewayError('session_busy', {
+  code: 4001,
+  data: { field: 'compression', reason: 'session_busy' }
+})
 
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
@@ -158,6 +168,31 @@ describe('/undo on a canonical session', () => {
     expect(callsOf(requestGateway, 'session.rewind')).toEqual([])
     expect(renderedText(handle)).toContain(copy.undoNothing)
   })
+
+  it('refuses during a running turn with main’s stop-first guidance, leaving the composer alone', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        throw BUSY
+      }
+    })
+
+    publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
+    setComposerDraft('half-typed follow-up')
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(renderedText(handle)).toContain('Stop the current reply first')
+    expect(renderedText(handle)).toContain('then run /undo')
+    expect(renderedText(handle)).not.toContain('error: session_busy')
+    expect($composerDraft.get()).toBe('half-typed follow-up')
+    expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
+    expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    expect(queuedTexts()).toEqual([])
+  })
 })
 
 describe('/retry on a canonical session', () => {
@@ -200,6 +235,77 @@ describe('/retry on a canonical session', () => {
     expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
     expect(renderedText(handle)).toContain(copy.retryUnsupported)
   })
+
+  it('refuses during a running turn with main’s stop-first guidance and resubmits nothing', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        throw BUSY
+      }
+    })
+
+    publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
+    const handle = await mount(requestGateway)
+    await handle.submitText('/retry')
+
+    expect(renderedText(handle)).toContain('Stop the current reply first')
+    expect(renderedText(handle)).toContain('then run /retry')
+    expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
+    expect(queuedTexts()).toEqual([])
+  })
+})
+
+describe('/undo and /retry while a compression holds the session', () => {
+  beforeEach(canonical)
+
+  for (const command of ['undo', 'retry'] as const) {
+    it(`/${command} says to wait for the compression instead of pressing Stop`, async () => {
+      const requestGateway = gateway(method => {
+        if (method === 'session.resume') {
+          return SNAPSHOT
+        }
+
+        if (method === 'session.rewind') {
+          throw COMPRESSING
+        }
+      })
+
+      const handle = await mount(requestGateway)
+      await handle.submitText(`/${command}`)
+
+      expect(renderedText(handle)).toContain(`a /compress is running; run /${command} when it finishes`)
+      expect(renderedText(handle)).not.toContain('Stop the current reply first')
+      expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
+      expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    })
+  }
+
+  it('keeps the wait text for a busy refusal only, not another refusal naming the same field', async () => {
+    const other = new JsonRpcGatewayError('invalid_params', {
+      code: 4001,
+      data: { field: 'compression', reason: 'invalid_params' }
+    })
+
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        throw other
+      }
+    })
+
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(renderedText(handle)).toContain('error: invalid_params')
+    expect(renderedText(handle)).not.toContain('a /compress is running')
+  })
 })
 
 describe('/steer', () => {
@@ -216,6 +322,32 @@ describe('/steer', () => {
     expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
     expect(queuedTexts()).toEqual([])
     expect(renderedText(handle)).toContain(copy.steerQueued('check the tests too'))
+  })
+
+  it('seals the live reply at the steer notice, keeping its running tool live', async () => {
+    const requestGateway = gateway(method => (method === 'session.steer' ? { status: 'queued' } : undefined))
+    const tool = { type: 'tool-call', toolCallId: 't1', toolName: 'terminal', args: {}, argsText: '{}', timestamp: 2 }
+    const live = { id: 'stream-1', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'before', timestamp: 1 }, tool] }
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[live]}
+        seedStreamId="stream-1"
+      />
+    )
+    publishSessionState(RUNTIME_SESSION_ID, { ...handle!.state(), busy: true })
+
+    await handle!.submitText('/steer use the other file')
+
+    // The next delta (the model's answer to the steer) seeds a bubble BELOW the notice.
+    const { messages, streamId } = handle!.state()
+    expect(streamId).toBeNull()
+    expect(messages.map(message => message.id).indexOf('stream-1')).toBe(0)
+    expect(renderedText(handle!)).toContain(copy.steerQueued('use the other file'))
+    expect(messages[0]).toMatchObject({ pending: true, parts: [expect.anything(), tool] })
   })
 
   it('queues the text as the next turn when the steer is not accepted', async () => {

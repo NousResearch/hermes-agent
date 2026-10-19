@@ -167,6 +167,7 @@ gateway:
     full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug` parancsot az összefoglaló jelentés feltöltéséhez."
   deny:
     stale: "❌ Parancs elutasítva (a jóváhagyás elavult)."
     no_pending: "Nincs elutasítható függőben lévő parancs."
@@ -448,6 +449,9 @@ gateway:
     state_no: "Nem"
     queued: "**Sorban álló folytatások:** {count}"
     platforms: "**Csatlakoztatott platformok:** {platforms}"
+  discard:
+    nothing: "Nincs mit elvetni: ebben a csevegésben nem veszett el kör újraindításkor."
+    done: "🗑️ {count} elveszett kör elvetve; nem futottak újra. A mentett üzeneteidre most válasz érkezik."
   stop:
     stopped_pending: "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
     stopped: "⚡ Leállítva. Folytathatod ezt a munkamenetet."
@@ -1547,6 +1551,8 @@ slash:
     description: "Megosztott profilarchívum importálása új profilként"
   stop:
     description: "Minden futó háttérfolyamat leállítása"
+  discard:
+    description: "Egy Hermes újraindításakor elveszett kör elvetése, hogy a csevegés sora újra fusson"
   pause:
     description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:
@@ -1700,6 +1706,21 @@ slash:
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:
+  modern:
+    thought_for: "{seconds} mp-ig gondolkodott"
+    thought: "Gondolkodott"
+    working: "Dolgozik…"
+    preparing: "{what} előkészítése…"
+    hint_steer: "terelés"
+    hint_queue: "sorba"
+    hint_interrupt: "megszakítás"
+    hint_stop: "leállítás"
+    hint_commands: "parancsok"
+    hint_files: "fájlok"
+    hint_shell: "shell"
+    placeholder_busy_steer: "írj, hogy tereld ezt a kört · Tab sorba állítja utánra"
+    placeholder_busy_interrupt: "írj, hogy átirányítsd ezt a kört · Tab sorba állítja utánra"
+    placeholder_busy_queue: "írj, hogy üzenetet állíts sorba e kör utánra"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Nem sikerült betölteni a számlázást"
@@ -2243,6 +2264,7 @@ cli:
     queue_heading: "Sor · {count} sorban · /queue list{controls}"
     more_queued: "+{count} további"
     transcript_unavailable: "Élő átirat még nem érhető el."
+    control_pending: "Küldés…"
     steer_prompt: "Irányítás: "
     roster_empty: "Nincs élő alügynök vagy háttérfolyamat. Az eredmények a beszélgetésben érkeznek."
     entry_gone: "Ez a bejegyzés már nem élő."
@@ -3021,6 +3043,10 @@ cli:
       usage_disconnect: "disconnect   Visszaállás az alapértelmezett böngésző-háttérrendszerre"
       usage_status: "status       Jelenlegi böngészőmód megjelenítése"
       usage_use: "use [off]    Átváltás Browser Use módra (CLI 3.0) / vissza a beépített eszközökre"
+      remote_gateway: "A /browser connect és /browser disconnect egy Chromium böngészőt kezel az átjáró gépén — csak helyi átjáróval érhető el."
+      checking: "A Chromium böngésző távoli hibakeresésének ellenőrzése: {url}..."
+      new_sessions_only: "Új munkamenetekre vonatkozik — ez megtartja a jelenlegi eszközeit (/new újat indít)."
+      status_gateway_default: "🌐 Böngésző: az átjáró alapértelmezett böngésző-háttere (nincs élő CDP-kapcsolat)"
     heartbeat:
       label: "Szívverések"
       paused: "⏸ Szívverés szüneteltetve: {prompt}"

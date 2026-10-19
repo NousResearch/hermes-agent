@@ -649,10 +649,14 @@ class GatewayAgent:
     def _take_turn_route(self):
         """The ``/model --once`` pick for the admission being built, consumed here: one admission carries
         it, even when a later ``run_conversation`` submits while this one's ``prompt.submit`` still blocks.
-        A refusal that admitted nothing (``session_busy``) puts it back with ``_give_back_turn_route``."""
+        A refusal that admitted nothing (``session_busy``) puts it back with ``_give_back_turn_route``.
+
+        Staging already compared the pick with the session's route (``_route_off_session``), so it is not
+        compared again: its ``model`` may be an alias spelled like the session's model, and the owner runs a
+        plain pick of the session's own route on the session's endpoint and key (``one_turn_runtime``)."""
         pending, reasoning = self._turn_route, self._turn_reasoning
         self._turn_route = self._turn_reasoning = self._taken_turn_route = None
-        if not pending or not self._route_off_session(**pending):
+        if not pending:
             return None
         self._taken_turn_route = (pending, reasoning)
         return {**pending, **({"reasoning": reasoning} if reasoning else {})}
@@ -927,8 +931,10 @@ class GatewayAgent:
         diff = payload.get("inline_diff")
         if isinstance(diff, str) and diff:
             from cli import _cprint
+            from hermes_cli.cli_modern_layout import diff_printer
+            emit = diff_printer(_cprint)
             for line in diff.rstrip("\n").splitlines():
-                _cprint(line)
+                emit(line)
             if name == "delegate_task" and self.tool_complete_callback is not None:
                 self.tool_complete_callback(call_id, name, args, result)
         elif self.tool_complete_callback is not None:
@@ -1145,7 +1151,11 @@ class GatewayAgent:
             return out
         self._session_messages = out["messages"]
         calls = stored.get("api_calls")
-        self._turn_api_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else None
+        # An interrupted turn's own count includes the attempt Ctrl-C cut off (the agent counts a call
+        # before the request goes out). Only a response prices the ask: fall back to the gateway's
+        # cumulative count, which moves per response, so an unanswered ask stays main's ``~`` estimate.
+        counted = isinstance(calls, int) and not isinstance(calls, bool) and not out.get("interrupted")
+        self._turn_api_calls = calls if counted else None
         self._apply_usage(stored, usage, turn)
         return out
 

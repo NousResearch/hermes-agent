@@ -613,6 +613,7 @@ class _SupervisorRegistry:
         self._by_task: dict[str, CDPSupervisor] = {}
         self._generation: dict[str, int] = {}
         self._starting: dict[str, list[CDPSupervisor]] = {}
+        self._home_by_task: dict[str, str] = {}  # profile home that started it (``stop_home``)
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
@@ -623,6 +624,7 @@ class _SupervisorRegistry:
             if self._by_task.get(task_id) is not expected:
                 return None
             self._generation[task_id] = self._generation.get(task_id, 0) + 1
+            self._home_by_task.pop(task_id, None)
             return self._by_task.pop(task_id, None)
 
     def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
@@ -630,6 +632,30 @@ class _SupervisorRegistry:
         from tools.browser_supervisor_capture import capture
 
         return capture(self, task_id, timeout=timeout)
+
+    def _forget_starter_locked(self, task_id: str, supervisor: CDPSupervisor) -> None:
+        starters = self._starting.get(task_id, [])
+        if supervisor in starters:
+            starters.remove(supervisor)
+        if not starters:
+            self._starting.pop(task_id, None)
+            if task_id not in self._by_task:
+                self._home_by_task.pop(task_id, None)
+
+    def _retire_locked(self, task_id: str) -> list[CDPSupervisor]:
+        self._generation[task_id] = self._generation.get(task_id, 0) + 1
+        self._home_by_task.pop(task_id, None)
+        supervisor = self._by_task.pop(task_id, None)
+        starters = list(self._starting.pop(task_id, ()))
+        return ([supervisor] if supervisor is not None else []) + starters
+
+    @staticmethod
+    def _stop_supervisors(supervisors: list[CDPSupervisor]) -> None:
+        seen: set[int] = set()
+        for supervisor in supervisors:
+            if id(supervisor) not in seen:
+                seen.add(id(supervisor))
+                supervisor.stop()
 
     def get_or_start(
         self,
@@ -643,6 +669,8 @@ class _SupervisorRegistry:
         publish_guard: Optional[Callable[[], bool]] = None,
     ) -> CDPSupervisor:
         """Ensure one healthy supervisor for an exact task/url/target binding."""
+        from hermes_constants import hermes_home_key
+        home = hermes_home_key()
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
@@ -674,6 +702,7 @@ class _SupervisorRegistry:
             self._by_task.pop(task_id, None)
             start_generation = self._generation.get(task_id, 0)
             self._starting.setdefault(task_id, []).append(supervisor)
+            self._home_by_task[task_id] = home
 
         try:
             if existing is not None:
@@ -681,22 +710,14 @@ class _SupervisorRegistry:
             supervisor.start(timeout=start_timeout)
         except BaseException:
             with self._lock:
-                starters = self._starting.get(task_id, [])
-                if supervisor in starters:
-                    starters.remove(supervisor)
-                if not starters:
-                    self._starting.pop(task_id, None)
+                self._forget_starter_locked(task_id, supervisor)
             supervisor.stop()
             raise
 
         duplicate: Optional[CDPSupervisor] = None
         displaced: Optional[CDPSupervisor] = None
         with self._lock:
-            starters = self._starting.get(task_id, [])
-            if supervisor in starters:
-                starters.remove(supervisor)
-            if not starters:
-                self._starting.pop(task_id, None)
+            self._forget_starter_locked(task_id, supervisor)
 
             stale_start = self._generation.get(task_id, 0) != start_generation
             if not stale_start and publish_guard is not None:
@@ -713,6 +734,7 @@ class _SupervisorRegistry:
             else:
                 displaced = already
                 self._by_task[task_id] = supervisor
+                self._home_by_task[task_id] = home
 
         # stop() may block; never call it while holding the registry lock.
         if stale_start:
@@ -728,40 +750,22 @@ class _SupervisorRegistry:
     def stop(self, task_id: str) -> None:
         """Fence, stop, and discard published or in-flight supervisors."""
         with self._lock:
-            self._generation[task_id] = self._generation.get(task_id, 0) + 1
-            supervisor = self._by_task.pop(task_id, None)
-            starters = list(self._starting.get(task_id, ()))
-        seen: set[int] = set()
-        for item in ([supervisor] if supervisor is not None else []) + starters:
-            if id(item) in seen:
-                continue
-            seen.add(id(item))
-            item.stop()
+            supervisors = self._retire_locked(task_id)
+        self._stop_supervisors(supervisors)
+
+    def stop_home(self, home_key: str) -> None:
+        """Stop the supervisors one profile home started (``/browser connect`` on a multiplexed gateway)."""
+        with self._lock:
+            tasks = [task for task, home in self._home_by_task.items() if home == home_key]
+            supervisors = [supervisor for task_id in tasks for supervisor in self._retire_locked(task_id)]
+        self._stop_supervisors(supervisors)
 
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
-            items = list(self._by_task.items())
-            self._by_task.clear()
-            starters = [
-                (task_id, supervisor)
-                for task_id, supervisors in self._starting.items()
-                for supervisor in supervisors
-            ]
-            self._starting.clear()
-            # The first starter may have neither a generation entry nor a
-            # published supervisor yet. Fence the captured starter task IDs
-            # even after the live starter map has been cleared.
-            for task_id in set(self._generation) | {
-                task_id for task_id, _ in items + starters
-            }:
-                self._generation[task_id] = self._generation.get(task_id, 0) + 1
-        seen: set[int] = set()
-        for _, supervisor in items + starters:
-            if id(supervisor) in seen:
-                continue
-            seen.add(id(supervisor))
-            supervisor.stop()
+            tasks = set(self._generation) | set(self._by_task) | set(self._starting)
+            supervisors = [supervisor for task_id in tasks for supervisor in self._retire_locked(task_id)]
+        self._stop_supervisors(supervisors)
 
 
 SUPERVISOR_REGISTRY = _SupervisorRegistry()

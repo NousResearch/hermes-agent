@@ -69,8 +69,20 @@ NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
 #: Alibaba DashScope OpenAI-compatible mode (Model Studio): ``extra_body.enable_thinking``
-#: plus a top-level ``reasoning_effort`` that must agree with it (issue #137174).
-DASHSCOPE_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+#: plus a top-level ``reasoning_effort`` that must agree with it (issue #137174). The
+#: vocabulary is per family, live-verified on the CN compatible-mode endpoint (PR #137308
+#: review, 2026-10-19): Qwen speaks plain low/medium/high (and honors the disable pair);
+#: DashScope-hosted DeepSeek and Kimi-K3 additionally accept ``max`` — and ``xhigh``, but
+#: they then run *below* medium, so it maps to the declared top tier ``max`` instead of
+#: clamping to ``high``; DashScope-hosted ``glm-5*`` rejects ``medium`` outright
+#: (``'reasoning_effort' must be one of: 'low', 'high', 'max'``) and its thinking cannot
+#: be disabled at all (``enable_thinking: false`` → ``restricted to True``), so it keeps
+#: the Ox-Alpha-style ladder with forced-on thinking.
+DASHSCOPE_QWEN_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+DASHSCOPE_DEEPSEEK_KIMI_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
+DASHSCOPE_DEEPSEEK_KIMI_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+DASHSCOPE_GLM_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+DASHSCOPE_GLM_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
@@ -266,6 +278,27 @@ def dashscope_preserve_thinking_extras(model: Optional[str]) -> dict:
     if m.startswith("glm-5"):
         return {"clear_thinking": False}
     return {}
+
+
+def dashscope_efforts_for(model: Optional[str]) -> tuple[tuple[str, ...], Optional[dict[str, str]]]:
+    """``(supported, overrides)`` a DashScope-hosted family accepts on the compatible-mode wire.
+
+    DeepSeek and the Kimi K3 aliases DashScope hosts take the widened low..max ladder;
+    ``glm-5*`` (detected the same way as :func:`dashscope_preserve_thinking_extras`)
+    takes low/high/max. Everything else — Qwen and unmeasured families — keeps the plain
+    three-level default rather than guessing a wider set for them.
+    """
+    m = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if m.startswith("deepseek") or _KIMI_K3_SLUG_RE.search(m):
+        return DASHSCOPE_DEEPSEEK_KIMI_EFFORTS, DASHSCOPE_DEEPSEEK_KIMI_OVERRIDES
+    if m.startswith("glm-5"):
+        return DASHSCOPE_GLM_EFFORTS, DASHSCOPE_GLM_OVERRIDES
+    return DASHSCOPE_QWEN_EFFORTS, None
+
+
+def dashscope_forced_thinking(model: Optional[str]) -> bool:
+    """Whether a DashScope-hosted family cannot turn thinking off at all (``glm-5*``)."""
+    return (model or "").strip().lower().rsplit("/", 1)[-1].startswith("glm-5")
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:

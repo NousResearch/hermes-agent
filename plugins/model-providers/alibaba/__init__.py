@@ -7,7 +7,12 @@ and ``model.provider: alibaba-cn`` resolves at runtime.
 
 from typing import Any
 
-from agent.reasoning_effort import DASHSCOPE_EFFORTS, clamp_effort, dashscope_preserve_thinking_extras
+from agent.reasoning_effort import (
+    clamp_effort,
+    dashscope_efforts_for,
+    dashscope_forced_thinking,
+    dashscope_preserve_thinking_extras,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -20,7 +25,12 @@ class DashScopeProfile(ProviderProfile):
     ``agent.reasoning_effort`` silent no-ops (#137174). Thinking rides on two fields
     that must agree — ``extra_body.enable_thinking`` plus a top-level
     ``reasoning_effort`` — otherwise DashScope answers HTTP 400 (``'reasoning_effort'
-    must be 'none' when 'enable_thinking' is false``)."""
+    must be 'none' when 'enable_thinking' is false``).
+
+    The effort vocabulary is per family, not global: DashScope hosts DeepSeek/Kimi K3
+    (low..max) and glm-5* (low/high/max, no medium, thinking cannot be disabled) beside
+    Qwen, and one shared tuple would either collapse accepted levels or 400 GLM on the
+    Hermes-default ``medium`` (#137308 review measurements)."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context: Any
@@ -28,12 +38,18 @@ class DashScopeProfile(ProviderProfile):
         extra_body = dashscope_preserve_thinking_extras(model)
         if not isinstance(reasoning_config, dict):
             return extra_body, {}
+        efforts, overrides = dashscope_efforts_for(model)
         effort = str(reasoning_config.get("effort") or "").strip().lower()
         if reasoning_config.get("enabled", True) is False or effort in {"none", "false", "disabled"}:
+            if dashscope_forced_thinking(model):
+                # glm-5* 400s on enable_thinking: false (restricted to True) and has no
+                # "none" level; forced-on at its weakest tier is the closest honest ask.
+                extra_body["enable_thinking"] = True
+                return extra_body, {"reasoning_effort": "low"}
             extra_body["enable_thinking"] = False
             return extra_body, {"reasoning_effort": "none"}
-        clamped = clamp_effort(effort, DASHSCOPE_EFFORTS)
-        if clamped in DASHSCOPE_EFFORTS:
+        clamped = clamp_effort(effort, efforts, overrides)
+        if clamped in efforts:
             extra_body["enable_thinking"] = True
             return extra_body, {"reasoning_effort": clamped}
         return extra_body, {}

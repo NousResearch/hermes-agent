@@ -14,7 +14,9 @@ import agent.auxiliary_client as aux
 from agent.aux_accounting import reset_accounting_context, set_accounting_context
 from agent.usage_pricing import PricingEntry, normalize_usage
 from hermes_state import SessionDB
-from tests.agent.test_compressor_runtime_handoff import MODEL, URL, compress, response_bytes, wire
+from tests.agent.test_compressor_runtime_handoff import MODEL, URL, compress, response_bytes
+
+pytest_plugins = ["tests.agent.test_compressor_runtime_handoff"]
 
 
 def _cache_details_reported(usage) -> bool:
@@ -36,8 +38,8 @@ def accounting(tmp_path, monkeypatch):
     db.update_token_counts("usage-session", input_tokens=10, output_tokens=2,
                            model=MODEL, billing_provider="custom", api_call_count=1)
     token = set_accounting_context(db, "usage-session")
-    rates = PricingEntry(input_cost_per_million=Decimal("2"),
-                         output_cost_per_million=Decimal("10"),
+    rates = PricingEntry(input_cost_per_million=Decimal(2),
+                         output_cost_per_million=Decimal(10),
                          cache_read_cost_per_million=Decimal("0.5"),
                          cache_write_cost_per_million=Decimal("2.5"), source="official_docs_snapshot")
     monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: rates)

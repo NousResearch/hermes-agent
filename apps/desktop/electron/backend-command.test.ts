@@ -109,6 +109,14 @@ test('serveBackendArgs drops a profile value that is not a valid profile id', ()
 test('serveBackendArgs keeps a valid profile id pinned, normalized like the CLI', () => {
   assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
   assert.deepEqual(serveBackendArgs('a-1_b'), ['--profile', 'a-1_b', 'serve', '--host', '127.0.0.1', '--port', '0'])
-  assert.deepEqual(serveBackendArgs('  Worker  '), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
+  assert.deepEqual(serveBackendArgs('  Worker  '), [
+    '--profile',
+    'worker',
+    'serve',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
   assert.deepEqual(serveBackendArgs('default'), ['--profile', 'default', 'serve', '--host', '127.0.0.1', '--port', '0'])
 })

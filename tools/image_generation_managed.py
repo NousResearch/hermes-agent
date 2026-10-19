@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
 FAL, KREA, PORTAL = "fal", "krea", "portal"
 
 # Portal ids that are the same model as a FAL or Krea catalog entry. FAL wins (it is the
@@ -47,6 +49,21 @@ def managed_backend_for_model(model_id: Optional[str]) -> str:
     return PORTAL
 
 
+def managed_route(provider: Any, model_id: Any) -> Optional[str]:
+    """Gateway a request is dispatched to for the stored ``image_gen.provider`` / ``image_gen.model``
+    (raw config values; blank or non-string reads as unset).
+
+    ``None`` when a direct/BYO provider owns the request. A Portal id reaches the Portal only under
+    an explicit ``nous`` pick; with the provider unset it stays on the in-tree FAL path."""
+    provider, model_id = (v.strip() if isinstance(v, str) and v.strip() else None for v in (provider, model_id))
+    if provider is not None and provider != NOUS_MANAGED_PROVIDER:
+        return None
+    backend = managed_backend_for_model(model_id)
+    if backend == PORTAL and provider != NOUS_MANAGED_PROVIDER:
+        return FAL
+    return backend
+
+
 def _plugin_rows(name: str) -> list:
     """``list_models()`` of a registered image gen plugin; ``[]`` when unavailable."""
     from tools.image_generation_tool import _get_plugin_provider
@@ -54,13 +71,13 @@ def _plugin_rows(name: str) -> list:
     try:
         provider = _get_plugin_provider(name)
         return list(provider.list_models() or []) if provider is not None else []
-    except Exception:  # noqa: BLE001 - a broken plugin must not empty the whole picker
+    except Exception:
         return []
 
 
 def managed_image_catalog(
     *, include_krea: bool = True, include_portal: bool = True,
-) -> Tuple[Dict[str, Dict[str, Any]], str]:
+) -> tuple[dict[str, dict[str, Any]], str]:
     """``({model_id: metadata}, default_model)`` for the managed row's model picker.
 
     FAL catalog first (minus the Krea-on-FAL entries), then native Krea, then Portal models
@@ -69,7 +86,7 @@ def managed_image_catalog(
     """
     from tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
 
-    catalog: Dict[str, Dict[str, Any]] = {
+    catalog: dict[str, dict[str, Any]] = {
         mid: {**meta, "backend": FAL} for mid, meta in FAL_MODELS.items()
         if not mid.startswith(_FAL_KREA_PREFIX)}
     if include_krea:

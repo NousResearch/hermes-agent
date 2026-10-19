@@ -10,7 +10,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +29,10 @@ from .shared_metrics_contract import (
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )
+from .shared_metrics_drift import conform_counter_dimensions, counter_dimensions_shape_is_known
 
 
-_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v3"
+_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v4"
 _STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
@@ -156,11 +157,11 @@ logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _isoformat(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _compact_json(value: Any) -> str:
@@ -552,10 +553,10 @@ class SharedMetricsStore:
     @staticmethod
     def _parse_state_timestamp(value: Any) -> datetime | None:
         try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(str(value))
         except (TypeError, ValueError):
             return None
-        return None if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        return None if parsed.tzinfo is None else parsed.astimezone(UTC)
 
     def _create_pending_packages_if_due(self) -> None:
         now = _utc_now()
@@ -600,9 +601,13 @@ class SharedMetricsStore:
                 """,
             (period_value, *resource_values),
         ).fetchall()
-        period_start = datetime.fromisoformat(str(period_value)).replace(tzinfo=timezone.utc)
+        period_start = datetime.fromisoformat(str(period_value)).replace(tzinfo=UTC)
         if not client_resource_is_valid(resource):
             raise ValueError("Unsupported shared-metrics client resource")
+        metrics = self._package_metrics(rows)
+        if not metrics:  # every row was a retired value with no bucket: settle them, try the next period
+            self._mark_packaged(connection, rows, period_value, resource_values)
+            return self._create_package_in_transaction(connection, now)
         payload = {
             "schema_version": _PACKAGE_SCHEMA_VERSION,
             "package_id": str(uuid.uuid4()),
@@ -611,7 +616,7 @@ class SharedMetricsStore:
             "period_end": _isoformat(period_start + timedelta(days=1)),
             "generated_at": _isoformat(now),
             "resource": resource,
-            "metrics": [self._package_metric(row) for row in rows],
+            "metrics": metrics,
         }
         connection.execute(
             "INSERT INTO package_outbox( package_id, period_start, period_end, payload_json,"
@@ -629,6 +634,13 @@ class SharedMetricsStore:
             " ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)",
             (payload["period_end"],),
         )
+        self._mark_packaged(connection, rows, period_value, resource_values)
+        return payload
+
+    @staticmethod
+    def _mark_packaged(
+        connection: sqlite3.Connection, rows: list[sqlite3.Row], period_value: str, resource_values: tuple,
+    ) -> None:
         for row in rows:
             connection.execute(
                 """
@@ -639,16 +651,42 @@ class SharedMetricsStore:
                     """,
                 (period_value, row["metric_name"], *resource_values, row["dimensions_json"]),
             )
-        return payload
+
+    @classmethod
+    def _package_metrics(cls, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+        """Package rows, merging rows a re-bucket folded onto the same dimensions into one metric."""
+        merged: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            metric = cls._package_metric(row)
+            if metric is None:
+                continue
+            key = (metric["name"], _compact_json(metric["dimensions"]))
+            if key in merged:
+                merged[key]["value"] += metric["value"]
+            else:
+                merged[key] = metric
+        return list(merged.values())
 
     @staticmethod
-    def _package_metric(row: sqlite3.Row) -> dict[str, Any]:
+    def _package_metric(row: sqlite3.Row) -> dict[str, Any] | None:
         metric_name = str(row["metric_name"])
         dimensions = json.loads(row["dimensions_json"])
-        if not isinstance(dimensions, dict) or not counter_dimensions_are_valid(
-            metric_name, dimensions
-        ):
+        # An unknown field set is tamper evidence and fails closed (must-not-be-exported). A known
+        # shape whose values fell out of the contract was recorded by an earlier build or catalog
+        # (#133017): re-bucket it inside the closed enum, or leave the row out when its field has no
+        # bucket, rather than abort the whole period's package. Either way no stale value leaves.
+        if not isinstance(dimensions, dict) or not counter_dimensions_shape_is_known(metric_name, dimensions):
             raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
+        if not counter_dimensions_are_valid(metric_name, dimensions):
+            conformed = conform_counter_dimensions(metric_name, dimensions)
+            if conformed is None:
+                logger.info("Shared-metric %s row holds a retired value with no bucket; not packaged", metric_name)
+                return None
+            logger.info(
+                "Shared-metric %s row drifted out of the contract since it was recorded; "
+                "packaged with bucketed dimensions %s", metric_name, _compact_json(conformed),
+            )
+            dimensions = conformed
         return {
             "name": metric_name, "type": "counter", "dimensions": dimensions,
             "value": row["value"] - row["packaged_value"],

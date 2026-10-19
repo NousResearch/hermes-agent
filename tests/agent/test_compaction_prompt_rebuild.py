@@ -79,7 +79,7 @@ def _init_repo(path, first_commit):
     (path / "main.py").write_text("print(1)\n")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-qm", first_commit], cwd=path, check=True)
-    return path
+    return path.resolve()
 
 
 
@@ -280,6 +280,58 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                  patch("agent.system_prompt.resolve_context_cwd", return_value=other):
                 moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
                 self.assertIn(f"- Root: {other}", build_system_prompt(moved))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_symlink_cwd_reuses_the_workspace_pin(self):
+        """A real directory alias must not refresh the snapshot during compression."""
+        import os, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-alias-")).resolve()
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            alias = tmp / "alias"
+            alias.symlink_to(repo, target_is_directory=True)
+            os.chdir(repo)
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    original = build_system_prompt(agent)
+                self.assertIn("Status: clean", original)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    self.assertEqual(build_system_prompt(agent), original)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_resume_accepts_a_persisted_cwd_alias(self):
+        """A stored logical cwd and its physical directory identify the same session root."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-resumed-alias-")).resolve()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            alias = tmp / "alias"
+            alias.symlink_to(repo, target_is_directory=True)
+            hints = f"Host: x\nUser home directory: /h\nCurrent working directory: {alias}"
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value=hints):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    stored = build_system_prompt(self._pin_agent())
+                self.assertIn("Status: clean", stored)
+                (repo / "untracked.txt").write_text("wip\n")
+                db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                    self.assertEqual(build_system_prompt(resumed), stored)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

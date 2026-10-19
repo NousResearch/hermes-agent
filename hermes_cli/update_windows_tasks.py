@@ -19,6 +19,10 @@ from xml.etree import ElementTree
 from hermes_cli.gateway_windows_task_control import process_is_system
 
 
+# Task queries exceeded 20 seconds under parallel ARM64 CI load.
+_TASK_TIMEOUT_S = 60
+
+
 _TASK_SCRIPT = r"""$ErrorActionPreference = 'Stop'
 $r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REQUEST__')) | ConvertFrom-Json
 try {
@@ -97,19 +101,28 @@ def task_operation(name: str, operation: str, expected: str = "") -> str | None:
         script = _TASK_SCRIPT.replace("__REQUEST__", data)
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
-        result = subprocess.run(
-            [*command, *args],
-            timeout=20,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=windows_hide_flags(),
-        )
+        try:
+            result = subprocess.run(
+                [*command, *args],
+                timeout=_TASK_TIMEOUT_S,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TaskOperationError(
+                124,
+                f"Gateway task {name} {operation} timed out after {_TASK_TIMEOUT_S}s",
+            ) from exc
         code = result.returncode
         detail = ""
         if code == 5:
             code, detail = _shell_execute_elevated_and_wait(
-                command[0], subprocess.list2cmdline(args), cwd=scratch, timeout_s=20
+                command[0],
+                subprocess.list2cmdline(args),
+                cwd=scratch,
+                timeout_s=_TASK_TIMEOUT_S,
             )
         if code == 2 and operation == "query":
             return None

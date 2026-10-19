@@ -135,13 +135,15 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
 
 
 def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
-    """``● Read calc.py  0.2s`` / ``✗ Ran $ pytest -q  0.4s [exit 1]`` — one row per completed call."""
+    """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
+    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed."""
     from agent.display import get_tool_row_parts
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
     out = []
-    for index, (verb, detail, suffix) in enumerate(rows):
+    for index, (emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
-        line = f"{f'{_RED}✗{_RST}' if suffix is not None else '●'} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
+        mark = f"{_RED}✗{_RST}" if suffix is not None else (emoji or "●")
+        line = f"{mark} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
         if detail:
             line += f" {detail}"
         if index == len(rows) - 1 and duration >= 0.1:

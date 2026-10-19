@@ -9,7 +9,7 @@ import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
-import { ruPluginSettings } from './ru_plugins'
+import { ruPluginSettings, ruSkillsPlugins } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
@@ -1464,9 +1464,7 @@ export const ruOverrides = {
     source: 'Источник'
   },
   skills: {
-    plugins: {
-      pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
-    },
+    plugins: ruSkillsPlugins,
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',

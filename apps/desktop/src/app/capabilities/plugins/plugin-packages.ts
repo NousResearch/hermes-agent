@@ -1,4 +1,5 @@
 import type { PluginRecord } from '@/contrib/plugins-store'
+import type { Translations } from '@/i18n'
 import type { AgentPluginRow } from '@/store/agent-plugins'
 
 /**
@@ -145,4 +146,27 @@ export function mergePluginPackages(
 
     return a.name.localeCompare(b.name)
   })
+}
+
+/** Only what lives under the profile's plugins dir ("user", or "git" when it
+ *  was cloned there) can be uninstalled here: bundled plugins are refused by
+ *  the backend and entrypoint (pip-installed) ones go with their package. */
+export function isAgentRemovable(agent: AgentPluginRow | null): boolean {
+  return agent?.source === 'user' || agent?.source === 'git'
+}
+
+/** A plain git install (no catalog sidecar, no --ref pin) has no pin to compare
+ *  against, so it always offers Update; the backend answers `unchanged` when
+ *  there is nothing new. Catalog rows only offer it when the pin moved. */
+export function isAgentUpdatable(agent: AgentPluginRow | null): boolean {
+  return Boolean(
+    agent && (agent.update_available || (isAgentRemovable(agent) && !agent.catalog_name && !agent.pinned_sha))
+  )
+}
+
+/** The Update button's label: the catalog pin it moves to, or a plain "Update". */
+export function agentUpdateLabel(agent: AgentPluginRow, p: Translations['skills']['plugins']): string {
+  return agent.update_available
+    ? p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')
+    : p.update
 }

@@ -54,7 +54,14 @@ import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
-import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
+import {
+  agentUpdateLabel,
+  isAgentRemovable,
+  isAgentUpdatable,
+  mergePluginPackages,
+  type PackageKind,
+  type PluginPackage
+} from './plugin-packages'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
@@ -293,10 +300,9 @@ function PackageRow({
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
-  // Only what lives under the profile's plugins dir ("user", or "git" when it
-  // was cloned there) can be uninstalled here: bundled plugins are refused by
-  // the backend and entrypoint (pip-installed) ones go with their package.
-  const agentRemovable = agent?.source === 'user' || agent?.source === 'git'
+  const agentRemovable = isAgentRemovable(agent)
+  const agentUpdatable = isAgentUpdatable(agent)
+
   const unavailableServers = agent?.servers?.filter(server => server.state !== 'connected') ?? []
   // A STANDALONE desktop plugin (a folder in <HERMES_HOME>/desktop-plugins with
   // no agent package behind it) is deleted by Electron. A unified package's
@@ -483,7 +489,7 @@ function PackageRow({
         <HalfCell label={p.halfAgentIn(scopeLabel)}>
           {agent ? (
             <>
-              {agent.update_available && (
+              {agentUpdatable && (
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
                   disabled={busy}
@@ -491,7 +497,7 @@ function PackageRow({
                   size="xs"
                   variant="outline"
                 >
-                  {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
+                  {agentUpdateLabel(agent, p)}
                 </Button>
               )}
               {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
@@ -777,6 +783,8 @@ export const PluginsTab = memo(function PluginsTab({
                     if (outcome.kind === 'applied') {
                       notify({ kind: 'success', message: p.updated(row.name) })
                       void rescanAll(requestGateway, scope)
+                    } else if (outcome.kind === 'unchanged') {
+                      notify({ kind: 'info', message: p.upToDate(row.name) })
                     }
                   }
 
@@ -788,11 +796,12 @@ export const PluginsTab = memo(function PluginsTab({
                         return
                       }
 
-                      // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                      // half); the backend changed nothing until the user confirms the delta.
+                      // The security scan flagged the new code, or a new catalog pin widens the
+                      // plugin (tools, hooks, deps, capabilities, a Desktop half). The backend
+                      // changed nothing until the user confirms what it listed.
                       const ok = await confirm({
                         confirmLabel: p.updateConsentConfirm,
-                        description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                        description: [p.updateConsentBody(row.name), ...outcome.deltaLines].join('\n'),
                         title: p.updateConsentTitle(row.name)
                       })
 

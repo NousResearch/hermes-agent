@@ -14,7 +14,13 @@ export const arCapabilities = {
   },
   skills: {
     plugins: {
-      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
+      pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.',
+      update: 'تحديث',
+      updated: (name: string) => `تم تحديث ${name}. أعد تشغيل البوابة لتطبيقه.`,
+      upToDate: (name: string) => `${name} محدّث بالفعل.`,
+      updateConsentTitle: (name: string) => `${name} يحتاج إلى موافقتك`,
+      updateConsentBody: (name: string) => `يجلب تحديث ${name} تغييرات يجب مراجعتها. طبّقه فقط إذا كنت تثق بالمصدر:`,
+      updateConsentConfirm: 'تطبيق التحديث'
     },
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',

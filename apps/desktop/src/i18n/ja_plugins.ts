@@ -41,3 +41,15 @@ export const jaPluginSettings = {
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>
+
+/** Japanese copy for the Skills ▸ Plugins tab; `skills.plugins`, composed by ja.ts. */
+export const jaSkillsPlugins: NonNullable<NonNullable<TranslationOverrides['skills']>['plugins']> = {
+  pageBlurb: 'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。',
+  update: '更新',
+  updated: (name: string) => `${name} を更新しました。反映するにはゲートウェイを再起動してください。`,
+  upToDate: (name: string) => `${name} はすでに最新です。`,
+  updateConsentTitle: (name: string) => `${name} の更新には確認が必要です`,
+  updateConsentBody: (name: string) =>
+    `${name} の更新には確認すべき変更が含まれています。提供元を信頼できる場合にのみ適用してください:`,
+  updateConsentConfirm: '更新を適用'
+}

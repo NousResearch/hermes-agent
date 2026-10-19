@@ -12,6 +12,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhSkillsPlugins } from './zh_skills_plugins'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
@@ -2081,63 +2082,7 @@ export const zhOverrides = {
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
-    plugins: {
-      agentTitle: 'Agent 插件',
-      agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
-      pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
-      halfDesktop: '桌面',
-      halfDesktopHint: '本应用，所有配置相同',
-      halfAgent: 'Agent',
-      halfAgentIn: (profile: string) => `${profile} 中的 Agent`,
-      defaultProfile: 'Hermes（默认）',
-      kindAgent: 'Agent',
-      kindDesktop: '桌面',
-      kindBoth: 'Agent + 桌面',
-      installAgentHere: '在此安装',
-      installAgentHereTip: (profile: string) =>
-        `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
-      installAgentHereNoOrigin:
-        '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
-      desktopHalfPending: '复制中…',
-      desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
-      desktopHalfRemote: '不可用（远程后端）',
-      desktopHalfRemoteTip:
-        '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
-      emptyAll: '还没有插件。',
-      empty: '此配置尚未安装任何 agent 插件。',
-      emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
-      loadFailed: '无法加载 agent 插件',
-      toggleFailed: (name: string) => `无法切换 ${name}`,
-      legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
-      portableBadge: '便携',
-      catalogTitle: '插件目录',
-      catalogBrowse: '浏览',
-      catalogHide: '隐藏目录浏览器',
-      catalogHint:
-        '点击任意插件上的「+ Add to this Agent」— 经过审核的条目会以其固定提交安装到所选配置。捆绑的 agent+桌面插件会同时提供两部分。',
-      alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
-      catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
-      pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
-      pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      updateToPin: (sha: string) => `更新到 ${sha}`,
-      updateFailed: (name: string) => `无法更新 ${name}`,
-      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
-      uninstall: '卸载',
-      uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
-      uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
-      uninstallConfirmBody: (name: string, profile: string) =>
-        `这将从 ${profile} 配置中删除该插件的文件。它附带的桌面部分也会一并移除。之后可随时从目录或 Git 重新安装。`,
-      uninstallFailed: (name: string) => `无法卸载 ${name}`,
-      uninstalled: (name: string) => `${name} 已卸载。重启网关后完全卸载。`,
-      uninstallDesktopTip: (name: string) => `从本应用卸载 ${name}`,
-      uninstallDesktopConfirmBody: (name: string) =>
-        `这将从本机的 desktop-plugins 文件夹中删除 ${name} 并立即卸载。之后可随时从 Git 重新安装或将文件夹放回。`,
-      uninstalledDesktop: (name: string) => `${name} 已卸载。`,
-      deepLinkErrorTitle: '插件安装链接已拒绝',
-      deepLinkCatalogInvalidName: '链接中的目录名称缺失或无效。',
-      deepLinkCatalogUnknown: (name: string) => `“${name}”不在 Hermes 插件目录中。未安装任何内容。`,
-      deepLinkCatalogUnavailable: '无法加载 Hermes 插件目录。请检查网络连接后重新打开链接。'
-    },
+    plugins: zhSkillsPlugins,
     officialCatalog: '可安装',
     officialPill: '官方',
     hub: {

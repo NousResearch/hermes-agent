@@ -4674,6 +4674,8 @@
     "skills.plugins.uninstallTip",
     "skills.plugins.uninstalled",
     "skills.plugins.uninstalledDesktop",
+    "skills.plugins.upToDate",
+    "skills.plugins.update",
     "skills.plugins.updateConsentBody",
     "skills.plugins.updateConsentConfirm",
     "skills.plugins.updateConsentTitle",

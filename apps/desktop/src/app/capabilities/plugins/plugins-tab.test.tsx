@@ -633,6 +633,30 @@ describe('PluginsTab catalog UX', () => {
     )
   })
 
+  it('offers Update on a plain git install with no catalog pin and sends plugins.manage update', async () => {
+    $agentPlugins.set([
+      { description: '', key: 'my-tool', name: 'my-tool', source: 'git', status: 'enabled', version: '0.1.0' },
+      { description: '', key: 'pip-tool', name: 'pip-tool', source: 'entrypoint', status: 'enabled', version: '' }
+    ])
+    requestGateway.mockResolvedValue({ ok: true, unchanged: true, plugins: [] } as never)
+
+    render(<PluginsTab profile="workbot" />)
+
+    // Only the install that lives in the profile's plugins dir can be updated here.
+    expect(screen.getAllByRole('button', { name: 'Update' })).toHaveLength(1)
+    screen.getByRole('button', { name: 'Update' }).click()
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'update', name: 'my-tool', profile: 'workbot' })
+      )
+    )
+    await waitFor(() =>
+      expect($notifications.get().some(n => n.message === 'my-tool is already up to date.')).toBe(true)
+    )
+  })
+
   it('uninstalls through plugins.manage remove only after the confirm dialog is accepted', async () => {
     $agentPlugins.set([
       {

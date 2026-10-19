@@ -3,7 +3,13 @@ import type { TranslationOverrides } from './define-locale'
 export const zhHantCapabilities = {
   skills: {
     plugins: {
-      pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。'
+      pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。',
+      update: '更新',
+      updated: (name: string) => `${name} 已更新。重新啟動閘道後生效。`,
+      upToDate: (name: string) => `${name} 已是最新版本。`,
+      updateConsentTitle: (name: string) => `${name} 需要你的確認`,
+      updateConsentBody: (name: string) => `更新 ${name} 會帶來你應該審查的變更。僅在你信任其來源時才套用：`,
+      updateConsentConfirm: '套用更新'
     },
     hub: {
       search: '搜尋',

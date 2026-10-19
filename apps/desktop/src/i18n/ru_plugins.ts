@@ -77,3 +77,15 @@ export const ruPluginSettings = {
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>
+
+/** Russian copy for the Skills ▸ Plugins tab; `skills.plugins`, composed by ru.ts. */
+export const ruSkillsPlugins: NonNullable<NonNullable<TranslationOverrides['skills']>['plugins']> = {
+  pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.',
+  update: 'Обновить',
+  updated: (name: string) => `${name} обновлён. Перезапустите шлюз, чтобы применить.`,
+  upToDate: (name: string) => `${name} уже обновлён до последней версии.`,
+  updateConsentTitle: (name: string) => `${name} ждёт вашего подтверждения`,
+  updateConsentBody: (name: string) =>
+    `Обновление ${name} приносит изменения, которые стоит проверить. Применяйте его, только если доверяете источнику:`,
+  updateConsentConfirm: 'Применить обновление'
+}

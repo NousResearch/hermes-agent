@@ -361,17 +361,21 @@ export async function installAgentPlugin(
   }
 }
 
-/** Outcome of `updateAgentPlugin`: `applied` when the re-pin landed, `unchanged`
- *  when already at pin, `consent` when the new pin widens the plugin — the
- *  backend changed nothing and waits for `acceptCapabilities`. */
+/** Outcome of `updateAgentPlugin`: `applied` when new code landed, `unchanged`
+ *  when there was nothing new, `consent` when the security scan flagged the
+ *  update or a new catalog pin widens the plugin. On `consent` the backend
+ *  changed nothing and waits for `acceptCapabilities`; `sha` may be '' (a scan
+ *  block on a git install has none). */
 export type AgentPluginUpdateOutcome =
   { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
 
-/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
- *  `plugins.manage update`; catalog installs only). Refreshes the list on
- *  success. A pin that adds tools / hooks / deps / capabilities / a Desktop half
- *  comes back as `consent` with the delta; the caller confirms and retries with
- *  `acceptCapabilities`. */
+/** Update a user-installed plugin (backend `plugins.manage update`): a catalog
+ *  install moves to the current catalog pin, a git install pulls its source.
+ *  Refreshes the list on success. Scan findings, or a pin that adds tools /
+ *  hooks / deps / capabilities / a Desktop half, come back as `consent` with
+ *  their lines; the caller confirms and retries with `acceptCapabilities`.
+ *  The retry sends `accept_capabilities` rather than `force` because older
+ *  backends only know that field; newer ones treat both as yes. */
 export async function updateAgentPlugin(
   request: GatewayRequest,
   name: string,

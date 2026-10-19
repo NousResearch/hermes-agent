@@ -1,14 +1,17 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 
-import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { LogView } from '@/components/ui/log-view'
 import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { LayoutDashboard, RefreshCw } from '@/lib/icons'
+import { LayoutDashboard, Power, RefreshCw } from '@/lib/icons'
+import { platformStatusTone } from '@/lib/platform-status'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
+import { reconnectGateway } from '@/store/gateway-reconnect'
+import { notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { StatusResponse } from '@/types/hermes'
 
@@ -70,15 +73,6 @@ function useGatewayLogTail(): string[] {
   return lines
 }
 
-const PLATFORM_TONE: Record<string, StatusTone> = {
-  connected: 'good',
-  connecting: 'warn',
-  retrying: 'warn',
-  pending_restart: 'warn',
-  startup_failed: 'bad',
-  fatal: 'bad'
-}
-
 const prettyState = (state: string) => state.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
 
 // Strip leading "YYYY-MM-DD HH:MM:SS,mmm " and "[runtime_id] " prefixes from
@@ -96,6 +90,7 @@ export function GatewayMenuPanel({
 }: GatewayMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.gatewayMenu
+  const [reconnecting, setReconnecting] = useState(false)
 
   // Both jumps open the system panel, which owns the full view — so dismiss the
   // little status popover on the way out.
@@ -109,6 +104,17 @@ export function GatewayMenuPanel({
   const restart = () => {
     onClose()
     void runGatewayRestart()
+  }
+
+  const reconnect = () => {
+    if (reconnecting) {
+      return
+    }
+
+    setReconnecting(true)
+    void reconnectGateway()
+      .catch(err => notifyError(err, copy.reconnectGateway))
+      .finally(() => setReconnecting(false))
   }
 
   const gatewayOpen = gatewayState === 'open'
@@ -157,15 +163,17 @@ export function GatewayMenuPanel({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <Tip label={t.commandCenter.restartGateway}>
+          {/* An open transport can still be wedged; recovery must remain reachable. */}
+          <Tip label={copy.reconnectGateway}>
             <Button
-              aria-label={t.commandCenter.restartGateway}
+              aria-label={copy.reconnectGateway}
               className="text-muted-foreground hover:text-foreground"
-              onClick={restart}
+              disabled={reconnecting}
+              onClick={reconnect}
               size="icon-xs"
               variant="ghost"
             >
-              <RefreshCw />
+              <RefreshCw className={cn(reconnecting && 'animate-spin')} />
             </Button>
           </Tip>
           <Tip label={copy.openSystem}>
@@ -177,6 +185,21 @@ export function GatewayMenuPanel({
               variant="ghost"
             >
               <LayoutDashboard />
+            </Button>
+          </Tip>
+          {/* Restart is the heavy, disruptive action: keep it visually distinct
+              (power icon, destructive hover) and separated from the benign
+              reconnect/system buttons so it can't be hit by mistake. */}
+          <span aria-hidden className="mx-1 h-4 w-px bg-border/70" />
+          <Tip label={t.commandCenter.restartGateway}>
+            <Button
+              aria-label={t.commandCenter.restartGateway}
+              className="text-muted-foreground hover:text-destructive"
+              onClick={restart}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Power />
             </Button>
           </Tip>
         </div>
@@ -216,7 +239,7 @@ export function GatewayMenuPanel({
               <li className="flex items-center justify-between gap-2 text-xs" key={name}>
                 <span className="truncate capitalize">{name}</span>
                 <span className="flex items-center gap-1.5 text-[0.66rem] text-muted-foreground">
-                  <StatusDot tone={PLATFORM_TONE[platform.state] || 'muted'} />
+                  <StatusDot tone={platformStatusTone({ state: platform.state })} />
                   {prettyState(platform.state)}
                 </span>
               </li>

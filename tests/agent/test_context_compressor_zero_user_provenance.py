@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import (
-    COMPRESSION_CONTINUATION_USER_CONTENT,
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
@@ -17,10 +16,10 @@ from agent.context_compressor import (
     _NO_USER_TASK_SENTINEL,
 )
 from agent.conversation_compression import (
-    _ensure_compressed_has_user_turn,
     compress_context,
 )
 from hermes_state import SessionDB
+from tools.process_registry_notifications import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 
@@ -143,7 +142,6 @@ Vind de bestanden.
 
     assert result is None
     assert compressor._previous_summary is None
-    assert "invented user attribution" in compressor._last_summary_error
 
 
 
@@ -235,6 +233,52 @@ def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
     idx = compressor._find_last_user_message_idx(messages, head_end=0)
     assert idx == 0, "nudge was selected as the anchor instead of the human task"
     assert messages[idx]["content"] == human["content"]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(
+            {
+                "type": "completion",
+                "session_id": "proc_build",
+                "command": "scripts/run_tests.sh tests/agent/",
+                "exit_code": 0,
+                "output": "42 passed",
+            },
+            id="completion",
+        ),
+        pytest.param(
+            {
+                "type": "watch_match",
+                "session_id": "proc_server",
+                "command": "python server.py",
+                "pattern": "Application startup complete",
+                "output": "Application startup complete",
+            },
+            id="watch_match",
+        ),
+    ],
+)
+def test_background_process_notifications_do_not_become_compaction_anchors(
+    compressor, event
+):
+    notification = format_process_notification(event)
+    assert notification is not None
+    process_turn = {"role": "user", "content": notification}
+    human = {"role": "user", "content": "Refactor the auth module and add tests."}
+    messages = [
+        human,
+        {"role": "assistant", "content": "Working on it."},
+        process_turn,
+    ]
+
+    assert ContextCompressor._is_synthetic_compression_user_turn(process_turn) is True
+    assert ContextCompressor._transcript_has_real_user_turn([process_turn]) is False
+    focus = compressor._derive_auto_focus_topic(messages)
+    assert "Refactor the auth module and add tests." in focus
+    assert notification not in focus
+    assert compressor._find_last_user_message_idx(messages, head_end=0) == 0
 
 
 @pytest.mark.parametrize(

@@ -8,25 +8,12 @@ import type * as ReactionsStore from '@/store/reactions'
 import { $reactionsEnabled } from '@/store/reactions-enabled'
 import { $localReactions } from '@/store/reactions-local'
 
+import { assistantMessage, stubThreadEnvironment } from '../test-utils'
+
 import { isTapbackDoubleClick } from './use-message-reactions'
 
 import { Thread } from '.'
-
-const createdAt = new Date('2026-05-01T00:00:00.000Z')
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
+stubThreadEnvironment()
 
 // The gesture persists through the gateway; this suite is about the local
 // paint, which is what the user actually sees on the click.
@@ -34,17 +21,6 @@ vi.mock('@/store/reactions', async importOriginal => ({
   ...(await importOriginal<typeof ReactionsStore>()),
   toggleMessageReaction: vi.fn(async () => {})
 }))
-
-function assistantMessage(): ThreadMessage {
-  return {
-    id: 'assistant-1',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
-  } as ThreadMessage
-}
 
 function Harness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({

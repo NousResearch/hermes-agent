@@ -41,4 +41,16 @@ class TestWebhookProfileResolution:
         adapter, Req, _REJ, _ = self._adapter(multiplex=True)
         assert adapter._resolve_request_profile(Req(None)) is None
 
+    def test_unserved_prefix_is_rejected(self, monkeypatch):
+        adapter, Req, rejected, served = self._adapter(
+            multiplex=True, served=("default", "worker"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [(name, f"/profiles/{name}") for name in served],
+        )
+
+        assert adapter._resolve_request_profile(Req("worker")) == "worker"
+        assert adapter._resolve_request_profile(Req("restricted")) is rejected
+
 

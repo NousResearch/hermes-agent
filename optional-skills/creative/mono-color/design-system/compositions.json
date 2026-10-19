@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "compositions": [
+    {"id": "composition_image_field", "layout": "image field", "dominant_subject_percent": [60, 80], "empty_paper_percent": [20, 40], "anchors": ["bottom", "side"], "title_relation": "crosses or is cut by the image", "manual_gesture_limit": 1},
+    {"id": "composition_specimen_annotation", "layout": "specimen annotation", "dominant_subject_percent": [45, 65], "empty_paper_percent": [35, 55], "anchors": ["center", "bottom"], "title_relation": "labels orbit one isolated specimen", "manual_gesture_limit": 1},
+    {"id": "composition_type_declaration", "layout": "type-led declaration", "dominant_subject_percent": [55, 80], "empty_paper_percent": [20, 45], "anchors": ["left", "top"], "title_relation": "type is the dominant object", "manual_gesture_limit": 1},
+    {"id": "composition_ruled_information", "layout": "ruled information poster", "dominant_subject_percent": [45, 65], "empty_paper_percent": [35, 55], "anchors": ["top", "left"], "title_relation": "headline and facts share one rule", "manual_gesture_limit": 1},
+    {"id": "composition_archival_plate", "layout": "archival plate", "dominant_subject_percent": [45, 60], "empty_paper_percent": [40, 55], "anchors": ["center", "bottom"], "title_relation": "small title indexes the plate", "manual_gesture_limit": 1},
+    {"id": "composition_editorial_cover", "layout": "editorial cover", "dominant_subject_percent": [55, 75], "empty_paper_percent": [25, 45], "anchors": ["bottom", "right"], "title_relation": "headline crosses the dominant crop", "manual_gesture_limit": 1},
+    {"id": "composition_object_field", "layout": "object field", "dominant_subject_percent": [50, 75], "empty_paper_percent": [25, 50], "anchors": ["center", "edge"], "title_relation": "title locks to repeated objects", "manual_gesture_limit": 1},
+    {"id": "composition_overprint_collage", "layout": "overprint collage", "dominant_subject_percent": [60, 80], "empty_paper_percent": [20, 40], "anchors": ["diagonal", "edge"], "title_relation": "title participates in one visible overprint collision", "manual_gesture_limit": 1},
+    {"id": "composition_editorial_journal", "layout": "editorial journal", "dominant_subject_percent": [45, 65], "empty_paper_percent": [35, 55], "anchors": ["top", "side"], "title_relation": "title sits inside the reading rhythm", "manual_gesture_limit": 1}
+  ]
+}

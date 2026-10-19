@@ -162,3 +162,19 @@ def test_personality_persists_to_the_profile_and_drives_the_next_turn(tmp_path):
                 assert result.get('result', {}).get('value') == 'none', result
                 assert _display(home)['personality'] == ''
         asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_timestamps_toggle_persists_display_timestamps(tmp_path):
+    """T10: Ink's /timestamps writes ``display.timestamps`` (the classic CLI's key) through the
+    owner's config.set; on|off|toggle like the other display toggles."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                assert (await rpc(ws, 'config.set', key='timestamps', value='on'))['result'] == {
+                    'key': 'timestamps', 'value': 'on'}
+                assert _display(home)['timestamps'] is True
+                assert (await rpc(ws, 'config.set', key='timestamps', value=''))['result']['value'] == 'off'
+                assert _display(home)['timestamps'] is False
+                assert (await rpc(ws, 'config.set', key='timestamps', value='maybe'))['error']['message'] == 'invalid_params'
+        asyncio.run(probe())

@@ -6,7 +6,8 @@ import {
   useHasSelection,
   useSelection,
   useStdout,
-  useTerminalTitle
+  useTerminalTitle,
+  wrapAnsi
 } from '@hermes/ink'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
@@ -36,6 +37,7 @@ import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
+import { pagerLineWidth } from '../lib/pager.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -504,9 +506,21 @@ export function useMainApp(gw: GatewayClient) {
     [sys]
   )
 
+  // Pager rows are pre-wrapped to the panel width: the pager pages by ROW, so
+  // a long line left to Ink would wrap into extra rows the panel has no space
+  // for, and a page turn would skip everything that did not fit.
   const page = useCallback(
-    (text: string, title?: string) => patchOverlayState({ pager: { lines: text.split('\n'), offset: 0, title } }),
-    []
+    (text: string, title?: string) => {
+      const width = pagerLineWidth(cols)
+
+      const lines = text
+        .split('\n')
+        .flatMap(line => (line ? wrapAnsi(line, width, { trim: false, hard: true }).split('\n') : ['']))
+
+      require('fs').appendFileSync('/tmp/pager-debug.log', `set ${lines.length} cols=${cols}\n`)
+      patchOverlayState({ pager: { lines, offset: 0, title } })
+    },
+    [cols]
   )
 
   const panel = useCallback(

@@ -36,6 +36,7 @@ import { GoalBar } from './goalBar.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
+import { PagerOverlay } from './pagerOverlay.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
@@ -590,6 +591,18 @@ export const AppLayout = memo(function AppLayout({
   // stay anchored via normal flex-column flow.
   const Shell = INLINE_MODE ? Fragment : AlternateScreen
   const shellProps = INLINE_MODE ? {} : { mouseTracking }
+
+  // The pager is a modal surface: rendering it next to the transcript makes the
+  // frame taller than the terminal, and Ink keeps the BOTTOM rows — the panel
+  // title and top border were cut off while the composer stayed on screen.
+  if (overlay.pager && !NATIVE_MODE) {
+    return (
+      <Shell {...shellProps}>
+        <PagerOverlay cols={composer.cols} />
+        <ActiveWidgetSlot />
+      </Shell>
+    )
+  }
 
   return (
     <Shell {...shellProps}>

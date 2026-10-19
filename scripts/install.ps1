@@ -1803,6 +1803,22 @@ function Publish-UserCommand {
     if ($code) { Fail "launcher staging failed" products_build_failed }
     Set-LauncherUserPath $binDir
     Write-Ok "hermes command installed at $binDir"
+    Write-LegacyUvNotice $binDir
+}
+
+function Write-LegacyUvNotice([string]$binDir) {
+    # An install that predates the pm-store split left uv/uvx here, and $binDir is
+    # now FIRST on the user PATH: that copy wins over a uv the user installs later.
+    # This bootstrapper does not delete it (no installer receipt says who wrote it)
+    # and neither does `doctor --fix` on Windows (no directory-relative deletion),
+    # so point at the diagnostic and name the manual step. A name match is enough
+    # for a NOTICE — worst case it points at a file the user already knows about.
+    $legacy = @('uv', 'uvx', 'uv.exe', 'uvx.exe') |
+        Where-Object { Test-Path -LiteralPath (Join-Path $binDir $_) }
+    if (-not $legacy) { return }
+    Write-Warn "$($legacy -join ', ') in $binDir is a pre-pm leftover; it shadows any uv you " +
+        "install later. Run 'hermes doctor' to confirm, then delete that file if you did " +
+        "not put it there"
 }
 
 function Test-DesktopProductPresent {

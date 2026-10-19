@@ -289,12 +289,15 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
         return []
 
 
+def _posture_toolsets(config: Optional[dict[str, Any]]) -> list[str]:
+    """The coding posture's toolset list; callers own the ``focus`` check."""
+    return [CODING_TOOLSET, *_enabled_mcp_servers(config)]
+
+
 def focus_toolsets(config: Optional[dict[str, Any]]) -> Optional[list[str]]:
     """The coding posture's toolsets when ``agent.coding_context`` is ``focus``, else None, for a
     session whose workspace decision is already made (no cwd probe)."""
-    if _coding_mode(config) != "focus":
-        return None
-    return [CODING_TOOLSET, *_enabled_mcp_servers(config)]
+    return _posture_toolsets(config) if _coding_mode(config) == "focus" else None
 
 
 # ── RuntimeMode (the seam) ──────────────────────────────────────────────────
@@ -324,10 +327,11 @@ class RuntimeMode:
 
     def toolset_selection(self, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
         """Toolset list (only under ``focus``), or ``None`` to keep the platform default. Callers
-        apply it only when the user hasn't pinned a selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``)."""
+        apply it only when the user hasn't pinned a selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``).
+        *config* None lists MCP servers from the user's config."""
         if self.config_mode != "focus" or self.profile.toolset is None:
             return None
-        return focus_toolsets(config)  # the one builder of the posture's list
+        return _posture_toolsets(config)  # the focus decision is this mode's own config_mode
 
     def system_prompt_parts(self, valid_tool_names=None, workspace_block: Optional[str] = None) -> tuple[list[str], list[str], list[str]]:
         """Return (prefix, workspace, trailing) posture blocks in the historical flat order —

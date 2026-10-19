@@ -1,7 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
@@ -9,6 +8,7 @@ import { frConnectorCard } from './fr_connector_card'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
+import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
@@ -1946,71 +1946,7 @@ export const frOverrides = {
       deepLinkErrorUrl: 'Seules les URL de serveur http:// et https:// sont autorisées.',
       deepLinkErrorTooLarge: 'La configuration dépasse la limite de 32 Ko.'
     },
-    model: {
-      setupProviderFallback: 'fournisseur',
-      setUpProvider: name => `Configurer ${name}`,
-      staleAuxBefore: (count, names) =>
-        count > 1
-          ? `${count} tâches auxiliaires (${names}) s'exécutent encore sur `
-          : `${count} tâche auxiliaire (${names}) s'exécute encore sur `,
-      staleAuxAfter: ', et non sur votre modèle principal.',
-      staleAuxOtherProviders: "d'autres fournisseurs",
-      moaEnabled: 'Activé',
-      moaSetDefault: 'Définir par défaut',
-      moaNewPresetPlaceholder: 'nouveau préréglage',
-      moaAddPreset: 'Ajouter un préréglage',
-      customModel: 'Modèle personnalisé…',
-      customModelPlaceholder: 'ID du modèle',
-      chooseFromList: 'Choisir dans la liste',
-      moaDefault: 'Par défaut :',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Désactiver' : 'Activer'} la référence ${index}`,
-      moaReferenceTitle: index => `Référence ${index}`,
-      moaAddReference: 'Ajouter un modèle de référence',
-      loading: 'Chargement de la configuration du modèle...',
-      appliesDesc:
-        "S'applique aux nouvelles sessions. Utilisez le sélecteur de modèle dans le compositeur pour changer à chaud la conversation active.",
-      provider: 'Fournisseur',
-      model: 'Modèle',
-      applying: 'Application...',
-      mainAppliedTitle: 'Modèle principal mis à jour',
-      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
-      defaultsLabel: 'Par défaut',
-      reasoning: 'Raisonnement',
-      reasoningOff: 'Désactivé',
-      speed: 'Vitesse',
-      speedStandard: 'Standard',
-      defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
-      loadFailed: 'Impossible de charger les modèles',
-      restartRequired:
-        "Ce backend exécute encore l'ancien code après une mise à jour. Redémarrez-le pour charger le nouveau code.",
-      restartBackend: 'Redémarrer le backend',
-      restartingBackend: 'Redémarrage du backend...',
-      restartFailed: 'Impossible de redémarrer le backend',
-      auxiliaryTitle: 'Modèles auxiliaires',
-      resetAllToMain: 'Tout réinitialiser au principal',
-      staleAuxDismiss: 'Ne plus afficher',
-      auxiliaryDesc:
-        "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
-      setToMain: 'Définir comme principal',
-      change: 'Modifier',
-      autoUseMain: 'auto · utiliser le modèle principal',
-      inheritMainEffort: 'hériter · effort du modèle principal',
-      inheritsFrom: task => `hérite de ${task}`,
-      followTask: task => `Suivre ${task}`,
-      providerDefault: '(par défaut du fournisseur)',
-      fallbackAdd: 'Ajouter un secours',
-      fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",
-      notInCatalog:
-        "n'est pas dans la liste des modèles de ce fournisseur — les appels peuvent basculer sur un secours.",
-      moaTitle: "Mélange d'agents",
-      moaPreset: 'Préréglage',
-      moaDescription:
-        "Configurez des préréglages nommés qui apparaissent comme modèles chez le fournisseur Mélange d'agents. L'agrégateur est le modèle actif : il exécute chaque étape de la boucle d'outils et son fournisseur facture presque tout le coût de l'exécution. Par défaut, les modèles de référence ne donnent qu'un avis par tour utilisateur.",
-      moaAggregator: 'Agrégateur',
-      moaAggregatorBilled: "modèle actif · facturé pour l'exécution",
-      moaReferenceHint: 'donne un avis une fois par tour par défaut',
-      tasks: frAuxTasks
-    },
+    model: frModelSettings,
     localModels: frLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mois`,
@@ -2594,8 +2530,6 @@ export const frOverrides = {
       pinnedProvenance: (sha: string) =>
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
-      tierOfficial: 'officiel',
-      tierCommunity: 'communauté',
       updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
       updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
       updated: (name: string) =>
@@ -4165,7 +4099,7 @@ export const frOverrides = {
       heartbeatEveryHours: hours => `toutes les ${hours} h`,
       heartbeatEverySeconds: seconds => `toutes les ${seconds} s`,
       heartbeatNext: time => `prochain : ${time}`,
-      heartbeatDueWaitingForIdle: 'échu — en attente de disponibilité',
+      dueWaitingForIdle: 'échu — en attente de disponibilité',
       heartbeatActions: 'Actions du suivi périodique',
       pauseHeartbeat: 'Mettre le suivi en pause',
       resumeHeartbeat: 'Reprendre le suivi',
@@ -5269,10 +5203,7 @@ export const frOverrides = {
         plugin: 'plugin',
         skill: 'skill'
       },
-      tier: {
-        official: 'officiel',
-        community: 'communauté'
-      },
+      tier: { official: 'officiel', verified: 'vérifié', community: 'communauté' },
       targetProfile: (profile: string) => `S’installe dans votre profil ${profile}`,
       sendFailed: 'Impossible d’envoyer votre réponse. Réessayez.',
       commitLabel: 'Commit',

@@ -103,3 +103,26 @@ def test_terminal_handler_rejects_explicit_foreground_pty(monkeypatch):
 
     assert "background=true" in result["error"]
     assert called is False
+
+
+def test_terminal_handler_inferred_pty_background_keeps_background_modifiers(monkeypatch):
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return '{"ok":true}'
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+
+    result = json.loads(
+        terminal_tool_module._handle_terminal(
+            {"command": "python3", "pty": True, "notify": True, "heartbeat": 120, "persist_on_release": True},
+            task_id="test",
+        )
+    )
+
+    assert result == {"ok": True}
+    assert captured["background"] is True
+    assert captured["notify_on_complete"] is True
+    assert captured["heartbeat"] == 120
+    assert captured["persist_on_release"] is True

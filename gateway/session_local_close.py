@@ -21,6 +21,8 @@ def closed_and_unviewed(authority, session_id, handle):
     live = authority.sessions.get(session_id)
     if live is None or live.subscribers or handle.execution_state != 'idle':
         return False
+    if live.superseded:
+        return True  # an old messaging conversation opened read-only: history once no one views it
     target = _local_target(authority, session_id)
     row = authority.db.get_session(target) if target else None
     return bool(row and row.get('ended_at') is not None)

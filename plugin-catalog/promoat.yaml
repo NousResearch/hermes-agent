@@ -1,11 +1,12 @@
 name: promoat
+title: AI Clone Videos
 repo: https://github.com/TechHiveDev/promoat_partner_hermes_plugin
-sha: 891407687e25e91aacbfc51c5f10333bf382d421
-description: Realistic AI presenter videos. Estimate, create, and edit videos with your own Promoat account.
+sha: 9818164f63c60cf4665893a805d076bfd16164fa
+description: Make realistic AI videos of yourself, with your own face and voice, from inside Hermes. Powered by Promoat
 maintainer: Promoat
 tier: community
 category: tools
-version: "1.1.1"
+version: "1.1.2"
 docs_url: https://promoat-platform-plugins.vercel.app/docs
 capabilities:
   provides_tools:

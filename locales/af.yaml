@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
+  modern:
+    thought_for: "Het {seconds}s gedink"
+    thought: "Het gedink"
+    working: "Besig…"
+    preparing: "Berei {what} voor…"
+    hint_steer: "stuur"
+    hint_queue: "in tou"
+    hint_interrupt: "onderbreek"
+    hint_stop: "stop"
+    hint_commands: "opdragte"
+    hint_files: "lêers"
+    hint_shell: "dop"
+    placeholder_busy_steer: "tik om hierdie beurt te stuur · Tab plaas dit in die tou vir daarna"
+    placeholder_busy_interrupt: "tik om hierdie beurt te herlei · Tab plaas dit in die tou vir daarna"
+    placeholder_busy_queue: "tik om 'n boodskap vir ná hierdie beurt in die tou te plaas"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Kon nie faktureringsinligting laai nie"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "Tou · {count} in tou · /queue list{controls}"
     more_queued: "+{count} meer"
     transcript_unavailable: "Lewendige transkripsie is nog nie beskikbaar nie."
+    control_pending: "Stuur tans…"
     steer_prompt: "Stuur: "
     roster_empty: "Geen lewendige subagente of agtergrondprosesse nie. Resultate kom in die gesprek aan."
     entry_gone: "Hierdie inskrywing is nie meer lewendig nie."

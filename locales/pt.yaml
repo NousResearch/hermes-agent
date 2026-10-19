@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
+  modern:
+    thought_for: "Pensou por {seconds}s"
+    thought: "Pensou"
+    working: "Trabalhando…"
+    preparing: "Preparando {what}…"
+    hint_steer: "guiar"
+    hint_queue: "enfileirar"
+    hint_interrupt: "interromper"
+    hint_stop: "parar"
+    hint_commands: "comandos"
+    hint_files: "arquivos"
+    hint_shell: "shell"
+    placeholder_busy_steer: "digite para guiar este turno · Tab enfileira para depois"
+    placeholder_busy_interrupt: "digite para redirecionar este turno · Tab enfileira para depois"
+    placeholder_busy_queue: "digite para enfileirar uma mensagem para depois deste turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Não foi possível carregar a cobrança"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "Fila · {count} na fila · /queue list{controls}"
     more_queued: "+{count} mais"
     transcript_unavailable: "Transcrição ao vivo ainda não disponível."
+    control_pending: "Enviando…"
     steer_prompt: "Redirecionar: "
     roster_empty: "Nenhum subagente ativo nem processo em segundo plano. Os resultados chegam na conversa."
     entry_gone: "Esta entrada não está mais ativa."

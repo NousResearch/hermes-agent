@@ -8,7 +8,7 @@
  * across the upgrade that curved the middle of the lever.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   backgroundMaterialFor,
@@ -17,6 +17,7 @@ import {
   DEFAULT_GLASS_SCOPE,
   defaultTranslucencyState,
   defaultTranslucencyValues,
+  displayMetricsRequireTranslucencyReassert,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   glassActive,
@@ -26,6 +27,8 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  installTranslucencyReassertOnDisplayMetrics,
+  installTranslucencyReassertOnWindowEvents,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -33,11 +36,14 @@ import {
   normalizeState,
   opacityNeedsSetting,
   resolveTranslucency,
+  scaleFactorRequiresTranslucencyReassert,
   setTranslucencyValues,
   TRANSLUCENCY_CURVE,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_OPACITY_FLOOR,
+  TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS,
+  translucencyReassertForDpiChange,
   type TranslucencyState,
   translucencySupportedOn,
   vibrancyFor,
@@ -48,6 +54,133 @@ import {
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD
 } from './translucency'
+
+describe('mixed-DPI translucency reassert', () => {
+  const activeGlass = (): TranslucencyState => ({
+    intensity: 50,
+    fade: 0,
+    mode: 'glass',
+    material: DEFAULT_GLASS_MATERIAL,
+    scope: DEFAULT_GLASS_SCOPE
+  })
+
+  it('limits DWM recovery to active glass without writing opacity', () => {
+    expect(translucencyReassertForDpiChange({ ...activeGlass(), mode: 'clear' })).toBeNull()
+    expect(translucencyReassertForDpiChange({ ...activeGlass(), intensity: 0 })).toBeNull()
+    expect(translucencyReassertForDpiChange(activeGlass())).toEqual({ backing: true, material: true, opacity: false })
+  })
+
+  it('reasserts once while a continuous move crosses to a different scale factor', () => {
+    const handlers = new Map<string, () => void>()
+    let scaleFactor = 1
+    let calls = 0
+    const scales = new WeakMap<object, number>()
+
+    const win = {
+      isDestroyed: () => false,
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      on(event: string, listener: () => void) {
+        handlers.set(event, listener)
+      }
+    }
+
+    installTranslucencyReassertOnWindowEvents(
+      win,
+      { getDisplayMatching: () => ({ scaleFactor }) },
+      () => {
+        calls += 1
+      },
+      scales,
+      'win32'
+    )
+
+    handlers.get('move')?.()
+    handlers.get('move')?.()
+    handlers.get('moved')?.()
+
+    expect(calls).toBe(1)
+
+    scaleFactor = 1.25
+    handlers.get('move')?.()
+    handlers.get('move')?.()
+    handlers.get('moved')?.()
+    expect(calls).toBe(2)
+  })
+
+  it('reasserts all chat windows only for Windows scale-factor display changes', () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>()
+    let calls = 0
+
+    installTranslucencyReassertOnDisplayMetrics(
+      { on: (event: string, listener: (...args: unknown[]) => void) => handlers.set(event, listener) },
+      () => {
+        calls += 1
+      },
+      'win32'
+    )
+
+    expect(displayMetricsRequireTranslucencyReassert(['workArea'])).toBe(false)
+    handlers.get('display-metrics-changed')?.({}, {}, ['workArea'])
+    handlers.get('display-metrics-changed')?.({}, {}, ['scaleFactor'])
+
+    expect(calls).toBe(1)
+  })
+
+  it('cleans up the pending show reassert and scale-factor state when the window closes', () => {
+    vi.useFakeTimers()
+
+    try {
+      const handlers = new Map<string, () => void>()
+      let calls = 0
+      const scales = new WeakMap<object, number>()
+
+      const win = {
+        isDestroyed: () => false,
+        getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+        on(event: string, listener: () => void) {
+          handlers.set(event, listener)
+        }
+      }
+
+      installTranslucencyReassertOnWindowEvents(
+        win,
+        { getDisplayMatching: () => ({ scaleFactor: 1.25 }) },
+        () => {
+          calls += 1
+        },
+        scales,
+        'win32'
+      )
+
+      handlers.get('show')?.()
+      expect(scales.get(win)).toBe(1.25)
+      handlers.get('closed')?.()
+      expect(scales.get(win)).toBeUndefined()
+      vi.advanceTimersByTime(TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS)
+      expect(calls).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['darwin', 'linux'] as const)('does not install Windows listeners on %s', platform => {
+    const handlers = new Map<string, () => void>()
+    installTranslucencyReassertOnWindowEvents(
+      { on: (event: string, listener: () => void) => handlers.set(event, listener) },
+      {},
+      () => undefined,
+      new WeakMap(),
+      platform
+    )
+    expect(handlers.size).toBe(0)
+  })
+
+  it('requires a positive, changed scale factor', () => {
+    expect(scaleFactorRequiresTranslucencyReassert(1, 1)).toBe(false)
+    expect(scaleFactorRequiresTranslucencyReassert(1, 1.25)).toBe(true)
+    expect(scaleFactorRequiresTranslucencyReassert(1, 0)).toBe(false)
+  })
+})
 
 /** The linear ramp the curve replaced. Endpoints must still agree with it. */
 const legacyOpacity = (intensity: number) => 1 - (intensity / 100) * 0.7

@@ -143,6 +143,40 @@ _CANONICAL_PENDING_SQL = """SELECT status FROM session_admissions WHERE target_s
     UNION ALL SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
 
 
+def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -> bool:
+    """End *session_id*'s row unless the gateway's durable ledger still holds work for it; True when
+    the row may end (ended now, or already ended). The check and the stamp share one write txn.
+
+    A viewer process (a dashboard, a second Desktop window) runs this reaper for a session the
+    owning gateway is still executing; stamping it ended mid-turn made the owner treat its own live
+    route as stale (#54878) and replace the conversation (#140642). The ledger names a local session
+    by its logical id (the row's ``chat_id``), so the physical id, the key and that id are checked: a
+    ``local-`` id, or the lineage owner its receipt names (an adopted conversation keeps its legacy id)."""
+    execute_write = getattr(db, "_execute_write", None)
+    if execute_write is None:
+        db.end_session(session_id, end_reason)
+        return True
+
+    def write(conn):
+        row = conn.execute("SELECT chat_id FROM sessions WHERE id=?", (session_id,)).fetchone()
+        ids = {session_id, str(session_key or "")}
+        if row is not None and str(row[0] or "").startswith("local-"):
+            ids.add(str(row[0]))
+        from hermes_state_local import local_lineage_owner
+        ids.add(local_lineage_owner(conn, session_id))
+        for sid in filter(None, ids):
+            if conn.execute(_CANONICAL_PENDING_SQL, (sid, sid)).fetchone() is not None:
+                return False
+        db._end_and_bump(conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                         (time.time(), end_reason, session_id), session_id, end_reason)
+        return True
+
+    if execute_write(write):
+        return True
+    logger.info("Preserving session %s during %s: the gateway's ledger still holds its turn", session_id, end_reason)
+    return False
+
+
 def _canonical_ledger_refusal(session: dict):
     """Refusal when the gateway's durable ledger still holds work for this stored session, else None.
 
@@ -170,10 +204,14 @@ def _canonical_ledger_refusal(session: dict):
     if row is None:
         return None
     logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, row[0])
-    return ActiveSessionRefusal(
+    refusal = ActiveSessionRefusal(
         f"Session {key} has {'outcome-unknown' if row[0] == 'unknown' else 'pending'} work in the gateway's "
         "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
         "resolve it; nothing was run here.", SESSION_NOT_OWNED)
+    # prompt.submit forwards a typed prompt to the owner's FIFO for work that ends on its own
+    # (tui_gateway/owner_forward.py); an ``unknown`` admission is never forwarded past.
+    refusal.ledger_status = row[0]
+    return refusal
 
 
 def _attach_lease(session: dict, lease) -> None:
@@ -461,7 +499,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                         # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
                         # runtime but must not end the durable row — the conversation stays open
                         # and resumable until the user explicitly closes or archives it.  #105588
-                        db.end_session(session_id, end_reason)
+                        # A turn the gateway's ledger still holds keeps the row open too (#140642).
+                        if not _end_unless_ledger_busy(db, session_id, session_key, end_reason):
+                            _tui_owns_lifecycle = False
     # ``_teardown_session`` follows with ``agent.close()``, whose ``_finalize_owned_session_row`` ends the row as
     # ``agent_close`` through the agent's own handle — every spare decision above would be undone one call later.
     if agent is not None and (_desktop_automatic_cleanup or not _tui_owns_lifecycle):

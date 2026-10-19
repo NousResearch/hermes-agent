@@ -4,6 +4,7 @@ Source and supported launch settings are frozen per route, never process env.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from contextlib import contextmanager
@@ -212,6 +213,28 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     return staged
 
 
+def staged_creation_follows(authority, actor, request_id):
+    """Whether a retry of *request_id* may ask to follow the profile.
+
+    True when nothing is staged under that identity, or the staged request already follows.
+    False only when an older build committed the session without ``follow_profile_config`` and
+    stopped before its title. The next attempt reuses the identity, and a different request is
+    refused for good. The retry then carries the frozen request.
+    """
+    if not isinstance(request_id, str) or not request_id:
+        return True
+    from gateway.session_local_recovery import local_identity
+    from hermes_state_local import local_receipt
+    sid = local_identity(authority.profile_id, actor.subject, request_id)
+    if authority.db.get_session(sid) is None:
+        return True
+    try:
+        request = json.loads(local_receipt(authority.db, sid)['policy']['request_json'])
+    except (KeyError, TypeError, ValueError, RuntimeStoreError):
+        return True
+    return isinstance(request, dict) and request.get('follow_profile_config') is True
+
+
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
                         client_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
@@ -313,14 +336,15 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     return staged
 
 
-def publish_local_policy(authority, session_id):
+def publish_local_policy(authority, session_id, *, evict=True):
     from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     live = authority.sessions[session_id]
     from gateway.session_local_recovery import local_adapter_map
     adapter = local_adapter_map(authority)[Platform.LOCAL]
     adapter.policies[live.source.chat_id] = restore_policy(local_receipt(authority.db, session_id)['policy'])
-    authority.runner._evict_cached_agent(live.route)
+    if evict:
+        authority.runner._evict_cached_agent(live.route)
 
 
 def _lazy_model(authority, policy):
@@ -386,7 +410,9 @@ def local_session_info(authority, ref):
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
             'profile_name': served_profile_name(authority.profile_id),
-            **({'cwd': policy.cwd} if policy else {})}
+            **({'cwd': policy.cwd} if policy else {}),
+            # An ACP session's edit approval policy: every attached surface reads the same one.
+            **({'edit_approval_policy': policy.edit_approval_policy} if policy and policy.source == 'acp' else {})}
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning

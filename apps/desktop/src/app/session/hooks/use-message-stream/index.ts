@@ -12,6 +12,7 @@ import {
   chatMessageText,
   completeOpenTimelineParts,
   type GatewayEventPayload,
+  hasUnresolvedToolCall,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
@@ -33,6 +34,7 @@ import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
 import { broadcastTranscriptChanged } from '@/store/transcript-sync'
@@ -205,15 +207,23 @@ export function useMessageStream({
               }
             ]
           } else {
-            nextMessages = prev.map(m =>
-              m.id === streamId
-                ? {
-                    ...m,
-                    parts: transform(m.parts, m),
-                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
-                  }
-                : m
-            )
+            nextMessages = prev.map(m => {
+              if (m.id !== streamId) {
+                return m
+              }
+
+              const patched = { ...m, parts: transform(m.parts, m) }
+
+              // A bubble a steer sealed stays pending only while its own tools run.
+              return {
+                ...patched,
+                pending: patchesSealedBubble
+                  ? Boolean(m.pending) && hasUnresolvedToolCall(patched)
+                  : opts.pending
+                    ? opts.pending(m)
+                    : true
+              }
+            })
           }
 
           if (patchesSealedBubble) {
@@ -472,6 +482,9 @@ export function useMessageStream({
     },
     [flushQueuedDeltas]
   )
+
+  // A steer seals the live bubble from outside this hook; it flushes our buffer first.
+  useEffect(() => registerStreamDeltaFlush(sessionId => flushQueuedDeltas(sessionId)), [flushQueuedDeltas])
 
   // Page Visibility does not report every Windows/Linux focus transition.
   // Flush queued deltas on both signals so returning to a chat cannot leave a
@@ -1037,6 +1050,11 @@ export function useMessageStream({
         // degraded websocket leaves its tool row spinning forever. The turn is
         // provably done here — nothing can still be running — so seal any
         // tool-call parts that never saw their completion event.
+        // A bubble a steer sealed while its tool ran stays pending for that tool's
+        // result; the turn is over now, so a lost tool.complete must not keep it spinning.
+        nextMessages = nextMessages.map(message =>
+          message.pending && message.interim ? { ...message, pending: false } : message
+        )
         nextMessages = bindReceiptUserRows(sealOpenToolParts(nextMessages), persistedTurn)
 
         const hasInlineError = nextMessages.some(

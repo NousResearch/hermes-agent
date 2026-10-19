@@ -10,9 +10,21 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  connectors: {
+    directory: {
+      suggested: '推薦',
+      allApps: '全部應用程式',
+      receiptConnected: apps => `已連接：${apps}`,
+      receiptNone: '未連接新的應用程式',
+      receiptTimedOut: '5 分鐘後已關閉',
+      finishInBrowser: '請在瀏覽器中完成',
+      signInFailed: '連接失敗，點擊重試'
+    }
+  },
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
@@ -61,6 +73,7 @@ export const zhHantOverrides = {
     stripChoices: { share: '與 Nous 分享', local: '保留在這部電腦上', off: '不用了' },
     stripDetails: '詳細資訊'
   },
+  firstRun: zhHantFirstRun,
   intro: introZhHant,
   sessionImport: zhHantConnectors.sessionImport,
   common: zhHantCommon.common,
@@ -69,6 +82,8 @@ export const zhHantOverrides = {
   notifications: zhHantDiagnostics.notifications,
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
   butterbar: zhHantBoot.butterbar,
+  promptNotices: zhHantBoot.promptNotices,
+  keepAwakeOffer: zhHantBoot.keepAwakeOffer,
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,
@@ -92,7 +107,15 @@ export const zhHantOverrides = {
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
-  composer: zhHantChat.composer,
+  composer: {
+    ...zhHantChat.composer,
+    redirect: '重新導向目前的執行',
+    queueLostNote: '重新啟動期間該回合已遺失',
+    restoreImageDraft: '還原圖片草稿',
+    queueCancelFailed: '無法移除排隊的回合',
+    queueLostDiscard: '捨棄',
+    queueLostDiscardTip: '閘道在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。'
+  },
   statusStack: zhHantChat.statusStack,
   updates: zhHantBoot.updates,
   install: zhHantBoot.install,
@@ -123,24 +146,6 @@ export const zhHantOverrides = {
   errors: zhHantDiagnostics.errors,
   tips: zhHantChat.tips,
   ui: zhHantCommon.ui,
-  handoffTour: {
-    profileTitle: '你的第一個任務在預設設定檔中執行',
-
-    profileText:
-      '這條欄用來切換設定檔。現在亮著的是 default，任務工作階段就在這裡。另一個是設定用的設定檔，歡迎聊天在那裡。',
-
-    sessionsTitle: '每個設定檔都有自己的工作階段',
-
-    sessionsText:
-      '這個清單屬於 default 設定檔。「新工作階段」會在目前選取的設定檔中開始。在欄上切換設定檔，清單也會跟著改變。',
-
-    stayTitle: 'Hermes 一鍵可及',
-
-    stayText: '需要幫忙時，切換到設定用的設定檔並開啟「歡迎使用 Hermes」。它會一直在那裡。',
-    localTitle: '這台電腦可以在本機執行模型',
-    localText: (model: string) =>
-      `${model} 適合你的硬體。免費執行，對話不會離開你的電腦。隨時在這裡的模型選單中選擇它。`
-  },
   freeTier: {
     offer: {
       heading: '繼續使用 Hermes',

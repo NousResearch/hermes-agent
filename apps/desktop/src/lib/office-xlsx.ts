@@ -69,6 +69,10 @@ function sharedStrings(bytes: Uint8Array | undefined): string[] {
 
 const DATE_FORMAT_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
 
+function stripFormatLiterals(code: string): string {
+  return code.replace(/"[^"]*"/g, '').replace(/\[[^\]]*\]/g, '').replace(/\\./g, '')
+}
+
 function isDateFormat(id: number, code: string | undefined): boolean {
   if (DATE_FORMAT_IDS.has(id)) {
     return true
@@ -78,7 +82,7 @@ function isDateFormat(id: number, code: string | undefined): boolean {
     return false
   }
 
-  const stripped = code.replace(/\[[^\]]*\]/g, '')
+  const stripped = stripFormatLiterals(code)
 
   return /[ydmhs]/i.test(stripped) && !/^[#0?,.\s%]+$/.test(stripped)
 }
@@ -116,7 +120,7 @@ function formatNumber(value: string, formatId: number, formatCode: string | unde
   }
 
   if (isDateFormat(formatId, formatCode)) {
-    return excelDate(number, formatId === 22 || /h/i.test(formatCode || ''))
+    return excelDate(number, formatId === 22 || /h/i.test(stripFormatLiterals(formatCode || '')))
   }
 
   return value

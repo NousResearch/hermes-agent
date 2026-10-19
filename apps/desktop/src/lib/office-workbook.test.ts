@@ -105,6 +105,34 @@ describe('spreadsheet preview', () => {
     expect(parseXlsx(bytes)[0].rows).toEqual([['2023-01-01']])
   })
 
+  it('keeps a quoted unit suffix as a number instead of a 1900 date', () => {
+    const styles = `<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0&quot; m&quot;"/></numFmts>
+<cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs>
+</styleSheet>`
+
+    const sheet = `<?xml version="1.0"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData><row r="1"><c r="A1" s="1"><v>42</v></c></row></sheetData>
+</worksheet>`
+
+    const workbook = `<?xml version="1.0"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="Units" sheetId="1" r:id="rId1"/></sheets></workbook>`
+
+    const bytes = zipSync({
+      'xl/workbook.xml': strToU8(workbook),
+      'xl/_rels/workbook.xml.rels': strToU8(
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'
+      ),
+      'xl/styles.xml': strToU8(styles),
+      'xl/worksheets/sheet1.xml': strToU8(sheet)
+    })
+
+    expect(parseXlsx(bytes)[0].rows).toEqual([['42']])
+  })
+
   it('reads a BIFF8 label and number without treating them as binary text', () => {
     const name = [5, 0, ...'Probe'.split('').map(char => char.charCodeAt(0))]
 

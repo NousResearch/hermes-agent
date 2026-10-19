@@ -285,6 +285,23 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return bool(value) if isinstance(value, (int, float)) else default
 
 
+def _coerce_after_row_id(value: Any) -> Tuple[Optional[int], Optional[str]]:
+    """Exclusive keyset cursor for transcript paging: ``(value, None)`` or ``(None, reason)``.
+
+    ``messages.id`` is an AUTOINCREMENT row id, so it is durable and monotonic per store —
+    unlike ``offset``, which shifts under a paging client every time a row is appended.
+    """
+    if value is None:
+        return None, None
+    try:
+        cursor = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None, "after_row_id must be a non-negative integer"
+    if cursor < 0:
+        return None, "after_row_id must be a non-negative integer"
+    return cursor, None
+
+
 _REQUEST_OPTION_MISSING = object()
 # Full internal ladder + "none" (what /reasoning and config.yaml accept); provider
 # vocabulary clamping happens downstream in agent.reasoning_effort.
@@ -3233,6 +3250,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         order = request.query.get("order")
         if order not in (None, "oldest", "latest"):
             return _error_response("order must be one of: oldest, latest", 400, code="invalid_pagination")
+        after_row_id, cursor_err = _coerce_after_row_id(request.query.get("after_row_id"))
+        if cursor_err:
+            return _error_response(cursor_err, 400, code="invalid_cursor")
         try:
             offset = int(raw_offset)
             requested_limit = None if raw_limit is None else int(raw_limit)
@@ -3241,20 +3261,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if offset < 0 or (requested_limit is not None and requested_limit < 0):
             return _error_response("limit and offset must be non-negative integers", 400, code="invalid_pagination")
         default_page = requested_limit is None
-        latest_page = order == "latest" or (order is None and default_page)
+        latest_page = order == "latest" or (order is None and default_page and after_row_id is None)
         limit = 500 if default_page else min(requested_limit, 500)
         include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
-        # Compression lineage: return root→tip messages, matching the REST router (#51058).
-        messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted, include_ancestors=True)
+        if after_row_id is not None:
+            # Keyset paging reads one session's live rows only: the store refuses to merge
+            # display generations or a compression lineage under a cursor, so a combined
+            # request is an error instead of a quietly different set of messages.
+            if offset:
+                return _error_response("after_row_id is incompatible with offset", 400, code="invalid_pagination")
+            if order == "latest":
+                return _error_response("after_row_id is incompatible with order=latest", 400, code="invalid_pagination")
+            if include_compacted:
+                return _error_response("after_row_id is incompatible with include_compacted", 400, code="invalid_pagination")
+            messages = await asyncio.to_thread(
+                db.get_messages, resolved_id, limit=limit, after_id=after_row_id)
+        else:
+            # Compression lineage: return root→tip messages, matching the REST router (#51058).
+            messages = await asyncio.to_thread(
+                db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
+                include_compacted=include_compacted, include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
             "pagination": {
                 "limit": limit, "offset": offset,
-                "order": order or ("latest" if default_page else "oldest"),
-                "returned": len(messages)}})
+                "order": "oldest" if after_row_id is not None else (order or ("latest" if default_page else "oldest")),
+                "returned": len(messages), "after_row_id": after_row_id}})
 
     @_require_auth
     async def _handle_fork_session(self, request: web.Request) -> web.Response:

@@ -697,6 +697,16 @@ export function createReconnectScheduler(startFn, {
 }
 
 /**
+ * A Baileys logged-out close (DisconnectReason.loggedOut / 401) will never
+ * reconnect with the stored creds. Delete the session directory in place.
+ * Renaming or copying it leaves the dead device in the way of the next QR.
+ */
+export function prepareLoggedOutSession(sessionDir, rm) {
+  rm(sessionDir, { recursive: true, force: true });
+  return { status: 'needs_qr', restartDelayMs: 1000 };
+}
+
+/**
  * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
  * raw.githubusercontent.com with no AbortSignal; a stalled connection can
  * pend forever and wedge the reconnect path (the scheduler above cannot

@@ -54,6 +54,7 @@ const STATE_BADGE: Record<
   not_configured: { tone: "outline", label: "Not configured" },
   disabled: { tone: "secondary", label: "Disabled" },
   fatal: { tone: "destructive", label: "Error" },
+  needs_qr: { tone: "warning", label: "Needs QR" },
 };
 
 function stateBadge(state: string, platformId?: string) {
@@ -65,6 +66,9 @@ function stateBadge(state: string, platformId?: string) {
   }
   if (platformId === "whatsapp" && state === "pending_restart") {
     return { tone: "warning" as const, label: "Bridge status unknown" };
+  }
+  if (platformId === "whatsapp" && state === "needs_qr") {
+    return { tone: "warning" as const, label: "Needs QR" };
   }
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
@@ -618,6 +622,11 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.id === "whatsapp" && platform.state === "needs_qr" && (
+                        <span className="text-xs text-muted-foreground">
+                          WhatsApp logged this device out. Pair with QR to link again.
+                        </span>
+                      )}
                       {platform.id === "whatsapp" &&
                         (platform.state === "disconnected" ||
                           platform.state === "retrying" ||
@@ -960,6 +969,12 @@ function WhatsAppOnboardingPanel({
           >
             {phase === "starting" ? "Starting…" : "Pair with QR"}
           </Button>
+          {platform.whatsapp_setup?.link_state === "linked" && (
+            <Badge tone="success">Linked</Badge>
+          )}
+          {platform.whatsapp_setup?.link_state === "needs_qr" && (
+            <Badge tone="warning">Needs QR</Badge>
+          )}
           {platform.configured && (
             <span className="text-xs text-muted-foreground">
               Existing WhatsApp settings are configured.

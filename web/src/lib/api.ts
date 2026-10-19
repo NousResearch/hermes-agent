@@ -1715,6 +1715,8 @@ export interface MessagingPlatform {
     /** Comma-separated numbers when kind is list. Empty for allow-all. */
     allowed_users_preview?: string;
     home_channel_set?: boolean;
+    /** linked only when the bridge reports a live connection, not when creds.json exists. */
+    link_state?: "linked" | "needs_qr" | "unlinked" | string;
   } | null;
   env_vars: MessagingPlatformEnvVar[];
 }

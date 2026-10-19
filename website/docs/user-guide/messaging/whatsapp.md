@@ -233,16 +233,19 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 
 ## Re-pairing
 
-If the session breaks (phone reset, WhatsApp update, manually unlinked), you'll see connection
-errors in the gateway logs. To fix it:
+If the session breaks (phone reset, WhatsApp update, manually unlinked), the bridge deletes
+the saved session and reports **Needs QR**. The dashboard Channels page stops showing
+**Linked** — that badge follows the live bridge connection, not the presence of
+`creds.json`. Pair with QR from the dashboard, or run:
 
 ```bash
 hermes whatsapp
 ```
 
-This generates a fresh QR code. Scan it again and the session is re-established. The gateway
-handles **temporary** disconnections (network blips, phone going offline briefly) automatically
-with reconnection logic.
+Either path generates a fresh QR code. Scan it again and the session is re-established.
+A logged-out session is removed, not backed up. The gateway handles **temporary**
+disconnections (network blips, phone going offline briefly) automatically with
+reconnection logic and does not delete the session for those.
 
 ---
 
@@ -330,7 +333,7 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
 | **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
 | **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
-| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
+| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. The bridge deletes the dead session and the dashboard shows Needs QR. Pair with QR from Channels, or run `hermes whatsapp`. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |

@@ -27,6 +27,11 @@ from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
+from hermes_cli.whatsapp_link import (
+    discard_whatsapp_session,
+    fetch_whatsapp_bridge_health,
+    whatsapp_onboarding_link_decision,
+)
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
@@ -276,12 +281,19 @@ def _messaging_platform_payload(
             allowed_kind, allowed_preview = "all", ""
         else:
             allowed_kind, allowed_preview = "list", allowed_raw
+        if state == "connected":
+            link_state = "linked"
+        elif state == "needs_qr":
+            link_state = "needs_qr"
+        else:
+            link_state = "unlinked"
         payload["whatsapp_setup"] = {
             "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
             "allowed_users_set": bool(allowed_raw),
             "allowed_users_kind": allowed_kind,
             "allowed_users_preview": allowed_preview,
             "home_channel_set": bool(home_channel),
+            "link_state": link_state,
         }
     return payload
 
@@ -474,6 +486,15 @@ def _apply_pairing_event(record, payload: dict) -> None:
             record.account_phone = _whatsapp_phone_from_identifier(account_id)
         record.status = "connected"
         record.error = None
+    elif event == "logged_out":
+        # The bridge deletes the dead session and follows with a QR. This is
+        # not a terminal failure — the next qr event fills the dashboard.
+        record.status = "waiting"
+        record.qr_payload = None
+        record.account_id = None
+        record.account_name = None
+        record.account_phone = None
+        record.error = None
     elif event == "error":
         record.status = "error"
         record.error = str(payload.get("error") or "WhatsApp pairing failed.")
@@ -651,16 +672,73 @@ async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
             expires_at=datetime.fromtimestamp(expires_at_ts, UTC).isoformat().replace("+00:00", "Z"),
             expires_at_ts=expires_at_ts, profile=body.profile,
         )
-        already_linked = (session_path / "creds.json").exists()
-        if already_linked:  # creds on disk: report connected without pairing
+        creds_exist = (session_path / "creds.json").exists()
+        health = fetch_whatsapp_bridge_health()
+        decision = whatsapp_onboarding_link_decision(creds_exist, health)
+        if decision == "linked":
             account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
             fields.update(status="connected", account_id=account_id, account_name=account_name, account_phone=account_phone)
+        elif decision == "watch":
+            qr = str((health or {}).get("qr") or "").strip() or None
+            fields.update(status="waiting", qr_payload=qr)
+        elif decision == "clear_and_pair":
+            discard_whatsapp_session(session_path)
+            fields.update(status="starting", qr_payload=None)
 
     record = _WhatsAppOnboardingSession(**fields)
     pairing_id = _register_whatsapp_session(session_path, record)
-    if not already_linked:
-        threading.Thread(target=_run_whatsapp_pairing, args=(pairing_id, session_path, mode), daemon=True).start()
+    _start_whatsapp_link_followup(decision, pairing_id, session_path, mode)
     return _whatsapp_onboarding_payload(pairing_id, record)
+
+
+def _start_whatsapp_link_followup(decision: str, pairing_id: str, session_path: Path, mode: str) -> None:
+    if decision in {"pair", "clear_and_pair"}:
+        threading.Thread(target=_run_whatsapp_pairing, args=(pairing_id, session_path, mode), daemon=True).start()
+    elif decision == "watch":
+        threading.Thread(target=_watch_whatsapp_bridge, args=(pairing_id,), daemon=True).start()
+
+
+def _watch_whatsapp_bridge(pairing_id: str) -> None:
+    """Follow the running bridge until it links or the setup expires.
+
+    A logged-out bridge stays up, deletes its session, and serves a QR on
+    ``/health``. Opening a second pairing process would fight that socket.
+    """
+    while True:
+        with _whatsapp_onboarding_lock:
+            record = _whatsapp_onboarding_sessions.get(pairing_id)
+            if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                return
+            if record.expires_at_ts <= time.time():
+                return
+            session_path = Path(record.session_path)
+        health = fetch_whatsapp_bridge_health()
+        status = str((health or {}).get("status") or "").strip().lower()
+        with _whatsapp_onboarding_lock:
+            record = _whatsapp_onboarding_sessions.get(pairing_id)
+            if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                return
+            if status == "connected":
+                account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
+                record.status = "connected"
+                record.account_id = account_id
+                record.account_name = account_name
+                record.account_phone = account_phone
+                record.qr_payload = None
+                record.error = None
+                return
+            if status == "needs_qr":
+                qr = str((health or {}).get("qr") or "").strip()
+                if qr:
+                    record.qr_payload = qr
+                record.status = "waiting"
+                record.error = None
+            elif status == "logged_out":
+                discard_whatsapp_session(session_path)
+                record.status = "waiting"
+                record.qr_payload = None
+                record.error = None
+        time.sleep(1)
 
 
 def _whatsapp_record_or_404(pairing_id: str):

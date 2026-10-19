@@ -100,6 +100,11 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     _web_server_messaging._whatsapp_onboarding_sessions["old"] = old_record
     monkeypatch.setattr(_web_server_messaging, "_whatsapp_session_path", lambda: session_dir)
     monkeypatch.setattr(ws.secrets, "token_urlsafe", lambda size: "existing-creds")
+    monkeypatch.setattr(
+        _rt_messaging,
+        "fetch_whatsapp_bridge_health",
+        lambda port=3000, timeout=2: {"status": "connected", "linked": True},
+    )
 
     result = asyncio.run(
         _rt_messaging.start_whatsapp_onboarding(
@@ -117,6 +122,130 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     assert old_proc.terminated is True
     assert _web_server_messaging._whatsapp_onboarding_sessions["existing-creds"].account_phone == "15551234567"
     _web_server_messaging._whatsapp_onboarding_sessions.clear()
+
+
+def test_start_whatsapp_onboarding_needs_qr_shows_bridge_qr(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text("{}", encoding="utf-8")
+    followed = []
+
+    monkeypatch.setattr(_web_server_messaging, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(ws.secrets, "token_urlsafe", lambda size: "needs-qr")
+    monkeypatch.setattr(
+        _rt_messaging,
+        "fetch_whatsapp_bridge_health",
+        lambda port=3000, timeout=2: {"status": "needs_qr", "linked": False, "qr": "qr-from-bridge"},
+    )
+    monkeypatch.setattr(
+        _rt_messaging,
+        "_start_whatsapp_link_followup",
+        lambda decision, pairing_id, session_path, mode: followed.append(decision),
+    )
+
+    result = asyncio.run(
+        _rt_messaging.start_whatsapp_onboarding(
+            _web_models.WhatsAppOnboardingStart(mode="bot", allowed_users="")
+        )
+    )
+
+    assert result["status"] == "waiting"
+    assert result["qr_payload"] == "qr-from-bridge"
+    assert result["account_id"] is None
+    assert followed == ["watch"]
+    assert (session_dir / "creds.json").exists()
+    _web_server_messaging._whatsapp_onboarding_sessions.clear()
+
+
+def test_start_whatsapp_onboarding_logged_out_clears_session(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text('{"me":{"id":"dead"}}', encoding="utf-8")
+    followed = []
+
+    monkeypatch.setattr(_web_server_messaging, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(ws.secrets, "token_urlsafe", lambda size: "logged-out")
+    monkeypatch.setattr(
+        _rt_messaging,
+        "fetch_whatsapp_bridge_health",
+        lambda port=3000, timeout=2: {"status": "logged_out", "linked": False},
+    )
+    monkeypatch.setattr(
+        _rt_messaging,
+        "_start_whatsapp_link_followup",
+        lambda decision, pairing_id, session_path, mode: followed.append((decision, session_path.exists())),
+    )
+
+    result = asyncio.run(
+        _rt_messaging.start_whatsapp_onboarding(
+            _web_models.WhatsAppOnboardingStart(mode="bot", allowed_users="")
+        )
+    )
+
+    assert result["status"] == "starting"
+    assert result["qr_payload"] is None
+    assert followed == [("clear_and_pair", False)]
+    assert not session_dir.exists()
+    assert list(tmp_path.iterdir()) == []
+    _web_server_messaging._whatsapp_onboarding_sessions.clear()
+
+
+def test_start_whatsapp_onboarding_creds_without_bridge_are_not_linked(monkeypatch, tmp_path):
+    from hermes_cli import web_server as ws
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text("{}", encoding="utf-8")
+    followed = []
+
+    monkeypatch.setattr(_web_server_messaging, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(ws.secrets, "token_urlsafe", lambda size: "stale-creds")
+    monkeypatch.setattr(_rt_messaging, "fetch_whatsapp_bridge_health", lambda port=3000, timeout=2: None)
+    monkeypatch.setattr(
+        _rt_messaging,
+        "_start_whatsapp_link_followup",
+        lambda decision, pairing_id, session_path, mode: followed.append(decision),
+    )
+
+    result = asyncio.run(
+        _rt_messaging.start_whatsapp_onboarding(
+            _web_models.WhatsAppOnboardingStart(mode="bot", allowed_users="")
+        )
+    )
+
+    assert result["status"] != "connected"
+    assert result["qr_payload"] is None
+    assert followed == ["pair"]
+    assert (session_dir / "creds.json").exists()
+    _web_server_messaging._whatsapp_onboarding_sessions.clear()
+
+
+def test_pairing_logged_out_event_waits_for_qr():
+    record = _web_server_messaging._WhatsAppOnboardingSession(
+        proc=None,
+        mode="bot",
+        allowed_users="",
+        session_path="/tmp/session",
+        expires_at="2099-01-01T00:00:00Z",
+        expires_at_ts=time.time() + 600,
+        status="starting",
+        account_id="15551234567:1@s.whatsapp.net",
+        qr_payload="stale",
+    )
+
+    _rt_messaging._apply_pairing_event(record, {"event": "logged_out", "reason": 401})
+    assert record.status == "waiting"
+    assert record.qr_payload is None
+    assert record.account_id is None
+    assert record.error is None
+
+    _rt_messaging._apply_pairing_event(record, {"event": "qr", "qr": "fresh-qr"})
+    assert record.status == "waiting"
+    assert record.qr_payload == "fresh-qr"
 
 
 

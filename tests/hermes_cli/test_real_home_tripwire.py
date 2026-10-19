@@ -231,6 +231,45 @@ def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, 
     assert _pm_generation_dirs([tmp_path / "checkout" / ".venv", tmp_path / "other" / "venv"]) == set()
 
 
+def test_separate_installed_checkout_allows_only_metadata(tmp_path, monkeypatch):
+    """A native process scan stats open code files; it never reads their bytes."""
+    from tests.home_io_guard import HomeIOGuard
+
+    home = tmp_path / "installed-home"
+    checkout = home / "hermes-agent"
+    checkout.mkdir(parents=True)
+    code = checkout / "source.py"
+    code.write_text("unchanged", encoding="utf-8")
+    state = home / "auth.json"
+    state.write_text("private", encoding="utf-8")
+    with monkeypatch.context() as patcher:
+        HomeIOGuard(lambda: [home]).install(patcher)
+        assert code.stat().st_size == len("unchanged")
+        assert os.path.realpath(code) == str(code)
+        for operation in (code.read_bytes, lambda: code.write_text("changed"), code.unlink,
+                          state.stat, state.read_bytes):
+            with pytest.raises(AssertionError, match="REAL hermes home"):
+                operation()
+    assert code.read_text(encoding="utf-8") == "unchanged"
+    assert state.read_text(encoding="utf-8") == "private"
+
+
+@pytest.mark.platforms("posix")
+def test_installed_checkout_metadata_cannot_follow_a_link_into_profile_state(tmp_path):
+    from tests.home_io_guard import HomeIOGuard
+
+    home = tmp_path / "installed-home"
+    checkout = home / "hermes-agent"
+    checkout.mkdir(parents=True)
+    state = home / "auth.json"
+    state.write_text("private", encoding="utf-8")
+    link = checkout / "state-link"
+    link.symlink_to(state)
+    guard = HomeIOGuard(lambda: [home])
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(link, metadata=True)
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

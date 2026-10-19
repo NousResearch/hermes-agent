@@ -10,9 +10,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import tempfile
 import threading
@@ -21,6 +23,7 @@ from hermes_dir_acl import make_user_dir
 from hermes_state_runtime import RuntimeStoreError
 from utils import fsync_directory
 
+logger = logging.getLogger(__name__)
 
 _API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
 _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
@@ -34,23 +37,37 @@ _lease_lock = threading.Lock()
 _lease_scope = ContextVar('native_media_lease_scope', default=None)
 
 
+class _CaptureScope(list):
+    def __init__(self, authority):
+        super().__init__()
+        self.authority = authority
+        self.all_paths = []
+        self.abandoned = False
+        self.write_started = False
+
+    def append(self, path):
+        super().append(path)
+        self.all_paths.append(path)
+
+
 @contextmanager
-def capture_lease():
+def capture_lease(authority=None):
     """Hold every path captured inside this block (capture through admission commit or refusal)
     against a concurrent release: an older turn's settlement or cancellation that names the same
     content-addressed bytes would otherwise unlink them before the new admission holds them."""
-    token = _lease_scope.set([])
+    scope = _CaptureScope(authority)
+    token = _lease_scope.set(scope)
     try:
-        yield
+        yield scope
     finally:
         drop_capture_lease()
         _lease_scope.reset(token)
 
 
-def drop_capture_lease(paths=None):
+def drop_capture_lease(paths=None, *, scope=None):
     """End this scope's lease on *paths* (default: all) early, e.g. before a refused admission
     releases its own fresh capture, which its lease would otherwise keep from collection."""
-    held = _lease_scope.get()
+    held = scope if scope is not None else _lease_scope.get()
     if not held:
         return
     with _lease_lock:
@@ -59,6 +76,26 @@ def drop_capture_lease(paths=None):
             _leases[path] -= 1
             if _leases[path] <= 0:
                 del _leases[path]
+
+
+async def abandon_capture(scope):
+    """Mark *scope*'s capture abandoned and release it, once: no row can own these bytes. A no-op for no
+    scope, a scope without an authority, or one already abandoned (its release ran or is arranged)."""
+    if scope is None or scope.authority is None or scope.abandoned:
+        return
+    scope.abandoned = True
+    await release_abandoned_capture(scope)
+
+
+async def release_abandoned_capture(scope):
+    """Collect every path published by an abandoned worker, including after its caller left."""
+    if scope.authority is None:
+        return
+    drop_capture_lease(scope=scope)
+    references = [{'path': path, 'sha256': Path(path).parent.name} for path in set(scope.all_paths)]
+    if references:
+        import asyncio
+        await asyncio.to_thread(release_unheld_media, scope.authority.db, references)
 
 
 def native_inputs_store():
@@ -461,14 +498,19 @@ def collect_unheld_api_images(db):
     unowned, so it collects nothing."""
     from hermes_constants import get_hermes_home
     if Path(db.db_path).resolve().parent != get_hermes_home().resolve():
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             'Skipped retained API image collection: %s is not the active profile store', db.db_path)
         return 0
     root = _media_root()
-    return release_unheld_media(db, [
-        {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
-        if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+    try:
+        return release_unheld_media(db, [
+            {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
+            if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+    except sqlite3.DatabaseError:
+        # Callers run after a committed delete or during startup recovery: neither may fail on it.
+        # ``DatabaseError`` also covers a corrupt store, not only ``OperationalError`` (locked, limits).
+        logger.exception('API image collection failed; files stay for the next sweep')
+        return 0
 
 
 def _history_mentions(conn, references, after_id=0):
@@ -484,10 +526,12 @@ def _history_mentions(conn, references, after_id=0):
         for tail in (reference['sha256'] + sep + Path(raw).name for sep in ('/', '\\')):
             needles[tail] = needles[json.dumps(tail)[1:-1]] = raw
     prefixes = sorted({reference['sha256'] for reference in references})
-    match = ' OR '.join(['instr(content,?)'] * len(prefixes))
-    query = f'SELECT content FROM messages WHERE ({match})' + (' AND id>?' if after_id else '')
+    # The digests are ONE bound JSON array, never one ``instr`` term each: the statement's size
+    # must not grow with the candidate count (SQLite's expression-depth limit fails at ~1000 terms).
+    query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages '
+             'WHERE EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))' + (' AND id>?' if after_id else ''))
     mentioned = set()
-    for (content,) in conn.execute(query, (*prefixes, *((after_id,) if after_id else ()))):
+    for (content,) in conn.execute(query, (json.dumps(prefixes), *((after_id,) if after_id else ()))):
         text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
         mentioned.update(raw for needle, raw in needles.items() if needle in text)
     return mentioned

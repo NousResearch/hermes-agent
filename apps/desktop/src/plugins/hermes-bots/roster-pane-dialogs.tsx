@@ -67,7 +67,7 @@ export function renderRosterDialogs({
       />
       <CreateGroupChatDialog
         onClose={() => setGroupCreateOpen(false)}
-        onCreated={groupName => openGroupChat(groupName)}
+        onCreated={(group, origin) => openGroupChat(group, origin)}
         open={groupCreateOpen} // Full multi-source roster: group chats can seat bots from other
         // registered connections — their turns route to their own machines.
         roster={roster}

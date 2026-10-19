@@ -61,6 +61,9 @@ class SessionState:
         self.request_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
+        # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
+        # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
+        self.gaps = self.attached_gaps = 0
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})
@@ -71,6 +74,12 @@ class SessionState:
         if self.info.get("title"):
             self.title = self.info["title"]
 
+    def runs_route(self, model, provider=""):
+        """Whether the session runs ``model`` (and ``provider``, when both sides name one)."""
+        current, current_provider = self.info.get("model"), self.info.get("provider")
+        return bool(current) and model == current and not (
+            provider and current_provider and provider != current_provider)
+
     def apply_event(self, kind, payload):
         if kind in ("session.info", "session.updated") and isinstance(payload, dict):
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})
@@ -79,10 +88,16 @@ class SessionState:
         elif kind == "todo.updated" and isinstance(payload, dict):
             self.todos = list(payload.get("todos") or [])
         elif kind == "session.usage" and isinstance(payload, dict):
-            self.apply_usage(payload.get("usage") if isinstance(payload.get("usage"), dict) else payload)
+            # The gateway's frame carries the flat counters next to a nested TUI ``usage`` view this
+            # reader can't map (``session_usage.usage_frame``): the counters win when present.
+            nested = payload.get("usage")
+            flat = isinstance(payload.get("api_calls"), int) or not isinstance(nested, dict)
+            self.apply_usage(payload if flat else nested)
         elif kind == "request.cancel" and isinstance(payload, dict):
             for listener in list(self.request_listeners):
                 listener(payload)
+        elif kind == "session.replay_gap":
+            self.gaps += 1
 
     def apply_usage(self, usage):
         """One session-cumulative usage dict (``session.usage`` payload or ``session.stats`` result)."""
@@ -305,8 +320,17 @@ class GatewayConnection:
             return False
         return True
 
-    def call(self, method, *, timeout=None, **params):
-        return self.call_tagged(method, timeout=timeout, **params)[0]
+    def call(self, method, *, timeout=None, abandon=None, **params):
+        return self.call_tagged(method, timeout=timeout, abandon=abandon, **params)[0]
+
+    def reattach(self, session_id, abandon=None):
+        """``session.resume`` after a replay gap; its snapshot names the subscription to detach."""
+        state = self.state(session_id)
+        gaps = state.gaps
+        snapshot = self.call("session.resume", session_id=session_id, abandon=abandon)
+        state.adopt_snapshot(snapshot)
+        state.attached_gaps = gaps  # a gap during this resume (or a wait given up) still owes one
+        return snapshot
 
     def _send(self, method, budget, params):
         """``(future, epoch)`` of one request sent on the live socket (see :meth:`call_tagged`)."""
@@ -379,13 +403,21 @@ class GatewayConnection:
             wake.set()  # ends the watcher above
             await asyncio.gather(stop, return_exceptions=True)
 
-    def call_tagged(self, method, *, timeout=None, **params):
+    def call_tagged(self, method, *, timeout=None, abandon=None, **params):
         """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
-        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
+        is tied to that gateway life even if another caller redials before this one reads ``epoch``.
+        ``abandon`` (polled) true stops the wait with :class:`CallStopped`; the answer is dropped."""
+        from concurrent.futures import wait
         budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
+        if abandon is not None and abandon():
+            raise CallStopped(method)
         future, epoch = self._send(method, budget, params)
+        deadline = time.monotonic() + budget + 5
         try:
-            return future.result(budget + 5), epoch
+            while abandon is not None and not wait([future], 0.1).done and time.monotonic() < deadline:
+                if abandon():
+                    raise CallStopped(method)
+            return future.result(max(deadline - time.monotonic(), 0)), epoch
         except TimeoutError as exc:
             future.cancel()
             raise GatewayClientError(f"Gateway did not answer {method}") from exc

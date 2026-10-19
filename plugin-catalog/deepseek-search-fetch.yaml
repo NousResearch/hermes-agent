@@ -1,20 +1,21 @@
 name: deepseek-search-fetch
 repo: https://github.com/JasonSwindle/hermes-deepseek-search-fetch
-sha: 21d6653087835f14946b3850be4f6fd089fb7b56
+sha: 68c9b735288ce9a38f1108eec22707c9880da6dd
 description: "DeepSeek Search & Fetch as a backend for the built-in web_search and web_extract. Disclosure — sends web_search queries and web_extract URLs to api.deepseek.com with your DEEPSEEK_API_KEY and DeepSeek fetches the pages server-side; billed to your DeepSeek balance per successful request; no other endpoint, no telemetry, no file or shell access."
 maintainer: JasonSwindle
 tier: community
 category: web
 docs_url: https://github.com/JasonSwindle/hermes-deepseek-search-fetch#readme
-version: "1.0.1"
+version: "1.0.7"
+title: "DeepSeek Search & Fetch"
+image: https://raw.githubusercontent.com/JasonSwindle/hermes-deepseek-search-fetch/68c9b735288ce9a38f1108eec22707c9880da6dd/docs/banner.png
 platforms: []
 known_issues:
-  - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free)."
-  - "web_extract calls DeepSeek's fetch endpoint one URL at a time, so a multi-URL extract runs sequentially."
+  - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free); web_extract calls Fetch one URL at a time, so multi-URL extracts run sequentially and stop starting new URLs 110s in (the extract_deadline setting, clamped 5-115, must stay below web.extract_timeout); and ori_question is not forwarded, because Hermes hands the provider only the query and a result limit."
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env:
     - DEEPSEEK_API_KEY
-requires_hermes: ">=0.18.1"
+requires_hermes: ">=0.22.0"

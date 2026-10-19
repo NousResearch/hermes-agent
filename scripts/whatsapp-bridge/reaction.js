@@ -20,7 +20,13 @@ export function registerReactionRoute(app, {
   getSocket,
   getConnectionState,
   sendWithTimeout,
+  trackSentMessageId,
 }) {
+  // Without it our own reaction comes back from Baileys as a fromMe upsert that
+  // intake cannot tell from an owner-typed one, and it loops as a new turn.
+  if (typeof trackSentMessageId !== 'function') {
+    throw new TypeError('registerReactionRoute: trackSentMessageId is required');
+  }
   app.post('/react', async (req, res) => {
     if (!getSocket() || getConnectionState() !== 'connected') {
       return res.status(503).json({ error: 'Not connected' });
@@ -35,7 +41,8 @@ export function registerReactionRoute(app, {
 
     try {
       const payload = buildReactionPayload({ chatId, messageId, emoji, senderId, fromMe });
-      await sendWithTimeout(chatId, payload);
+      const sent = await sendWithTimeout(chatId, payload);
+      trackSentMessageId(sent);
       return res.json({ success: true });
     } catch (err) {
       return res.status(500).json({ error: err.message });

@@ -32,7 +32,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
-import { createOutboundIdTracker } from './outbound_ids.js';
+import { createOutboundIdTracker, isOwnSendEcho } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import { registerReactionRoute } from './reaction.js';
 import {
@@ -745,8 +745,15 @@ async function startSocket() {
       });
       event.fromOwner = fromOwner;
 
-      // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      // Ignore Hermes' own sends (replies, reactions) echoed back as fromMe, to avoid loops.
+      const ownEcho = isOwnSendEcho({
+        fromMe: msg.key.fromMe,
+        messageId: msg.key.id,
+        body: event.body,
+        replyPrefix: REPLY_PREFIX,
+        recentlySent: recentlySentIds,
+      });
+      if (ownEcho) {
         if (WHATSAPP_DEBUG) {
           emitDebugEvent({
             stage: 'ignored',
@@ -1066,6 +1073,7 @@ registerReactionRoute(app, {
   getSocket: () => sock,
   getConnectionState: () => connectionState,
   sendWithTimeout,
+  trackSentMessageId,
 });
 
 // Typing indicator

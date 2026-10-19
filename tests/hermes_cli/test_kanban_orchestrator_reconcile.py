@@ -151,7 +151,7 @@ def test_failure_below_the_limit_leaves_no_reconciliation_card(board):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         assert _fail_once(kb, kbd, conn, child) is False
         assert kb.get_task(conn, child).status == "ready"
         assert _reconcile_cards(kb, conn) == []
@@ -211,7 +211,7 @@ def test_reconciliation_card_is_created_once_across_repeated_ticks(board):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         _exhaust(kb, kbd, conn, child)
         first = _reconcile_cards(kb, conn)
         assert len(first) == 1
@@ -232,7 +232,7 @@ def test_repeated_unblock_and_re_exhaust_files_exactly_one_open_card(board):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         for _ in range(6):
             _exhaust(kb, kbd, conn, child)
             kb.recompute_ready(conn, failure_limit=FAILURE_LIMIT)
@@ -308,7 +308,7 @@ def test_a_reconcile_failure_does_not_take_the_dispatcher_tick_down(board, monke
 
     monkeypatch.setattr(kanban_reconcile, "waiting_orchestrator_roots", _boom)
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         _exhaust(kb, kbd, conn, child)
         assert kb.get_task(conn, child).status == "blocked"
         assert _reconcile_cards(kb, conn) == []
@@ -329,7 +329,7 @@ def test_concurrent_dispatch_ticks_still_file_one_card(board):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         _exhaust(kb, kbd, conn, child)
         assert len(_reconcile_cards(kb, conn)) == 1
         # A second generation of the same failure, filed by racing ticks.
@@ -365,7 +365,7 @@ def test_reconciliation_card_survives_reopening_the_board(board):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         _exhaust(kb, kbd, conn, child)
         before = _reconcile_cards(kb, conn)
     with kbc.connect_closing() as conn:
@@ -381,7 +381,7 @@ def test_without_an_orchestrator_nothing_is_created(board_without_orchestrator):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         _exhaust(kb, kbd, conn, child)
         assert kb.get_task(conn, child).status == "blocked"
         assert _reconcile_cards(kb, conn) == []
@@ -407,7 +407,7 @@ def test_a_failing_reconciliation_card_does_not_chain(board):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
-        root, child = _fanout(kb, conn)
+        _root, child = _fanout(kb, conn)
         _exhaust(kb, kbd, conn, child)
         cards = _reconcile_cards(kb, conn)
         assert len(cards) == 1

@@ -78,7 +78,7 @@ def orchestrator_profile() -> Optional[str]:
 
         value = (load_config() or {}).get("kanban", {}).get("orchestrator_profile")
         value = _canonical_assignee((value or "").strip() or None)
-    except Exception as exc:  # pragma: no cover - config I/O is best effort
+    except (OSError, AttributeError, ValueError) as exc:  # pragma: no cover - config I/O is best effort
         logger.debug("kanban reconcile: could not read orchestrator_profile: %s", exc)
         return None
     return value or None
@@ -203,7 +203,7 @@ def _create(
         with kb.write_txn(conn):
             for owner in (task_id, *roots):
                 kb._append_event(conn, owner, "reconcile_requested", payload)
-    except Exception as exc:  # pragma: no cover - the card is what matters
+    except sqlite3.Error as exc:  # pragma: no cover - the card is what matters
         logger.debug("kanban reconcile: could not record the event for %s: %s", task_id, exc)
     return card_id
 
@@ -283,8 +283,8 @@ def reconcile_gave_up(
             body=body, orchestrator=orchestrator, task_id=task_id, roots=roots,
             board=board,
         )
-    except Exception as exc:
-        logger.warning("kanban reconcile: gave_up handling failed for %s: %s", task_id, exc)
+    except Exception:
+        logger.exception("kanban reconcile: gave_up handling failed for %s", task_id)
         return None
 
 
@@ -359,6 +359,6 @@ def reconcile_self_review(
             title=f"Route an independent reviewer for {task_id}", body=body,
             orchestrator=orchestrator, task_id=task_id, roots=[], board=board,
         )
-    except Exception as exc:
-        logger.warning("kanban reconcile: self-review handling failed for %s: %s", task_id, exc)
+    except Exception:
+        logger.exception("kanban reconcile: self-review handling failed for %s", task_id)
         return None

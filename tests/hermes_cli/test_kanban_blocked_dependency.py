@@ -126,7 +126,7 @@ def test_failure_below_limit_retries_and_does_not_flag_the_waiter(kanban_home: P
 
 def test_retry_exhaustion_blocks_child_without_spinning(kanban_home: Path) -> None:
     with kbc.connect() as conn:
-        root, child = _build(conn)
+        _root, child = _build(conn)
         _exhaust(conn, child)
 
         c = kb.get_task(conn, child)

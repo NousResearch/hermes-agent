@@ -1760,6 +1760,21 @@ slash:
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
+  modern:
+    thought_for: "Thought for {seconds}s"
+    thought: "Thought"
+    working: "Working…"
+    preparing: "Preparing {what}…"
+    hint_steer: "steer"
+    hint_queue: "queue"
+    hint_interrupt: "interrupt"
+    hint_stop: "stop"
+    hint_commands: "commands"
+    hint_files: "files"
+    hint_shell: "shell"
+    placeholder_busy_steer: "type to steer this turn · Tab queues it for after"
+    placeholder_busy_interrupt: "type to redirect this turn · Tab queues it for after"
+    placeholder_busy_queue: "type to queue a message for after this turn"
   billing:
     # shared helpers (/topup + /subscription)
     load_failed: "{label}: {error}"
@@ -2331,6 +2346,7 @@ cli:
     queue_heading: "Queue · {count} queued · /queue list{controls}"
     more_queued: "+{count} more"
     transcript_unavailable: "Live transcript not available yet."
+    control_pending: "Sending…"
     steer_prompt: "Steer: "
     roster_empty: "No live subagents or background processes. Results arrive in the conversation."
     entry_gone: "This entry is no longer live."

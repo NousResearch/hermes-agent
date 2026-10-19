@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
+  modern:
+    thought_for: "Nachgedacht für {seconds}s"
+    thought: "Nachgedacht"
+    working: "Arbeitet…"
+    preparing: "Bereite {what} vor…"
+    hint_steer: "lenken"
+    hint_queue: "einreihen"
+    hint_interrupt: "unterbrechen"
+    hint_stop: "stoppen"
+    hint_commands: "Befehle"
+    hint_files: "Dateien"
+    hint_shell: "Shell"
+    placeholder_busy_steer: "tippen, um diesen Zug zu lenken · Tab reiht für danach ein"
+    placeholder_busy_interrupt: "tippen, um diesen Zug umzulenken · Tab reiht für danach ein"
+    placeholder_busy_queue: "tippen, um eine Nachricht für nach diesem Zug einzureihen"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Abrechnung konnte nicht geladen werden"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "Warteschlange · {count} wartend · /queue list{controls}"
     more_queued: "+{count} weitere"
     transcript_unavailable: "Live-Transkript noch nicht verfügbar."
+    control_pending: "Wird gesendet…"
     steer_prompt: "Steuern: "
     roster_empty: "Keine aktiven Subagenten oder Hintergrundprozesse. Ergebnisse erscheinen in der Konversation."
     entry_gone: "Dieser Eintrag ist nicht mehr aktiv."

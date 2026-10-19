@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
+  modern:
+    thought_for: "{seconds}秒考えました"
+    thought: "考えました"
+    working: "作業中…"
+    preparing: "{what} を準備中…"
+    hint_steer: "誘導"
+    hint_queue: "キュー"
+    hint_interrupt: "中断"
+    hint_stop: "停止"
+    hint_commands: "コマンド"
+    hint_files: "ファイル"
+    hint_shell: "シェル"
+    placeholder_busy_steer: "入力してこのターンを誘導 · Tab で後にキュー"
+    placeholder_busy_interrupt: "入力してこのターンを切り替え · Tab で後にキュー"
+    placeholder_busy_queue: "入力してこのターンの後にメッセージをキュー"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "請求情報を読み込めませんでした"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "キュー · {count} 件キュー待ち · /queue list{controls}"
     more_queued: "+{count} 件"
     transcript_unavailable: "ライブトランスクリプトはまだ利用できません。"
+    control_pending: "送信中…"
     steer_prompt: "ステア: "
     roster_empty: "稼働中のサブエージェントやバックグラウンドプロセスはありません。結果は会話内に届きます。"
     entry_gone: "この項目はすでに終了しています。"

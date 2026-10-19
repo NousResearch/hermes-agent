@@ -430,6 +430,15 @@ class A2AAdapter(BasePlatformAdapter):
             # task's answer too. Tombstone first (see _drop_swept_pending) so a reply already in flight
             # cannot resurrect the task behind our back.
             self._drop_swept_pending(tid)
+        # A parked task that exhausts the job budget is a terminal failure like any other, so a
+        # registered taskPushNotificationConfig must hear about it. _drop_swept_pending resolves the
+        # waiter with the sweep sentinel, which makes the late-finalize path skip _record_outcome —
+        # and _record_outcome is the only thing that pushes. Push here instead.
+        for tid in expired:
+            rec = self.tasks.get(tid)
+            if rec is not None:
+                self._send_push_notification(tid, rec["context_id"], rec.get("reply", ""),
+                                             protocol.STATE_FAILED)
         failed += expired
         protocol.metrics.tasks_failed += len(failed)
         return failed

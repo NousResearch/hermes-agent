@@ -1199,6 +1199,48 @@ class TestInboundRoundTrip:
         assert "A2A_JOB_TIMEOUT" in stored["reply"]
         assert "t-parked" not in adapter._parked
 
+    def test_job_budget_sweep_pushes_the_failure_to_the_registered_callback(self, monkeypatch):
+        """A parked task that exhausts A2A_JOB_TIMEOUT must notify its push callback.
+
+        The sweep tombstones through _drop_swept_pending, whose sentinel makes the late-finalize path
+        skip _record_outcome — and _record_outcome is the only thing that pushes. Without this push a
+        caller that registered taskPushNotificationConfig waits forever on a task already FAILED.
+        """
+        from plugins.platforms.a2a import adapter as adapter_mod
+        from plugins.platforms.a2a import security
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-parked", "c1", "peer")
+        adapter.tasks.set_state("t-parked", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-parked"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        adapter.tasks.set_push_config("t-parked", "http://push.example/a2a")
+        pending = {"task_id": "t-parked", "context_id": "c1", "peer": "peer",
+                   "future": adapter._add_pending("t-parked", "c1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        adapter._park_task(pending, "parked note")
+
+        sent = []
+        monkeypatch.setattr(security, "is_safe_callback_url", lambda url, **kw: True)
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(adapter_mod.urllib.request, "urlopen",
+                            lambda req, timeout=None: (sent.append(req), _Resp())[1])
+        before = protocol.metrics.push_sent
+
+        assert adapter._fail_orphans_once() == ["t-parked"]
+        assert len(sent) == 1, "the job-budget sweep must push exactly once"
+        status = json.loads(sent[0].data.decode("utf-8"))["statusUpdate"]["status"]
+        assert status["state"] == protocol.STATE_FAILED
+        assert "A2A_JOB_TIMEOUT" in protocol.extract_text(status["message"])
+        assert protocol.metrics.push_sent == before + 1
+
     def test_budget_sweep_leaves_no_pending_state_and_next_task_keeps_its_reply(self, monkeypatch):
         """The job-budget sweep must FULLY tear down an over-budget task.
 

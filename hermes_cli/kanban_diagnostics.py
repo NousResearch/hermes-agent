@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
 import time
+from hermes_cli.kanban_db_dependencies import parent_succeeded
 
 
 # Least → most urgent; sorted outputs put critical first.
@@ -548,7 +549,7 @@ def _rule_review_dependency_deadlock(task, events, runs, now, cfg) -> list[Diagn
         kind="review_dependency_deadlock", severity="error",
         title=f"Review handoff blocks {len(child_ids)} dependent task(s)",
         detail="This implementation is sticky-blocked for review while its downstream task(s) require "
-               "the implementation to be done or archived before they can run. Complete the finished "
+               "the implementation to be done before they can run. Complete the finished "
                "phase, unlink the incorrect dependency, or migrate this workflow to the first-class "
                "review lifecycle.",
         actions=actions,
@@ -558,7 +559,7 @@ def _rule_review_dependency_deadlock(task, events, runs, now, cfg) -> list[Diagn
 
 
 def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagnostic]:
-    """A ``running`` card with a direct parent that is not ``done``/``archived``:
+    """A ``running`` card with a direct parent that has not succeeded:
     the dependency gate is not holding it (the parent reopened mid-run, or the
     edge predates the running-child refusal) and ``kanban_complete`` will be
     refused until the parents finish. Graph-aware; mutates nothing."""
@@ -570,7 +571,7 @@ def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagno
     open_parents = [
         parent for parent in (graph.get("parents") or [])
         if isinstance(parent, dict) and parent.get("id")
-        and parent.get("status") not in ("done", "archived")
+        and not parent_succeeded(parent.get("status"))
     ]
     if not open_parents:
         return []
@@ -582,7 +583,7 @@ def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagno
         title=f"Running while {len(parent_ids)} parent(s) are not done",
         detail="This card is running concurrently with a parent it declares a dependency on, so the "
                "parent's work is not serialised ahead of it and completion will be refused until every "
-               "parent is done or archived. Finish the parent, or unlink the edge if it was never meant "
+               "parent is done. Finish the parent, or unlink the edge if it was never meant "
                "to gate this run.",
         actions=[_cli_hint("Unlink the parent that should not gate this run",
                            f"hermes kanban unlink {parent_ids[0]} {task_id}")],

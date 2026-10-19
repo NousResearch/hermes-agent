@@ -551,6 +551,7 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="systemd user scope exists only on Linux")
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):
@@ -801,7 +802,8 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    # Git porcelain uses forward slashes on Windows despite native Path spelling.
+    assert f"worktree {target.as_posix()}" in listed.replace("\\", "/")
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1138,6 +1140,7 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(kbd, "_live_worker_procs", {})  # Windows fake Popen is per-test
 
         task = kb.Task(
             id="t_dispatch_env",
@@ -1425,9 +1428,8 @@ def test_create_task_with_open_parent_emits_dependency_wait(kanban_home):
         assert wait[-1].payload["parent"] == parent
 
 
-def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
-    """archived is terminal for recompute_ready, so linking under an archived
-    parent must not demote a ready child (it would only flap back to ready)."""
+def test_link_tasks_archived_parent_is_not_success(kanban_home):
+    """Archival is cleanup, not successful completion of the dependency."""
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="archived parent")
         kb.archive_task(conn, parent)
@@ -1436,9 +1438,10 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
 
         gated = kb.link_tasks(conn, parent, child)
 
-        assert gated is False
-        assert kb.get_task(conn, child).status == "ready"
-        assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
+        assert gated is True
+        assert kb.get_task(conn, child).status == "todo"
+        assert "dependency_wait" in [e.kind for e in kb.list_events(conn, child)]
+        assert kb.recompute_ready(conn) == 0
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
@@ -1654,6 +1657,7 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
             self.pid = 4242
 
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(kbd, "_live_worker_procs", {})  # Windows fake Popen is per-test
 
     task = kb.Task(
         id="t_import_root", title="x", body=None, assignee="coder", status="ready",

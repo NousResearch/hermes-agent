@@ -153,6 +153,9 @@ def test_counter_reset_on_invalidated_descendants(conn):
 
 
 def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch):
+    # Prevent unrelated Pydantic plugin discovery from accessing the real
+    # editable-install metadata while the home I/O guard protects this test.
+    monkeypatch.setenv("PYDANTIC_DISABLE_PLUGINS", "__all__")
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     import importlib.util

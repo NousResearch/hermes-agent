@@ -7,7 +7,7 @@ instead of what the user actually asked. The strip lives once in MemoryManager
 so it covers the whole provider fan-out — not per backend.
 
 See: agent.skill_commands.extract_user_instruction_from_skill_message and
-MemoryManager._strip_skill_scaffolding.
+agent.memory_inputs.memory_user_text.
 """
 
 from agent.memory_manager import MemoryManager

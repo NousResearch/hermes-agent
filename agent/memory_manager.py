@@ -23,10 +23,10 @@ from agent.memory_caller_scope import bound_scope, caller_scope, claim_instance,
 # Moved to agent.memory_context / agent.memory_manager_tools; still importable here because agent.memory_manager is a public
 # module for plugins (hermes_cli/plugin_validate_private_imports.py).
 from agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from agent.memory_inputs import memory_messages, memory_user_text
 from agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
                                         memory_provider_tools_exposed, normalize_tool_schema)
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
-from agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_constants import hermes_home_key
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -339,13 +339,9 @@ class MemoryManager:
                                       level=logging.WARNING)
         return "\n\n".join(b for b in blocks if b and b.strip())
 
-    # A /skill or /bundle turn embeds the whole skill body in the model-facing message;
-    # providers get just the user's instruction (None for a bare invocation).
-    _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
-
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
-        clean_query = self._strip_skill_scaffolding(query)
+        clean_query = memory_user_text(query)
         if not clean_query or not self._owner_allows("prefetch"):
             return ""
         clean_query = _redact_for_provider(clean_query)
@@ -422,7 +418,7 @@ class MemoryManager:
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
         providers = list(self._providers)
-        clean_query = self._strip_skill_scaffolding(query) if providers else None
+        clean_query = memory_user_text(query) if providers else None
         if not clean_query or not self._owner_allows("queue_prefetch"):
             return
         clean_query = _redact_for_provider(clean_query)
@@ -452,12 +448,12 @@ class MemoryManager:
         verbatim in a provider's store (#115104).
         """
         providers = list(self._providers)
-        clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
+        clean_user_content = memory_user_text(user_content) if providers else None
         if not clean_user_content or not self._owner_allows("sync_turn"):
             return
         clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
             clean_user_content, assistant_content, messages)
-        optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
+        optional_kwargs = {"messages": memory_messages(redacted_messages), "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:
             kwargs: dict[str, Any] = {"session_id": session_id}
@@ -611,7 +607,8 @@ class MemoryManager:
         return result
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        if not self._owner_allows("on_turn_start"):
+        message = memory_user_text(message)
+        if message is None or not self._owner_allows("on_turn_start"):
             return
         message = _redact_for_provider(message)
 
@@ -626,7 +623,7 @@ class MemoryManager:
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if not self._owner_allows("on_session_end"):
             return
-        messages = _redact_messages_for_egress(messages or [])
+        messages = memory_messages(_redact_messages_for_egress(messages or []))
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
 
@@ -706,6 +703,7 @@ class MemoryManager:
         parts = []
         checkpoint_succeeded = False
         messages, evidence_messages = _redact_for_provider(messages or [], evidence_messages)
+        messages, evidence_messages = memory_messages(messages), memory_messages(evidence_messages)
         for provider in self._providers:
             version = self._checkpoint_api_version(provider)
             if version is None:

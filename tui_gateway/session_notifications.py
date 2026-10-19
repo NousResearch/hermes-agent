@@ -96,6 +96,15 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     resolved matches) — the fail-closed gate for addressed notifications, without the orphan-adoption fallback."""
     if session.get("_finalized"):
         return False
+    # A completion replayed at process start has no in-process owner. A matching
+    # persisted key alone can belong to a detached runtime whose old lease survived;
+    # requiring a current client prevents it from spending a full model turn unseen.
+    # Shared peer membership excludes stdio, even when it is the real TUI RPC channel
+    # (possibly wrapped for a dashboard sidecar), rather than a headless fallback sink.
+    if (evt.get("type") == "async_delegation" and evt.get("startup_replay")
+            and not (_session_has_live_transport(session)
+                     or (_stdio_is_rpc_channel and session.get("transport") is _stdio_transport))):
+        return False
     if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
         return True
     evt_key = str(evt.get("session_key") or "")
@@ -162,11 +171,29 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+# A retried notice the canonical ledger refuses (SESSION_NOT_OWNED persists while a gateway owns the
+# chat) waits before its requeue, doubling per session up to the kanban/loop poll period so the
+# poller thread never delays those polls by more than one period.
+_NOTIF_REFUSAL_BACKOFF_S = 0.25
+_NOTIF_REFUSAL_BACKOFF_MAX_S = _KANBAN_POLL_SECONDS
+
+
+def _notif_refusal_backoff(session: dict) -> None:
+    """Wait before requeueing a refused notice: this session's next delay doubles, to a cap."""
+    delay = session.get("_notif_refusal_delay") or _NOTIF_REFUSAL_BACKOFF_S
+    session["_notif_refusal_delay"] = min(delay * 2, _NOTIF_REFUSAL_BACKOFF_MAX_S)
+    time.sleep(delay)
+
+
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
     """Only the execution gate can acknowledge a claimed notification turn."""
     try:
         accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
-        if not accepted:
+        if accepted:
+            session.pop("_notif_refusal_delay", None)
+        else:
+            # Admission can refuse even after the local running flag was claimed. A caller that
+            # requeues the notice backs off first (_notif_refusal_backoff); the rest return at once.
             _notif_release_turn(session)
         return accepted
     except Exception as exc:
@@ -531,8 +558,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
         if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                             "notification poller dispatch failed", **kwargs):
+                             "notification poller dispatch failed", report_ownership_refusal=False, **kwargs):
             _notif_defer_event(evt, claim)
+            _notif_refusal_backoff(session)  # requeued: queue.get(timeout=...) would never wait
             return
     except Exception:
         release_event_delivery(evt, claim)
@@ -637,10 +665,13 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         if text is not None:
             if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                                  "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
+                                 report_ownership_refusal=False,
                                  display_metadata={"display_text": batch.display_text(registry)}):
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,
                         deferred.append if deferred is not None else registry.completion_queue.put)
+                if deferred is None:  # requeued onto the live queue (a shutdown drain hands them back)
+                    _notif_refusal_backoff(session)
                 return
     except Exception:
         for event, _text, claim in claimed:

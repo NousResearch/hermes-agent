@@ -264,6 +264,25 @@ def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
     assert agent.get_rate_limit_state() is None
 
 
+def test_gateway_session_usage_frame_feeds_the_status_bar_mid_turn(make_agent):
+    """The frame the gateway really publishes (`usage_frame`: flat counters plus the nested TUI
+    `usage` view) lands the flat counters, not the nested view, on main's attributes mid-turn."""
+    from gateway.session_usage import usage_frame
+    usage = dict(SESSION_USAGE, compression_count=2)
+    seen = []
+    agent, _ = make_agent([frame("session.usage", usage_frame(usage), admission=None),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    agent.context_compressor.context_length = 0
+    # Runs after the agent's own listener: what the status bar shows right after the mid-turn frame.
+    agent._state().usage_listeners.append(lambda cached: seen.append((
+        dict(cached), agent.session_api_calls, agent.context_compressor.context_length,
+        agent.context_compressor.compression_count, list(agent._api_latency_history))))
+    agent.run_conversation("q")
+    cached, *bar = seen[0]
+    assert bar == [5, 128000, 2, [0.2]]
+    assert cached["api_calls"] == 5 and "context_max" not in cached
+
+
 def test_turn_end_reads_session_stats_cumulative(make_agent):
     """/usage after a turn shows main's session-cumulative totals (session.stats), not the turn's."""
     agent, client = make_agent([frame("message.complete", {"text": "x", "outcome": "completed"})],
@@ -417,6 +436,21 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
     assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
     assert agent2.reasoning_config == {"enabled": False}
+
+
+def test_an_explicit_level_the_session_already_inherits_is_still_committed(make_agent):
+    """``/reasoning high`` (the rebuilt agent) or a model pick's ``--reasoning high`` while the session runs
+    high by inheritance: still the owner's reasoning mutation, so a later profile change can't move it. An
+    implicit re-derivation (/new, a one-turn restore) of the same level commits nothing."""
+    from types import SimpleNamespace
+    from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+    agent, client = make_agent([])
+    agent.connection.state(SID).info["reasoning_effort"] = "high"
+    GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": True, "effort": "high"},
+                 push_reasoning=True)
+    _apply_reasoning_after_switch(SimpleNamespace(agent=agent), "high", persist_global=False)
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    assert [p["payload"] for m, p in client.calls if m == "session.mutate"] == [{"effort": "high"}] * 2
 
 
 def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(make_agent):
@@ -713,10 +747,10 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
 
 
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
-    """/model, /model --once and /new's reset to the config default call main's
-    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
-    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
-    next turn reads the committed model from the session, not the old one."""
+    """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
+    the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
+    and the agent main rebuilds for the next turn reads the committed model from the session.
+    ``/model --once`` is not this path: that pick is one admission's ``model_override``."""
     agent, client = make_agent([], model="old-model", provider="openrouter")
     agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
                        base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)
@@ -823,3 +857,45 @@ def test_a_background_review_summary_during_a_turn_is_printed_like_mains(make_ag
     agent._print_fn = printed.append
     agent.run_conversation("hi")
     assert printed == ["  💾 Self-improvement review: Memory updated"]
+
+
+def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_agent, monkeypatch):
+    """Another viewer (Desktop/Ink) locks every answer of the batch the classic CLI is showing: the
+    gateway settles it and withdraws the request (``request.cancel`` reason ``resolved``). main's real
+    batch panel (``CLIModalMixin._clarify_callback``) blocks the agent thread, so the withdrawal must
+    close it from the connection thread; the pump then reads the turn's completion instead of sitting
+    in the modal until clarify_timeout."""
+    import cli
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    monkeypatch.setattr(cli, "CLI_CONFIG", {"agent": {"clarify_timeout": 60}})
+    panel = _make_cli_stub()
+    panel._ring_bell = lambda **kw: None
+    request = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]},
+        {"qid": "q1", "question": "size?", "choices": ["s", "l"]}]}}
+    withdrawn = frame("request.cancel", {"id": "srq-clr", "method": "clarify", "reason": "resolved"}, admission=None)
+    agent, _client = make_agent(
+        [request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        clarify_callback=panel._clarify_callback, modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(agent.run_conversation("ask")), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its clarify panel"
+    assert panel._clarify_state is None
+    assert out["completed"] is True or out.get("final_response") is not None
+    # Its late reply is a cancel the gateway drops (the request is already settled).
+    assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
+
+
+def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
+    agent, _client = make_agent([])
+    closed = []
+    agent.modal_withdraw_callback = closed.append
+    agent._open_request = ("srq-mine", "clarify")
+    agent._on_request_withdrawn({"id": "srq-other", "method": "clarify", "reason": "resolved"})
+    assert closed == []
+    agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
+    assert closed == ["clarify"]

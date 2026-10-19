@@ -35,23 +35,42 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'api_calls', 'model', 'provider', 'prompt_tokens', 'completion_tokens', 'total_tokens',
                  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
-                 'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens')
+                 'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
+                 'billing_block')
+# ``billing_block`` (``agent/billing_links.BillingBlock`` plus ``unverified``) is the one structured field.
+BILLING_FIELDS = ('provider', 'provider_label', 'model', 'billing_url', 'is_nous', 'message', 'unverified')
+
+
+def _scalar(value):
+    return value is None or type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 4096)
+
+
+def _billing_block(value):
+    return isinstance(value, dict) and not set(value) - set(BILLING_FIELDS) and all(map(_scalar, value.values()))
 
 
 def result_frame(result):
     """Worker side: the receipt fields of ``run_conversation``'s result, scalars only, text bounded."""
-    return {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
-            if k in RESULT_FIELDS and (v is None or type(v) in (bool, int, float, str))}
+    frame = {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
+             if k in RESULT_FIELDS and k != 'billing_block' and (v is None or type(v) in (bool, int, float, str))}
+    block = result.get('billing_block')
+    if isinstance(block, dict):
+        frame['billing_block'] = {k: v[:4096] if isinstance(v, str) else v for k, v in block.items()
+                                  if k in BILLING_FIELDS and (v is None or type(v) in (bool, int, float, str))}
+    return frame
 
 
 def accept_result(result):
     """Owner side of the worker's result frame: ``(result, usage)`` in the in-process turn's shape
     (gateway projection: prompt/completion tokens as input/output), or ValueError."""
     if (not isinstance(result, dict) or set(result) - set(RESULT_FIELDS) or not isinstance(result.get('final_response'), str)
-            or any(not (value is None or type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 4096))
-                   for key, value in result.items() if key != 'final_response')):
+            or result.get('billing_block') is not None and not _billing_block(result['billing_block'])
+            or any(not _scalar(value) for key, value in result.items() if key not in ('final_response', 'billing_block'))):
         raise ValueError('invalid_worker_result')
     accepted = dict(result)
+    if accepted.get('billing_block') is None:
+        # Every failure other than a billing wall carries no block.
+        accepted.pop('billing_block', None)
     turn_in, turn_out = accepted.pop('_turn_input_tokens', None), accepted.pop('_turn_output_tokens', None)
     if any(value is not None and (type(value) is not int or value < 0) for value in (turn_in, turn_out)):
         raise ValueError('invalid_worker_result')
@@ -423,8 +442,9 @@ def hello():
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
     handle one or two hops above; the owner, never this process, decides whether they match."""
     import psutil
+    from hermes_cli.process_identity import process_birth
     me = psutil.Process()
-    return {'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]}
+    return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
 def main():

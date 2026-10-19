@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
 import logging
 import queue
 import re
@@ -88,8 +87,17 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
         verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
         payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
     authority.publish_execution(session_id, generation, kind, payload)
-    from gateway.session_api_turn import publish_api_tool_event
+    from gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
     publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
+    # A worker sends no progress events: progress-only observers get the executor's preview of its
+    # args and the frame's own verdict, taken before the result was bounded.
+    if kind == "tool.start":
+        from agent.display import build_tool_preview
+        publish_api_tool_progress(authority, session_id, generation, "tool.started", name,
+                                  build_tool_preview(name, args), args)
+    else:
+        publish_api_tool_progress(authority, session_id, generation, "tool.completed", name, None, None,
+                                  is_error=frame["is_error"], result=result)
     return True
 
 
@@ -139,14 +147,18 @@ class GatewayTurnProgressMixin:
     def progress_callback(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args: dict | None = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        if local_viewer_turn(self):
+            try:
+                from gateway import local_viewer_events
+                local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
+            except Exception:
+                # Best-effort: a viewer frame never blocks the failure notice below, but a lost one is logged.
+                logger.debug("Local viewer progress publish failed for %s", event_type, exc_info=True)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
-        if local_viewer_turn(self):
-            from gateway import local_viewer_events
-            local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
@@ -291,13 +303,11 @@ class GatewayTurnProgressMixin:
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
-                from agent.display import get_tool_preview_max_len
-                pl = get_tool_preview_max_len()
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
+                from agent.display import get_tool_preview_max_len, verbose_tool_args_text
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.
-                if pl > 0 and len(args_str) > pl:
-                    args_str = args_str[:pl - 3] + "..."
+                args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
+                                                  getattr(adapter, "supports_code_blocks", False))
                 code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:
                 code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
@@ -789,7 +799,8 @@ class GatewayTurnProgressMixin:
         if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
             return
         ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
+        # The bot whose call the guild was resolved on (#139345), not the default profile's.
+        adapter = self._runner._delivery_adapter_for(ctx.source)
         if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
             return
         try:

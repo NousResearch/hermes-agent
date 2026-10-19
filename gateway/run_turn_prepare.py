@@ -39,19 +39,21 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
+def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
-    config and launch credential, walking its own fallback chain on an AuthError. Module-level so
-    tests that bind the method onto bare namespaces still reach it."""
+    config and launch credential, walking its own fallback chain on an AuthError unless
+    ``fallback=False`` (a session control asking which route the session itself runs). Module-level
+    so tests that bind the method onto bare namespaces still reach it."""
     from gateway.run import _runtime_agent_kwargs
-    from gateway.session_policy import launch_key
+    from gateway.session_policy import route_launch_key
     from gateway.session_worker_construct import route_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
-    runtime, fallback_entry = route_runtime(policy, frozen, model, launch_key(authority, policy))
+    runtime, fallback_entry = route_runtime(policy, frozen, model, route_launch_key(authority, policy, frozen),
+                                            fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
@@ -91,12 +93,13 @@ def _recover_or_remember_model(runner, skey, model):
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
+        user_config: Optional[dict] = None, fallback: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
-        (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
+        (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
+        keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
@@ -107,7 +110,7 @@ class GatewayTurnPrepareMixin:
         self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            return _resolve_policy_agent_runtime(self, policy)
+            return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -328,6 +331,23 @@ class GatewayTurnPrepareMixin:
                 source, touch_activity=not bool(getattr(event, "internal", False)),
             )
         session_key = session_entry.session_key
+        claim = getattr(event, "_claimed_owner", None)
+        if claim is not None:
+            from gateway.session_authorities import active_authority
+            authority, (owner, generation) = active_authority(self), claim
+            # /new and /reset latch a Stop for the claimed generation before they move the route;
+            # /resume, /branch and compression don't, so those turns run where the route points.
+            stopped = generation in (authority.pending_stops.get(owner), authority.delivered_stops.get(owner))
+            if stopped and session_entry.session_id not in await asyncio.to_thread(
+                    authority.db.get_compression_chain, owner):  # preflight's continuation walk
+                # It settles interrupted, as that Stop would have, and never runs on the fresh one.
+                logger.warning("Dropping a stopped claimed turn: its route moved from %s to %s before it ran",
+                               owner, session_entry.session_id)
+                from gateway.session_results import execution_result
+                captured = execution_result.get()
+                if captured is not None:
+                    captured['result'] = {'final_response': '', 'messages': [], 'interrupted': True}
+                return
         if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id, event_metadata.get("gateway_proven_session_id") or "", event_metadata.get("gateway_completion_ids") or ())
             if resolved_entry is None:
@@ -633,10 +653,13 @@ class GatewayTurnPrepareMixin:
         # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
         # Rendering it here would make every surface hop of one durable session a system-prompt
         # (and prompt-cache) break.
-        if source.platform != Platform.LOCAL and event.internal and session_key:
+        # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
+        # pins exactly like internal events do (and still pass authorization, unlike internal ones).
+        _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
+        if source.platform != Platform.LOCAL and _reuse_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=event.internal)
+            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).

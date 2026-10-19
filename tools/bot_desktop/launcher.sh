@@ -28,6 +28,10 @@ export XDG_CONFIG_HOME="$HERMES_BD_CONFIG_HOME"
 export XDG_CACHE_HOME="${HERMES_BD_CACHE_HOME:-$HERMES_BD_CONFIG_HOME/.cache}"
 export XDG_DATA_HOME="${HERMES_BD_DATA_HOME:-$HERMES_BD_CONFIG_HOME/.local-share}"
 export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE
+# Pinned, not inherited: login sessions set their own prefix (uwsm/Hyprland exports "hyprland-", GNOME
+# "gnome-"), and the panel's applications menu then looks for "<prefix>applications.menu", which an
+# Xfce install doesn't ship -> a modal "Failed to load the applications menu" on every screen start.
+export XDG_MENU_PREFIX=xfce-
 export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb NO_AT_BRIDGE=1 GTK_A11Y=none
 export LANG="${LANG:-C.UTF-8}"
 # Inheriting a login session's bus/session manager yields "Another session manager is already

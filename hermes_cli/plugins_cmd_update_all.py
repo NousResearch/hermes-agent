@@ -1,16 +1,15 @@
 """``hermes plugins update`` with no name: update every installed plugin that has an update.
 
 The list comes from the read-only ``check-updates`` probe (:func:`hermes_cli.plugins_updates.run_checks`);
-each plugin is then updated through the single-plugin :func:`~hermes_cli.plugins_cmd_update.cmd_update`
-path, so catalog consent, the security scan and capability re-consent still apply per plugin.
+each plugin is then updated through the single-plugin
+path (:func:`~hermes_cli.plugins_cmd_update.update_one`), so catalog consent, the security scan and
+capability re-consent still apply per plugin.
 
 Sibling of :mod:`hermes_cli.plugins_cmd` (the facade is imported late, never at module level).
 """
 
 from __future__ import annotations
 
-import logging
-import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,8 +18,6 @@ from typing import Any
 # re-pins to the reviewed sha, a tracked git install pulls. A pip row is a PyPI distribution that
 # Hermes never upgrades (#132494), so offering it would promise an update nothing applies.
 _UPDATE_KIND = {"catalog": "catalog re-pin", "git": "git pull"}
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-logger = logging.getLogger(__name__)
 
 
 def _pc():
@@ -57,58 +54,31 @@ def plan_update_all(results: list[Any]) -> UpdatePlan:
     return plan
 
 
-class _Tee:
-    """Pass-through stdout that keeps what was written, so a failed update's own error message can
-    be quoted in the summary. Everything else (isatty, fileno, encoding) is the real stream's."""
-
-    def __init__(self, stream):
-        self._stream = stream
-        self.text: list[str] = []
-
-    def write(self, data):
-        self.text.append(data)
-        return self._stream.write(data)
-
-    def __getattr__(self, name):
-        return getattr(self._stream, name)
-
-    def failure_reason(self) -> str:
-        """The paragraph the single-plugin update printed with its refusal (``Error: ...`` or
-        ``... not applied``), rejoined from Rich's wrapping; else the last line printed."""
-        lines = [ln.strip() for ln in _ANSI_RE.sub("", "".join(self.text)).splitlines()]
-        start = next((i for i, ln in enumerate(lines) if ln.startswith("Error:") or "not applied" in ln), None)
-        if start is None:
-            return next((ln for ln in reversed(lines) if ln), "")
-        para = []
-        for ln in lines[start:]:
-            if not ln:
-                break
-            para.append(ln)
-        reason = " ".join(para)
-        return reason if len(reason) <= 200 else reason[:197] + "..."
+def _short(reason: str) -> str:
+    first = reason.strip().splitlines()[0] if reason.strip() else ""
+    return first if len(first) <= 200 else first[:197] + "..."
 
 
-def _revision(name: str) -> str:
-    return str(_pc()._read_install_metadata().get(name, {}).get("revision") or "")
-
-
-def _update_one(name: str, *, interactive: bool) -> tuple[str, str]:
-    """Run the single-plugin update; return ``(status, detail)`` with status updated/current/failed."""
-    before = _revision(name)
-    tee = _Tee(sys.stdout)
-    sys.stdout = tee
+def _update_one(row, console, *, interactive: bool) -> tuple[str, str]:
+    """Run the single-plugin update for one plan row; return ``(status, detail)``, status being
+    updated/current/failed. A refusal is printed like ``update <name>`` prints it, then recorded."""
+    from rich.markup import escape
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    from hermes_cli.plugins_cmd_update import update_one
+    target = _pc()._user_installed_plugin_dir(row.name)
+    if target is None:
+        return "failed", "no longer installed"
     try:
-        _pc().cmd_update(name, interactive=interactive)
-    except SystemExit as exc:
-        if exc.code not in (0, None):
-            return "failed", tee.failure_reason() or f"exit {exc.code}"
-    except Exception as exc:  # one plugin's crash must not stop the rest
-        logger.warning("update of plugin %s failed", name, exc_info=True)
-        return "failed", f"{type(exc).__name__}: {exc}"
-    finally:
-        sys.stdout = tee._stream
-    after = _revision(name)
-    return ("updated", f"{before[:8]}..{after[:8]}") if after != before else ("current", "")
+        moved = update_one(row.name, target, console, interactive=interactive)
+    except RepinConsentRequired as exc:
+        console.print(f"[yellow]Update of {escape(row.name)} not applied:[/yellow] {escape(str(exc))}")
+        return "failed", _short(f"not applied: {exc}")
+    except _pc().PluginOperationError as exc:
+        console.print(f"[red]Error:[/red] {escape(str(exc))}")
+        return "failed", _short(str(exc))
+    if not moved:
+        return "current", ""
+    return "updated", f"{(row.current or '')[:8]}..{(row.latest or '')[:8]}"
 
 
 def _print_plan(console, plan: UpdatePlan) -> None:
@@ -127,7 +97,7 @@ def cmd_update_all(*, yes: bool = False) -> None:
     """``hermes plugins update [--yes]``: list the plugins with an update and update them all.
 
     A terminal asks once (``Update all N? [Y/n]``); without one nothing moves unless ``--yes`` is
-    given. Each plugin then goes through ``cmd_update``, interactive only when a terminal is present,
+    given. Each plugin then goes through ``update_one``, interactive only when a terminal is present,
     so per-plugin consent prompts still appear there and stay closed (fail closed) under ``--yes``
     in scripts. One failure does not stop the rest; exit 1 when any update failed.
     """
@@ -160,7 +130,7 @@ def cmd_update_all(*, yes: bool = False) -> None:
     outcomes = []
     for row in plan.movable:
         console.print(f"\n[bold]── {row.name}[/bold]")
-        outcomes.append((row.name, *_update_one(row.name, interactive=tty)))
+        outcomes.append((row.name, *_update_one(row, console, interactive=tty)))
 
     console.print("\n[bold]Summary[/bold]")
     marks = {"updated": "[green]✓ updated[/green]", "current": "[dim]= already current[/dim]",

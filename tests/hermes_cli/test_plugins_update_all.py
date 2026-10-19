@@ -20,7 +20,7 @@ def _parse(argv):
 @pytest.fixture
 def fleet(monkeypatch, tmp_path):
     """Four installed rows: two the update path can move, a PyPI row it never upgrades (#132494) and a pin."""
-    from hermes_cli import plugins_cmd, plugins_updates
+    from hermes_cli import plugins_cmd, plugins_cmd_update, plugins_updates
 
     rows = [
         CheckResult("cat", "catalog", current="a" * 40, latest="b" * 40, update_available=True),
@@ -30,14 +30,16 @@ def fleet(monkeypatch, tmp_path):
     ]
     calls = []
 
-    def fake_update(name, *, interactive=True):
+    def fake_update(name, target, console, *, interactive=True):
         calls.append((name, interactive))
         if name == "cat":
-            plugins_cmd._fail(plugins_cmd._console(), "Error: catalog pin refused")
+            raise plugins_cmd.PluginOperationError("catalog pin refused")
+        return True
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(plugins_updates, "run_checks", lambda plugins_dir, **kw: rows)
-    monkeypatch.setattr(plugins_cmd, "cmd_update", fake_update)
+    monkeypatch.setattr(plugins_cmd, "_user_installed_plugin_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr(plugins_cmd_update, "update_one", fake_update)
     return calls
 
 

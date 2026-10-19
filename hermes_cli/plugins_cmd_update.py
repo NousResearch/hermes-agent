@@ -67,28 +67,27 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
-def cmd_update(name: str, *, interactive: bool = True) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+def update_one(name: str, target: Path, console, *, interactive: bool = True) -> bool:
+    """Update one installed plugin, printing progress and consent prompts; True when it moved.
+
+    Refusals raise :class:`~hermes_cli.plugins_cmd_catalog.RepinConsentRequired` or
+    ``PluginOperationError`` with nothing changed; :func:`cmd_update` turns them into exit 1 and
+    ``hermes plugins update`` with no name records them per plugin and moves on.
+    """
     from rich.markup import escape
     from hermes_cli import plugins_cmd_catalog as catalog
-    console = _pc()._console()
-    target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
     sidecar = catalog.catalog_install_record(target)
     if sidecar:  # catalog installs re-pin to the reviewed SHA — never `git pull`
-        catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
-        return
-    try:
-        output = _pull_plugin_update(
-            target,
-            lambda rec: (
-                f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
-                f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
-                "--ref <40-character commit SHA>`."),
-            lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
-            before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
-            interactive=interactive)
-    except _pc().PluginOperationError as exc:
-        _pc()._fail(console, f"[red]Error:[/red] {exc}")
+        return catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
+    output = _pull_plugin_update(
+        target,
+        lambda rec: (
+            f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
+            f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
+            "--ref <40-character commit SHA>`."),
+        lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
+        before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
+        interactive=interactive)
     _post_pull_housekeeping(target, console)
 
     # Update-time re-consent (#64228): if the new version declares
@@ -110,9 +109,23 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
     out = output.strip()
     if "Already up to date" in out:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
-    else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
+        return False
+    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
+    console.print(f"[dim]{out}[/dim]")
+    return True
+
+
+def cmd_update(name: str, *, interactive: bool = True) -> None:
+    """``hermes plugins update <name>``: :func:`update_one`, exit 1 on a refusal."""
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    console = _pc()._console()
+    target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
+    try:
+        update_one(name, target, console, interactive=interactive)
+    except RepinConsentRequired as exc:
+        _pc()._fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
+    except _pc().PluginOperationError as exc:
+        _pc()._fail(console, f"[red]Error:[/red] {exc}")
 
 
 def _post_pull_housekeeping(target: Path, console) -> None:

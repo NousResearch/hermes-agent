@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
-_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp'})
+_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'})
 # Controls that leave the transcript alone authorize on the lineage owner (see ``_owner_ref``).
 _OWNER_AUTHORIZED = _METADATA | {'delete'}
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
@@ -289,7 +289,8 @@ def _project_committed(authority, ref, operation, result):
     """Publish a committed receipt's runtime projections (safe to repeat on exact retry)."""
     if operation in _POLICY:
         from gateway.session_local import publish_local_policy
-        publish_local_policy(authority, ref.session_id)
+        # The edit policy is read per edit, never by the built agent: it keeps its agent (and prompt cache).
+        publish_local_policy(authority, ref.session_id, evict=operation != 'edit_policy')
         # A drain that ran while the receipt committed off-loop saw the new stored policy beside
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.
@@ -299,7 +300,7 @@ def _project_committed(authority, ref, operation, result):
         # command still waiting for a turn boundary.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
         authority.sessions[ref.session_id].pending_reasoning = None
-    if operation in {'model', 'reasoning', 'workspace'}:
+    if operation in {'model', 'reasoning', 'workspace', 'edit_policy'}:
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.
         from gateway.session_local import local_session_info

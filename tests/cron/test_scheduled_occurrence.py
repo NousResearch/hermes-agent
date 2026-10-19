@@ -34,8 +34,11 @@ else:
         ack = home / (claim['execution_id'] + '.ready')
         payload.write_text(json.dumps({'job': claim, 'profile_home': str(home),
                                        'multiplex_active': False}))
-        subprocess.run([sys.executable, '-m', 'cron.scheduler',
-                        '--external-worker-file', str(payload), '--ack-file', str(ack)],
+        from hermes_cli._launchers import runtime_command
+        command = runtime_command(Path(scheduler.__file__).resolve().parents[1],
+                                  ['--external-worker-file', str(payload), '--ack-file', str(ack)],
+                                  module='cron.scheduler', home=home)
+        subprocess.run(command,
                        stdin=subprocess.DEVNULL, check=True, timeout=60)
         assert json.loads(ack.read_text())['pid'] != os.getpid()
 """

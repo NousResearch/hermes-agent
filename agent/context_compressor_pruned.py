@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def finish_pruned_or_defer(
     compressor: Any, pruned: list[dict], original: list[dict], pruned_count: int,
-    spare_pending_images: bool, telemetry: dict, failure_class: str, reason: str,
+    spare_pending_images: bool, telemetry: dict, failure_class: str, reason: str, n_messages: int = 0,
 ) -> list[dict]:
     """Return a normal compression candidate if pruning itself reclaimed context.
 
@@ -23,7 +23,9 @@ def finish_pruned_or_defer(
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(compressor)
+        # Reuse the summary-neutral boundary verdict: pruning did not prove summary health.
+        compressor._last_feasibility_skip = True
         logger.info("No new summary needed; retaining pruning of %d tool results", pruned_count)
         return compressor._finalize_compressed(pruned, original, len(original), spare_pending_images, pruned_count)
-    compressor._structural_no_op_result(telemetry, failure_class, reason)
+    compressor._structural_no_op_result(telemetry, failure_class, reason, n_messages)
     return original

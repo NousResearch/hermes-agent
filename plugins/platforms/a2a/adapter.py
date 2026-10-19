@@ -241,6 +241,12 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 class A2AAdapter(BasePlatformAdapter):
     """Inbound A2A server adapter."""
 
+    # RPC replies are atomic: send() drops every non-final send, so previews are
+    # never delivered and cannot be edited. The caller gets exactly one complete
+    # final reply; the gateway must not subtract an "already shown" prefix from it.
+    SUPPORTS_MESSAGE_EDITING = False
+    REQUIRES_ATOMIC_FINAL = True
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("a2a"))
         extra = getattr(config, "extra", {}) or {}

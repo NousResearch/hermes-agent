@@ -1145,7 +1145,11 @@ class GatewayAgent:
             return out
         self._session_messages = out["messages"]
         calls = stored.get("api_calls")
-        self._turn_api_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else None
+        # An interrupted turn's own count includes the attempt Ctrl-C cut off (the agent counts a call
+        # before the request goes out). Only a response prices the ask: fall back to the gateway's
+        # cumulative count, which moves per response, so an unanswered ask stays main's ``~`` estimate.
+        counted = isinstance(calls, int) and not isinstance(calls, bool) and not out.get("interrupted")
+        self._turn_api_calls = calls if counted else None
         self._apply_usage(stored, usage, turn)
         return out
 

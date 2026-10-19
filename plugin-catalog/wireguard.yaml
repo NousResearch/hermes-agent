@@ -1,0 +1,25 @@
+name: wireguard
+repo: https://github.com/lEWFkRAD/hermes-plugin-wireguard
+sha: "dcb810fab7e98d8824da4b0d3078c1f195db87e1"
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/lEWFkRAD/hermes-plugin-wireguard/dcb810fab7e98d8824da4b0d3078c1f195db87e1/docs/banner.jpg"
+description: >-
+  Read-only status and peer list for a WireGuard server running on the
+  same Windows machine as Hermes. Two tools: vpn_status (service state,
+  tunnel address and port, server public key, per-peer handshake and
+  transfer) and vpn_peers (the peer list only). The plugin runs only
+  wg.exe show, sc.exe query, and one PowerShell adapter lookup; it never
+  changes the tunnel and never reads the tunnel configuration file or
+  any private key material. Windows only (WireGuard for Windows).
+title: WireGuard
+maintainer: lEWFkRAD
+tier: community
+category: tools
+docs_url: https://github.com/lEWFkRAD/hermes-plugin-wireguard#readme
+requires_hermes: ">=0.21.3"
+platforms: [windows]
+capabilities:
+  provides_tools: [vpn_status, vpn_peers]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

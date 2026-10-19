@@ -26,8 +26,6 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
-
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
@@ -35,10 +33,6 @@ if TYPE_CHECKING:
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
-
-# Worker log files larger than this at spawn time are rotated.
-DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
-DEFAULT_LOG_BACKUP_COUNT = 1
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
@@ -130,6 +124,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    guidance_stripped: list[str] = field(default_factory=list)
+    """Ready task ids NOT spawned because ``KANBAN_GUIDANCE`` lost its mandatory
+    ``TERMINAL CALL REQUIRED`` block (template regression). Fail-closed: the card
+    stays ``ready`` with a ``guidance_stripped`` event; fix the template and the
+    next tick picks it up. Distinct from ``skipped_nonspawnable`` (missing
+    profile) so operators can tell "bad template" from "bad assignee"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -174,6 +174,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.guidance_stripped:
+            counts["guidance_stripped"] = counts.get("guidance_stripped", 0) + len(res.guidance_stripped)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -256,27 +258,6 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
     return ("nonzero_exit", code)
-
-
-_EXIT_TRAILER_RE = re.compile(
-    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
-)
-
-
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
-    """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
-
-    The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
-    return int(matches[-1]) if matches else None
 
 
 def reap_worker_zombies() -> list[int]:
@@ -2032,6 +2013,66 @@ def dispatch_once(
     return result
 
 
+# Marker the mandatory worker-guidance block must carry. If a refactor, fork,
+# or template edit strips this heading, workers are spawned with no rule that
+# every turn ends in a terminal board tool — the exact hang this block exists
+# to prevent. The dispatcher fails closed rather than spawning them.
+_TERMINAL_CALL_HEADING = "## TERMINAL CALL REQUIRED"
+
+
+def terminal_call_rule_present(guidance: Optional[str] = None) -> bool:
+    """True when the shared worker guidance still carries the terminal-call block.
+
+    ``guidance=None`` (the normal path) loads ``KANBAN_GUIDANCE`` from
+    ``agent.prompt_builder``. Pass a string to test a candidate template
+    without importing the live constant (used by the stripped-template
+    rejection test).
+    """
+    if guidance is None:
+        try:
+            from agent.prompt_builder import KANBAN_GUIDANCE as guidance
+        except Exception:  # health: allow BLE001 -- fail-closed: any
+            # KANBAN_GUIDANCE load failure must refuse the spawn.
+            return False
+    return _TERMINAL_CALL_HEADING in (guidance or "")
+
+
+def _guard_terminal_call_rule(
+    conn: sqlite3.Connection,
+    task_id: str,
+    result: DispatchResult,
+    *,
+    dry_run: bool,
+) -> bool:
+    """Refuse to spawn when ``KANBAN_GUIDANCE`` lost its terminal-call block.
+
+    Returns True when spawning may proceed. On a stripped template the card is
+    left ``ready`` (never claimed), a one-shot ``guidance_stripped`` event is
+    stamped for ``hermes kanban tail``, and the tick logs an error. Fail-closed:
+    spawning without the rule produces workers that narrate and never call
+    ``kanban_complete`` / ``kanban_block``, wedging the board.
+    """
+    if terminal_call_rule_present():
+        return True
+    result.guidance_stripped.append(task_id)
+    _kb._log.error(
+        "kanban dispatcher: refusing to spawn %s — KANBAN_GUIDANCE is missing the "
+        "%r block; restore agent/prompt_builder.py before re-enabling dispatch",
+        task_id, _TERMINAL_CALL_HEADING,
+    )
+    if not dry_run:
+        with _kb.write_txn(conn):
+            last = conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            payload = {"error": "KANBAN_GUIDANCE missing TERMINAL CALL REQUIRED block"}
+            if (last is None or last["kind"] != "guidance_stripped"
+                    or last["payload"] != _kb._json_or_null(payload)):
+                _kb._append_event(conn, task_id, "guidance_stripped", payload)
+    return False
+
+
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
@@ -2114,6 +2155,11 @@ def _dispatch_lane_task(
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
+    # Fail closed before claiming: a stripped terminal-call template must not
+    # produce a worker, and the card must stay ready for when the template is
+    # restored (no retry-budget spend, no claim churn).
+    if not _guard_terminal_call_rule(conn, task_id, result, dry_run=dry_run):
+        return False
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
@@ -2450,66 +2496,6 @@ def _dispatch_once_locked(
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
     return result
-
-
-def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= minimum else default
-
-
-def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
-    """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
-    Defaults: rotate at 2 MiB, keep one backup (``.log.1``); both overridable
-    from ``config.yaml``.
-    """
-    if kanban_cfg is None:
-        try:
-            from hermes_cli.config import load_config
-
-            kanban_cfg = (load_config().get("kanban") or {})
-        except Exception:
-            kanban_cfg = {}
-    kanban_cfg = kanban_cfg or {}
-    max_bytes = _positive_int(kanban_cfg.get("worker_log_rotate_bytes"), DEFAULT_LOG_ROTATE_BYTES, minimum=1)
-    backup_count = _positive_int(kanban_cfg.get("worker_log_backup_count"), DEFAULT_LOG_BACKUP_COUNT, minimum=0)
-    return max_bytes, backup_count
-
-
-def _rotated_log_path(log_path: Path, generation: int) -> Path:
-    return log_path.with_suffix(log_path.suffix + f".{generation}")
-
-
-def _rotate_worker_log(
-    log_path: Path,
-    max_bytes: int,
-    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-) -> None:
-    """Rotate ``<log>`` when it exceeds ``max_bytes``: ``<log>`` → ``<log>.1``,
-    older generations shift up to ``backup_count``.
-    """
-    try:
-        if not log_path.exists() or log_path.stat().st_size <= max_bytes:
-            return
-        backup_count = _positive_int(backup_count, DEFAULT_LOG_BACKUP_COUNT, minimum=0)
-        if backup_count == 0:
-            log_path.unlink()
-            return
-        oldest = _rotated_log_path(log_path, backup_count)
-        with contextlib.suppress(OSError):
-            if oldest.exists():
-                oldest.unlink()
-        for generation in range(backup_count - 1, 0, -1):
-            src = _rotated_log_path(log_path, generation)
-            if not src.exists():
-                continue
-            with contextlib.suppress(OSError):
-                src.rename(_rotated_log_path(log_path, generation + 1))
-        log_path.rename(_rotated_log_path(log_path, 1))
-    except OSError:
-        pass
 
 
 def _module_hermes_argv() -> list[str]:
@@ -3010,3 +2996,15 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+
+# worker-log rotation + exit-trailer helpers moved to
+# kanban_db_worker_logs.py (FILE_LINES cap). Re-exported: kanban_ops calls
+# kbd._positive_int, tests monkeypatch dispatch.worker_log_rotation_config /
+# dispatch._worker_log_exit_code, and this module still calls them directly.
+from hermes_cli.kanban_db_worker_logs import DEFAULT_LOG_BACKUP_COUNT  # noqa: F401
+from hermes_cli.kanban_db_worker_logs import DEFAULT_LOG_ROTATE_BYTES  # noqa: F401
+from hermes_cli.kanban_db_worker_logs import _EXIT_TRAILER_RE  # noqa: F401
+from hermes_cli.kanban_db_worker_logs import _positive_int  # noqa: F401
+from hermes_cli.kanban_db_worker_logs import _rotate_worker_log  # noqa: F401
+from hermes_cli.kanban_db_worker_logs import _worker_log_exit_code  # noqa: F401
+from hermes_cli.kanban_db_worker_logs import worker_log_rotation_config  # noqa: F401

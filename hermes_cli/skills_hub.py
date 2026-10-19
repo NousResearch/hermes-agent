@@ -972,13 +972,19 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     # and ellipsis-truncates the Name column, so `hermes skills list | grep <name>` reads
     # an installed skill as missing (#140555). Widen the render to fit the longest name;
     # the interactive terminal path is unchanged.
+    name_kw: dict = {"style": "bold cyan"}
     if console is None and not sys.stdout.isatty():
         longest_name = max((len(s["name"]) for s in all_skills), default=0)
         c = Console(width=max(_console.width, longest_name + 80))
+        # Widening alone is not enough: a multi-line status note (built-in-command
+        # collision) raises the Status column's width demand and Rich reclaims the
+        # surplus from the wrappable Name column, truncating it anyway. Pin the
+        # name column so the widened width can't be taken back from it.
+        name_kw["no_wrap"] = True
     root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
-    table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
+    table = _table(("Name", name_kw), "Category", "Source", "Trust", "Status",
                    title="Installed Skills" + (" (enabled only)" if enabled_only else ""))
 
     counts = {"hub": 0, "builtin": 0, "local": 0}

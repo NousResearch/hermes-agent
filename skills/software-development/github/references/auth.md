@@ -24,6 +24,26 @@ git config --global credential.helper 2>/dev/null || echo "no git credential hel
 2. If `gh` is installed but not authenticated → use "gh auth" method below
 3. If `gh` is not installed → use "git-only" method below (no sudo needed)
 
+**Prefer `gh` when it can be installed.** An authenticated gh is the single source of truth
+for the token (`gh auth token`) and for git credentials (`gh auth setup-git`), so there is
+one credential to rotate and audit instead of a store file, a `.env` line and a gh config
+drifting apart. Use the git-only method when gh is not available or cannot be installed.
+
+**Never hand-write the detection ladder — source the helper:**
+
+```bash
+source "${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
+```
+
+It sets `GH_AUTH_METHOD` (`gh` / `curl` / `none`), `GH_TOKEN_SOURCE` (where the token
+actually came from), `GH_USER` (as returned by the API, never asserted), `GH_CRED_SOURCE`
+(the credential path git itself will consult in `$PWD`, named, never executed) and
+`GH_AUTH_EVIDENCE` (the command that produced the verdict). The copy-pasted ladders this
+skill used to carry wrote `&>`, which is a bashism: under `/bin/sh` (dash) `command -v gh
+&>/dev/null` backgrounds the test and reports success, so the check claimed `gh` on a machine
+with no gh installed. If the helper prints `none` while `git push` demonstrably works from
+that directory, the reporter is wrong — report it rather than working around it.
+
 ---
 
 ## Method 1: Git-Only Authentication (No gh, No sudo)
@@ -263,29 +283,16 @@ If git credentials are already configured (via credential.helper store), the tok
 
 ```bash
 # Read from git credential store
-uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py"
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/git-credential-token.py"
 ```
 
 ### Helper: Detect Auth Method
 
-Use this pattern at the start of any GitHub workflow:
+Use the shipped helper — it is the single implementation of this ladder:
 
 ```bash
-# Try gh first, fall back to git + curl
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  echo "AUTH_METHOD=gh"
-elif [ -n "$GITHUB_TOKEN" ]; then
-  echo "AUTH_METHOD=curl"
-elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-  export GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-  echo "AUTH_METHOD=curl"
-elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-  export GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-  echo "AUTH_METHOD=curl"
-else
-  echo "AUTH_METHOD=none"
-  echo "Need to set up authentication first"
-fi
+source "${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
+# -> GitHub Auth: gh | curl | none, plus where the token and the credential path came from
 ```
 
 ---

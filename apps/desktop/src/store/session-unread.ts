@@ -327,19 +327,18 @@ function resolveOwnedRow(storedSessionId: string, profile?: string): SessionInfo
     : resolveLoadedRow(storedSessionId)
 }
 
-/** A project-tree row for *storedSessionId* (in *profile*'s bucket when one is named). */
+/** A project-tree row for *storedSessionId* in *profile*'s bucket, else the live gateway's (as the
+ *  live-source lookup): the tree mixes profiles, and an unhinted completion comes from the live gateway. */
 function projectTreeRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
+  const owner = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+
   return $projectTree
     .get()
     .flatMap(project => [
       ...(project.previewSessions ?? []),
       ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
     ])
-    .find(
-      row =>
-        sessionMatchesStoredId(row, storedSessionId) &&
-        (!profile || profileKeyForRow(row) === normalizeProfileKey(profile))
-    )
+    .find(row => sessionMatchesStoredId(row, storedSessionId) && profileKeyForRow(row) === owner)
 }
 
 /** Sources the live poll reported, by profile and stored id: a messaging turn can settle before its row

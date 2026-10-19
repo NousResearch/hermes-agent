@@ -8,7 +8,7 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from tools.registry import registry
 from tools.schema_sanitizer import resolve_local_schema_ref
@@ -18,12 +18,13 @@ from tools.schema_sanitizer import resolve_local_schema_ref
 logger = logging.getLogger("model_tools")
 
 
-def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
+def coerce_tool_args(tool_name: str, args: dict[str, Any], schema: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Coerce string-typed args to their JSON-Schema types; originals kept on failure. ``schema`` replaces the
+    registered schema when the model was shown a different form of the tool."""
     if not args or not isinstance(args, dict):
         return args
 
-    schema = registry.get_schema(tool_name)
+    schema = registry.get_schema(tool_name) if schema is None else schema
     parameters = (schema or {}).get("parameters") or {}
     properties = parameters.get("properties")
     if not properties:

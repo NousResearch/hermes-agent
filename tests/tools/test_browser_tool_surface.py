@@ -394,7 +394,7 @@ def test_the_built_in_browser_refuses_a_tab_id_instead_of_ignoring_it(browser, t
     assert browser == []
 
 
-@pytest.mark.parametrize("tab_id", ["4", 0, -1, 2.5, True, [4]])
+@pytest.mark.parametrize("tab_id", ["four", 0, -1, 2.5, True, [4]])  # "4" is coerced to 4, as the schema says
 def test_a_tab_id_that_is_not_a_tab_id_is_refused_before_either_browser(browser, tab_id):
     out = _call("browser_click", {"ref": "@e1", "tab_id": tab_id})
 

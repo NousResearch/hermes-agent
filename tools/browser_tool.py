@@ -10,6 +10,7 @@ Sibling ``browser_tool_*`` modules hold extracted clusters.
 
 import atexit
 import base64
+import functools
 import json
 import logging
 import os
@@ -1613,6 +1614,7 @@ def _extension_screenshot_result(raw: Any) -> Any:
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from tools.arg_coercion import coerce_tool_args
 from tools.browser_extension_router import extension_lane_configured, routed_browser_handler
 from tools.browser_tool_extension_landing import (
     extension_landing_guard as _extension_landing_guard, extension_withheld_guard as _extension_withheld_guard,
@@ -1706,10 +1708,20 @@ def _routed_check_fn(name: str):
 _ROUTED_RESULT_FILTERS = {"browser_screenshot": _extension_screenshot_result}
 
 
+@functools.cache
+def _lane_form_schema(name: str) -> Optional[dict[str, Any]]:
+    """The extension-lane schema of a long-standing browser tool, or ``None`` for any other tool."""
+    return _extension_schemas.lane_schema(_BROWSER_SCHEMA_MAP[name]) if name in _extension_schemas.LANE_TOOLS else None
+
+
 def _routed_handler(name: str, fallback):
     finish = _ROUTED_RESULT_FILTERS.get(name)
 
     def handler(args, **kw):
+        if (lane_form := _lane_form_schema(name)) is not None:
+            # Dispatch coerced string values against the registered schema, which is the stock one for these
+            # tools, so "57" for tab_id or "false" for clear would reach the checks below unconverted.
+            args = coerce_tool_args(name, args, schema=lane_form)
         invalid = _args.invalid_arguments(name, args)
         if invalid:  # refused before either lane sees it: no approval card, no silently dropped argument
             return _dumps(_err(invalid))

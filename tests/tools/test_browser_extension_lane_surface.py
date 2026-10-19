@@ -325,6 +325,27 @@ def test_the_built_in_browser_still_answers_a_bound_session_the_extension_never_
     assert len(ran) == 1
 
 
+# --- string values for the lane arguments of the long-standing tools ---------------------------------------------
+
+
+def test_string_values_for_the_lane_arguments_are_coerced_on_the_long_standing_tools(monkeypatch):
+    """The registry coerces against the registered schema, which for these seven tools is main's (no tab_id,
+    clear, amount, ...), so their handler coerces against the extension form the model was shown."""
+    sent = []
+    monkeypatch.setattr(browser_tool, "routed_browser_handler",
+                        lambda name, args, **kw: sent.append((name, args)) or json.dumps({"success": True}))
+    calls = (
+        ("browser_click", {"ref": "@e1", "tab_id": "57"}, {"ref": "@e1", "tab_id": 57}),
+        ("browser_type", {"ref": "@e1", "text": "x", "clear": "false"}, {"ref": "@e1", "text": "x", "clear": False}),
+        ("browser_scroll", {"direction": "down", "amount": "300"}, {"direction": "down", "amount": 300}),
+        ("browser_press", {"key": "a", "modifiers": '["Control"]'}, {"key": "a", "modifiers": ["Control"]}),
+    )
+    for name, args, _ in calls:
+        assert json.loads(registry.dispatch(name, args, task_id="task-1")) == {"success": True}, name
+
+    assert sent == [(name, coerced) for name, _, coerced in calls]
+
+
 # --- tool search can defer the rarely used extension tools ---------------------------------------------------------
 
 

@@ -9,6 +9,10 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from typing import Literal
+
+from pydantic import model_validator
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
@@ -545,6 +549,7 @@ method("bot_relay.outbox.drain", params=BotRelayOutboxDrainParams, result=BotRel
 class BotRelayDeliverParams(Params):
     """``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds)."""
 
+    id: str
     profile: str
     message: str
     from_profile: str | None = None
@@ -553,11 +558,29 @@ class BotRelayDeliverParams(Params):
 
 
 class BotRelayDeliverResult(Result):
-    reply: str
+    """The target authority's receipt, unchanged across the relay bridge."""
+
+    status: str
+    delivery_id: str
+    profile_home: str
+    session_id: str
+    admission_id: str | None = None
+    refused: Literal[True] | None = None
+    message: str
+    reply: str | None = None
+    retry_admission_id: str | None = None
+    error: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode='after')
+    def _admitted_or_refused(self):
+        if (self.admission_id is None) != (self.refused is True) or (self.refused and self.status != 'failed'):
+            raise ValueError('a deliver result names its admission, or is a refused failed receipt without one')
+        return self
 
 
 method("bot_relay.deliver", params=BotRelayDeliverParams, result=BotRelayDeliverResult,
-       doc="Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).")
+       doc="Forward an identified DM to the target profile's authority and return its delivery receipt.")
 
 
 class BotRelayReplyParams(ProfileParams):

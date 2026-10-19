@@ -1829,14 +1829,26 @@ export interface RelayEnvelope {
 }
 /** ``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds). */
 export interface BotRelayDeliverParams {
+  id: string
   profile: string
   message: string
   from_profile?: string | null
   from_handle?: string | null
   from_connection?: string | null
 }
+/** The target authority's receipt, unchanged across the relay bridge. */
 export interface BotRelayDeliverResult {
-  reply: string
+  status: string
+  delivery_id: string
+  profile_home: string
+  session_id: string
+  admission_id?: string | null
+  refused?: true | null
+  message: string
+  reply?: string | null
+  retry_admission_id?: string | null
+  error?: string | null
+  reason?: string | null
 }
 export interface BotRelayReplyParams {
   profile?: string | null
@@ -5258,7 +5270,7 @@ export interface CanonicalBotDeliverParams {
   author?: Record<string, unknown> | null
   notification_category?: string | null
 }
-/** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
+/** The authority and its legacy relay bridge return the same receipt. */
 export interface CanonicalBotDeliverResult {
   status: string
   delivery_id: string
@@ -5963,7 +5975,7 @@ export interface RpcMethods {
   'billing.state': { params: ProfileParams; result: BillingStateResult }
   /** Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification. */
   'billing.step_up': { params: BillingStepUpParams; result: BillingStepUpResult }
-  /** Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking). */
+  /** Forward an identified DM to the target profile's authority and return its delivery receipt. */
   'bot_relay.deliver': { params: BotRelayDeliverParams; result: BotRelayDeliverResult }
   /** Atomically claim every pending cross-connection envelope queued on this gateway. */
   'bot_relay.outbox.drain': { params: BotRelayOutboxDrainParams; result: BotRelayOutboxDrainResult }

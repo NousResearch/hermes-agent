@@ -170,7 +170,7 @@
     },
     {
       "name": "bot_relay.deliver",
-      "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
+      "summary": "Forward an identified DM to the target profile's authority and return its delivery receipt.",
       "params": [
         {
           "name": "params",
@@ -7208,6 +7208,10 @@
         "additionalProperties": false,
         "description": "``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds).",
         "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
           "profile": {
             "title": "Profile",
             "type": "string"
@@ -7254,6 +7258,7 @@
           }
         },
         "required": [
+          "id",
           "profile",
           "message"
         ],
@@ -7262,14 +7267,108 @@
       },
       "BotRelayDeliverResult": {
         "additionalProperties": false,
+        "description": "The target authority's receipt, unchanged across the relay bridge.",
         "properties": {
-          "reply": {
-            "title": "Reply",
+          "status": {
+            "title": "Status",
             "type": "string"
+          },
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "profile_home": {
+            "title": "Profile Home",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refused"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply"
+          },
+          "retry_admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Admission Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
-          "reply"
+          "status",
+          "delivery_id",
+          "profile_home",
+          "session_id",
+          "message"
         ],
         "title": "BotRelayDeliverResult",
         "type": "object"
@@ -8084,7 +8183,7 @@
       },
       "CanonicalBotDeliverResult": {
         "additionalProperties": false,
-        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
+        "description": "The authority and its legacy relay bridge return the same receipt.",
         "properties": {
           "status": {
             "title": "Status",

@@ -1063,6 +1063,16 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _action_update(args):
+    if args.name:
+        if getattr(args, "yes", False):
+            _fail(_console(), "[red]Error:[/red] --yes only applies to `hermes plugins update` with no name.")
+        cmd_update(args.name)
+        return
+    from hermes_cli.plugins_cmd_update_all import cmd_update_all
+    cmd_update_all(yes=getattr(args, "yes", False))
+
+
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
@@ -1083,7 +1093,7 @@ _PLUGIN_ACTIONS = {
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": _action_update,
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

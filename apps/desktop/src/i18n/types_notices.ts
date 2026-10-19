@@ -42,6 +42,10 @@ export interface SessionCommandNotices {
   undidOther: (count: string) => string
   retryNothing: string
   retryUnsupported: string
+  /** A rewind refused while a reply is running: main's stop-first guidance (tui_gateway busy_message). */
+  busy: (command: string) => string
+  /** The same refusal while another writer holds the compression lock: Stop does not end it, so wait. */
+  busyCompressing: (command: string) => string
   steerUsage: string
   steerQueued: (preview: string) => string
   steerNoActiveTurn: (preview: string) => string

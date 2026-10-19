@@ -1080,15 +1080,16 @@ def _cute_path(p) -> str:
 
 
 class _CuteRow(str):
-    """A rendered completion row that also keeps its verb and detail, so the CLI's glyph layout
-    can rebuild the row without re-parsing the padded ``┊ emoji verb`` string."""
+    """A rendered completion row that also keeps its emoji, verb and detail, so the CLI's glyph
+    layout can rebuild the row without re-parsing the padded ``┊ emoji verb`` string."""
 
+    emoji: str
     verb: str
     detail: str
 
-    def __new__(cls, text: str, verb: str, detail: str):
+    def __new__(cls, text: str, emoji: str, verb: str, detail: str):
         row = super().__new__(cls, text)
-        row.verb, row.detail = verb, detail
+        row.emoji, row.verb, row.detail = emoji.strip(), verb, detail
         return row
 
     def __reduce__(self):  # copy/pickle as a plain str; the custom __new__ can't be re-called bare
@@ -1098,12 +1099,20 @@ class _CuteRow(str):
 def _cute_row(emoji: str, verb: str, detail: str = "") -> str:
     """``┊ {emoji} {verb:9} {detail}`` -- verb column from ``display.cute.verb.<verb>`` (9 cells wide)."""
     label = t(f'display.cute.verb.{verb}')
-    return _CuteRow(f"┊ {emoji} {label:9} {detail}", label, detail)
+    return _CuteRow(f"┊ {emoji} {label:9} {detail}", emoji, label, detail)
+
+
+def _cute_fallback_row(tool_name: str, args: dict) -> _CuteRow:
+    """The row for a tool with no dedicated renderer: its registered (or skin) emoji, its name, and
+    its preview. One source for both layouts, so their icons can't drift."""
+    detail = _cute_trunc(build_tool_preview(tool_name, args) or "")
+    emoji = get_tool_emoji(tool_name)
+    return _CuteRow(f"┊ {emoji} {tool_name[:9]:9} {detail}", emoji, tool_name, detail)
 
 
 def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = None, *, is_error: bool = False):
-    """``[(verb, detail, failure), ...]`` for one completed call: the labels the ``┊`` line uses,
-    without its emoji and padding. ``failure`` is None for a row that succeeded, else that row's
+    """``[(emoji, verb, detail, failure), ...]`` for one completed call: the parts the ``┊`` line
+    uses, without its padding. ``failure`` is None for a row that succeeded, else that row's
     suffix (``" [exit 1]"``, possibly ``""``); batch calls mark the entry that failed."""
     try:
         args = redact_tool_args_for_display(tool_name, args) or args or {}
@@ -1115,16 +1124,15 @@ def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = N
             marks = [s or None for s in suffixes]
             if call_failure is not None and not any(suffixes):
                 marks[-1] = call_failure  # the call failed without naming an entry
-            return [(_cute_trunc(lb.text), _cute_trunc(lb.preview) if lb.preview else "", mark)
+            return [(lb.emoji, _cute_trunc(lb.text), _cute_trunc(lb.preview) if lb.preview else "", mark)
                     for lb, mark in zip(labels, marks)]
         render = _CUTE_LINES.get(tool_name)
         row = render(args, result) if render else None
-        if isinstance(row, _CuteRow):
-            return [(row.verb, row.detail, call_failure)]
-        return [(tool_name, _cute_trunc(build_tool_preview(tool_name, args) or ""), call_failure)]
+        row = row if isinstance(row, _CuteRow) else _cute_fallback_row(tool_name, args)
+        return [(row.emoji, row.verb, row.detail, call_failure)]
     except Exception:
         logger.debug("Tool row parts failed for %s", tool_name, exc_info=True)
-        return [(str(tool_name), "", None)]
+        return [("⚡", str(tool_name), "", None)]
 
 
 def _cute_web_extract(a: dict, _r) -> str:
@@ -1300,7 +1308,7 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     render = _CUTE_LINES.get(tool_name)
     rows = _cute_bridge_rows(tool_name, args)
     if rows is None:
-        body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
+        body = render(args, result) if render else _cute_fallback_row(tool_name, args)
         rows, suffixes = [body], [failure_suffix if is_failure else ""]
     else:
         suffixes = _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else "")

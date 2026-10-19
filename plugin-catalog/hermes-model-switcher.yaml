@@ -1,0 +1,39 @@
+# Community catalog entry — hermes-model-switcher
+#
+# Owner-submitted: the PR author (nicolasestrem) owns and maintains the repo below.
+# Exact-SHA pin (40-hex, resolves as a COMMIT on the repo). Dashboard-only plugin:
+# the whole code surface is a Dashboard extension tab served through the plugin host.
+name: hermes-model-switcher
+repo: https://github.com/nicolasestrem/hermes-model-switcher
+sha: 02703e37817fbee85cb62e22139da7ffe187c35c
+description: >-
+  Choose models across Hermes profiles from a Dashboard tab: a per-profile
+  picker built on Hermes' own model catalog, a preview of exactly which config
+  paths a selection would change across main, cron, delegation and auxiliary
+  slots, and one-click apply or revert with presets. Disclosure — its apply
+  route reads and edits the profiles' config.yaml (that is the plugin's
+  function) through Hermes' own save_config path; the model-catalog listing
+  reads the provider-models disk cache and, only when the user clicks "Refresh
+  catalog", lets Hermes' own picker seam probe the providers' /v1/models
+  endpoints and models.dev for pricing; it makes no other network calls, runs
+  no shell commands or background processes, stores credentials nowhere and
+  reports nothing.
+maintainer: Nico Estrem
+tier: community
+category: models
+docs_url: https://github.com/nicolasestrem/hermes-model-switcher#readme
+version: "0.2.0"
+screenshots:
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/02703e37817fbee85cb62e22139da7ffe187c35c/docs/images/model-switcher-real-dashboard.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/02703e37817fbee85cb62e22139da7ffe187c35c/docs/images/model-switcher-real-preview.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/02703e37817fbee85cb62e22139da7ffe187c35c/docs/images/model-switcher-real-operation.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/02703e37817fbee85cb62e22139da7ffe187c35c/docs/images/model-switcher-catalog-1440.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/02703e37817fbee85cb62e22139da7ffe187c35c/docs/images/model-switcher-dark-1440.png
+  - https://raw.githubusercontent.com/nicolasestrem/hermes-model-switcher/02703e37817fbee85cb62e22139da7ffe187c35c/docs/images/model-switcher-light-1440.png
+known_issues:
+  - "Built on undocumented Hermes internal seams (hermes plugins validate: 'private core imports, catalog rule 9'): the plugin reuses Hermes' own picker, pricing and profile-scope modules from hermes_cli/agent rather than reimplementing them, so a core refactor can break the plugin until it re-pins."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

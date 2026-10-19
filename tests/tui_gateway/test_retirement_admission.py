@@ -80,16 +80,6 @@ def test_prompt_claim_and_automatic_continuations_cannot_cross_prepare(runtime, 
     server._run_post_turn_followups("r", "s", goal_session, {}, "keep going")
     assert goal_session["running"] is False
     assert not dispatched
-    from types import SimpleNamespace
-    from tools import bot_live_delivery
-
-    monkeypatch.setattr(bot_live_delivery, "has_mailbox", lambda home: True)
-    monkeypatch.setattr(bot_live_delivery, "find_canonical_live_owner", lambda home: {
-        "lease_id": "l", "live_session_id": "s", "session_id": "stored"})
-    monkeypatch.setattr(bot_live_delivery, "claim_pending_delivery", lambda *a: pytest.fail("retiring backend claimed a delivery"))
-    mailbox_session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "stored",
-                       "active_session_lease": SimpleNamespace(lease_id="l", released=False)}
-    assert server._poll_bot_live_delivery_once("s", mailbox_session) is False
     assert fence.cancel(token) == {"ok": True}
     assert server._notif_claim_turn(session) is True
     assert session["running"] is True

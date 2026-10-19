@@ -38,10 +38,7 @@ def _model_short(model: Optional[str]) -> str:
 
 
 def _env_cwd() -> str:
-    try:
-        from tools.terminal_scope import terminal_env
-    except ImportError:
-        return os.environ.get("TERMINAL_CWD", "")
+    from tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_CWD", "")
 
 
@@ -66,7 +63,7 @@ def _format_latency(seconds: float) -> str:
     """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
     if seconds < 1:
         return "<1s"
-    total = int(round(seconds))
+    total = round(seconds)
     if total < 60:
         return f"{total}s"
     m, sec = divmod(total, 60)
@@ -104,6 +101,24 @@ def _requested_reasoning_effort(reasoning_config: Any) -> str:
         return "none"
     effort = str(reasoning_config.get("effort") or "").strip().lower()
     return effort or "default"
+
+
+def capture_turn_usage_baseline(agent: Any) -> dict[str, Any]:
+    """Capture cumulative counters immediately before a physical turn executes."""
+    fields = {
+        "uncached_input_tokens": "session_input_tokens", "completion_tokens": "session_completion_tokens",
+        "cache_read_tokens": "session_cache_read_tokens", "cache_write_tokens": "session_cache_write_tokens",
+        "usage_report_calls": "session_usage_report_calls", "cache_usage_report_calls": "session_cache_usage_report_calls",
+        "context_usage_report_calls": "session_context_usage_report_calls",
+    }
+    return {name + "_start": getattr(agent, attribute, 0) or 0 for name, attribute in fields.items()}
+
+
+def _reported_usage_status(calls, expected, *values) -> str | None:
+    if not isinstance(calls, int) or calls <= 0 or any(value is None for value in values):
+        return None
+    complete = expected is not None and expected >= 0 and calls == expected
+    return "reported" if complete else "reported_partial"
 
 
 def _gateway_turn_runtime_metadata(
@@ -154,48 +169,19 @@ def _gateway_turn_runtime_metadata(
     except (TypeError, ValueError):
         expected_api_calls = None
 
-    token_usage_status = None
-    if (
-        isinstance(turn_usage_report_calls, int)
-        and turn_usage_report_calls > 0
-        and turn_input_tokens is not None
-        and turn_output_tokens is not None
-    ):
-        token_usage_status = "reported"
-        if expected_api_calls is None or expected_api_calls < 0 or turn_usage_report_calls != expected_api_calls:
-            token_usage_status = "reported_partial"
-    else:
-        turn_input_tokens = None
-        turn_output_tokens = None
-
-    cache_usage_status = None
-    if (
-        isinstance(turn_cache_usage_report_calls, int)
-        and turn_cache_usage_report_calls > 0
-        and turn_cache_read_tokens is not None
-        and turn_cache_write_tokens is not None
-    ):
-        cache_usage_status = "reported"
-        if (
-            expected_api_calls is None
-            or expected_api_calls < 0
-            or turn_cache_usage_report_calls != expected_api_calls
-        ):
-            cache_usage_status = "reported_partial"
-    else:
-        turn_cache_read_tokens = None
-        turn_cache_write_tokens = None
-
-    context_usage_status = None
-    if (
-        isinstance(turn_context_usage_report_calls, int)
-        and turn_context_usage_report_calls > 0
-        and expected_api_calls is not None
-        and expected_api_calls >= 0
-        and turn_context_usage_report_calls == expected_api_calls
-        and last_prompt_tokens > 0
-    ):
-        context_usage_status = "reported"
+    token_usage_status = _reported_usage_status(
+        turn_usage_report_calls, expected_api_calls, turn_input_tokens, turn_output_tokens,
+    )
+    if token_usage_status is None:
+        turn_input_tokens = turn_output_tokens = None
+    cache_usage_status = _reported_usage_status(
+        turn_cache_usage_report_calls, expected_api_calls, turn_cache_read_tokens, turn_cache_write_tokens,
+    )
+    if cache_usage_status is None:
+        turn_cache_read_tokens = turn_cache_write_tokens = None
+    context_usage_status = _reported_usage_status(turn_context_usage_report_calls, expected_api_calls)
+    if context_usage_status != "reported" or last_prompt_tokens <= 0:
+        context_usage_status = None
 
     return {
         "last_prompt_tokens": last_prompt_tokens,
@@ -218,6 +204,15 @@ def _gateway_turn_runtime_metadata(
         "model": getattr(agent, "model", None),
         "context_length": context_length,
     }
+
+
+def _format_context_usage(field, tokens, length, status) -> str:
+    if status != "reported" or not length or length <= 0 or tokens < 0:
+        return ""
+    percentage = max(0, min(100, round(tokens / length * 100)))
+    if field == "context_pct":
+        return f"{percentage}%"
+    return f"ctx(last):{_format_token_count(tokens)}/{_format_token_count(length)} ({percentage}%)"
 
 
 def format_runtime_footer(
@@ -251,20 +246,8 @@ def format_runtime_footer(
             if served_model and served_model not in (alias, requested):
                 parts.append(f"{alias} → {served_model}")
         elif field in {"context_pct", "context_window"}:
-            if (
-                context_usage_status == "reported"
-                and context_length
-                and context_length > 0
-                and context_tokens >= 0
-            ):
-                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                if field == "context_pct":
-                    parts.append(f"{pct}%")
-                else:
-                    parts.append(
-                        f"ctx(last):{_format_token_count(context_tokens)}/"
-                        f"{_format_token_count(context_length)} ({pct}%)"
-                    )
+            if value := _format_context_usage(field, context_tokens, context_length, context_usage_status):
+                parts.append(value)
         elif field == "latency":
             if turn_seconds is not None and turn_seconds >= 0:
                 parts.append(_format_latency(turn_seconds))

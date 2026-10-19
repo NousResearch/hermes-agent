@@ -40,14 +40,14 @@ def _is_disabled(reasoning_config: Any) -> bool:
     return isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
 
 
-def floor_reasoning_config(reasoning_config: Any) -> Dict[str, Any]:
+def floor_reasoning_config(reasoning_config: Any) -> dict[str, Any]:
     """The caller's disabled ``reasoning_config`` lifted to the floor; anything else returned as-is."""
     if _is_disabled(reasoning_config):
         return {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
     return reasoning_config
 
 
-def with_reasoning_floor(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def with_reasoning_floor(kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Copy of *kwargs* with every thinking-OFF encoding lifted to ``REASONING_FLOOR_EFFORT``:
     top-level ``reasoning_effort``, ``extra_body.reasoning`` (OpenRouter shape) and the adapter's private
     ``_reasoning_config``. ``None`` when nothing was disabled, so the ladder never re-sends an unchanged
@@ -72,7 +72,7 @@ def with_reasoning_floor(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def remember_reasoning_floor(
-    provider: Optional[str], base_url: Optional[str], rejected_kwargs: Dict[str, Any], error: BaseException,
+    provider: Optional[str], base_url: Optional[str], rejected_kwargs: dict[str, Any], error: BaseException,
 ) -> None:
     """Record that this route's ``rejected_kwargs["model"]`` refuses to disable reasoning (the ladder
     calls this after the stepped-up retry succeeded)."""

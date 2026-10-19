@@ -14961,6 +14961,16 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // removing a connection or re-pointing it must evict them (`evictConnectionCaches`).
 const SSH_INVENTORY_RETRY_MS = 60_000
 
+// A roster source whose credential is gone (gateway reauth, a Cloud agent
+// without a portal session, or a refused OAuth gateway) shows Sign in.
+function rosterSourceNeedsSignIn(connection, error): boolean {
+  return (
+    isReauthRequiredError(error) ||
+    isCloudLoginRequired(error) ||
+    (connection.authMode === 'oauth' && isGatewayAuthRejection(error))
+  )
+}
+
 // Stable backend identity per registered connection: the `install_id` its /api/status reports,
 // TTL-cached in `connectionInstallIds` (see registry-backend-identity.ts).
 const probeConnectionInstallId = (connectionId: string, descriptor: any) =>
@@ -15178,10 +15188,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             connection,
             profiles: null,
             error: redactSecrets(String(error?.message || error)),
-            needsSignIn:
-              isReauthRequiredError(error) ||
-              isCloudLoginRequired(error) ||
-              (connection.authMode === 'oauth' && isGatewayAuthRejection(error))
+            needsSignIn: rosterSourceNeedsSignIn(connection, error)
           }
         }
 

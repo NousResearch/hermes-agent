@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
+import { frCloudSignIn } from './fr_cloud_sign_in'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
 import { frFirstRun } from './fr_first_run'
@@ -1759,12 +1760,7 @@ export const frOverrides = {
         'Vous êtes connecté. Choisissez un agent ci-dessous ; la session se rafraîchit automatiquement.',
       cloudAgentsTitle: 'Vos agents',
       cloudOrgChange: "Changer d'organisation",
-      cloudBrowserPendingTitle: 'Terminez la connexion dans votre navigateur',
-      cloudBrowserPendingDesc: 'Une page de connexion Hermes Cloud est ouverte dans votre navigateur par défaut.',
-      cloudCopySignInLink: 'Copier le lien de connexion',
-      cloudCancelSignIn: 'Annuler la connexion',
-      cloudSignInLinkCopied: 'Lien de connexion copié',
-      cloudSignInLinkCopiedMessage: 'Collez-le dans votre navigateur pour poursuivre la connexion.',
+      ...frCloudSignIn,
       cloudLoadingAgents: 'Chargement de vos agents…',
       cloudNoAgents: {
         before: 'Aucun agent trouvé sur ce compte… Créez-en un dans le ',

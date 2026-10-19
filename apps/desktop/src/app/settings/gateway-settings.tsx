@@ -40,7 +40,8 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { isCloudLoginRequiredErrorLike } from '../../../electron/cloud-auth-errors'
 
-import { cancelCloudSignIn, copyCloudSignInLink, useCloudSignInLink } from './cloud-sign-in-link'
+import { cancelCloudSignIn } from './cloud-sign-in-link'
+import { CloudSignInPendingRow } from './cloud-sign-in-pending'
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
@@ -350,8 +351,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   // A browser sign-in (first sign-in or "Change org") is pending.
   const [cloudBrowserPending, setCloudBrowserPending] = useState(false)
   const [cloudSigningOut, setCloudSigningOut] = useState(false)
-  const cloudSignInUrl = useCloudSignInLink(cloudBrowserPending)
-  const cancelSignInRef = useRef<HTMLButtonElement>(null)
   const [cloudAgents, setCloudAgents] = useState<DesktopCloudAgent[]>([])
   const [cloudDiscover, setCloudDiscover] = useState<CloudDiscoverStatus>('idle')
   const [cloudConnectingId, setCloudConnectingId] = useState<null | string>(null)
@@ -804,13 +803,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     }
   }
 
-  // Keyboard users land on the way out of the pending browser flow.
-  useEffect(() => {
-    if (cloudBrowserPending) {
-      cancelSignInRef.current?.focus()
-    }
-  }, [cloudBrowserPending])
-
   const cloudSignOut = async () => {
     const desktop = window.hermesDesktop
     const seq = ++signingSeq.current
@@ -1180,31 +1172,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             title={g.cloudSignInTitle}
           />
 
-          {cloudBrowserPending ? (
-            <div aria-live="polite" role="status">
-              <ListRow
-                action={
-                  <div className="flex items-center gap-2">
-                    {/* "Browser didn't open?" — xdg-open and friends can report
-                        success without a browser appearing; hand over the link. */}
-                    <Button
-                      disabled={!cloudSignInUrl}
-                      onClick={() => cloudSignInUrl && void copyCloudSignInLink(cloudSignInUrl, g)}
-                      size="sm"
-                      variant="text"
-                    >
-                      {g.cloudCopySignInLink}
-                    </Button>
-                    <Button onClick={cancelCloudSignIn} ref={cancelSignInRef} size="sm" variant="outline">
-                      {g.cloudCancelSignIn}
-                    </Button>
-                  </div>
-                }
-                description={g.cloudBrowserPendingDesc}
-                title={g.cloudBrowserPendingTitle}
-              />
-            </div>
-          ) : null}
+          {cloudBrowserPending ? <CloudSignInPendingRow copy={g} /> : null}
 
           {cloudSignedIn ? (
             <div className="mt-3">

@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
+import { esCloudSignIn } from './es_cloud_sign_in'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
 import { esFirstRun } from './es_first_run'
@@ -1754,13 +1755,7 @@ export const esOverrides = {
       cloudSignedInDesc: 'Has iniciado sesión. Elige un agente de abajo; la sesión se actualiza automáticamente.',
       cloudAgentsTitle: 'Tus agentes',
       cloudOrgChange: 'Cambiar organización',
-      cloudBrowserPendingTitle: 'Termina de iniciar sesión en tu navegador',
-      cloudBrowserPendingDesc:
-        'Hay una página de inicio de sesión de Hermes Cloud abierta en tu navegador predeterminado.',
-      cloudCopySignInLink: 'Copiar enlace de inicio de sesión',
-      cloudCancelSignIn: 'Cancelar inicio de sesión',
-      cloudSignInLinkCopied: 'Enlace de inicio de sesión copiado',
-      cloudSignInLinkCopiedMessage: 'Pégalo en tu navegador para continuar con el inicio de sesión.',
+      ...esCloudSignIn,
       cloudLoadingAgents: 'Cargando tus agentes…',
       cloudNoAgents: {
         before: 'No se encontraron agentes en esta cuenta. Crea uno en el ',

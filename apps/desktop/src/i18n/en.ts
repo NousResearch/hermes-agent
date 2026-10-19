@@ -6,6 +6,7 @@ import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
+import { enCloudSignIn } from './en_cloud_sign_in'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
@@ -1407,12 +1408,7 @@ export const en: Translations = {
       cloudSignedInDesc: 'You are signed in. Pick an agent below; the session refreshes automatically.',
       cloudAgentsTitle: 'Your agents',
       cloudOrgChange: 'Change org',
-      cloudBrowserPendingTitle: 'Finish signing in in your browser',
-      cloudBrowserPendingDesc: 'A Hermes Cloud sign-in page is open in your default browser.',
-      cloudCopySignInLink: 'Copy sign-in link',
-      cloudCancelSignIn: 'Cancel sign-in',
-      cloudSignInLinkCopied: 'Sign-in link copied',
-      cloudSignInLinkCopiedMessage: 'Paste it into your browser to continue signing in.',
+      ...enCloudSignIn,
       cloudLoadingAgents: 'Loading your agents…',
       cloudNoAgents: {
         before: 'No agents found on this account. Create one in the ',

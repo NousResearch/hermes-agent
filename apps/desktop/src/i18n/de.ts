@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
+import { deCloudSignIn } from './de_cloud_sign_in'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deFirstRun } from './de_first_run'
@@ -1755,12 +1756,7 @@ export const deOverrides = {
         'Sie sind angemeldet. Wählen Sie unten einen Agent; die Session wird automatisch aktualisiert.',
       cloudAgentsTitle: 'Ihre Agents',
       cloudOrgChange: 'Organisation ändern',
-      cloudBrowserPendingTitle: 'Anmeldung im Browser abschließen',
-      cloudBrowserPendingDesc: 'In Ihrem Standardbrowser ist eine Hermes-Cloud-Anmeldeseite geöffnet.',
-      cloudCopySignInLink: 'Anmeldelink kopieren',
-      cloudCancelSignIn: 'Anmeldung abbrechen',
-      cloudSignInLinkCopied: 'Anmeldelink kopiert',
-      cloudSignInLinkCopiedMessage: 'Fügen Sie ihn in Ihren Browser ein, um die Anmeldung fortzusetzen.',
+      ...deCloudSignIn,
       cloudLoadingAgents: 'Ihre Agents werden geladen…',
       cloudNoAgents: {
         before: 'Keine Agents in diesem Konto gefunden. Legen Sie einen im ',

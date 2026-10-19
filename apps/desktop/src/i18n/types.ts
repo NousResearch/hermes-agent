@@ -14,6 +14,7 @@ import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
+import type { CloudBrowserSignInCopy } from './types_cloud_sign_in'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { FirstRunCopy } from './types_first_run'
@@ -1147,7 +1148,7 @@ export interface Translations extends NoticeTranslations {
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
-    gateway: {
+    gateway: CloudBrowserSignInCopy & {
       loading: string
       unavailableTitle: string
       unavailableDesc: string
@@ -1171,12 +1172,6 @@ export interface Translations extends NoticeTranslations {
       cloudSignedInDesc: string
       cloudAgentsTitle: string
       cloudOrgChange: string
-      cloudBrowserPendingTitle: string
-      cloudBrowserPendingDesc: string
-      cloudCopySignInLink: string
-      cloudCancelSignIn: string
-      cloudSignInLinkCopied: string
-      cloudSignInLinkCopiedMessage: string
       cloudLoadingAgents: string
       cloudNoAgents: { before: string; linkText: string; after: string }
       cloudRefresh: string

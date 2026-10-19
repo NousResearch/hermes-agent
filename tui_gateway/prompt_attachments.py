@@ -102,17 +102,25 @@ def _profile_attachments_storage(profile_home) -> str:
 
     Read from THAT profile's config.yaml — ``file.attach`` runs before ``prompt.submit``
     installs the profile scope, so the process config still belongs to the launch profile
-    (same reason as ``_profile_configured_cwd``)."""
+    (same reason as ``_profile_configured_cwd``).
+
+    Best-effort, including when the config backend cannot serve the profile: ``""`` keeps the
+    profile-home store, which the sandbox mounts and the vision allowlist always cover, so the
+    attachment still reaches the agent (by an absolute instead of a workspace-relative ref)."""
     import contextlib as _contextlib
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     home = Path(profile_home) if profile_home else _hermes_home
-    with _contextlib.suppress(Exception):
-        from hermes_cli.config_backend import config_exists
-        from hermes_cli.config_effective import load_user_config_effective
-        cfg_path = home / "config.yaml"
-        if config_exists(cfg_path):
-            attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
-            if isinstance(attachments_cfg, dict):
-                return str(attachments_cfg.get("storage") or "").strip().lower()
+    try:
+        with _contextlib.suppress(Exception):
+            from hermes_cli.config_backend import config_exists
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg_path = home / "config.yaml"
+            if config_exists(cfg_path):
+                attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
+                if isinstance(attachments_cfg, dict):
+                    return str(attachments_cfg.get("storage") or "").strip().lower()
+    except ConfigBackendUnavailable as exc:
+        logger.warning("attachments.storage for %s unavailable (%s); staging in the profile home", home, exc.code)
     return ""
 
 

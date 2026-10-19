@@ -1,16 +1,22 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
-import { enAppTour, enHandoffTour } from './en_app_tour'
-import { enAuxTasks } from './en_aux_tasks'
+import { enAppTour } from './en_app_tour'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enClarify } from './en_clarify'
+import { enConnectorAccounts } from './en_connector_accounts'
+import { enConnectorCard } from './en_connector_card'
+import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
+import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
+import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
@@ -28,40 +34,10 @@ export const en: Translations = {
   },
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
+  firstRun: enFirstRun,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
-  connectors: {
-    title: 'Connect your apps',
-    connect: 'Connect',
-    skip: 'Not now',
-    cancel: 'Stop waiting',
-    retry: 'Try again',
-    grant: 'Reconnect',
-    connected: 'Connected',
-    checking: 'Checking your apps…',
-    notConnected: 'Not connected',
-    skipped: 'Skipped',
-    disabled: 'Unavailable',
-    failed: 'Could not connect',
-    needsAuth: 'Access expired',
-    opening: 'Opening sign-in…',
-    waiting: 'Waiting for your browser…',
-    timeout: 'Still waiting for authorization.',
-    refresh: 'Refresh status',
-    connectError: 'Could not start authorization. Try again.',
-    connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
-    unavailable: 'Connectors are unavailable for this session.',
-    ownerMissing: 'Reopen this conversation to manage its connections.',
-    search: 'Find an app',
-    empty: 'No matching apps',
-    disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    execution: 'Connector tools',
-    setup: server => `Set up ${server}`,
-    openInBrowser: 'Open in browser',
-    setupCancel: 'Cancel',
-    authorizedToolsUnavailable: 'Authorized. Tools unavailable.',
-    required: 'Required'
-  },
+  connectors: enConnectorCard,
 
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
@@ -226,6 +202,8 @@ export const en: Translations = {
       advanced: 'Advanced',
       advancedHint: 'the mcp.json entry and logs'
     },
+
+    accounts: enConnectorAccounts,
 
     tools: {
       title: 'Tools',
@@ -802,17 +780,22 @@ export const en: Translations = {
         title: 'Install plugin',
         description: 'Review what this repository contains before installing anything.',
         repoLabel: 'Repository',
+        verified: 'Verified',
+        unverified: 'Unverified',
+        reviewedByNous: 'Reviewed by Nous.',
+        installsAndEnables: profile => `Installs for ${profile} and turns on right away.`,
+        installsOnly: profile => `Installs for ${profile}.`,
+        advanced: 'Advanced',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Reviewed pin ${sha}` : 'Reviewed pin'),
+        latestCommit: 'Latest commit',
+        nothingToInstall: 'This package has nothing to install here.',
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
         desktopLabel: 'Desktop UI',
         profileLabel: 'Install for profile',
         agentTargetLocal: (profile, dir) => `Installs into the ${profile} backend (${dir})`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
-        catalogPinned: (name, sha) =>
-          `Hermes catalog entry "${name}" — the agent component installs at the reviewed pin${sha ? ` ${sha}` : ''}, not the branch tip.`,
-        reviewedHeading: 'Reviewed catalog entry',
-        reviewedIntro:
-          'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
         toolsConnected: n => (n === 1 ? '1 tool connected' : `${n} tools connected`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} ready` : `${names.length} skills ready`),
         nextChat: 'more tools available in your next chat',
@@ -823,13 +806,11 @@ export const en: Translations = {
         desktopTargetFromPackage: 'Loaded into this app from the package above — same for every profile',
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
-        securityHeading: 'Before you install',
         securityIntro:
           'Install only from sources you trust — review the repository below if you want to see what will be added.',
         sourceHeading: 'Source code',
         viewRepository: 'View repository',
         viewPluginFiles: 'View plugin files',
-        gitCloneLabel: 'Git clone URL',
         enableAgent: 'Enable agent plugin after install',
         forceReinstall: 'Force reinstall (replace if already installed)',
         pinToCommit: 'Pin to commit (optional)',
@@ -1161,12 +1142,6 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
-    poolLimits: {
-      warmBotBackendsAria: 'Warm bot backends',
-      warmBotBackendsTitle: 'Warm Bot Backends',
-      backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
-      backendIdleTimeoutTitle: 'Backend Idle Timeout'
-    },
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1248,12 +1223,6 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
-      developerTitle: 'Developer',
-      resetOnboardingTitle: 'Reset onboarding',
-      resetOnboardingDesc:
-        'Delete the setup chats, rebuild the setup profile and run the first-run setup again. Your own profiles, chats and plugins stay.',
-      resetOnboardingAction: 'Reset',
-      resetOnboardingFailed: 'Could not reset onboarding',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -1619,64 +1588,7 @@ export const en: Translations = {
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
-    model: {
-      setupProviderFallback: 'provider',
-      setUpProvider: name => `Set up ${name}`,
-      staleAuxBefore: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
-      staleAuxAfter: ', not your main model.',
-      staleAuxOtherProviders: 'other providers',
-      moaEnabled: 'Enabled',
-      moaSetDefault: 'Set default',
-      moaNewPresetPlaceholder: 'new preset',
-      moaAddPreset: 'Add preset',
-      customModel: 'Custom model…',
-      customModelPlaceholder: 'Model id',
-      chooseFromList: 'Choose from list',
-      moaDefault: 'Default:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
-      moaReferenceTitle: index => `Reference ${index}`,
-      moaAddReference: 'Add reference model',
-      loading: 'Loading model configuration...',
-      appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
-      provider: 'Provider',
-      model: 'Model',
-      applying: 'Applying...',
-      mainAppliedTitle: 'Main model updated',
-      mainAppliedMessage: model => `New sessions will use ${model}.`,
-      defaultsLabel: 'Defaults',
-      reasoning: 'Reasoning',
-      reasoningOff: 'Off',
-      speed: 'Speed',
-      speedStandard: 'Standard',
-      defaultsFailed: 'Failed to save model defaults',
-      loadFailed: 'Could not load models',
-      restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
-      restartBackend: 'Restart backend',
-      restartingBackend: 'Restarting backend...',
-      restartFailed: 'Could not restart the backend',
-      auxiliaryTitle: 'Auxiliary models',
-      resetAllToMain: 'Reset all to main',
-      staleAuxDismiss: "Don't show again",
-      auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
-      setToMain: 'Set to main',
-      change: 'Change',
-      autoUseMain: 'auto · use main model',
-      inheritMainEffort: 'inherit · main model effort',
-      inheritsFrom: task => `inherits ${task}`,
-      followTask: task => `Follow ${task}`,
-      providerDefault: '(provider default)',
-      fallbackAdd: 'Add fallback',
-      fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
-      notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preset',
-      moaDescription:
-        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
-      moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'acting model · billed for the run',
-      moaReferenceHint: 'advises once per turn by default',
-      tasks: enAuxTasks
-    },
+    model: enModelSettings,
     localModels: enLocalModels,
     billing: {
       perMonth: amount => `${amount}/mo`,
@@ -2133,17 +2045,7 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    source: 'Source'
-  },
+  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2256,8 +2158,6 @@ export const en: Translations = {
       pinnedProvenance: (sha: string) =>
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
-      tierOfficial: 'official',
-      tierCommunity: 'community',
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
       updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
@@ -2383,6 +2283,7 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
+  gatewayGroupOpen: enGatewayGroupOpen,
   agents: {
     extendedTranscript: 'Extended transcript',
     transcriptTruncated: 'Showing the latest 16 KiB',
@@ -3115,8 +3016,7 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
-    // Queued trigger feedback in Run History: the backend accepted the trigger
-    // but has not materialized the run session yet (#70826).
+    // Queued trigger feedback in Run History: the backend accepted the trigger but has not materialized the run session yet (#70826).
     queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
@@ -3422,6 +3322,7 @@ export const en: Translations = {
     openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
+    redirect: 'Redirect the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -3565,6 +3466,12 @@ export const en: Translations = {
     queueSteer: 'Steer — redirect the live turn now',
     queueSend: 'Send',
     queueDelete: 'Delete',
+    queueLostNote: 'Turn lost during restart',
+    restoreImageDraft: 'Restore image draft',
+    queueCancelFailed: "Couldn't remove the queued turn",
+    queueLostDiscard: 'Discard',
+    queueLostDiscardTip:
+      'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
@@ -3745,7 +3652,7 @@ export const en: Translations = {
       heartbeatEveryHours: hours => `every ${hours}h`,
       heartbeatEverySeconds: seconds => `every ${seconds}s`,
       heartbeatNext: time => `next ${time}`,
-      heartbeatDueWaitingForIdle: 'due — waiting for idle',
+      dueWaitingForIdle: 'due — waiting for idle',
       heartbeatActions: 'Heartbeat actions',
       pauseHeartbeat: 'Pause heartbeat',
       resumeHeartbeat: 'Resume heartbeat',
@@ -3971,7 +3878,6 @@ export const en: Translations = {
     versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 
-  handoffTour: enHandoffTour,
   install: {
     stageStates: {
       pending: 'Pending',
@@ -4723,6 +4629,14 @@ export const en: Translations = {
           title: 'Hermes got stuck in a loop',
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
         },
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes is busy in this chat',
+          body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          title: 'Your message may already be queued',
+          body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
+        },
         SESSION_NOT_OWNED: {
           title: 'This chat is open somewhere else',
           body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
@@ -4841,49 +4755,8 @@ export const en: Translations = {
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
       alwaysAllow: 'Always allow'
     },
-    clarify: {
-      notReady: 'Clarify request is not ready yet',
-      gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
-      sendFailed: 'Could not send clarify response',
-      loadingQuestion: 'Loading question…',
-      other: 'Other (type your answer)',
-      placeholder: 'Type your answer…',
-      skip: 'Skip',
-      skipped: 'Skipped',
-      noAnswer: 'No answer',
-      confirmAndContinueLabel: 'Confirm and continue',
-      singleSelectHint: 'Pick one',
-      multiSelectHint: 'Select all that apply',
-      oneQuestion: '1 question',
-      questionProgress: (answered, total) => `${answered} of ${total} answered`,
-      notDelivered:
-        "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Accent color',
-        connectors: 'Apps',
-        layout: 'Layout',
-        plugins: 'Plugins',
-        theme: 'Appearance'
-      },
-      loading: 'Loading options…',
-      unavailable: "This list isn't available right now. Reply in chat instead.",
-      findApp: 'Find an app',
-      customColor: 'Custom color',
-      plugin: 'Plugin',
-      startsLater: "We'll set these up when you start."
-    },
-    startChat: {
-      starting: title => `Starting “${title}”…`,
-      startingUntitled: 'Starting a chat…',
-      untitled: 'New chat',
-      notStarted: "Couldn't start that chat.",
-      retry: 'Retry',
-      inProfile: profile => `In ${profile}`,
-      open: 'Open',
-      openFailed: "Couldn't open the chat"
-    },
+    clarify: enClarify,
+    themePicker: enThemePicker,
     catalogInstall: enCatalogInstall,
     mcpSetup: {
       installTitle: 'Add MCP servers',
@@ -4995,8 +4868,6 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
-        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
-        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },

@@ -10,7 +10,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_eviction_policy import outbound_image_retire_count
+from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
 from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
 
 logger = logging.getLogger(__name__)
@@ -596,7 +596,9 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
     replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones.
     """
     route = anthropic_thinking_route(base_url, model)
-    loop_start = _current_tool_loop_start(result)
+    # The latest assistant turn always keeps its thinking, even once a new user message closes its loop.
+    loop_start = min(_current_tool_loop_start(result),
+                     next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), len(result)))
     preserve_prior = route_replays_prior_thinking(route, model)
     for idx, m in _assistant_block_lists(result):
         if route == "kimi":
@@ -620,32 +622,57 @@ def _manage_thinking_signatures(result: list[dict[str, Any]], base_url: str | No
         m.pop("_thinking_signature_invalidated", None)  # internal flag, never on the wire
 
 
+def _image_source_data(block: Any) -> Optional[str]:
+    """Base64 payload of a wire ``image`` block, or None for a URL/native source (unmeasurable)."""
+    source = block.get("source") if isinstance(block, dict) else None
+    data = source.get("data") if isinstance(source, dict) else None
+    return data if isinstance(data, str) else None
+
+
 def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
     """Retire screenshot payloads once the request would cross the API's per-request image limit.
 
-    Mutates ``result`` in place. This wire pass has no byte sizes, so it enforces the block
-    ceiling only; the auxiliary Anthropic client (``agent.auxiliary_client`` via
-    ``anthropic_adapter.build_anthropic_kwargs``) reaches it without the compressor's
-    send-path pass, so it must hold the invariant alone. Policy: :mod:`agent.image_eviction_policy`.
+    Mutates ``result`` in place. The block ceiling is conditional on the request's actual image
+    dimensions (the strict 20 only when some image exceeds the many-image per-side cap), so this
+    pass reads the headers of the ``source.data`` payloads it already holds. It sizes the block
+    budget AND the byte budget, the latter because the auxiliary Anthropic client
+    (``agent.auxiliary_client`` via ``anthropic_adapter.build_anthropic_kwargs``) reaches this pass
+    without the compressor's send-path pass, so it must hold the invariant alone -- previously with
+    no request-size guard at all (post-#113953 review). Policy and rationale:
+    :mod:`agent.image_eviction_policy`.
     """
-    reserved = sum(
-        1
+    reserved = [
+        (block, _image_source_data(block))
         for msg in result
         for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "image"
-    )
+    ]
     # Parallel tool calls land as sibling tool_result blocks inside ONE user message
     # (oldest first), so the inner walk must also run newest -> oldest or a batch that
     # ends mid-message retires the newest frames instead of the oldest (#103217).
     carriers = [
-        (block, sum(1 for b in block["content"] if _block_type(b) == "image"))
+        (block, [(b, _image_source_data(b)) for b in block["content"] if _block_type(b) == "image"])
         for msg in reversed(result)
         for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "tool_result"
         and isinstance(block.get("content"), list)
         and _has_block_type(block["content"], {"image"})
     ]
-    retire = outbound_image_retire_count([n for _, n in carriers], reserved)
+    many_image_safe = images_all_within_many_image_limit(
+        [
+            *(data for _, data in reserved),
+            *(data for _, images in carriers for _, data in images),
+        ]
+    )
+    retire = outbound_image_retire_count(
+        [len(images) for _, images in carriers],
+        len(reserved),
+        carrier_bytes_newest_first=[
+            sum(len(data) for _, data in images if data) for _, images in carriers
+        ],
+        reserved_bytes=sum(len(data) for _, data in reserved if data),
+        many_image_safe=many_image_safe,
+    )
     for block, _ in carriers[len(carriers) - retire:]:
         placeholder = _text_block("[screenshot removed to save context]")
         block["content"] = [

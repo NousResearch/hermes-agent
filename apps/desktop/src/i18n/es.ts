@@ -1,52 +1,27 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esClarify } from './es_clarify'
+import { esConnectorAccounts } from './es_connector_accounts'
+import { esConnectorCard } from './es_connector_card'
+import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
+import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
   sharedMetrics: esSharedMetrics,
+  firstRun: esFirstRun,
   intro: introEs,
-  connectors: {
-    title: 'Conecta tus apps',
-    connect: 'Conectar',
-    skip: 'Ahora no',
-    cancel: 'Dejar de esperar',
-    retry: 'Reintentar',
-    grant: 'Volver a conectar',
-    connected: 'Conectado',
-    checking: 'Comprobando tus apps…',
-    notConnected: 'No conectado',
-    skipped: 'Omitido',
-    disabled: 'No disponible',
-    failed: 'No se pudo conectar',
-    needsAuth: 'Acceso caducado',
-    opening: 'Abriendo el inicio de sesión…',
-    waiting: 'Esperando a tu navegador…',
-    timeout: 'Seguimos esperando la autorización.',
-    refresh: 'Actualizar estado',
-    connectError: 'No se pudo iniciar la autorización. Inténtalo de nuevo.',
-    connectErrorFor: (app: string) => `No se pudo iniciar la autorización para ${app}.`,
-    unavailable: 'Los conectores no están disponibles en esta sesión.',
-    ownerMissing: 'Vuelve a abrir esta conversación para gestionar sus conexiones.',
-    search: 'Buscar una app',
-    empty: 'No hay apps que coincidan',
-    disclaimer: 'Conectar es opcional. Autoriza solo las apps que quieras que use Hermes.',
-    execution: 'Herramientas de conectores',
-    setup: server => `Configurar ${server}`,
-    openInBrowser: 'Abrir en el navegador',
-    setupCancel: 'Cancelar',
-    authorizedToolsUnavailable: 'Autorizado. Herramientas no disponibles.',
-    required: 'Obligatorio'
-  },
+  connectors: esConnectorCard,
   connectorsPage: {
     title: 'Conectores',
     searchPlaceholder: (count: number) => `Buscar entre ${count} apps`,
@@ -203,6 +178,9 @@ export const esOverrides = {
       advanced: 'Avanzado',
       advancedHint: 'la entrada de mcp.json y los registros'
     },
+
+    accounts: esConnectorAccounts,
+
     tools: {
       title: 'Herramientas',
       notInstalledBody: 'Instálalo en este dispositivo para ver las herramientas que incluye.',
@@ -817,11 +795,6 @@ export const esOverrides = {
         profileLabel: 'Instalar para el perfil',
         agentTargetLocal: (profile, dir) => `Se instala en el backend ${profile} (${dir})`,
         agentTargetRemote: profile => `Se instala en el backend ${profile} conectado`,
-        catalogPinned: (name, sha) =>
-          `Entrada del catálogo de Hermes “${name}”: el componente del agente se instala en la versión fijada revisada${sha ? ` ${sha}` : ''}, no en la punta de la rama.`,
-        reviewedHeading: 'Entrada del catálogo revisada',
-        reviewedIntro:
-          'Una persona revisó esta entrada en su commit fijado. Aun así, puedes inspeccionar el código exacto abajo.',
         toolsConnected: n => (n === 1 ? '1 herramienta conectada' : `${n} herramientas conectadas`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} lista` : `${names.length} skills listas`),
         nextChat: 'más herramientas disponibles en tu próximo chat',
@@ -834,13 +807,11 @@ export const esOverrides = {
         desktopOnlyNote: 'Los paquetes solo de escritorio no instalan un plugin del agente en el backend.',
         insecureWarning:
           'Esta URL usa un esquema inseguro o local. Para instalaciones de producción, usa https:// o git@.',
-        securityHeading: 'Antes de instalar',
         securityIntro:
           'Instala solo desde fuentes de confianza; revisa el repositorio de abajo si quieres ver qué se añadirá.',
         sourceHeading: 'Código fuente',
         viewRepository: 'Ver repositorio',
         viewPluginFiles: 'Ver archivos del plugin',
-        gitCloneLabel: 'URL de git clone',
         enableAgent: 'Activar el plugin del agente tras instalarlo',
         forceReinstall: 'Forzar reinstalación (reemplazar si ya está instalado)',
         pinToCommit: 'Fijar a un commit (opcional)',
@@ -861,7 +832,17 @@ export const esOverrides = {
           'Hermes dejó de esperar el resultado de la instalación, pero es posible que el plugin siga instalándose. Cierra este cuadro y actualiza la lista de plugins antes de volver a instalarlo.',
         desktopFailed: 'Error al instalar el plugin de escritorio',
         missingEnv: (name, vars) =>
-          `${name} está instalado, pero necesita una clave para funcionar: ${vars}. Añádela ahora o las herramientas del plugin fallarán.`
+          `${name} está instalado, pero necesita una clave para funcionar: ${vars}. Añádela ahora o las herramientas del plugin fallarán.`,
+        verified: 'Verificado',
+        unverified: 'Sin verificar',
+        reviewedByNous: 'Revisado por Nous.',
+        installsAndEnables: profile => `Se instala para ${profile} y se activa al momento.`,
+        installsOnly: profile => `Se instala para ${profile}.`,
+        advanced: 'Avanzado',
+        versionLabel: 'Versión',
+        reviewedPin: sha => (sha ? `Pin revisado ${sha}` : 'Pin revisado'),
+        latestCommit: 'Último commit',
+        nothingToInstall: 'Este paquete no tiene nada que instalar aquí.'
       }
     },
     vault: {
@@ -1235,9 +1216,7 @@ export const esOverrides = {
         maxLines: 'Límite de páginas de archivo',
         maxLineLength: 'Límite de longitud de línea'
       },
-      codeExecution: {
-        mode: 'Modo de ejecución de código'
-      },
+      codeExecution: { mode: 'Modo de ejecución de código' },
       approvals: {
         mode: 'Modo de aprobación',
         timeout: 'Tiempo límite de aprobación',
@@ -1510,12 +1489,6 @@ export const esOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Backends de bots en caliente',
-      warmBotBackendsTitle: 'Backends de bots en caliente',
-      backendIdleTimeoutAria: 'Tiempo de inactividad del backend en milisegundos',
-      backendIdleTimeoutTitle: 'Tiempo de inactividad del backend'
-    },
     customEndpoints: {
       active: 'Activo',
       apiKeySet: 'Clave API configurada',
@@ -1595,12 +1568,6 @@ export const esOverrides = {
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
-      developerTitle: 'Desarrollador',
-      resetOnboardingTitle: 'Restablecer la configuración inicial',
-      resetOnboardingDesc:
-        'Borra los chats de configuración, reconstruye el perfil de configuración y vuelve a ejecutar la configuración inicial. Tus propios perfiles, chats y plugins se conservan.',
-      resetOnboardingAction: 'Restablecer',
-      resetOnboardingFailed: 'No se pudo restablecer la configuración inicial',
       attachmentSizeTitle: 'Tamaño máximo de vista previa / carga de imagen',
       attachmentSizeDesc:
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
@@ -1969,70 +1936,7 @@ export const esOverrides = {
       deepLinkErrorUrl: 'Solo se permiten URL de servidor http:// y https://.',
       deepLinkErrorTooLarge: 'La configuración supera el límite de 32 KB.'
     },
-    model: {
-      setupProviderFallback: 'proveedor',
-      setUpProvider: name => `Configurar ${name}`,
-      staleAuxBefore: (count, names) =>
-        count === 1
-          ? `${count} tarea auxiliar (${names}) todavía se ejecuta en `
-          : `${count} tareas auxiliares (${names}) todavía se ejecutan en `,
-      staleAuxAfter: ', no en tu modelo principal.',
-      staleAuxOtherProviders: 'otros proveedores',
-      moaEnabled: 'Activado',
-      moaSetDefault: 'Establecer como predeterminado',
-      moaNewPresetPlaceholder: 'nuevo preajuste',
-      moaAddPreset: 'Añadir preajuste',
-      customModel: 'Modelo personalizado…',
-      customModelPlaceholder: 'ID del modelo',
-      chooseFromList: 'Elegir de la lista',
-      moaDefault: 'Predeterminado:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Desactivar' : 'Activar'} la referencia ${index}`,
-      moaReferenceTitle: index => `Referencia ${index}`,
-      moaAddReference: 'Añadir modelo de referencia',
-      loading: 'Cargando configuración de modelo...',
-      appliesDesc:
-        'Se aplica a sesiones nuevas. Usa el selector de modelo en el compositor para cambiar el chat activo.',
-      provider: 'Proveedor',
-      model: 'Modelo',
-      applying: 'Aplicando...',
-      mainAppliedTitle: 'Modelo principal actualizado',
-      mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,
-      defaultsLabel: 'Valores predeterminados',
-      reasoning: 'Razonamiento',
-      reasoningOff: 'Desactivado',
-      speed: 'Velocidad',
-      speedStandard: 'Estándar',
-      defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
-      loadFailed: 'No se pudieron cargar los modelos',
-      restartRequired:
-        'Este backend ejecuta código antiguo tras una actualización. Reinícialo para cargar el código nuevo.',
-      restartBackend: 'Reiniciar backend',
-      restartingBackend: 'Reiniciando backend...',
-      restartFailed: 'No se pudo reiniciar el backend',
-      auxiliaryTitle: 'Modelos auxiliares',
-      resetAllToMain: 'Restablecer todos al principal',
-      staleAuxDismiss: 'No volver a mostrar',
-      auxiliaryDesc:
-        'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
-      setToMain: 'Usar principal',
-      change: 'Cambiar',
-      autoUseMain: 'auto · usar modelo principal',
-      inheritMainEffort: 'heredar · esfuerzo del modelo principal',
-      inheritsFrom: task => `hereda de ${task}`,
-      followTask: task => `Seguir ${task}`,
-      providerDefault: '(predeterminado del proveedor)',
-      fallbackAdd: 'Añadir respaldo',
-      fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
-      notInCatalog: 'no está en la lista de modelos de este proveedor; las llamadas pueden recurrir a un respaldo.',
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preajuste',
-      moaDescription:
-        'Configura preajustes con nombre que aparecen como modelos del proveedor Mixture of Agents. El agregador es el modelo que actúa: ejecuta cada paso del bucle de herramientas, y casi todo el coste de la ejecución se factura a su proveedor. Por defecto, las referencias solo asesoran una vez por turno del usuario.',
-      moaAggregator: 'Agregador',
-      moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
-      moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: esAuxTasks
-    },
+    model: esModelSettings,
     localModels: esLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mes`,
@@ -2614,8 +2518,6 @@ export const esOverrides = {
       pinnedProvenance: (sha: string) =>
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
-      tierOfficial: 'oficial',
-      tierCommunity: 'comunidad',
       updateToPin: (sha: string) => `Actualizar a ${sha}`,
       updateFailed: (name: string) => `No se pudo actualizar ${name}`,
       updated: (name: string) =>
@@ -3853,6 +3755,7 @@ export const esOverrides = {
     openDirective: 'Abrir',
     queueMessage: 'Poner mensaje en cola',
     steer: 'Guiar la ejecución actual',
+    redirect: 'Redirigir la ejecución actual',
     stop: 'Detener',
     send: 'Enviar',
     speaking: 'Hablando',
@@ -4002,6 +3905,12 @@ export const esOverrides = {
     queueDelete: 'Borrar',
     queueResume: 'Reanudar',
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
+    queueLostNote: 'Turno perdido durante el reinicio',
+    restoreImageDraft: 'Restaurar borrador con imagen',
+    queueCancelFailed: 'No se pudo quitar el turno en cola',
+    queueLostDiscard: 'Descartar',
+    queueLostDiscardTip:
+      'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
     queueDroppedTitle: 'Entrada en cola descartada',
@@ -4174,7 +4083,7 @@ export const esOverrides = {
       heartbeatEveryHours: (hours: number) => `cada ${hours} h`,
       heartbeatEverySeconds: (seconds: number) => `cada ${seconds} s`,
       heartbeatNext: (time: string) => `próximo ${time}`,
-      heartbeatDueWaitingForIdle: 'pendiente: esperando inactividad',
+      dueWaitingForIdle: 'pendiente: esperando inactividad',
       heartbeatActions: 'Acciones del heartbeat',
       pauseHeartbeat: 'Pausar heartbeat',
       resumeHeartbeat: 'Reanudar heartbeat',
@@ -4405,19 +4314,6 @@ export const esOverrides = {
       noReturn:
         'El backend no volvió a estar disponible. Puede que la actualización no se haya completado; revisa el host del backend.'
     }
-  },
-  handoffTour: {
-    localTitle: 'Este equipo puede ejecutar modelos localmente',
-    localText: (model: string) =>
-      `${model} encaja con tu hardware. Funciona gratis y los chats nunca salen de este equipo. Elígelo aquí, en el menú de modelos, cuando quieras.`,
-    profileTitle: 'Tu primera tarea se ejecuta en el perfil predeterminado',
-    profileText:
-      'Esta barra cambia de perfil. El que está iluminado ahora es el predeterminado, donde está la sesión de la tarea. El otro es el perfil de configuración, donde está el chat de bienvenida.',
-    sessionsTitle: 'Cada perfil tiene sus propias sesiones',
-    sessionsText:
-      'Esta lista pertenece al perfil predeterminado. Nueva sesión crea una en el perfil que esté seleccionado. Cambia de perfil en la barra y la lista cambia con él.',
-    stayTitle: 'Hermes está a un clic',
-    stayText: 'Cambia al perfil de configuración y abre Bienvenida a Hermes siempre que necesites ayuda. Se queda ahí.'
   },
   install: {
     stageStates: {
@@ -5277,49 +5173,8 @@ export const esOverrides = {
         `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
       alwaysAllow: 'Permitir siempre'
     },
-    clarify: {
-      notReady: 'La solicitud de aclaración aún no está lista',
-      gatewayDisconnected: 'Hermes está sin conexión ahora mismo. Reconéctate y vuelve a enviarlo.',
-      sendFailed: 'No se pudo enviar la respuesta de aclaración',
-      loadingQuestion: 'Cargando pregunta…',
-      other: 'Otro (escribe tu respuesta)',
-      placeholder: 'Escribe tu respuesta…',
-      skip: 'Omitir',
-      skipped: 'Omitido',
-      noAnswer: 'Sin respuesta',
-      confirmAndContinueLabel: 'Confirmar y continuar',
-      singleSelectHint: 'Elige una',
-      multiSelectHint: 'Elige todas las que correspondan',
-      oneQuestion: '1 pregunta',
-      questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
-      notDelivered:
-        'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Color de acento',
-        connectors: 'Apps',
-        layout: 'Diseño',
-        plugins: 'Plugins',
-        theme: 'Apariencia'
-      },
-      loading: 'Cargando opciones…',
-      unavailable: 'Esta lista no está disponible ahora. Responde en el chat.',
-      findApp: 'Buscar una app',
-      customColor: 'Color personalizado',
-      plugin: 'Plugin',
-      startsLater: 'Los configuraremos cuando empieces.'
-    },
-    startChat: {
-      starting: title => `Iniciando «${title}»…`,
-      startingUntitled: 'Iniciando un chat…',
-      untitled: 'Chat nuevo',
-      notStarted: 'El chat no se inició',
-      retry: 'Reintentar',
-      inProfile: profile => `En ${profile}`,
-      open: 'Abrir',
-      openFailed: 'No se pudo abrir el chat'
-    },
+    clarify: esClarify,
+    themePicker: esThemePicker,
     catalogInstall: {
       preparing: 'Preparando la instalación…',
       install: 'Instalar',
@@ -5336,10 +5191,7 @@ export const esOverrides = {
         plugin: 'plugin',
         skill: 'skill'
       },
-      tier: {
-        official: 'oficial',
-        community: 'comunidad'
-      },
+      tier: { official: 'oficial', verified: 'verificado', community: 'comunidad' },
       targetProfile: (profile: string) => `Se instala en tu perfil ${profile}`,
       sendFailed: 'No se pudo enviar tu respuesta. Vuelve a intentarlo.',
       commitLabel: 'Commit',
@@ -5520,12 +5372,6 @@ export const esOverrides = {
           pending: 'Buscar en el historial de sesiones',
           pendingAction: 'Buscando'
         },
-        setup_choose: {
-          done: 'Hizo una pregunta de configuración',
-          pending: 'Haciendo una pregunta de configuración',
-          pendingAction: 'Preguntando'
-        },
-        start_chat: { done: 'Inició un chat', pending: 'Iniciando un chat', pendingAction: 'Iniciando' },
         terminal: {
           done: 'Comando ejecutado',
           pending: 'Ejecutar comando',

@@ -539,12 +539,23 @@ def _pricing_entry_from_metadata(
     prompt = per_million("prompt")
     completion = per_million("completion")
     request = _to_decimal(pricing.get("request"))
+    cache_read = per_million("cache_read", "cached_prompt", "input_cache_read")
+    cache_write = per_million("cache_write", "cache_creation", "input_cache_write")
+    # A NEGATIVE rate is not a price: OpenRouter's router sentinels quote "-1" (per token,
+    # i.e. -1,000,000 per million) for routes it cannot price, and multiplying that as money
+    # produced negative dollars and a bogus 'estimated' status. Refuse the whole entry so the
+    # route reads 'unknown' instead. Each value is checked at its own scale (per_million ones
+    # are already x1e6, ``request`` is raw dollars); a missing key (None) is not negative, so
+    # a genuine $0 request fee or an absent cache rate still prices normally.
+    if any(v is not None and v.is_finite() and v < 0
+           for v in (prompt, completion, request, cache_read, cache_write)):
+        return None
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=cache_read,
+        cache_write_cost_per_million=cache_write,
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
     )

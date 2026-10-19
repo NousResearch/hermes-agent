@@ -1428,6 +1428,14 @@ stage_venv() {
 # The application dependency graph is never installed in this interpreter.
 bootstrap_python() {
     ensure_uv
+    # uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the user's
+    # uv (#101269), so pin both to the Hermes root unless the caller set them.
+    # The cache keeps its own slot: pm seeds <root>/cache/uv once and skips
+    # existing entries, so bootstrap bytes there first would mark a partial seed
+    # done. --system still finds a host interpreter, so a machine with one
+    # downloads nothing either way.
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-$HERMES_ROOT/cache/uv-bootstrap}"
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HERMES_ROOT/cache/uv-python}"
     local _py
     # Read packages.python.version by following object names and braces, not
     # indentation — same pre-Python reader contract as setup-hermes.sh's pin().

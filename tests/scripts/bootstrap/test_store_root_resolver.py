@@ -116,10 +116,12 @@ def test_checkout_bootstraps_source_the_canonical_resolver() -> None:
 
 
 def test_setup_ps1_sources_the_canonical_files() -> None:
-    """setup-hermes.ps1 carries NO resolver copy (it runs from a checkout)."""
+    """setup-hermes.ps1 carries NO resolver or pins copy (it runs from a checkout)."""
     text = (REPO_ROOT / "setup-hermes.ps1").read_text(encoding="utf-8-sig")
     assert "bootstrap\\store_root.ps1" in text, "setup-hermes.ps1 must dot-source the canonical resolver"
+    assert "bootstrap\\uv_state_pins.ps1" in text, "setup-hermes.ps1 must dot-source the canonical pins"
     assert "# --- BEGIN store-root resolver" not in text, "an inline resolver copy came back"
+    assert "# --- BEGIN uv state pins" not in text, "an inline pins copy came back"
 
 
 @pytest.mark.platforms("posix")

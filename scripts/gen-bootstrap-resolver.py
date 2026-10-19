@@ -26,9 +26,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = REPO_ROOT / "scripts" / "bootstrap"
 CANONICAL_SH = BOOTSTRAP / "store_root.sh"
 CANONICAL_PS1 = BOOTSTRAP / "store_root.ps1"
+CANONICAL_PINS = BOOTSTRAP / "uv_state_pins.ps1"
 
 BEGIN_MARK = "# --- BEGIN GENERATED: store-root resolver (scripts/gen-bootstrap-resolver.py) ---"
 END_MARK = "# --- END GENERATED: store-root resolver ---"
+PINS_BEGIN = "# --- BEGIN GENERATED: uv state pins (scripts/gen-bootstrap-resolver.py) ---"
+PINS_END = "# --- END GENERATED: uv state pins ---"
 
 # install.ps1 is fetched with `irm | iex`, so it cannot source a sibling either:
 # both its resolver and its uv-state pins are spliced from the canonical files,
@@ -47,6 +50,8 @@ CANON_END = "# --- END canonical store-root resolver ---"
 
 CANON_PS1_BEGIN = "# --- BEGIN canonical store-root resolver (scripts/gen-bootstrap-resolver.py) ---"
 CANON_PS1_END = "# --- END canonical store-root resolver ---"
+CANON_PINS_BEGIN = "# --- BEGIN canonical uv state pins (scripts/gen-bootstrap-resolver.py) ---"
+CANON_PINS_END = "# --- END canonical uv state pins ---"
 
 
 def _canonical_body(path: Path, begin_mark: str, end_mark: str) -> str:
@@ -97,6 +102,9 @@ def main() -> int:
         _canonical_body(CANONICAL_PS1, CANON_PS1_BEGIN, CANON_PS1_END),
         BEGIN_MARK, END_MARK,
         "scripts/bootstrap/store_root.ps1")
+    pins_ps1 = _fragment(
+        _canonical_body(CANONICAL_PINS, CANON_PINS_BEGIN, CANON_PINS_END),
+        PINS_BEGIN, PINS_END, "scripts/bootstrap/uv_state_pins.ps1")
     # key -> (canonical source the copy derives from, fresh?)
     results: dict[str, tuple[str, bool]] = {}
     for path in _SPLICE_SH:
@@ -107,6 +115,9 @@ def main() -> int:
         where = path.relative_to(REPO_ROOT).as_posix()
         results[where] = (CANONICAL_PS1.relative_to(REPO_ROOT).as_posix(),
                           _splice(path, resolver_ps1, args.check, BEGIN_MARK, END_MARK))
+        results[f"{where} (uv pins)"] = (
+            CANONICAL_PINS.relative_to(REPO_ROOT).as_posix(),
+            _splice(path, pins_ps1, args.check, PINS_BEGIN, PINS_END))
     stale = {name: source for name, (source, fresh) in results.items() if not fresh}
     if args.check and stale:
         detail = "\n".join(f"  {name}: drifted from {source}" for name, source in stale.items())

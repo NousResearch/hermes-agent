@@ -34,7 +34,7 @@ _GUARD_SCRIPTS = (
 # drift it is there to judge.
 _RESOLVER_ENGINE = (
     "scripts/gen-bootstrap-resolver.py", "scripts/bootstrap/store_root.sh",
-    "scripts/bootstrap/store_root.ps1",
+    "scripts/bootstrap/store_root.ps1", "scripts/bootstrap/uv_state_pins.ps1",
     "scripts/install.sh", "scripts/install.ps1",
 )
 _SUPPORT = (

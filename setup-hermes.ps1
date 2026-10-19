@@ -50,6 +50,11 @@ if ($env:HERMES_HOME) {
 }
 # --- END explicit-home binding ---
 
+# uv's cache and managed-python dirs, dot-sourced from the canonical file like
+# the resolver above.
+. (Join-Path $PSScriptRoot "scripts\bootstrap\uv_state_pins.ps1")
+Set-UvStatePins
+
 Write-Host ''
 Write-Host 'Hermes Agent Setup' -ForegroundColor Cyan
 Write-Host ''

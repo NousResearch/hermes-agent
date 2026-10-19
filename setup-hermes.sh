@@ -234,6 +234,15 @@ if [ "$os" = win32 ]; then
   case "$arch" in arm64) py_request="cpython-$py_version-windows-aarch64-none" ;;
                   *) py_request="cpython-$py_version-windows-x86_64-none" ;; esac
 fi
+# uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the user's uv
+# (#101269), so pin both to the Hermes root. An explicit value stays
+# authoritative — the fresh-source acceptance test pre-seeds
+# UV_PYTHON_INSTALL_DIR with UV_PYTHON_DOWNLOADS=never, and overwriting it makes
+# `python install` refuse to run. The cache keeps its own slot: pm seeds
+# <root>/cache/uv once and skips existing entries, so bootstrap bytes there
+# first would mark a partial seed done.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$hermes_root/cache/uv-bootstrap}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$hermes_root/cache/uv-python}"
 "$uv" python install --no-bin --no-registry "$py_request"
 boot_py="$("$uv" python find --managed-python "$py_request")"
 boot_py="${boot_py%$'\r'}"

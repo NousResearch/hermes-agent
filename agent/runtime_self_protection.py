@@ -57,8 +57,11 @@ _DELETING_COMMANDS = frozenset({
 _FIND_DELETE_RE = re.compile(r"(?:^|\s)-(?:delete|exec\s+rm\b)", re.IGNORECASE)
 
 # uv-managed install layout: .../uv/python/cpython-3.14.7-arm64-apple-darwin/...
+# The bootstrap pins UV_PYTHON_INSTALL_DIR to <hermes-root>/cache/uv-python, which drops
+# the "python" path component the uv default carries; both are uv-managed installs and
+# both must stay recognizable, or ``uv python uninstall`` stops being blocked (#101269).
 _UV_INSTALL_DIR_RE = re.compile(
-    r"(?i)(?P<root>.*[/\\](?:uv[/\\])?python[/\\]cpython-(?P<version>\d+(?:\.\d+)*)(?:[-_][^/\\]*)?)(?:[/\\].*)?$"
+    r"(?i)(?P<root>.*[/\\](?:uv[-/\\])?python[/\\]cpython-(?P<version>\d+(?:\.\d+)*)(?:[-_][^/\\]*)?)(?:[/\\].*)?$"
 )
 
 _WIN_DRIVE_FROM_POSIX_RE = re.compile(r"^/(?:(mnt)/)?([a-zA-Z])/(.+)$")

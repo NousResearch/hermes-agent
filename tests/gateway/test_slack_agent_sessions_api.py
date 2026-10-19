@@ -22,6 +22,25 @@ class _SlackApiError(Exception):
         self.response = {"ok": False, "error": code}
 
 
+class _SlackResponse:
+    """slack_sdk SlackResponse shape: ``.data`` payload, not a dict subclass.
+
+    Deliberately omits ``.get`` / mapping inheritance so a dict-only gate cannot
+    accidentally pass this fixture.
+    """
+
+    def __init__(self, payload: dict):
+        self.data = payload
+
+
+class _SlackApiErrorFromResponse(Exception):
+    """``SlackApiError`` whose ``response`` is a SlackResponse object, not a dict."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.response = _SlackResponse({"ok": False, "error": code})
+
+
 @pytest.fixture(autouse=True)
 def _pin_legacy_assistant_threads_api():
     """Pin the SDK capability probe to the legacy assistant.threads API and
@@ -111,6 +130,29 @@ class TestAgentSessionsApiRouting:
             thread_ts="parent_ts",
             status="is thinking...",
         )
+
+        a._app.client.agents_sessions_setStatus.reset_mock()
+        a._app.client.assistant_threads_setStatus.reset_mock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_not_called()
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejected_agent_sessions_remembers_slack_response_object(self):
+        """Permanent refusals arrive as SlackResponse, not a dict; memory must still trip."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock(
+            side_effect=_SlackApiErrorFromResponse("not_authorized")
+        )
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once()
+        a._app.client.assistant_threads_setStatus.assert_called_once()
 
         a._app.client.agents_sessions_setStatus.reset_mock()
         a._app.client.assistant_threads_setStatus.reset_mock()

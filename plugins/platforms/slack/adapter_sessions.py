@@ -40,10 +40,21 @@ def agent_session_status_enum(status: str) -> str:
 
 
 def _api_error_code(err: BaseException) -> str:
+    """Read Slack's structured ``error`` field from a dict or SlackResponse.
+
+    Real ``slack_sdk.SlackApiError.response`` is a mapping-like
+    ``SlackResponse``, not a ``dict``. Gating on ``isinstance(..., dict)``
+    would miss every genuine API refusal and skip rejection memory.
+    """
     response = getattr(err, "response", None)
-    if not isinstance(response, dict):
+    data = response if isinstance(response, dict) else getattr(response, "data", None)
+    if isinstance(data, dict):
+        code = data.get("error")
+        return code if isinstance(code, str) else ""
+    try:
+        code = response.get("error") if response is not None else None
+    except (AttributeError, TypeError):
         return ""
-    code = response.get("error")
     return code if isinstance(code, str) else ""
 
 

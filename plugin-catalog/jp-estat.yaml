@@ -1,13 +1,14 @@
 name: jp-estat
 repo: https://github.com/TakeshiTGAL/hermes-plugin-estat
-sha: 7cf225afe7ef6f46b4dccd0e2521f137e602dd9e
-description: "Japanese government statistics for Hermes Agent, built on the e-Stat API (政府統計の総合窓口, Japan's official government statistics portal): search tables, see their categories, and fetch numbers by name (population, households, establishments by industry, wages, consumer prices) with units, survey dates and citations. Disclosure — sends your search words and table selections to api.e-stat.go.jp with your own ESTAT_APP_ID (e-Stat requires the ID in the request URL); no other host, nothing written to disk."
+sha: 2cf442a83be2ed90b0a07cc4e8707d591f1e9196
+description: 'Japanese government statistics from the e-Stat API: search tables and fetch figures such as population, households, wages, and prices, with estat_search_tables, estat_table_info, and estat_get_data. Disclosure — It needs a free e-Stat application ID, set as ESTAT_APP_ID in the .env of each profile. Each call sends your search words and table selections to api.e-stat.go.jp and puts ESTAT_APP_ID in the request URL. The ID is read for the active profile on each call. An HTTP proxy set in the environment is not used, and no other host is called. Nothing is written to disk, and this plugin creates no cron job. The tools are on for every surface, including gateways, so anyone you allow there can call them with your ID. Turn a surface off with hermes tools.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
-requires_hermes: ">=0.18"
+requires_hermes: '>=0.21.4'
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-estat#readme
-version: "0.1.0"
+version: 0.1.4
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-estat/2cf442a83be2ed90b0a07cc4e8707d591f1e9196/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:

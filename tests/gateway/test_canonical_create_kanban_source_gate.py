@@ -9,6 +9,12 @@ kanban dispatcher's injected ``HERMES_SESSION_SOURCE=kanban`` (hermes_cli/kanban
 the Desktop app's ``source: 'desktop'`` (apps/desktop session-create-request.ts), and cron's
 ``cron`` — every one a bare ``invalid_params``. The gate is a closed KEY set; the VALUE of a
 known key is not part of the wire contract, so ``source`` must stay as open as the legacy wire.
+
+NOTE (t_53101721): this file pins GATE 1 only — the canonical wire contract. A full turn passes
+a SECOND source gate at ``gateway/session_policy.py`` (``SURFACES`` enforced by ``build_policy``
+in the handler); a source that passes this dispatch-level test can still be refused by gate 2.
+The second gate is pinned by ``test_canonical_create_kanban_surface_gate.py`` (which drives
+``build_policy`` directly) — the two files together cover the full turn.
 """
 import tempfile
 from pathlib import Path

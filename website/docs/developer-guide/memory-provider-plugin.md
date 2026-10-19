@@ -84,6 +84,13 @@ two files Hermes reads from disk rather than importing — `config_schema.py`
 subcommands). Both are found next to your package's `__init__.py`, so point the
 entry point at a package rather than a single module if you ship either.
 
+Memory providers registered through `register(ctx)` can retain that context and
+call `ctx.inject_message(body, session_key=origin_session_key)` to return an
+asynchronous reply to its originating session. The memory-provider collector
+uses the profile's normal plugin injection host, including its target checks
+and `plugins.entries.<provider>.allow_gateway_injection` permission. A `True`
+result means the host accepted the message, not that the resulting turn finished.
+
 ## The MemoryProvider ABC
 
 Your plugin implements the `MemoryProvider` abstract base class from `agent/memory_provider.py`:

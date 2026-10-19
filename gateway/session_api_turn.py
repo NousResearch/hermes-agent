@@ -18,11 +18,24 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 # Request-owned sinks an API observer may register for its admission's execution.
 _OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
                   'reasoning_callback', 'status_callback', 'interim_assistant_callback')
+_TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
                  'session_history_delivery')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
+
+
+class AdmissionQueued(RuntimeStoreError):
+    """The owner retired while this API admission was still queued. Unlike a refused request, the
+    input is committed: the row stays queued and the next owner runs it exactly once, so a client
+    that resends it submits the work twice. ``str()`` is the message every API surface shows."""
+
+    MESSAGE = 'Hermes is restarting. Your input is saved and will run once when it is back; do not resend it.'
+
+    def __init__(self):
+        super().__init__('admission_queued')
+        self.args = (self.MESSAGE,)
 
 
 def api_settings(authority, ref):
@@ -42,7 +55,8 @@ def check_api_turn(authority, ref, payload):
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
         if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control',
-                         'relay_metadata'}
+                         'relay_metadata', 'resume_unanswered'}
+                or data.get('resume_unanswered', True) is not True
                 or not {'history', 'settings'} <= set(data)
                 or not isinstance(data.get('relay_metadata', {}), dict)
                 or (data['history'] is not None and not isinstance(data['history'], list))
@@ -147,10 +161,8 @@ def admit_api_turn(adapter, **kwargs):
 async def admit_api_turn_async(adapter, steps=None, **kwargs):
     """``admit_api_turn`` (or *steps*, a generator ending in ``admit_api_steps``) with every SQLite
     write off the owner loop, in admission order."""
-    from gateway.session_authorities import active_authority
-    authority = active_authority(adapter.gateway_runner)
-    if authority is None:
-        raise RuntimeStoreError('profile_mismatch')
+    from gateway.session_authorities import require_active_authority
+    authority = require_active_authority(adapter.gateway_runner)
     return await run_steps_off_loop(authority, steps or admit_api_steps(adapter, **kwargs), orphaned=schedule_orphan)
 
 
@@ -163,10 +175,8 @@ def schedule_orphan(admitted):
 
 def admit_api_steps(adapter, **kwargs):
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
-    from gateway.session_authorities import active_authority
-    authority = active_authority(adapter.gateway_runner)
-    if authority is None or adapter._ensure_session_db() is not authority.db:
-        raise RuntimeStoreError('profile_mismatch')
+    from gateway.session_authorities import require_active_authority
+    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
     sid = kwargs.get('session_id') or uuid.uuid4().hex
     declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
     if declared_key:
@@ -210,6 +220,10 @@ def admit_api_steps(adapter, **kwargs):
         if author is None:
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
+    if kwargs.get('resume_unanswered_turn'):
+        # The session-chat door's one policy-gated re-run (#115325): its failed attempt left this text as
+        # the transcript's unanswered tail, which the turn adopts instead of appending it again.
+        payload['api_turn_v1']['resume_unanswered'] = True
     if kwargs.get('relay_metadata'):
         # The request's Relay metadata rides the admission to the turn it describes (main passed it
         # to ``run_conversation``); it is client JSON, so it is part of the exact-retry identity.
@@ -245,28 +259,39 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
+    ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
+                                    caller_key=kwargs.get('gateway_session_key'), walked_from=kwargs.get('walked_from'))
     check_api_turn(authority, ref, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,
-                        _authorize_write=authority._admission_gate(partial(_admit_target, sid, request_id, payload['api_turn_v1']['settings'])))
+                        _authorize_write=authority._admission_gate(partial(
+                            _admit_target, sid, request_id, payload['api_turn_v1']['settings'],
+                            client_key=bool(kwargs.get('request_id')))))
     return authority, ref, row
 
 
-def _admit_target(session_id, request_id, settings, conn):
+def _admit_target(session_id, request_id, settings, conn, *, client_key=True):
     """Inside the admission's own off-loop transaction: one target per request id, and the
     session's settings for its later payload-less (internal) turns, committed with the admitted
     turn rather than by the drain on the owner loop (N50)."""
-    _one_target(session_id, request_id, conn)
+    _one_target(session_id, request_id, conn, client_key=client_key)
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                  (_SETTINGS_PREFIX + session_id, _json(settings)))
 
 
-def _one_target(session_id, request_id, conn):
+def _one_target(session_id, request_id, conn, *, client_key=True):
     """One API request id (an Idempotency-Key) names one admission. The ledger keys identity by
-    target too, so the same key aimed at another session would otherwise run the work again."""
+    target too, so the same key aimed at another session would otherwise run the work again.
+    A deleted session's admission is gone from the ledger but its tombstone still spends the key
+    (a target that already holds the key replays before this guard runs). Only a client key can
+    name a tombstone: a server-minted id (key-less turn, run id) is fresh, so it skips that scan."""
     if conn.execute("SELECT 1 FROM session_admissions WHERE principal_id='api' AND request_id=? "
                     'AND target_session_id!=? LIMIT 1', (request_id, session_id)).fetchone():
+        raise RuntimeStoreError('admission_conflict')
+    if not client_key:
+        return
+    from hermes_state_terminal import terminal_api_admissions
+    if any(row['target_session_id'] != session_id for row in terminal_api_admissions(conn, request_id)):
         raise RuntimeStoreError('admission_conflict')
 
 
@@ -290,16 +315,17 @@ def owns_api_run(adapter, run_id, owner_scope):
 
 
 def recover_api_turns(adapter):
-    """Recover committed work only after the real API adapter is published."""
-    from gateway.session_authorities import all_authorities, owner_scope
-    for authority in all_authorities(adapter.gateway_runner):
+    """Recover committed work only after the real API adapter is published. A parked profile's
+    retained (retiring) authority is not served: its store is never read here."""
+    from gateway.session_authorities import owner_scope, serving_authorities
+    for authority in serving_authorities(adapter.gateway_runner):
         # Startup is unscoped (the launch profile's home): each profile's media root, config and
         # API bindings must pair with its own state.db, never the launch profile's.
         with owner_scope(authority):
-            _recover_api_turns(adapter, authority)
+            recover_authority_api_turns(adapter, authority)
 
 
-def _recover_api_turns(adapter, authority):
+def recover_authority_api_turns(adapter, authority):
     from hermes_state_runtime import list_session_admissions
     from gateway.session_ingress_media import collect_unheld_api_images
     import logging
@@ -368,12 +394,23 @@ async def observe_api_turn(admitted, **kwargs):
     if observers is None:
         observers = authority.api_observers = {}
     observer = {key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None}
+    if kwargs.get('tool_progress_callback') is not None and not observer.keys() & _TOOL_SINKS:
+        # Progress-only (the session chat stream): the producer's own tool.started / tool.completed
+        # events with its preview and failure verdict. Structured observers keep only theirs.
+        observer['tool_progress_callback'] = kwargs['tool_progress_callback']
     registered = observers.setdefault(row['admission_id'], [])
     registered.append(observer)
     try:
         authority._publish_pending(ref)
         authority._schedule(ref)
         await asyncio.shield(waiter)
+    except RuntimeStoreError as exc:
+        # Retirement releases every observer with runtime_draining, the same reason a refused
+        # request gets. This one's input is admitted: say so while the row is still queued.
+        current = get_session_admission(authority.db, admission_id=row['admission_id']) or {}
+        if exc.reason == 'runtime_draining' and current.get('status') == 'queued':
+            raise AdmissionQueued() from exc
+        raise
     finally:
         # Shielding keeps the canonical turn alive past a cancelled request; only this
         # request's observer leaves, and the entry itself goes once the last one is gone.
@@ -445,6 +482,7 @@ def prepare_api_execution(authority, ref, payload):
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None,
             'relay_metadata': data.get('relay_metadata') if data else None,
+            'resume_unanswered': bool(data and data.get('resume_unanswered')),
             'browser_control': _rebind_browser_control(adapter, data)}
 
 
@@ -473,8 +511,8 @@ def _notify_observers(authority, session_id, key, *args, **kwargs):
 
 def wire_api_observers(agent, owner, want_interim):
     """Hand this admission's API observers (Chat/Responses SSE, runs) the agent's reasoning,
-    status and commentary callbacks, the ones the direct API path gave the agent itself. Each
-    event is fenced to the exact running claim, so a settled worker's late callback is inert;
+    status, commentary and tool progress callbacks, the ones the direct API path gave the agent
+    itself. Each event is fenced to the exact running claim, so a settled worker's late callback is inert;
     the turn's own status/commentary sinks keep running after the observers."""
     authority, session_id, generation = owner
 
@@ -497,8 +535,16 @@ def wire_api_observers(agent, owner, want_interim):
         publish('interim_assistant_callback', text, already_streamed=already_streamed)
         if interim is not None:
             interim(text, already_streamed=already_streamed)
+    progress = agent.tool_progress_callback
+
+    def tool_progress_callback(event_type, *args, **kwargs):
+        if event_type in ('tool.started', 'tool.completed'):
+            publish_api_tool_progress(authority, session_id, generation, event_type, *args, **kwargs)
+        if progress is not None:
+            return progress(event_type, *args, **kwargs)
     agent.reasoning_callback = lambda text: publish('reasoning_callback', text)
     agent.status_callback = status_callback
+    agent.tool_progress_callback = tool_progress_callback
     if want_interim:
         agent.interim_assistant_callback = interim_assistant_callback
 
@@ -507,6 +553,17 @@ def publish_api_event(authority, session_id, event_type, payload):
     if event_type == 'message.delta' and payload['text'] is not None:  # a None segment boundary is viewer-only
         return _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
     return False
+
+
+def publish_api_tool_progress(authority, session_id, generation, *args, **kwargs):
+    """A ``tool_progress_callback`` tool event as its producer emitted it, for the admission's
+    progress-only observers; never inferred again from formatted or bounded result text."""
+    with authority.sessions[session_id].event_stream.lock:
+        try:
+            authority.check_approval_generation(session_id, generation)
+        except RuntimeStoreError:
+            return
+        _notify_observers(authority, session_id, 'tool_progress_callback', *args, **kwargs)
 
 
 def publish_api_tool_event(authority, session_id, generation, event_type, call_id, tool_name, args, result=None):

@@ -415,7 +415,7 @@ class CLIModalMixin:
         """Flat (command, category, desc) rows for the Ctrl+P palette: the COMMAND_REGISTRY behind
         /help filtered to this surface, plus installed skill commands. Selecting inserts the exact
         command string — never a fuzzy resolution."""
-        from cli import _ensure_skill_commands
+        from cli import _session_skill_commands
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
 
         entries: list[tuple[str, str, str]] = []
@@ -424,7 +424,7 @@ class CLIModalMixin:
                 if self._command_available(cmd):
                     entries.append((cmd, category, desc))
         try:
-            for cmd, info in sorted(_ensure_skill_commands().items()):
+            for cmd, info in sorted(_session_skill_commands(self).items()):
                 entries.append((cmd, t("cli.palette.category_skill"), info.get("description", "")))
         except Exception:
             pass
@@ -1038,6 +1038,20 @@ class CLIModalMixin:
         self._clarify_teardown()
         _cprint(f"\n{_DIM}{t('cli.clarify.timed_out_locked_answers', timeout=timeout)}{_RST}")
         return {"answers": partial, "outcome": "timed_out"}
+
+    def _withdraw_gateway_modal(self, method) -> None:
+        """The gateway withdrew the server request this CLI's modal is answering (``request.cancel``:
+        another viewer completed it, or its wait ended): close that modal as if cancelled locally, so
+        the blocked agent thread returns. Called from the gateway connection's thread."""
+        # Each modal's response queue is an unbounded queue.Queue: put() never blocks or raises.
+        if method == "clarify" and self._clarify_state:
+            state = self._clarify_state
+            self._clarify_teardown()
+            state["response_queue"].put(None)
+        elif method == "sudo" and self._sudo_state:
+            self._sudo_state["response_queue"].put("")
+        elif method == "secret" and getattr(self, "_secret_state", None):
+            self._cancel_secret_capture()
 
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style

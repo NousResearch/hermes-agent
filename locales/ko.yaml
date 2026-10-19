@@ -1689,6 +1689,21 @@ slash:
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
+  modern:
+    thought_for: "{seconds}초 동안 생각함"
+    thought: "생각함"
+    working: "작업 중…"
+    preparing: "{what} 준비 중…"
+    hint_steer: "유도"
+    hint_queue: "대기열"
+    hint_interrupt: "중단"
+    hint_stop: "정지"
+    hint_commands: "명령어"
+    hint_files: "파일"
+    hint_shell: "셸"
+    placeholder_busy_steer: "입력해 이번 턴을 유도 · Tab 은 이후로 대기열에 추가"
+    placeholder_busy_interrupt: "입력해 이번 턴을 전환 · Tab 은 이후로 대기열에 추가"
+    placeholder_busy_queue: "입력해 이번 턴 이후 메시지를 대기열에 추가"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "결제 정보를 불러올 수 없어요"
@@ -2232,6 +2247,7 @@ cli:
     queue_heading: "대기열 · {count}개 대기 중 · /queue list{controls}"
     more_queued: "+{count}개 더"
     transcript_unavailable: "실시간 기록을 아직 볼 수 없어요."
+    control_pending: "보내는 중…"
     steer_prompt: "조정: "
     roster_empty: "진행 중인 서브에이전트나 백그라운드 프로세스가 없어요. 결과는 대화에 도착해요."
     entry_gone: "이 항목은 더 이상 진행 중이 아니에요."

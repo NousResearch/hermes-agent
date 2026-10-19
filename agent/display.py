@@ -1079,9 +1079,52 @@ def _cute_path(p) -> str:
     return "." * limit if limit <= 3 else "..." + p[-(limit - 3):]
 
 
+class _CuteRow(str):
+    """A rendered completion row that also keeps its verb and detail, so the CLI's glyph layout
+    can rebuild the row without re-parsing the padded ``┊ emoji verb`` string."""
+
+    verb: str
+    detail: str
+
+    def __new__(cls, text: str, verb: str, detail: str):
+        row = super().__new__(cls, text)
+        row.verb, row.detail = verb, detail
+        return row
+
+    def __reduce__(self):  # copy/pickle as a plain str; the custom __new__ can't be re-called bare
+        return (str, (str(self),))
+
+
 def _cute_row(emoji: str, verb: str, detail: str = "") -> str:
     """``┊ {emoji} {verb:9} {detail}`` -- verb column from ``display.cute.verb.<verb>`` (9 cells wide)."""
-    return f"┊ {emoji} {t(f'display.cute.verb.{verb}'):9} {detail}"
+    label = t(f'display.cute.verb.{verb}')
+    return _CuteRow(f"┊ {emoji} {label:9} {detail}", label, detail)
+
+
+def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = None, *, is_error: bool = False):
+    """``[(verb, detail, failure), ...]`` for one completed call: the labels the ``┊`` line uses,
+    without its emoji and padding. ``failure`` is None for a row that succeeded, else that row's
+    suffix (``" [exit 1]"``, possibly ``""``); batch calls mark the entry that failed."""
+    try:
+        args = redact_tool_args_for_display(tool_name, args) or args or {}
+        is_failure, suffix = _detect_tool_failure(tool_name, result)
+        call_failure = suffix if is_failure else ("" if is_error else None)
+        labels = bridge_tool_labels(tool_name, args)
+        if labels:
+            suffixes = _bridge_row_suffixes(len(labels), result, suffix if is_failure else "")
+            marks = [s or None for s in suffixes]
+            if call_failure is not None and not any(suffixes):
+                marks[-1] = call_failure  # the call failed without naming an entry
+            return [(_cute_trunc(lb.text), _cute_trunc(lb.preview) if lb.preview else "", mark)
+                    for lb, mark in zip(labels, marks)]
+        render = _CUTE_LINES.get(tool_name)
+        row = render(args, result) if render else None
+        if isinstance(row, _CuteRow):
+            return [(row.verb, row.detail, call_failure)]
+        return [(tool_name, _cute_trunc(build_tool_preview(tool_name, args) or ""), call_failure)]
+    except Exception:
+        logger.debug("Tool row parts failed for %s", tool_name, exc_info=True)
+        return [(str(tool_name), "", None)]
 
 
 def _cute_web_extract(a: dict, _r) -> str:

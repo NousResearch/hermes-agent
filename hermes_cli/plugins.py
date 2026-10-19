@@ -199,6 +199,11 @@ VALID_HOOKS: set[str] = {
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # pre_turn: once per user turn at the top of the loop, BEFORE turn context is built
+    # (agent/conversation_loop.py). Observer only — return values are ignored, so a callback cannot
+    # replace the turn. Kwargs: agent (the live agent object), user_message, task_id. Gated on
+    # has_hook(), and callbacks are isolated by the dispatcher.
+    "pre_turn",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

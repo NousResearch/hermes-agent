@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Optional
 
 # Demote tool results older than the newest N rounds so the tail budget binds
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
@@ -83,3 +83,35 @@ def demote_stale_tail_tools(
         result[i] = _rewritten(msg, stub)
         demoted += 1
     return result, demoted
+
+
+def _last_template_visible_role(messages: list[dict[str, Any]]) -> Optional[str]:
+    """Last role a strict alternation template would count in *messages*.
+
+    ``None`` when every row is template-exempt (tool flow only).
+    """
+    from agent.context_compressor import _template_visible_role
+
+    return next((role for role in map(_template_visible_role, reversed(messages)) if role is not None), None)
+
+
+def fold_leading_tool_flow(messages: list[dict[str, Any]], compress_start: int, compress_end: int) -> int:
+    """Tail cut that keeps a system-only head's transcript opening on a user turn (#141569).
+
+    With nothing but the system prompt in the head, the summary is forced to ``role="user"`` and must
+    lead (#52160); when the first template-visible tail row is a user turn the summary merges into it.
+    Template-exempt tool flow (assistant ``tool_calls`` + ``tool`` rows) in front of that row would then
+    open the transcript with an assistant tool call, which providers requiring a leading user turn
+    reject on every later request. Move the cut to that user row so the tool flow is summarized whole;
+    any other shape keeps *compress_end*.
+    """
+    from agent.context_compressor import _template_visible_role
+
+    if compress_start >= compress_end or (
+        compress_start and _last_template_visible_role(messages[:compress_start]) != "system"
+    ):
+        return compress_end
+    first_visible = next(
+        (i for i in range(compress_end, len(messages)) if _template_visible_role(messages[i]) is not None), None,
+    )
+    return first_visible if first_visible is not None and messages[first_visible].get("role") == "user" else compress_end

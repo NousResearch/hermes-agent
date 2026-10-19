@@ -36,6 +36,7 @@ from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
+from agent.context_compressor_tail import _last_template_visible_role, fold_leading_tool_flow
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -357,21 +358,6 @@ def _template_visible_role(message: Any) -> Optional[str]:
         return None
     role = message.get("role")
     return None if role == "tool" or (role == "assistant" and message.get("tool_calls")) else role
-
-
-def _last_template_visible_role(messages: list[dict[str, Any]]) -> Optional[str]:
-    """Last role a strict alternation template would count in *messages*.
-
-    ``None`` when every row is template-exempt (tool flow only).
-    """
-    return next(
-        (
-            role
-            for role in (_template_visible_role(m) for m in reversed(messages))
-            if role is not None
-        ),
-        None,
-    )
 
 
 def _strip_persistence_markers(messages: list[dict[str, Any]]) -> None:
@@ -5218,7 +5204,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                 bridge_idx = -1
             if bridge_idx > compress_start:
                 compress_end = bridge_idx
-        return compress_start, compress_end
+        # System-only head: tool flow ahead of the forced user summary's carrier is summarized (#141569).
+        return compress_start, fold_leading_tool_flow(messages, compress_start, compress_end)
 
     def _log_compression_start(
         self, display_tokens: int, compress_start: int, compress_end: int, n_turns: int, tail_msgs: int,

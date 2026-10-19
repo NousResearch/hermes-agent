@@ -843,6 +843,8 @@ ollama ps
 # Look at the CONTEXT column — it should show your configured value
 ```
 
+On a local Ollama, Hermes sends the main chat loop through Ollama's native `/api/chat` instead of `/v1` once `GET /api/version` identifies the endpoint as Ollama. The window Hermes detects from `/api/show` (or `model.ollama_num_ctx`) is then applied per request, so the CONTEXT column shows it even without a server-side setting. vLLM, llama.cpp and LM Studio have no `/api/version` and stay on `/v1`. Auxiliary tasks such as title generation and compression still go through `/v1` at the server default. Ollama reloads the model whenever the window changes, so a server-side `OLLAMA_CONTEXT_LENGTH` still saves those reloads.
+
 :::tip
 List available models with `ollama list`. Pull any model from the [Ollama library](https://ollama.com/library) with `ollama pull <model>`. Ollama handles GPU offloading automatically — no configuration needed for most setups.
 :::

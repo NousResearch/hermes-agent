@@ -143,3 +143,59 @@ def test_not_signed_in_names_the_sign_in_command(stubs):
     with pytest.raises(ppr.ProviderNotSignedIn, match="hermes auth add openai-codex"):
         _plugin(declares=True).mint(allowed.url)
     assert allowed.seen == []
+
+
+
+def _xai_sign_in():
+    (_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {"xai-oauth": {
+        "auth_mode": "oauth_device_code", "tokens": {"access_token": TOKEN, "refresh_token": "fake-rt"}}}}))
+
+
+def _xai_plugin(name: str, requires_auth: str):
+    """A dashboard plugin minting an xAI Realtime client secret with the user's Grok sign-in."""
+    root = _home() / "plugins" / name
+    (root / "dashboard").mkdir(parents=True)
+    (root / "plugin.yaml").write_text(f"name: {name}\nrequires_auth: [{requires_auth}]\n")
+    (root / "dashboard" / "plugin_api.py").write_text(
+        "from hermes_cli.plugin_provider_requests import credentialed_provider_request\n"
+        "def mint(url):\n"
+        "    return credentialed_provider_request('xai-oauth', 'POST', url, json={'expires_after': {'seconds': 300}})\n")
+    spec = importlib.util.spec_from_file_location(f"hermes_dashboard_plugin_{name}", root / "dashboard" / "plugin_api.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def xai_stub(monkeypatch):
+    stub = _Stub()
+    origins, resolve = ppr._PROVIDERS["xai-oauth"]
+    # Test-only: the loopback stub joins the real xAI allowlist.
+    monkeypatch.setitem(ppr._PROVIDERS, "xai-oauth",
+                        (origins | {("http", "127.0.0.1", stub.server.server_address[1])}, resolve))
+    yield stub
+    stub.close()
+
+
+def test_xai_sign_in_mints_for_declared_plugin_and_stays_on_xai(xai_stub):
+    _xai_sign_in()
+    plugin = _xai_plugin("grok_voice", "xai-oauth")
+    result = plugin.mint(xai_stub.url + "/v1/realtime/client_secrets")
+
+    assert result.status == 200 and result.json()["value"] == "ek_ephemeral"
+    assert xai_stub.seen[0]["headers"]["Authorization"] == f"Bearer {TOKEN}"
+    assert json.loads(xai_stub.seen[0]["body"]) == {"expires_after": {"seconds": 300}}
+    assert TOKEN not in repr(result)
+    # The Grok token never goes to another provider's origin, even one allowlisted for Codex.
+    with pytest.raises(PermissionError, match="Refusing"):
+        plugin.mint("https://api.openai.com/v1/realtime/client_secrets")
+
+
+def test_xai_needs_its_own_declaration_and_names_its_sign_in(xai_stub):
+    with pytest.raises(ppr.ProviderNotSignedIn, match="hermes auth add xai-oauth"):
+        _xai_plugin("grok_voice", "xai-oauth").mint(xai_stub.url)
+    _xai_sign_in()
+    with pytest.raises(PermissionError, match=r"requires_auth: \[xai-oauth\]"):
+        _xai_plugin("codex_only", "openai-codex").mint(xai_stub.url)
+    assert xai_stub.seen == []

@@ -1,9 +1,10 @@
 """Signed-in provider requests that core makes FOR plugins; the token never reaches plugin code.
 
-A plugin that needs the user's subscription sign-in (today: Codex / ChatGPT) must not read, refresh
-or rewrite Hermes's auth store or ``~/.codex/auth.json``. Codex refresh tokens are single-use, so a
-second refresher races Hermes's locked refresh and can sign the user out. Instead the plugin declares
-``requires_auth: [openai-codex]`` in its ``plugin.yaml`` and calls :func:`credentialed_provider_request`.
+A plugin that needs the user's subscription sign-in (Codex / ChatGPT, xAI Grok) must not read, refresh
+or rewrite Hermes's auth store or ``~/.codex/auth.json``. Codex and xAI refresh tokens are single-use,
+so a second refresher races Hermes's locked refresh and can sign the user out. Instead the plugin
+declares ``requires_auth: [<provider>]`` in its ``plugin.yaml`` and calls
+:func:`credentialed_provider_request`.
 Hermes resolves the credential through its own locked-refresh path, attaches ``Authorization``
 itself, sends only to that provider's origins, never follows a redirect, and hands back
 status, headers and body.
@@ -65,10 +66,35 @@ def _codex_auth(url: str) -> tuple[dict[str, str], str]:
     return headers, str(creds.get("base_url") or "")
 
 
+def _xai_auth(url: str) -> tuple[dict[str, str], str]:
+    """``(auth headers, credential base URL)`` for the Grok (SuperGrok / X Premium) sign-in.
+
+    Same locked-refresh resolver chat uses: xAI refresh tokens are single-use too.
+    """
+    from agent.turn_failure_copy import oauth_relogin_command
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
+
+    try:
+        creds = resolve_xai_oauth_runtime_credentials()
+    except AuthError as exc:
+        if not exc.relogin_required:
+            raise
+        creds = {}
+    token = str(creds.get("api_key") or "").strip()
+    if not token:
+        raise ProviderNotSignedIn(
+            f"Not signed in to xAI Grok in Hermes. Run `{oauth_relogin_command('xai-oauth')}` "
+            "or sign in to xAI Grok under Providers in the Hermes desktop app.")
+    return {"Authorization": f"Bearer {token}"}, str(creds.get("base_url") or "")
+
+
 # provider -> (origins its token may be sent to, auth resolver). chatgpt.com is the Codex backend
 # core itself calls; api.openai.com hosts the Realtime client-secret endpoint Codex clients use.
+# api.x.ai serves both xAI chat and its Realtime client-secret endpoint.
 _PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str]]]] = {
     "openai-codex": (frozenset({("https", "chatgpt.com", 443), ("https", "api.openai.com", 443)}), _codex_auth),
+    "xai-oauth": (frozenset({("https", "api.x.ai", 443)}), _xai_auth),
 }
 
 

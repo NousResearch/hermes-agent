@@ -388,12 +388,12 @@ Hermes reads these from installed metadata without importing your code, so
 `hermes plugins capabilities` and the consent flow stay accurate for pip
 installs.
 
-### Use the user's Codex sign-in (core-made requests)
+### Use the user's Codex or Grok sign-in (core-made requests)
 
-A plugin that needs the user's ChatGPT / Codex subscription (minting an OpenAI
-Realtime client secret, calling a Codex backend endpoint) must **not** read,
-refresh or rewrite `~/.codex/auth.json` or Hermes's `auth.json`. Codex refresh
-tokens are single-use: a plugin that refreshes on its own races Hermes's locked
+A plugin that needs the user's ChatGPT / Codex or xAI Grok subscription
+(minting an OpenAI or xAI Realtime client secret, calling a Codex backend
+endpoint) must **not** read, refresh or rewrite `~/.codex/auth.json` or Hermes's
+`auth.json`. Codex and xAI refresh tokens are single-use: a plugin that refreshes on its own races Hermes's locked
 refresh, and the loser's rotation chain gets revoked, signing the user out.
 Ask Hermes to make the request instead. Hermes resolves the credential through
 its own refresh path, attaches `Authorization` itself and returns only the
@@ -430,6 +430,17 @@ This replaces a hand-rolled helper that read `~/.codex/auth.json`, POSTed to
 `auth.openai.com/oauth/token` when the token was near expiry and wrote the
 result back. Delete that code; there is no refresh step left for the plugin.
 
+The Grok sign-in works the same way with `requires_auth: [xai-oauth]`. xAI's
+Realtime client secret takes only an expiry:
+
+```python
+resp = credentialed_provider_request(
+    "xai-oauth", "POST", "https://api.x.ai/v1/realtime/client_secrets",
+    json={"expires_after": {"seconds": 300}}, timeout=15)
+# 200 -> {"value": ..., "expires_at": ...}; open wss://api.x.ai/v1/realtime with the
+# subprotocol "xai-client-secret.<value>".
+```
+
 `credentialed_provider_request(provider, method, url, *, json=None, headers=None, timeout=30.0)`
 returns a `ProviderResponse` (`status`, `headers`, `body`, `.text`, `.json()`).
 The rules:
@@ -441,7 +452,8 @@ The rules:
   from your own function. Handing the bare helper to `run_in_executor` leaves no
   plugin frame on the stack, so the call is refused.
 - **Provider origins only.** For `openai-codex` the token is sent only to
-  `https://chatgpt.com` and `https://api.openai.com`. Any other URL raises
+  `https://chatgpt.com` and `https://api.openai.com`; for `xai-oauth` (the
+  SuperGrok / X Premium sign-in) only to `https://api.x.ai`. Any other URL raises
   `PermissionError` before a request is made. A profile whose Codex credential
   routes to a custom gateway is refused too, because that key belongs to the
   gateway.
@@ -486,7 +498,7 @@ this Hermes understands still loads with a warning.
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
-| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
+| `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (`openai-codex`, `xai-oauth`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex or Grok sign-in](#use-the-users-codex-or-grok-sign-in-core-made-requests). |
 
 ```yaml
 # plugin.yaml — manifest v2 example

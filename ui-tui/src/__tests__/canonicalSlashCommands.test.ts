@@ -18,7 +18,9 @@ function harness(rewindRefusal?: Error) {
   // T9/T10 owner verbs, one answer per method (kept out of the request ladder below).
   const ownerVerb = (method: string, params: any): unknown => {
     const answers: Record<string, () => unknown> = {
-      'config.get:full': () => ({ config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }),
+      'config.get:full': () => ({
+        config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } }
+      }),
       'config.get:voice': () => ({ value: voiceMode }),
       'process.stop': () => ({ killed: 0 }),
       'reload.mcp': () =>
@@ -32,7 +34,8 @@ function harness(rewindRefusal?: Error) {
       }
     }
 
-    const sub = method === 'config.get' ? params.key : method === 'slash.exec' ? String(params.command).split(' ')[0] : ''
+    const sub =
+      method === 'config.get' ? params.key : method === 'slash.exec' ? String(params.command).split(' ')[0] : ''
 
     return (answers[sub ? `${method}:${sub}` : method] ?? (() => undefined))()
   }
@@ -65,19 +68,35 @@ function harness(rewindRefusal?: Error) {
     }
 
     if (method === 'session.mutate' && params.operation === 'reasoning') {
-      return { session_id: 'owner', operation: 'reasoning', revision: 8, execution_generation: 4, effort: params.payload.effort }
+      return {
+        session_id: 'owner',
+        operation: 'reasoning',
+        revision: 8,
+        execution_generation: 4,
+        effort: params.payload.effort
+      }
     }
 
     if (method === 'session.stats') {
       return {
-        api_calls: 2, compression_count: 0, context_length: 128000, context_source: 'provider_usage',
-        input_tokens: 200, last_prompt_tokens: 100, model: 'fake-model', output_tokens: 40, prompt_tokens: 200,
+        api_calls: 2,
+        compression_count: 0,
+        context_length: 128000,
+        context_source: 'provider_usage',
+        input_tokens: 200,
+        last_prompt_tokens: 100,
+        model: 'fake-model',
+        output_tokens: 40,
+        prompt_tokens: 200,
         total_tokens: 240
       }
     }
 
     if (method === 'prompt.receipt') {
-      return { status: 'terminal', result: { model: 'm', input_tokens: 5, output_tokens: 7, total_tokens: 12, api_calls: 1 } }
+      return {
+        status: 'terminal',
+        result: { model: 'm', input_tokens: 5, output_tokens: 7, total_tokens: 12, api_calls: 1 }
+      }
     }
 
     if (method === 'tools.show') {
@@ -169,7 +188,10 @@ it('/voice on|off|status run on the owner and mirror its per-session voice mode,
 
 beforeEach(() => {
   resetUiState()
-  patchUiState({ sid: 'owner', info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any })
+  patchUiState({
+    sid: 'owner',
+    info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any
+  })
 })
 
 it('/title renames and /undo, /retry rewind through session.mutate with the snapshot CAS and row id', async () => {
@@ -191,7 +213,9 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
     await flush()
   }
 
-  const rewinds = request.mock.calls.filter(([method, params]) => method === 'session.mutate' && params.operation === 'rewind')
+  const rewinds = request.mock.calls.filter(
+    ([method, params]) => method === 'session.mutate' && params.operation === 'rewind'
+  )
 
   expect(rewinds).toHaveLength(2)
 
@@ -209,7 +233,7 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
-it('/undo and /retry while a turn runs print main\'s stop-first text, not the bare reason code', async () => {
+it("/undo and /retry while a turn runs print main's stop-first text, not the bare reason code", async () => {
   const busy = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
   const { send, slash, sys } = harness(busy)
 
@@ -317,7 +341,7 @@ it('/status reads through the gateway', async () => {
   expect(request.mock.calls.map(([method]) => method)).not.toContain('session.status')
 })
 
-it('/stop is session-scoped; /reload-mcp runs the owner\'s session-scoped reload.mcp (T10)', async () => {
+it("/stop is session-scoped; /reload-mcp runs the owner's session-scoped reload.mcp (T10)", async () => {
   const { request, slash, sys } = harness()
 
   for (const cmd of ['/stop', '/reload-mcp', '/reload-mcp now', '/reload-mcp always']) {
@@ -340,7 +364,7 @@ it('/stop is session-scoped; /reload-mcp runs the owner\'s session-scoped reload
   expect(notices).toContain('MCP servers reconciled (no server changes)')
 })
 
-it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /skin reads still work', async () => {
+it("/reasoning --global is the owner's /reasoning handler behind config.set; /skin reads still work", async () => {
   const { request, slash, sys } = harness()
 
   for (const cmd of ['/reasoning high --global', '/skin']) {
@@ -349,7 +373,12 @@ it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /s
 
   await flush()
 
-  expect(request).toHaveBeenCalledWith('config.set', { key: 'reasoning', scope: 'global', session_id: 'owner', value: 'high' })
+  expect(request).toHaveBeenCalledWith('config.set', {
+    key: 'reasoning',
+    scope: 'global',
+    session_id: 'owner',
+    value: 'high'
+  })
   expect(request).toHaveBeenCalledWith('config.get', { key: 'skin' })
 
   const notices = sys.mock.calls.map(([text]) => String(text))
@@ -370,7 +399,7 @@ it('/voice tts refuses by name: the owner never speaks a TUI reply', async () =>
   ])
 })
 
-it('bare /personality lists through the owner\'s /personality handler', async () => {
+it("bare /personality lists through the owner's /personality handler", async () => {
   const { request, slash, sys } = harness()
 
   slash('/personality')
@@ -380,7 +409,7 @@ it('bare /personality lists through the owner\'s /personality handler', async ()
   expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['🎭 **Available Personalities**'])
 })
 
-it('/personality <name> is the owner\'s config.set like main', async () => {
+it("/personality <name> is the owner's config.set like main", async () => {
   const { request, slash, sys } = harness()
 
   slash('/personality pirate')
@@ -390,7 +419,7 @@ it('/personality <name> is the owner\'s config.set like main', async () => {
   expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['personality: pirate'])
 })
 
-it('/skin writes the profile through the owner\'s config.set like main (the owner repaints via skin.changed)', async () => {
+it("/skin writes the profile through the owner's config.set like main (the owner repaints via skin.changed)", async () => {
   const { request, slash, sys } = harness()
 
   slash('/skin mono')
@@ -400,7 +429,7 @@ it('/skin writes the profile through the owner\'s config.set like main (the owne
   expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['skin → mono'])
 })
 
-it('/fast <mode> is the owner\'s session-scoped config.set like main', async () => {
+it("/fast <mode> is the owner's session-scoped config.set like main", async () => {
   const { request, slash, sys } = harness()
 
   slash('/fast fast')
@@ -411,7 +440,7 @@ it('/fast <mode> is the owner\'s session-scoped config.set like main', async () 
   expect(getUiState().info).toMatchObject({ fast: true, service_tier: 'priority' })
 })
 
-it('/theme and /indicator write the profile through the owner\'s config.set like main', async () => {
+it("/theme and /indicator write the profile through the owner's config.set like main", async () => {
   const { request, slash, sys } = harness()
 
   slash('/theme dark')
@@ -429,7 +458,7 @@ it('/theme and /indicator write the profile through the owner\'s config.set like
   expect(getUiState().indicatorStyle).toBe('ascii')
 })
 
-it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); display words are its /reasoning handler', async () => {
+it("session /reasoning <level> is the owner's fenced reasoning mutation (B14); display words are its /reasoning handler", async () => {
   const { request, slash, sys } = harness()
 
   slash('/reasoning high')
@@ -437,9 +466,16 @@ it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); 
   slash('/reasoning show')
   await flush()
 
-  expect(request).toHaveBeenCalledWith('session.mutate', expect.objectContaining({
-    session_id: 'owner', operation: 'reasoning', payload: { effort: 'high' }, expected_revision: 7, expected_generation: 3
-  }))
+  expect(request).toHaveBeenCalledWith(
+    'session.mutate',
+    expect.objectContaining({
+      session_id: 'owner',
+      operation: 'reasoning',
+      payload: { effort: 'high' },
+      expected_revision: 7,
+      expected_generation: 3
+    })
+  )
   expect(request).toHaveBeenCalledWith('config.set', { key: 'reasoning', session_id: 'owner', value: 'show' })
 
   const notices = sys.mock.calls.map(([text]) => String(text))
@@ -449,7 +485,7 @@ it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); 
   expect(getUiState().showReasoning).toBe(true)
 })
 
-it('/config pages the owner\'s presentation config (config.get full), never slash.exec (T10)', async () => {
+it("/config pages the owner's presentation config (config.get full), never slash.exec (T10)", async () => {
   const { page, request, slash, sys } = harness()
 
   slash('/config')

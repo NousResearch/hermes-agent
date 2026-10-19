@@ -8,7 +8,7 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 
 beforeEach(() => resetUiState())
 
-it('turns on the shared owner\'s per-session voice mode, not the sidecar flag, before a wake capture', async () => {
+it("turns on the shared owner's per-session voice mode, not the sidecar flag, before a wake capture", async () => {
   const request = vi.fn(async () => null)
   const rpc = vi.fn(async () => null)
 
@@ -25,7 +25,9 @@ it('turns on the shared owner\'s per-session voice mode, not the sidecar flag, b
   patchUiState({ sid: 'owner-session' })
   createGatewayEventHandler(ctx)({ payload: { start_new_session: false }, type: 'wake.detected' } as any)
 
-  await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('voice.record', { action: 'start', session_id: 'owner-session' }))
+  await vi.waitFor(() =>
+    expect(rpc).toHaveBeenCalledWith('voice.record', { action: 'start', session_id: 'owner-session' })
+  )
   expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice on', session_id: 'owner-session' })
   expect(rpc).not.toHaveBeenCalledWith('voice.toggle', expect.anything())
 })

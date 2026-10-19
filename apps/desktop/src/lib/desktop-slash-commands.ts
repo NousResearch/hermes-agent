@@ -889,9 +889,7 @@ export function desktopSlashCommandArgumentMode(command: string): DesktopSlashAr
   return resolveDesktopCommand(command)?.argumentMode ?? asArgumentMode(catalogMeta(command)?.argument_mode) ?? null
 }
 
-const SEQUENCE_ARGUMENT_MODE_OVERRIDES: Partial<
-  Record<string, DesktopSlashArgumentMode>
-> = {
+const SEQUENCE_ARGUMENT_MODE_OVERRIDES: Partial<Record<string, DesktopSlashArgumentMode>> = {
   // The backend catalog's coarse text mode predates subcommand sequencing;
   // /worktree has bounded subcommands whose arguments end at the next command.
   '/worktree': 'options'
@@ -983,10 +981,10 @@ export function desktopSlashCommandSequenceSegments(input: string): DesktopSlash
       break
     }
 
-    const mode = current.local
-      ? current.spec.argumentMode ?? null
-      : (SEQUENCE_ARGUMENT_MODE_OVERRIDES[current.spec.name] ??
-        desktopSlashCommandArgumentMode(current.spec.name))
+    // An override holds whether the command is catalog-owned or a local spec (e.g. a named refusal).
+    const mode =
+      SEQUENCE_ARGUMENT_MODE_OVERRIDES[current.spec.name] ??
+      (current.local ? (current.spec.argumentMode ?? null) : desktopSlashCommandArgumentMode(current.spec.name))
 
     if (mode === 'text' || mode === 'mixed') {
       push(start)

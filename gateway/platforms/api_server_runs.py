@@ -1107,11 +1107,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (
                 result.get("runtime") if isinstance(result, dict) else None) or {}
         else:
-            # Fold only where the run's own agent reads run.conversation_history: an authority-admitted
-            # turn captured its history at admission, so claiming rows here would drop them.
-            if run.fold_deliveries:
-                await _fold_caller_history_deliveries(self, run)
             with self._profile_scope(run.request_profile):
+                # Fold only where the run's own agent reads run.conversation_history: an authority-admitted
+                # turn captured its history at admission, so claiming rows here would drop them.
+                if run.fold_deliveries:
+                    await _fold_caller_history_deliveries(self, run)
                 agent = self._create_agent(
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)

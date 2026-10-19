@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from agent.message_metadata import stamp_message_uid
 from hermes_state_common import _placeholders
@@ -86,7 +86,7 @@ class SessionDetachedResultsMixin:
             out["reservation_token"] = token
         return out
 
-    def claim_caller_history_deliveries(self, session_id: str) -> List[Dict[str, Any]]:
+    def claim_caller_history_deliveries(self, session_id: str) -> list[dict[str, Any]]:
         """Finally consume the lineage's pending delegation rows (skipping live reservations).
 
         Check and stamp share one writer txn, so each row has exactly one consumer.
@@ -104,7 +104,7 @@ class SessionDetachedResultsMixin:
         return self._execute_write(_do)
 
     def reserve_caller_history_deliveries(self, session_id: str, owner: str, ttl_seconds: float,
-                                          limit: Optional[int] = None) -> List[Dict[str, Any]]:
+                                          limit: Optional[int] = None) -> list[dict[str, Any]]:
         """Lease pending rows to ``owner`` for ``ttl_seconds``; commit or release them under the
         returned ``reservation_token``. Expired leases are reclaimable by any caller."""
         import uuid
@@ -147,7 +147,7 @@ class SessionDetachedResultsMixin:
             tuple(params)).rowcount)
 
     def release_caller_history_deliveries(self, session_id: Optional[str] = None,
-                                          row_ids: Optional[List[int]] = None, *,
+                                          row_ids: Optional[list[int]] = None, *,
                                           reservation_token: Optional[str] = None,
                                           owner: Optional[str] = None) -> int:
         """Return rows to pending: ``(session_id, row_ids)`` undoes a claim; ``reservation_token=``

@@ -131,7 +131,8 @@ async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
         history = run.conversation_history
         assert sum("RESULT-A" in m["content"] for m in history) == 1
         assert sum("RESULT-B" in m["content"] for m in history) == 1
-        assert all(a["role"] != b["role"] for a, b in zip(history, history[1:]))
+        from itertools import pairwise
+        assert all(a["role"] != b["role"] for a, b in pairwise(history))
         again = _launch(list(caller))
         await _fold_caller_history_deliveries(_fold_adapter(db), again)
         assert again.conversation_history == caller  # both rows already consumed

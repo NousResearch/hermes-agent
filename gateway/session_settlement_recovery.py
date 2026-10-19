@@ -98,7 +98,32 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
-    live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
+    complete = completion_payload(row, settled, response, captured)
+    notice = owner_stop_notice(captured, settled['outcome'])
+    if notice and not complete.get('warning'):
+        # ``warning`` is the slot every surface already renders on message.complete (Ink activity
+        # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
+        complete['warning'] = notice
+    live.event_stream.publish(ref.session_id, complete)
+
+
+RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+                            'Send your message again once Hermes reconnects.')
+SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
+                             'Send your message again once Hermes is back.')
+
+
+def owner_stop_notice(captured, outcome):
+    """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
+    ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
+    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it."""
+    # The cause is the one the turn recorded when it was interrupted (stop() interrupts with these
+    # reasons), never the runner's flags at publication: a user Stop whose settlement was delayed
+    # until after shutdown began is still the user's Stop.
+    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+    cause = ((captured or {}).get('result') or {}).get('interrupt_message') if outcome == 'interrupted' else None
+    return {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
+            _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
 
 
 def _release_media(authority, row):

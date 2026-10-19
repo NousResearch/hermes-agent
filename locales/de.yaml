@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint: "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
     report_label: "Bericht"
+    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug`, um den Kurzbericht hochzuladen."
   deny:
     stale: "❌ Befehl abgelehnt (Genehmigung war veraltet)."
     no_pending: "Kein ausstehender Befehl zum Ablehnen."
@@ -445,6 +446,9 @@ gateway:
     state_no: "Nein"
     queued: "**Wartende Folgenachrichten:** {count}"
     platforms: "**Verbundene Plattformen:** {platforms}"
+  discard:
+    nothing: "Nichts zu verwerfen: In diesem Chat ging bei einem Neustart kein Turn verloren."
+    done: "🗑️ {count} verlorene(n) Turn(s) verworfen; sie wurden nicht erneut ausgeführt. Deine gespeicherten Nachrichten werden jetzt beantwortet."
   stop:
     stopped_pending: "⚡ Gestoppt. Der Agent hatte noch nicht begonnen — Sie können diese Sitzung fortsetzen."
     stopped: "⚡ Gestoppt. Sie können diese Sitzung fortsetzen."
@@ -1530,6 +1534,8 @@ slash:
     description: "Ein geteiltes Profilarchiv als neues Profil importieren"
   stop:
     description: "Alle laufenden Hintergrundprozesse beenden"
+  discard:
+    description: "Einen beim Neustart von Hermes verlorenen Turn verwerfen, damit die Warteschlange dieses Chats weiterläuft"
   pause:
     description: "Neue Arbeit global pausieren (Notstopp); '/pause off' setzt fort"
   deny:
@@ -3004,6 +3010,10 @@ cli:
       usage_disconnect: "disconnect   Zurück zum Standard-Browser-Backend"
       usage_status: "status       Aktuellen Browser-Modus anzeigen"
       usage_use: "use [off]    In den Browser-Use-Modus (CLI 3.0) wechseln / zurück zu den integrierten Tools"
+      remote_gateway: "/browser connect und /browser disconnect verwalten einen Chromium-Browser auf dem Gateway-Host — nur mit einem lokalen Gateway verfügbar."
+      checking: "Prüfe Remote-Debugging des Chromium-Browsers unter {url}..."
+      new_sessions_only: "Gilt für neue Sitzungen — diese behält ihre aktuellen Tools (/new startet eine neue)."
+      status_gateway_default: "🌐 Browser: Standard-Browser-Backend des Gateways (keine Live-CDP-Verbindung)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat pausiert: {prompt}"

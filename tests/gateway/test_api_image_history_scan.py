@@ -123,6 +123,31 @@ async def test_retirement_keeps_ownership_while_a_collection_can_still_unlink(ap
     assert await _retire_profile_authority(owner, timeout=5) is True
 
 
+@pytest.mark.asyncio
+async def test_a_collection_cancelled_before_it_runs_never_unlinks(api, owner, monkeypatch):
+    """A task cancelled before its first step ends without running its body: had the thread already
+    started, it would still be unlinking files after retirement released the profile."""
+    import gateway.session_ingress_media as media
+    from gateway.run_runtime import _retire_profile_authority
+    started, resume = threading.Event(), threading.Event()
+
+    def collect(db):  # a scan still in progress
+        started.set()
+        resume.wait(30)
+    monkeypatch.setattr(media, 'collect_unheld_api_images', collect)
+    pending = recover_api_turns(api)
+    for task in pending:
+        task.cancel()
+    try:
+        assert await _retire_profile_authority(owner, timeout=5) is True
+        assert not started.is_set(), 'retirement released the profile under a running collection'
+    finally:
+        resume.set()
+    await asyncio.get_running_loop().shutdown_default_executor()  # nor one queued behind other work
+    assert not started.is_set(), 'a queued collection ran after retirement released the profile'
+    assert [task.cancelled() for task in pending] == [True]
+
+
 def test_history_scan_work_does_not_grow_with_the_candidate_count(api, owner, monkeypatch):
     """Many unheld images (a big chat deleted, or leftovers of a failed sweep) cost one read of each
     row, never one test per row and candidate: that took 8 s at 1,000 images on 20,000 messages."""

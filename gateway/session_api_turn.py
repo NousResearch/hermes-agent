@@ -336,7 +336,8 @@ def _collect_images_off_loop(authority):
 
     It unlinks files, so it is the authority's tracked work until the THREAD returns: retirement
     keeps ownership and shutdown keeps state.db open until then, even when the task is cancelled
-    (a closed store would only reopen under a late write)."""
+    (a closed store would only reopen under a late write). The task starts the thread itself: one
+    cancelled before its first step never runs its body, so it must not leave a thread behind."""
     import contextvars
     import logging
     from gateway.session_ingress_media import collect_unheld_api_images
@@ -346,9 +347,10 @@ def _collect_images_off_loop(authority):
     except RuntimeError:
         collect_unheld_api_images(authority.db)
         return None
-    worker = loop.run_in_executor(None, contextvars.copy_context().run, collect_unheld_api_images, authority.db)
+    context = contextvars.copy_context()
 
     async def owned():
+        worker = loop.run_in_executor(None, context.run, collect_unheld_api_images, authority.db)
         cancelled = False
         while not worker.done():
             try:

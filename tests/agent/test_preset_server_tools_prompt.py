@@ -1,4 +1,4 @@
-"""Preset server-side tools are discoverable (fix 4, refs #621).
+"""Preset server-side tools are discoverable.
 
 An OpenRouter preset can switch on server-side tools that execute inside the router. They never
 appear in the client tool list and leave no tool-call trace, so the capability is undiscoverable

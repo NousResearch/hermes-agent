@@ -242,7 +242,7 @@ SESSION_SEARCH_GUIDANCE = (
 # An OpenRouter preset may switch on SERVER-SIDE tools (advisor, fusion, web search/fetch, ...) that
 # execute inside the router. They never appear in the client tool list and their output carries no
 # tool-call trace, so the model cannot tell a preset tool ran. One factual paragraph, rendered only for
-# a preset route: no fabricated client tool, no lookup of the preset's actual contents (#621).
+# a preset route: no fabricated client tool, no lookup of the preset's actual contents.
 PRESET_SERVER_TOOLS_NOTE = (
     "## Preset routes and server-side tools\n"
     "This session's model id names an OpenRouter preset (it contains `@preset/`). A preset may declare "

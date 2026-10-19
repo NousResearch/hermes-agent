@@ -1,4 +1,4 @@
-"""Provider-actual cost, fix 2: a negative rate is not a price (refs #621).
+"""A negative or non-finite catalog rate is not a price.
 
 OpenRouter's router sentinels are quoted as ``"-1"`` per token in the models catalog
 (``-1,000,000`` per million after the catalog's own scale). Multiplying that as money

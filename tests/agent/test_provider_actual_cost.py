@@ -1,4 +1,4 @@
-"""Provider-actual cost at the turn seam (fix 1, refs #621).
+"""The provider-reported cost is recorded at the turn seam.
 
 When the route reports its own billed cost for the call (OpenRouter's
 ``usage.cost``), that figure is the call's ACTUAL cost: it must land in the

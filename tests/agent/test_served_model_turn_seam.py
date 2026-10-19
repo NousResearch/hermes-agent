@@ -1,4 +1,4 @@
-"""Served model at the turn seam (fix 3, refs #622).
+"""The served model is recorded at the turn seam.
 
 ``agent/served_model.py``'s httpx hook sees response HEADERS only — reading a body there
 buffers the whole SSE stream — so the served MODEL (``response.model``, which the router sets

@@ -207,10 +207,14 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         if key in os.environ:
             env[key] = os.environ[key]
     if user_env:
-        # A value that is still a whole ``${VAR}`` here was unset (or empty) at render time: drop
-        # the key so a plugin can forward an optional var without the child seeing the literal
-        # placeholder (servers that validate it, e.g. as an absolute path, refuse to start).
-        env.update({key: value for key, value in user_env.items() if not _is_unresolved_ref(value)})
+        # A value that is still a whole ``${VAR}`` here was unset (or empty) at render time: the
+        # key is left unset (baseline copy included) so a plugin can forward an optional var
+        # without the child seeing the literal placeholder (servers that validate it refuse to start).
+        for key, value in user_env.items():
+            if _is_unresolved_ref(value):
+                env.pop(key, None)
+            else:
+                env[key] = value
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 

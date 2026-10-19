@@ -57,6 +57,28 @@ def has_failure_marker(result: str) -> bool:
     return any(m.start() < 500 for m in _FAILURE_MARKER_RE.finditer(head)) or result.startswith("Error")
 
 
+# ``timeout`` is deliberately absent: process(wait) returns it for a still-running job.
+_FAILED_STATUSES = frozenset({"failed", "error"})
+
+
+def shape_failure_error(data: dict) -> str | None:
+    """Error text when a JSON-object result failed by SHAPE rather than by its top-level
+    ``error``: a ``status`` of failed/error, or a ``results`` batch where EVERY item carries an
+    error (delegate_task with all children interrupted, a connector batch with every call
+    refused). None for a clean or partial result. Top-level JSON objects skip the substring
+    scan, so this is what keeps those failures counted."""
+    if str(data.get("status", "")).lower() in _FAILED_STATUSES:
+        return str(data.get("status"))
+    items = data.get("results")
+    if not isinstance(items, list) or not items or not all(isinstance(i, dict) for i in items):
+        return None
+    errors = [i.get("error") for i in items]
+    if not all(errors):
+        return None
+    first = errors[0]
+    return str(first.get("message") or first) if isinstance(first, dict) else str(first)
+
+
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
     """Return True when a file mutation result proves the write landed."""
     if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):

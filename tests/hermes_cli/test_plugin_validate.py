@@ -351,8 +351,9 @@ class TestDesktopSurface:
         including a global the file shadows with a same-named class elsewhere, and an alias of a
         global (any spelling: assigned, bracketed, destructured) whose name some unrelated scope
         also declares as a class, including a minifier-reused one-letter name, and a parameter
-        shadowing the class. Passing the class around (``register(Q)``, ``{ Array: Q }``) or text
-        in a string literal is not a rebinding."""
+        shadowing the class, a destructuring assignment, and writes hidden in a template ``${}`` or
+        between divisions. Passing the class around (``register(Q)``, ``{ Array: Q }``) or text in
+        a string, template or regex literal is not a rebinding."""
         d = self._desktop_plugin(tmp_path, (
             "var Vector2 = class _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }\n"
             "function Track() {}\nTrack.prototype.ValueTypeName = 'vector'\n"
@@ -366,6 +367,10 @@ class TestDesktopSurface:
             "var Mv=class s{constructor(){s.prototype.isMv=!0}};var s=window.Storage;s.prototype.setItem=noop\n"
             "function Q() {}\nregister(Q); const label = \"Q = vector\"\nQ.prototype.ValueTypeName = 'v'\n"
             "function R() {}\nfunction patch(R) { R.prototype.setItem = noop }\n"
+            "function D() {}\n({D} = {D: window.Storage}); D.prototype.setItem = spy\n"
+            "const label = `${Storage.prototype.setItem = spy}`\n"
+            "const n = 1 / (Storage.prototype.setItem = spy, 2) / 3\n"
+            "function E() {}\nconst re = /E = x/, t = `E = ${1}`; E.prototype.isE = 1\n"
         ))
         assert desktop_surface_hits(d) == [
             "prototype patching (desktop/plugin.js:5)",
@@ -376,6 +381,9 @@ class TestDesktopSurface:
             "prototype patching (desktop/plugin.js:20)",
             "prototype patching (desktop/plugin.js:21)",
             "prototype patching (desktop/plugin.js:26)",
+            "prototype patching (desktop/plugin.js:28)",
+            "prototype patching (desktop/plugin.js:29)",
+            "prototype patching (desktop/plugin.js:30)",
         ]
 
     def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):

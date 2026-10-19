@@ -98,27 +98,121 @@ _RENDERER_GLOBAL = re.compile(rf"^(?:{_RENDERER_GLOBAL_NAMES})$")
 _OWN_DECLARATION = r"(?:\bclass\s+{0}\b[^{{]*|\bfunction\s*\*?\s*{0}\s*\([^)]*\)\s*)\{{"
 # ``var X = class {...}`` / ``X = function () {...}``: what bundlers emit; binds ``X`` in its block.
 _ASSIGNED_DECLARATION = (r"(?<![\w$.]){0}\s*=\s*(?:class\b[^{{]*|function\s*\*?\s*[\w$]*\s*\([^)]*\)\s*)\{{")
-# What can make ``X`` name something else: ``X = …``, ``let/const/var/class/function X``, a
-# destructuring declaration naming ``X``, or a parameter called ``X`` (function, method, arrow,
-# catch). A reference (``register(X)``, ``[X, Y]``) is not a binding. Scanned with strings and regex
-# literals masked, so ``"X = vector"`` in a label is not one either.
+# What can make ``X`` name something else, read liberally (a false hit only refuses a bundle for
+# review; a miss would excuse a renderer patch): any assignment operator on ``X``; a declaration;
+# ``X`` inside a destructuring pattern that is assigned or iterated (``({X} = o)``, ``for ([X] of
+# a)``); a parameter (function, method, arrow, catch); ``for (X of/in …)``; an import binding.
+# A reference (``register(X)``, ``[X, Y]``, ``{ Array: X }``) is not a binding.
 _REBINDING = (
-    r"(?<![\w$.]){0}\s*=(?![=>])"
+    r"(?<![\w$.]){0}\s*(?:&&|\|\||\?\?|\*\*|<<|>>>?|[-+*/%&|^])?=(?![=>])"
     r"|\b(?:let|const|var|class|function\s*\*?)\s+{0}(?![\w$])"
-    r"|\b(?:let|const|var)\s*[{{\[][^;=]*?(?<![\w$.]){0}(?![\w$])[^;=]*?[}}\]]\s*="
+    r"|(?<![\w$.]){0}(?![\w$])[^;=()]*?[}}\]][\s}}\]]*(?:=(?![=>])|\b(?:of|in)\b)"
     r"|(?:\bfunction\s*\*?\s*[\w$]*|(?<![\w$.])(?!(?:if|for|while|switch|with|return|typeof|await)\b)[\w$]+)"
     r"\s*\([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*\)\s*\{{"
     r"|\(([^()]*?(?<![\w$.]){0}(?![\w$])[^()]*)\)\s*=>|(?<![\w$.]){0}\s*=>"
-    r"|\bcatch\s*\(\s*{0}\s*\)")
-_STRING_OR_REGEX = re.compile(_JS_STRING + r"|`(?:[^`\\]|\\.)*`|" + _REGEX_LITERAL.pattern)
+    r"|\bcatch\s*\([^)]*(?<![\w$.]){0}(?![\w$])"
+    r"|(?<![\w$.]){0}\s+(?:of|in)\b|\bas\s+{0}(?![\w$])|\bimport\s+{0}(?![\w$])")
 
 
-def _mask_literals(source: str) -> str:
-    return _STRING_OR_REGEX.sub(lambda m: " " * len(m.group(0)), source)
+_REGEX_AFTER_WORD = re.compile(r"(?:^|[^\w$.])(?:return|typeof|case|do|else|in|of|void|delete|throw|new|yield|await)\s*$")
+
+
+def _regex_may_start(source: str, at: int) -> bool:
+    j = at - 1
+    while j >= 0 and source[j] in " \t\r\n":
+        j -= 1
+    if j < 0:
+        return True
+    if source[j] in "(,=:[!&|?{};+-*%<>~^":
+        return not source.startswith("/", at + 1) and not (source[j] in "+-" and j > 0 and source[j - 1] == source[j])
+    return bool(_REGEX_AFTER_WORD.search(source, max(0, j - 12), j + 1))
+
+
+def _regex_end(source: str, at: int) -> int:
+    """Offset of the closing ``/`` of the regex literal at *at*, or 0 when it is not one."""
+    i, in_class = at + 1, False
+    while i < len(source) and source[i] != "\n":
+        c = source[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            return i
+        i += 1
+    return 0
+
+
+def _code_view(source: str) -> str:
+    """*source* with the text of quoted strings, template literals and regex literals blanked, same
+    length. Only text that can never run is blanked: a template's ``${…}`` stays code, and a ``/``
+    starts a regex only where an expression cannot end before it (after an operator, ``(``, ``,``,
+    a keyword such as ``return``); after a name, number, ``)`` or ``]`` it is division."""
+    out = list(source)
+
+    def blank(i: int) -> None:
+        if source[i] != "\n":
+            out[i] = " "
+
+    holes: list[int] = []  # open ``${`` nesting: brace depth inside each
+    i, n = 0, len(source)
+    in_template = False
+    while i < n:
+        c = source[i]
+        if in_template:
+            if c == "\\":
+                blank(i)
+                if i + 1 < n:
+                    blank(i + 1)
+                i += 2
+                continue
+            if c == "`":
+                in_template = False
+            elif c == "$" and source.startswith("${", i):
+                blank(i), blank(i + 1)
+                holes.append(0)
+                in_template = False
+                i += 2
+                continue
+            else:
+                blank(i)
+            i += 1
+            continue
+        if c in "'\"":
+            j = i + 1
+            while j < n and source[j] not in (c, "\n"):
+                j += 2 if source[j] == "\\" else 1
+            for k in range(i + 1, min(j, n)):
+                blank(k)
+            i = j + 1
+            continue
+        if c == "/" and _regex_may_start(source, i):
+            j = _regex_end(source, i)
+            if j:
+                for k in range(i + 1, j):
+                    blank(k)
+                i = j + 1
+                continue
+        if c == "`":
+            in_template = True
+        elif holes and c == "{":
+            holes[-1] += 1
+        elif holes and c == "}":
+            if holes[-1] == 0:
+                holes.pop()
+                blank(i)
+                in_template = True
+            else:
+                holes[-1] -= 1
+        i += 1
+    return "".join(out)
 
 
 def _brace_pairs(code: str) -> dict[int, int]:
-    """``{`` offset -> matching ``}`` offset in literal-masked *code*."""
+    """``{`` offset -> matching ``}`` offset in *code* (a :func:`_code_view`)."""
     pairs: dict[int, int] = {}
     stack: list[int] = []
     for i, ch in enumerate(code):
@@ -163,7 +257,7 @@ def _own_class_write(source: str, name: str, at: int, pairs: dict[int, int]) -> 
 
 def _foreign_prototype_writes(source: str) -> list[int]:
     """Offsets of ``X.prototype.y =`` that are not provably on ``X``'s own class (see above)."""
-    code = _mask_literals(source)  # offsets unchanged; literal text never reads as code
+    code = _code_view(source)  # offsets unchanged; string/template text never reads as code
     writes = [(m.start(), m.group(1)) for m in _PROTOTYPE_WRITE.finditer(code)]
     pairs = _brace_pairs(code) if writes else {}
     return [at for at, name in writes

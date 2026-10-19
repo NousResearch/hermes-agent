@@ -465,6 +465,76 @@ function cspAttributes(source: string): CspAttribute[] {
  *  inside them is text, never a policy. */
 const TEXT_CONTEXT_TAG = /^(?:script|style|textarea|title|template|noscript|xmp|iframe|noembed|noframes|plaintext)$/i
 
+/** Index just past `name`'s content, whose start tag ended at `from`. Raw-text
+ *  and RCDATA content ends at the first matching close tag. `<template>`
+ *  content is still markup, so nested text-context elements and comments are
+ *  stepped over while its own nesting depth is matched. */
+function skipTextContext(doc: string, name: string, from: number): number {
+  if (name.toLowerCase() !== 'template') {
+    const close = new RegExp(`</${name}\\b[^>]*>`, 'i').exec(doc.slice(from))
+
+    return close === null ? doc.length : from + close.index + close[0].length
+  }
+
+  const tagAt = /<([a-zA-Z][^\s/>]*)(?:"[^"]*"|'[^']*'|[^>"'])*>/y
+  let depth = 1
+  let index = from
+
+  while (index < doc.length) {
+    const open = doc.indexOf('<', index)
+
+    if (open === -1) {
+      break
+    }
+
+    if (doc.startsWith('<!--', open)) {
+      const close = doc.indexOf('-->', open + 4)
+
+      index = close === -1 ? doc.length : close + 3
+
+      continue
+    }
+
+    if (doc.startsWith('</', open)) {
+      const close = /^<\/template\b[^>]*>/i.exec(doc.slice(open))
+
+      if (close === null) {
+        index = open + 2
+
+        continue
+      }
+
+      depth -= 1
+      index = open + close[0].length
+
+      if (depth === 0) {
+        return index
+      }
+
+      continue
+    }
+
+    tagAt.lastIndex = open
+    const tag = tagAt.exec(doc)
+
+    if (tag === null) {
+      index = open + 1
+
+      continue
+    }
+
+    index = open + tag[0].length
+
+    if (tag[1].toLowerCase() === 'template') {
+      depth += 1
+    } else if (TEXT_CONTEXT_TAG.test(tag[1])) {
+      index = skipTextContext(doc, tag[1], index)
+    }
+  }
+
+  return doc.length
+}
+
 /** Locate every real `<meta http-equiv="Content-Security-Policy">` content
  *  value and its offsets. Multiple policies all apply (intersection), so each
  *  one that would block the injected scripts must be amended. Comments and
@@ -502,9 +572,7 @@ function cspMetaContents(doc: string): CspAttribute[] {
     index = open + tag[0].length
 
     if (TEXT_CONTEXT_TAG.test(tag[1])) {
-      const close = new RegExp(`</${tag[1]}\\b[^>]*>`, 'i').exec(doc.slice(index))
-
-      index = close === null ? doc.length : index + close.index + close[0].length
+      index = skipTextContext(doc, tag[1], index)
 
       continue
     }

@@ -111,6 +111,7 @@ describe('withInlineChrome × page Content-Security-Policy', () => {
     ['script', `<html><body><script>const sample = \`${metaText}\`</script></body></html>`],
     ['comment', `<html><body><!-- ${metaText} --></body></html>`],
     ['template', `<html><body><template>${metaText}</template></body></html>`],
+    ['nested template', `<html><body><template><template></template>${metaText}</template></body></html>`],
     ['noscript', `<html><body><noscript>${metaText}</noscript></body></html>`],
     ['style', `<html><head><style>/* ${metaText} */</style></head><body>x</body></html>`],
     ['title', `<html><head><title>${metaText}</title></head><body>x</body></html>`]
@@ -132,6 +133,20 @@ describe('withInlineChrome × page Content-Security-Policy', () => {
     expect(framed).toContain(`<textarea>${metaText}</textarea>`)
     expect(framed.match(/'nonce-tok'/g)).toHaveLength(1)
     expect(framed.match(/<script nonce="tok">/g)).toHaveLength(2)
+  })
+
+  // Template content is markup, so its own nesting must be matched: a nested
+  // `<template>` or a `<template>` inside a script string must not end the
+  // skip early and expose the sample to the rewrite.
+  it('resumes scanning after a nested template and amends the real meta', () => {
+    const doc = `<html><head><template><template>${metaText}</template><script>const open = "<template>"</script></template><meta http-equiv="Content-Security-Policy" content="script-src 'none'"></head><body>x</body></html>`
+    const framed = withInlineChrome(doc, 'tok', prelude)
+
+    expect(policyOf(framed)).toBe("script-src 'nonce-tok'")
+    expect(framed).toContain(
+      `<template><template>${metaText}</template><script>const open = "<template>"</script></template>`
+    )
+    expect(framed.match(/'nonce-tok'/g)).toHaveLength(1)
   })
 
   it('appends a quoted source (an unquoted nonce is a URL source, not a nonce)', () => {

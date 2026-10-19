@@ -85,5 +85,3 @@ def test_progress_callback_preserves_log_mode_events_for_feishu():
     runner.progress_callback("tool.started", "terminal", "git status", {})
 
     assert ctx.log_queue.get_nowait().endswith('terminal: "git status"')
-
-

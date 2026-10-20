@@ -47,12 +47,19 @@ def live_work(home: Path) -> Optional[dict[str, Any]]:
     return _live_work_from_state(home)
 
 
-def _candidate_homes() -> list[Path]:
-    """Homes whose gateway a stop/restart from here takes down, in order: this home's own gateway (a
-    ``--force`` standalone one included), then the live host owner that serves it."""
-    from hermes_cli import gateway as gw
+def _candidate_homes(system: bool = False) -> list[Path]:
+    """Homes whose gateway a stop/restart from here takes down, in order: the system unit's pinned home
+    (``sudo`` strips HERMES_HOME, so this process sees root's), this home's own gateway (a ``--force``
+    standalone one included), then the live host owner that serves it. Only READS the unit: a foreign
+    unit is skipped here and refused by the systemd verb before it adopts any home."""
+    from hermes_cli import gateway as gw, gateway_service_owner
 
     homes = [gw.get_hermes_home()]
+    if (gw.supports_systemd_services() and gw._select_systemd_scope(system)
+            and gateway_service_owner.foreign_systemd_unit_home(True) is None
+            and (unit_home := gateway_service_owner.service_home_for_unit(gw.get_systemd_unit_path(system=True), True))
+            not in homes):
+        homes.insert(0, unit_home)
     owner = gw._host_multiplexer_for_all_verb()
     if owner is not None and Path(owner.home) not in homes:
         homes.append(Path(owner.home))
@@ -84,7 +91,7 @@ def refusal_lines(verb: str, homes: list[Path], *, flag_hint: str = f"hermes gat
 
 def refuse_while_sessions_live(verb: str, args) -> None:
     """Exit 1 naming the live work unless ``--interrupt`` was passed; with it, say what is interrupted."""
-    lines = refusal_lines(verb, _candidate_homes())
+    lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
     if not lines:
         return
     from hermes_cli.gateway import print_error, print_warning

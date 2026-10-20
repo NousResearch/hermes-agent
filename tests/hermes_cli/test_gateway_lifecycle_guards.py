@@ -15,6 +15,7 @@ Every ``systemctl``/``launchctl``/kill seam is replaced by a recorder; nothing h
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -190,3 +191,36 @@ def test_dashboard_stop_refuses_while_sessions_are_live(monkeypatch):
 
     assert client.post("/api/gateway/stop?interrupt=true").status_code == 200
     assert spawned and spawned[0][-1] == "--interrupt"
+
+
+@pytest.mark.platforms("linux")
+def test_sudo_system_stop_checks_the_units_home_not_roots(tmp_path, monkeypatch, recorded, capsys):
+    """``sudo hermes gateway stop --system``: HOME=/root and HERMES_HOME stripped, while the system unit
+    runs the invoking user's home. The live-work check must ask the unit's home, without adopting it."""
+    import hermes_constants
+    root_home, user_home = tmp_path / "root", tmp_path / "user" / ".hermes"
+    (root_home / ".hermes").mkdir(parents=True)
+    user_home.mkdir(parents=True)
+    _unit(tmp_path / "systemd" / "hermes-gateway.service", user_home)
+    monkeypatch.setattr(gw, "_SYSTEM_UNIT_DIR", tmp_path / "systemd")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("HOME", str(root_home))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(hermes_constants, "_account_home", lambda: root_home)
+    _live_gateway(monkeypatch, None)
+    from gateway import control_socket
+    monkeypatch.setattr(control_socket, "query_gateway_control", lambda home, verb, **kw: (
+        _WORK if verb == "active-work" and Path(home).resolve() == user_home.resolve() else None))
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda: None)
+    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda: False)
+    stopped: list = []
+    monkeypatch.setattr(gw, "_stop_installed_service", lambda system: stopped.append(system) or True)
+
+    with pytest.raises(SystemExit) as exc:
+        gw._cmd_stop(SimpleNamespace(all=False, system=True, interrupt=False))
+
+    assert exc.value.code == 1 and stopped == [] and recorded == []
+    assert "chat turn agent:main:telegram:dm:7" in capsys.readouterr().out
+    assert "HERMES_HOME" not in os.environ  # the check never adopted the unit's home
+

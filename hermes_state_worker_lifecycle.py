@@ -31,6 +31,11 @@ def worker_create(db, conn, session_id, payload):
     if config is not None and (not isinstance(config, dict) or set(config) - _CONSTRUCTOR_CONFIG):
         raise RuntimeStoreError('invalid_params')
     insert_session_row_in_transaction(db, conn, session_id, **payload)
+    if config:
+        # An owner-reserved child row already holds its lineage marker, so the keep-existing upsert
+        # would drop these facts; merge them beside it (keys are the constructor set only).
+        conn.execute("UPDATE sessions SET model_config=json_patch(model_config,?) WHERE id=? "
+                     "AND json_type(model_config,'$._delegate_from') IS NOT NULL", (json.dumps(config), session_id))
     return {'value': session_id}
 
 
@@ -272,3 +277,6 @@ def insert_session_row_in_transaction(
         self._delete_unreferenced_system_prompts(conn)
     if parent_session_id:
         self._inherit_parent_session_metadata(conn, session_id)
+    # The upsert may have just filled a compression tip's created_source (update_token_counts).
+    from hermes_state_compression import stamp_compression_ancestors
+    stamp_compression_ancestors(conn, session_id)

@@ -660,7 +660,12 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
             logger.debug("failed waiting for session turn thread", exc_info=True)
     if end_reason != "tui_shutdown":
         _settle_isolated_turn_before_close(session)
-    _teardown_session(session, end_reason=end_reason)
+    try:
+        _teardown_session(session, end_reason=end_reason)
+    finally:
+        # finally: a raising finalize (callers log and move on) must still free the ring.
+        from tui_gateway.event_replay import forget_session
+        forget_session(session.get("_sid") or "")
     return True
 
 
@@ -1016,9 +1021,11 @@ def _schedule_ws_orphan_reap(
             if _session_has_active_delegations(sid, current) or (
                     not current.get("running")
                     and not current.get("_client_gone_interrupt_requested")
-                    and _session_owns_live_wakeup_schedule(current)):
-                # Live background work, or an active /loop or /heartbeat only this process's poller can fire. A
-                # settled client-gone interrupt wins over the schedule: its latches block every tick and reattach.
+                    and (_session_owns_live_wakeup_schedule(current)
+                         or _session_owns_pending_process_notification(current))):
+                # Live background work, or a wake-up only this process's poller can deliver: an active /loop or
+                # /heartbeat, or a running process that will notify this session. A settled client-gone interrupt
+                # wins over both: its latches block every tick and reattach.
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)

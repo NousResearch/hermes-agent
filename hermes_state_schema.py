@@ -1119,21 +1119,26 @@ class SessionSchemaMixin:
         """Mint ``message_uid`` onto rows written before the column existed, one bounded slice per open.
 
         A single full-table UPDATE held the write lock for 261 s on an 835k-row / 4.8 GB store, so every
-        sibling process timed out with "database is locked". Id-range chunks commit one at a time (the
+        sibling process timed out with "database is locked". Rowid-range chunks commit one at a time (the
         writer connection is autocommit) and an open spends at most ``_MESSAGE_UID_BACKFILL_BUDGET_S``
         after its first chunk, so a large store converges over later opens. Until then a legacy row
-        simply has no uid, which every reader already treats as "no identity yet"."""
+        simply has no uid, which every reader already treats as "no identity yet".
+
+        The walk is keyed on ``rowid``, not ``id``: on the declared table ``id INTEGER PRIMARY KEY`` is the
+        rowid alias (same plan), but a store converted from JSONL still carries ``id TEXT`` with no PRIMARY
+        KEY (``_reconcile_columns`` adds columns, never rebuilds the key), where ``MAX(id)`` is a str and an
+        ``id`` range compares lexicographically (#141467)."""
         if _meta_row(cursor, _MESSAGE_UID_BACKFILL_DONE) is not None:
             return
         row = _meta_row(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
         done_through = int(row[0]) if row else 0
-        high = cursor.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
+        high = cursor.execute("SELECT MAX(rowid) FROM messages").fetchone()[0] or 0
         deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
         while done_through < high:
             upper = done_through + _MESSAGE_UID_BACKFILL_CHUNK
             cursor.execute(
                 "UPDATE messages SET message_uid = lower(hex(randomblob(16))) "
-                "WHERE id > ? AND id <= ? AND message_uid IS NULL", (done_through, upper))
+                "WHERE rowid > ? AND rowid <= ? AND message_uid IS NULL", (done_through, upper))
             done_through = upper
             if done_through < high and time.monotonic() >= deadline:
                 self.set_meta(_MESSAGE_UID_BACKFILL_CURSOR, str(done_through), cursor=cursor)

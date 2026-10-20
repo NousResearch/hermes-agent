@@ -14,8 +14,9 @@ import type {
   AnalyticsResponse,
   AnalyticsDailyEntry,
   AnalyticsModelEntry,
+  AnalyticsProviderEntry,
   AnalyticsSkillEntry,
-} from "@/lib/api";
+} from "@/lib/api-analytics";
 import { timeAgo } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -349,6 +350,78 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   );
 }
 
+function ProviderTable({ providers }: { providers: AnalyticsProviderEntry[] }) {
+  const { t } = useI18n();
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(providers, "actual_cost", "desc");
+
+  if (providers.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start gap-2">
+          <Cpu className="h-5 w-5 shrink-0 text-muted-foreground mt-0.5" />
+          <div>
+            <CardTitle className="text-base">{t.analytics.providerUsage}</CardTitle>
+            <p className="mt-1 font-mondwest normal-case text-xs text-muted-foreground">
+              {t.analytics.providerUsageScope}
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full font-mondwest normal-case text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground text-xs">
+                <SortHeader label={t.analytics.provider} col="provider" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
+                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.apiCalls} col="api_calls" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.estimatedCostLocal} col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.loggedCostLocal} col="actual_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((provider) => (
+                <tr
+                  key={provider.provider}
+                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                >
+                  <td className="py-2 pr-4">
+                    <span className="font-mono-ui text-xs">{provider.provider}</span>
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">
+                    {provider.sessions}
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">
+                    {provider.api_calls}
+                  </td>
+                  <td className="text-right py-2 px-4 whitespace-nowrap">
+                    <span style={{ color: "var(--series-input-token)" }}>
+                      {formatTokens(provider.input_tokens)}
+                    </span>
+                    {" / "}
+                    <span style={{ color: "var(--series-output-token)" }}>
+                      {formatTokens(provider.output_tokens)}
+                    </span>
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">
+                    ${provider.estimated_cost.toFixed(4)}
+                  </td>
+                  <td className="text-right py-2 pl-4">
+                    ${provider.actual_cost.toFixed(4)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
   const { t } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(skills, "total_count", "desc");
@@ -411,8 +484,8 @@ export default function AnalyticsPage() {
   const [error, setError] = useState<string | null>(null);
   // Gated on `dashboard.show_token_analytics` (default off).  When off the
   // page renders an explanation card instead of fetching analytics — the
-  // local token counts exclude auxiliary calls and provider retries, so
-  // they diverge from provider billing in ways that mislead users.
+  // local records can omit billable calls and retries even when the provider
+  // breakdown includes recorded auxiliary work. They are not a billing ledger.
   const [showTokens, setShowTokens] = useState<boolean | null>(null);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -495,13 +568,11 @@ export default function AnalyticsPage() {
               </h2>
               <p>
                 The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                local debug estimate. Summary, daily, and model views can
+                exclude auxiliary calls, cache writes, provider-side retries,
+                and fallback attempts. The provider breakdown also includes
+                recorded auxiliary usage, but still depends on local records
+                and may be incomplete.
               </p>
               <p>
                 On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
@@ -578,14 +649,16 @@ export default function AnalyticsPage() {
           </div>
 
           <DailyTable daily={data.daily} />
+          <ProviderTable providers={data.by_provider ?? []} />
           <ModelTable models={data.by_model} />
           <SkillTable skills={data.skills.top_skills} />
         </>
       )}
 
-      {data &&
+      {showTokens && data &&
         data.daily.length === 0 &&
         data.by_model.length === 0 &&
+        (data.by_provider?.length ?? 0) === 0 &&
         data.skills.top_skills.length === 0 && (
           <Card>
             <CardContent className="py-12">

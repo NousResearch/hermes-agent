@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import pickle
+from collections.abc import Iterable
 from dataclasses import FrozenInstanceError, fields
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+if TYPE_CHECKING:
+    from gateway.authorization import TrustedPrincipalIssuer
 
-def _issuer() -> Any:
+
+def _issuer() -> TrustedPrincipalIssuer:
     from gateway.authorization import _bootstrap_principal_issuer
 
     return _bootstrap_principal_issuer()
@@ -86,14 +90,16 @@ def test_issuer_capability_is_not_publicly_constructible_or_serializable() -> No
 @pytest.mark.parametrize("principal_id", [None, 1, True, "", "   ", "x" * 257])
 def test_issuer_rejects_invalid_principal_ids(principal_id: object) -> None:
     with pytest.raises((TypeError, ValueError)):
-        _issuer().issue_user(principal_id=principal_id, authz_version=0)
+        _issuer().issue_user(
+            principal_id=cast(str, principal_id), authz_version=0
+        )
 
 
 @pytest.mark.parametrize("authz_version", [None, True, False, 1.0, "1", -1])
 def test_issuer_rejects_invalid_authz_versions(authz_version: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         _issuer().issue_user(
-            principal_id="telegram:123", authz_version=authz_version
+            principal_id="telegram:123", authz_version=cast(int, authz_version)
         )
 
 
@@ -113,7 +119,9 @@ def test_issuer_rejects_invalid_authz_versions(authz_version: object) -> None:
 def test_issuer_rejects_invalid_scopes(scopes: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         _issuer().issue_user(
-            principal_id="telegram:123", authz_version=0, scopes=scopes
+            principal_id="telegram:123",
+            authz_version=0,
+            scopes=cast(Iterable[str], scopes),
         )
 
 
@@ -149,7 +157,8 @@ def test_on_behalf_of_issuance_rejects_unverified_or_service_parent() -> None:
 
     with pytest.raises(TypeError, match="VerifiedPrincipal"):
         issuer.issue_on_behalf_of(
-            parent={"principal_id": "telegram:123"}, scopes={"agent.use"}
+            parent=cast(Any, {"principal_id": "telegram:123"}),
+            scopes={"agent.use"},
         )
     with pytest.raises(ValueError, match="service principals"):
         issuer.issue_on_behalf_of(
@@ -322,6 +331,57 @@ def test_authorize_fail_closed_denies_readiness_errors_timeouts_and_non_allow(
     )
 
     assert decision is PermissionDecision.DENY
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    [None, "1", True, -1, float("nan"), float("inf"), float("-inf")],
+)
+def test_authorize_fail_closed_rejects_invalid_timeout_before_provider_calls(
+    timeout_seconds: object,
+) -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    async def scenario() -> None:
+        provider_calls: list[str] = []
+        unhandled: list[dict[str, object]] = []
+
+        class Provider:
+            def __getattribute__(self, name: str) -> Any:
+                if name in {"readiness", "authorize"}:
+                    provider_calls.append(name)
+                return object.__getattribute__(self, name)
+
+            async def readiness(self) -> bool:
+                return True
+
+            async def authorize(self, **_kwargs: object) -> PermissionDecision:
+                return PermissionDecision.ALLOW
+
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        tasks_before = asyncio.all_tasks()
+        try:
+            decision = await authorize_fail_closed(
+                Provider(),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+                timeout_seconds=cast(int | float, timeout_seconds),
+            )
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+        assert decision is PermissionDecision.DENY
+        assert provider_calls == []
+        assert asyncio.all_tasks() == tasks_before
+        assert unhandled == []
+
+    asyncio.run(scenario())
 
 
 def test_readiness_timeout_wins_when_provider_suppresses_cancellation() -> None:

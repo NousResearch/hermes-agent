@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import math
 from collections.abc import Iterable, Mapping, Set as AbstractSet
 from dataclasses import dataclass
 from enum import Enum
@@ -239,9 +241,12 @@ async def authorize_fail_closed(
     permission: str,
     known_permissions: AbstractSet[str],
     resource: Mapping[str, object] | None = None,
-    timeout_seconds: float = 1.0,
+    timeout_seconds: int | float = 1.0,
 ) -> PermissionDecision:
     """Authorize a known permission, reducing every failure to DENY.
+
+    ``timeout_seconds`` must be a finite exact ``int`` or ``float`` (not ``bool``)
+    greater than or equal to zero. Invalid deadlines deny before provider methods run.
 
     This boundary deliberately emits no logs. Callers may audit safe identifiers and
     reason codes, but must never log the protected message or tool payload here.
@@ -249,8 +254,11 @@ async def authorize_fail_closed(
 
     if permission not in known_permissions:
         return PermissionDecision.DENY
+    deadline_seconds = _validated_timeout_seconds(timeout_seconds)
+    if deadline_seconds is None:
+        return PermissionDecision.DENY
     try:
-        ready = await _await_with_deadline(provider.readiness(), timeout_seconds)
+        ready = await _await_with_deadline(provider.readiness(), deadline_seconds)
         if ready is _DEADLINE_EXPIRED or ready is not True:
             return PermissionDecision.DENY
         decision = await _await_with_deadline(
@@ -259,7 +267,7 @@ async def authorize_fail_closed(
                 permission=permission,
                 resource=resource,
             ),
-            timeout_seconds,
+            deadline_seconds,
         )
     except Exception:
         return PermissionDecision.DENY
@@ -277,18 +285,32 @@ def _consume_task_result(task: asyncio.Future[Any]) -> None:
         pass
 
 
+def _validated_timeout_seconds(value: object) -> int | float | None:
+    if type(value) is int:
+        return value if value >= 0 else None
+    if type(value) is float and math.isfinite(value) and value >= 0:
+        return value
+    return None
+
+
 async def _await_with_deadline(
-    awaitable: Awaitable[_T], timeout_seconds: float
+    awaitable: Awaitable[_T], timeout_seconds: object
 ) -> _T | _DeadlineExpired:
     """Race an operation against a deadline without trusting cancellation."""
 
+    deadline_seconds = _validated_timeout_seconds(timeout_seconds)
+    if deadline_seconds is None:
+        if inspect.iscoroutine(awaitable):
+            awaitable.close()
+        return _DEADLINE_EXPIRED
+
     operation = asyncio.ensure_future(awaitable)
-    deadline = asyncio.create_task(asyncio.sleep(max(timeout_seconds, 0.0)))
+    deadline = asyncio.create_task(asyncio.sleep(deadline_seconds))
     try:
         done, _pending = await asyncio.wait(
             (operation, deadline), return_when=asyncio.FIRST_COMPLETED
         )
-    except asyncio.CancelledError:
+    except BaseException:
         operation.cancel()
         deadline.cancel()
         operation.add_done_callback(_consume_task_result)
@@ -298,6 +320,7 @@ async def _await_with_deadline(
     if deadline in done:
         operation.cancel()
         operation.add_done_callback(_consume_task_result)
+        _consume_task_result(deadline)
         return _DEADLINE_EXPIRED
 
     deadline.cancel()

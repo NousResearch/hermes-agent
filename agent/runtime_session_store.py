@@ -220,6 +220,9 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     adoption. Local queue acceptance is never returned as canonical commit.
     Pending journals live outside age-pruned cache trees.
     """
+    # The process's async-delegation ledger belongs to the adopted execution, never a reserved child.
+    binds_delegation_ledger = True
+
     def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024):
         self.rpc = rpc
         self.scope = dict(scope)
@@ -258,7 +261,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 # Replay must land the journal exactly on the adopted assignment (a pending
                 # publication moves it to the child); anything else is not this successor's outbox.
                 raise WorkerPersistenceError('outbox_scope_mismatch')
-            if is_worker_process():
+            if is_worker_process() and self.binds_delegation_ledger:
                 from tools.async_delegation_worker import bind_worker_delegation_store
                 bind_worker_delegation_store(self)
         except Exception:

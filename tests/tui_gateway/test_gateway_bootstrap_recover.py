@@ -2,7 +2,7 @@
 
 Main's TUI owned its own sidecar and never depended on an external daemon, so an open TUI must come
 back on its own after ANY end of the shared gateway: a crash, its idle exit, or a planned
-`hermes gateway stop` while the TUI is open. The bounded recovery slot (gatewayClient.ts
+`hermes gateway stop` while the TUI is open. The bounded recovery slot (`@hermes/shared/gateway-client`
 OWNER_RECOVERY_LIMIT) is what keeps a crash-looping owner from being respawned forever."""
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyCompletion, completionToApplyOnSubmit } from '../domain/slash.js'
+import { applyCompletion, completionToApplyOnSubmit } from './slash-input'
 
 describe('applyCompletion', () => {
   it('replaces from compReplace and drops the leading slash from the row', () => {

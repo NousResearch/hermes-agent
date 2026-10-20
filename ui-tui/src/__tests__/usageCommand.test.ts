@@ -1,7 +1,7 @@
+import type { SessionUsageResponse } from '@hermes/shared/gateway-types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { sessionCommands } from '../app/slash/commands/session.js'
-import type { SessionUsageResponse } from '../gatewayTypes.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 
 const usageCommand = sessionCommands.find(cmd => cmd.name === 'usage')!

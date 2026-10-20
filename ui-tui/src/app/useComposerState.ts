@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { useStdin, withInkSuspended } from '@hermes/ink'
+import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
-import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'

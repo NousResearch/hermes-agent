@@ -1,5 +1,6 @@
+import type { SessionActiveListResponse } from '@hermes/shared/gateway-types'
+
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionActiveListResponse } from '../gatewayTypes.js'
 
 /** The live-session roster the status bar's title and count read: on the shared owner its own
  * `session.list` (live scope); the sidecar's `session.active_list` never holds those sessions. */

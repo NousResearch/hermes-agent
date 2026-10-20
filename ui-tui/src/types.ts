@@ -1,6 +1,6 @@
-import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
-
-import type { SharedControl } from './canonicalGateway.js'
+import type { SharedControl } from '@hermes/shared/gateway-canonical'
+import type { ProjectInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
+import type { SessionInfo, SlashCategory } from '@hermes/shared/gateway-types'
 
 export interface ActiveTool {
   context?: string
@@ -184,24 +184,6 @@ export interface McpServerStatus {
   transport: string
 }
 
-/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`,
- *  plus the canonical-authority fields the legacy contract does not carry yet
- *  (`gateway/session_events.py` owner stamps and the durable admission FIFO). */
-export interface SessionInfo extends SessionLiveInfo {
-  execution_epoch?: string
-  execution_generation?: number
-  execution_state?: string
-  install_warning?: string
-  pending_submissions?: Array<{
-    admission_id: string
-    input_id?: string
-    target_session_id: string
-    target_profile_home: string
-    status: string
-    user: string
-    outcome?: string | null
-  }>
-}
 export type { ProjectInfo }
 
 export interface SudoReq {
@@ -259,7 +241,3 @@ export interface SlashCatalog {
   sub: Record<string, string[]>
 }
 
-export interface SlashCategory {
-  name: string
-  pairs: [string, string][]
-}

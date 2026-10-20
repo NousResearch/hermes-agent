@@ -15,7 +15,7 @@ import {
 
 import { deferred } from '../../test/deferred'
 
-import { startWorkspaceSession } from './workspace-session-target'
+import { startSessionInWorkspace, startWorkspaceSession } from './workspace-session-target'
 
 describe('startWorkspaceSession', () => {
   afterEach(() => {
@@ -128,5 +128,65 @@ describe('startWorkspaceSession', () => {
     $activeGatewayProfile.set('personal')
 
     expect($newChatProfile.get()).toBe('work')
+  })
+
+  // #124265: with a chat already loaded the "+" stacks a tile instead of going
+  // through the fresh-draft flow. The tile resolves its owner synchronously
+  // from $newChatProfile, so the pin must fire BEFORE the tile call — not
+  // inside startWorkspaceSession, which this path never reaches.
+  it('pins the project profile before the occupied-chat tile path resolves its owner', () => {
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set(null)
+
+    let ownerAtTileCall: unknown
+    const startFreshSessionDraft = vi.fn()
+
+    startSessionInWorkspace(
+      {
+        activeSessionIdRef: { current: 'live-session' },
+        chatOccupied: true,
+        openNewSessionTile: options => {
+          ownerAtTileCall = $newChatProfile.get()
+
+          expect(options).toEqual({ cwd: '/workspace-work', listed: false })
+        },
+        requestGateway: vi.fn(() => new Promise<never>(() => {})),
+        setWorkspaceScope: vi.fn(),
+        startFreshSessionDraft
+      },
+      '/workspace-work',
+      { openTab: true }
+    )
+
+    // A still-settling profile swap after the click must not steal the pin.
+    $activeGatewayProfile.set('personal')
+
+    expect(ownerAtTileCall).toBe('work')
+    expect($newChatProfile.get()).toBe('work')
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
+  })
+
+  it('keeps the fresh-draft path pinned when main chat is free', () => {
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set(null)
+
+    const startFreshSessionDraft = vi.fn()
+
+    startSessionInWorkspace(
+      {
+        activeSessionIdRef: { current: null },
+        chatOccupied: false,
+        openNewSessionTile: vi.fn(),
+        requestGateway: vi.fn(() => new Promise<never>(() => {})),
+        setWorkspaceScope: vi.fn(),
+        startFreshSessionDraft
+      },
+      '/workspace-work'
+    )
+
+    $activeGatewayProfile.set('personal')
+
+    expect($newChatProfile.get()).toBe('work')
+    expect(startFreshSessionDraft).toHaveBeenCalled()
   })
 })

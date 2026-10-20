@@ -564,6 +564,7 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── whatsapp/adapter.py     # WhatsApp via the local Baileys bridge
 ├── whatsapp_cloud/adapter.py # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
+├── matrix/media_upload.py  # Outbound media upload and message payloads
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
 ├── sms/adapter.py          # SMS via Twilio

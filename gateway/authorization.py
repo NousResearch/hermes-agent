@@ -23,15 +23,11 @@ _MAX_KNOWN_PERMISSIONS = 512
 # Keep authorization deadlines bounded to values every supported event loop can
 # represent operationally, and to a duration appropriate for an ingress check.
 _MAX_AUTHORIZATION_TIMEOUT_SECONDS = 60
-_QUARANTINE_POLL_INTERVAL_SECONDS = 0.01
 _T = TypeVar("_T")
 _NATIVE_ASYNCIO_TASK_TYPE = asyncio.Task
 _NATIVE_ASYNCIO_TASK = asyncio.Task
 _QUARANTINED_AUTHORIZATION_TASKS: set[asyncio.Task[Any]] = set()
 _AUTHORIZATION_REAPER_TASKS: set[asyncio.Task[Any]] = set()
-_AUTHORIZATION_POLL_HANDLES: dict[
-    asyncio.Task[Any], asyncio.TimerHandle
-] = {}
 
 
 class _DeadlineExpired:
@@ -288,10 +284,10 @@ async def authorize_fail_closed(
     indefinitely suppress cancellation are outside the contract. Malicious code in
     the same interpreter can still defeat availability; this is not a Python sandbox.
 
-    If the host event loop rejects the final internal cleanup timer after callback
-    registration and native reaper construction both fail, the task remains strongly
-    quarantined as a fail-safe. That broken-loop condition is a host-runtime failure
-    outside the provider contract.
+    If callback registration and native reaper construction both fail, cleanup falls
+    back to awaiting the exact owned operation in the current authorization task before
+    returning. This last-resort path may therefore wait for the selected provider's
+    cancellation-cooperative or independently bounded contract to settle.
 
     This boundary deliberately emits no logs. Callers may audit safe identifiers and
     reason codes, but must never log the protected message or tool payload here.
@@ -355,9 +351,6 @@ def _is_valid_permission(value: object) -> bool:
 
 
 def _discard_quarantined_task(task: asyncio.Task[Any]) -> None:
-    handle = _AUTHORIZATION_POLL_HANDLES.pop(task, None)
-    if handle is not None:
-        handle.cancel()
     _QUARANTINED_AUTHORIZATION_TASKS.discard(task)
 
 
@@ -379,43 +372,6 @@ def _consume_quarantined_task(task: asyncio.Task[Any]) -> None:
         _discard_quarantined_task(task)
 
 
-def _poll_quarantined_task(
-    task: asyncio.Task[Any], loop: asyncio.AbstractEventLoop
-) -> None:
-    _AUTHORIZATION_POLL_HANDLES.pop(task, None)
-    if task not in _QUARANTINED_AUTHORIZATION_TASKS:
-        return
-    if _authorization_task_done(task):
-        try:
-            _consume_authorization_task_result(task)
-        finally:
-            _discard_quarantined_task(task)
-        return
-    _schedule_quarantine_poll(task, loop)
-
-
-def _schedule_quarantine_poll(
-    task: asyncio.Task[Any], loop: asyncio.AbstractEventLoop
-) -> None:
-    if (
-        task not in _QUARANTINED_AUTHORIZATION_TASKS
-        or task in _AUTHORIZATION_POLL_HANDLES
-    ):
-        return
-    try:
-        handle = loop.call_later(
-            _QUARANTINE_POLL_INTERVAL_SECONDS,
-            _poll_quarantined_task,
-            task,
-            loop,
-        )
-    except BaseException:
-        # The host loop is broken beyond the provider contract. Retain the exact
-        # owned task strongly in quarantine rather than risk an unconsumed result.
-        return
-    _AUTHORIZATION_POLL_HANDLES[task] = handle
-
-
 async def _reap_quarantined_task(task: asyncio.Task[Any]) -> None:
     try:
         try:
@@ -431,24 +387,18 @@ async def _reap_quarantined_task(task: asyncio.Task[Any]) -> None:
 
 def _start_quarantine_reaper(
     task: asyncio.Task[Any], loop: asyncio.AbstractEventLoop
-) -> None:
+) -> bool:
     reaper_coroutine = _reap_quarantined_task(task)
     try:
         reaper = _NATIVE_ASYNCIO_TASK(reaper_coroutine, loop=loop)
     except BaseException:
         reaper_coroutine.close()
-        if _authorization_task_done(task):
-            try:
-                _consume_authorization_task_result(task)
-            finally:
-                _discard_quarantined_task(task)
-        else:
-            _schedule_quarantine_poll(task, loop)
-        return
+        return False
     _AUTHORIZATION_REAPER_TASKS.add(reaper)
+    return True
 
 
-def _cancel_and_quarantine(
+async def _cancel_and_quarantine(
     task: asyncio.Task[Any], loop: asyncio.AbstractEventLoop
 ) -> None:
     if _authorization_task_done(task):
@@ -462,7 +412,17 @@ def _cancel_and_quarantine(
             task.cancel()
         except BaseException:
             pass
-        _start_quarantine_reaper(task, loop)
+        if _start_quarantine_reaper(task, loop):
+            return
+        try:
+            await task
+        except BaseException:
+            pass
+        finally:
+            try:
+                _consume_authorization_task_result(task)
+            finally:
+                _discard_quarantined_task(task)
         return
     try:
         task.cancel()
@@ -483,12 +443,6 @@ def _reaper_task_count() -> int:
     """Return the quarantine-reaper registry size for focused invariant tests."""
 
     return len(_AUTHORIZATION_REAPER_TASKS)
-
-
-def _polling_handle_count() -> int:
-    """Return the quarantine-poll handle registry size for invariant tests."""
-
-    return len(_AUTHORIZATION_POLL_HANDLES)
 
 
 def _expire_deadline(deadline: asyncio.Future[None]) -> None:
@@ -542,7 +496,7 @@ async def _await_with_deadline(
             _consume_task_result(deadline)
             raise
     except BaseException:
-        _cancel_and_quarantine(operation, loop)
+        await _cancel_and_quarantine(operation, loop)
         raise
 
     try:
@@ -551,12 +505,12 @@ async def _await_with_deadline(
         )
     except BaseException:
         _cancel_and_consume_deadline(deadline, handle)
-        _cancel_and_quarantine(operation, loop)
+        await _cancel_and_quarantine(operation, loop)
         raise
 
     if deadline in done:
         _cancel_and_consume_deadline(deadline, handle)
-        _cancel_and_quarantine(operation, loop)
+        await _cancel_and_quarantine(operation, loop)
         return _DEADLINE_EXPIRED
 
     _cancel_and_consume_deadline(deadline, handle)

@@ -1347,12 +1347,11 @@ def test_callback_registration_failure_denies_reaps_and_drains_cleanly() -> None
     asyncio.run(scenario())
 
 
-def test_callback_and_reaper_failures_poll_until_quarantine_drains() -> None:
+def test_callback_and_reaper_failures_await_owned_operation_before_deny() -> None:
     import gateway.authorization as authorization
 
     from gateway.authorization import (
         PermissionDecision,
-        _polling_handle_count,
         _quarantined_task_count,
         _reaper_task_count,
         authorize_fail_closed,
@@ -1367,14 +1366,18 @@ def test_callback_and_reaper_failures_poll_until_quarantine_drains() -> None:
     async def scenario() -> None:
         started = asyncio.Event()
         cancelled = asyncio.Event()
-        release = asyncio.Event()
         finished = asyncio.Event()
         unhandled: list[dict[str, object]] = []
+        created: list[asyncio.Task[Any]] = []
+        consumed: list[asyncio.Task[Any]] = []
         registration_failures = 0
         reaper_failures = 0
-        reject_task_methods = False
 
         class CallbackFailureTask(asyncio.Task[Any]):
+            def __init__(self, coroutine: Any, **kwargs: Any) -> None:
+                super().__init__(coroutine, **kwargs)
+                created.append(self)
+
             def add_done_callback(self, callback: Any, *, context: Any = None) -> None:
                 nonlocal registration_failures
                 if (
@@ -1387,25 +1390,16 @@ def test_callback_and_reaper_failures_poll_until_quarantine_drains() -> None:
                     )
                 super().add_done_callback(callback, context=context)
 
-            def done(self) -> bool:
-                if reject_task_methods:
-                    raise AssertionError("polling must use exact Task.done")
-                return super().done()
-
-            def result(self) -> Any:
-                if reject_task_methods:
-                    raise AssertionError("cleanup must use exact Task.result")
-                return super().result()
-
-            def get_loop(self) -> asyncio.AbstractEventLoop:
-                if reject_task_methods:
-                    raise AssertionError("cleanup must use the captured host loop")
-                return super().get_loop()
-
         def failing_reaper_task(*_args: object, **_kwargs: object) -> Any:
             nonlocal reaper_failures
             reaper_failures += 1
             raise ReaperConstructionFailure("injected reaper Task failure")
+
+        original_consumer = authorization._consume_authorization_task_result
+
+        def recording_consumer(task: asyncio.Task[Any]) -> None:
+            consumed.append(task)
+            original_consumer(task)
 
         class Provider:
             async def readiness(self) -> bool:
@@ -1414,7 +1408,7 @@ def test_callback_and_reaper_failures_poll_until_quarantine_drains() -> None:
                     await asyncio.Event().wait()
                 except asyncio.CancelledError:
                     cancelled.set()
-                    await release.wait()
+                    await asyncio.sleep(0)
                     finished.set()
                     raise RuntimeError("eventual provider failure")
                 raise AssertionError("readiness should only finish after cancellation")
@@ -1429,6 +1423,7 @@ def test_callback_and_reaper_failures_poll_until_quarantine_drains() -> None:
         loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
         setattr(authorization.asyncio, "Task", CallbackFailureTask)
         setattr(authorization, "_NATIVE_ASYNCIO_TASK", failing_reaper_task)
+        setattr(authorization, "_consume_authorization_task_result", recording_consumer)
         tasks_before = asyncio.all_tasks()
         try:
             decision = await authorize_fail_closed(
@@ -1442,139 +1437,26 @@ def test_callback_and_reaper_failures_poll_until_quarantine_drains() -> None:
             )
             assert decision is PermissionDecision.DENY
             assert started.is_set()
-            await cancelled.wait()
+            assert cancelled.is_set()
+            assert finished.is_set()
             assert registration_failures == 1
             assert reaper_failures == 1
-            assert _quarantined_task_count() == 1
-            assert _reaper_task_count() == 0
-            assert _polling_handle_count() == 1
-            assert len(asyncio.all_tasks() - tasks_before) == 1
-
-            reject_task_methods = True
-            release.set()
-            await finished.wait()
-            for _ in range(20):
-                if _quarantined_task_count() == 0:
-                    break
-                await asyncio.sleep(0.01)
-        finally:
-            reject_task_methods = False
-            setattr(authorization, "_NATIVE_ASYNCIO_TASK", original_reaper_task)
-            setattr(authorization.asyncio, "Task", original_task_type)
-            loop.set_exception_handler(previous_handler)
-
-        assert _quarantined_task_count() == 0
-        assert _reaper_task_count() == 0
-        assert _polling_handle_count() == 0
-        assert asyncio.all_tasks() == tasks_before
-        assert unhandled == []
-
-    asyncio.run(scenario())
-
-
-def test_broken_host_timer_keeps_strong_quarantine_until_manual_cleanup() -> None:
-    import gateway.authorization as authorization
-
-    from gateway.authorization import (
-        PermissionDecision,
-        _polling_handle_count,
-        _quarantined_task_count,
-        _reaper_task_count,
-        authorize_fail_closed,
-    )
-
-    async def scenario() -> None:
-        release = asyncio.Event()
-        finished = asyncio.Event()
-        unhandled: list[dict[str, object]] = []
-        created: list[asyncio.Task[Any]] = []
-        timer_failures = 0
-
-        class CallbackFailureTask(asyncio.Task[Any]):
-            def add_done_callback(self, callback: Any, *, context: Any = None) -> None:
-                if callback is authorization._consume_quarantined_task:
-                    raise RuntimeError("injected add_done_callback failure")
-                super().add_done_callback(callback, context=context)
-
-        def task_factory(
-            coroutine: Any, *, loop: asyncio.AbstractEventLoop
-        ) -> CallbackFailureTask:
-            task = CallbackFailureTask(coroutine, loop=loop)
-            created.append(task)
-            return task
-
-        def failing_reaper_task(*_args: object, **_kwargs: object) -> Any:
-            raise RuntimeError("injected reaper Task failure")
-
-        class Provider:
-            async def readiness(self) -> bool:
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    await release.wait()
-                    finished.set()
-                    raise RuntimeError("eventual provider failure")
-                raise AssertionError("readiness should only finish after cancellation")
-
-            async def authorize(self, **_kwargs: object) -> PermissionDecision:
-                raise AssertionError("late readiness must not authorize")
-
-        loop = asyncio.get_running_loop()
-        previous_handler = loop.get_exception_handler()
-        original_call_later = loop.call_later
-        original_task_type = authorization.asyncio.Task
-        original_reaper_task = authorization._NATIVE_ASYNCIO_TASK
-
-        def failing_poll_timer(
-            delay: float, callback: Any, *args: object, **kwargs: object
-        ) -> asyncio.TimerHandle:
-            nonlocal timer_failures
-            if callback is authorization._poll_quarantined_task:
-                timer_failures += 1
-                raise RuntimeError("injected host call_later failure")
-            return cast(Any, original_call_later)(
-                delay, callback, *args, **kwargs
-            )
-
-        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
-        setattr(loop, "call_later", failing_poll_timer)
-        setattr(authorization.asyncio, "Task", task_factory)
-        setattr(authorization, "_NATIVE_ASYNCIO_TASK", failing_reaper_task)
-        try:
-            decision = await authorize_fail_closed(
-                Provider(),
-                principal=_issuer().issue_user(
-                    principal_id="telegram:123", authz_version=7
-                ),
-                permission="agent.use",
-                known_permissions={"agent.use"},
-                timeout_seconds=0.001,
-            )
-            assert decision is PermissionDecision.DENY
-            assert timer_failures == 1
             assert len(created) == 1
-            assert _quarantined_task_count() == 1
-            assert _reaper_task_count() == 0
-            assert _polling_handle_count() == 0
-
-            release.set()
-            await finished.wait()
-            await asyncio.sleep(0)
-            assert authorization._authorization_task_done(created[0])
-            assert _quarantined_task_count() == 1
-            assert unhandled == []
-
-            authorization._consume_quarantined_task(created[0])
+            assert created[0].done()
+            assert consumed == [created[0]]
             assert _quarantined_task_count() == 0
+            assert _reaper_task_count() == 0
+            assert asyncio.all_tasks() == tasks_before
         finally:
-            release.set()
+            setattr(
+                authorization,
+                "_consume_authorization_task_result",
+                original_consumer,
+            )
             setattr(authorization, "_NATIVE_ASYNCIO_TASK", original_reaper_task)
             setattr(authorization.asyncio, "Task", original_task_type)
-            setattr(loop, "call_later", original_call_later)
             loop.set_exception_handler(previous_handler)
 
-        assert _reaper_task_count() == 0
-        assert _polling_handle_count() == 0
         assert unhandled == []
 
     asyncio.run(scenario())
@@ -1593,10 +1475,10 @@ def test_provider_contract_excludes_indefinite_cancellation_suppression() -> Non
     assert "same interpreter" in contract
     assert "availability" in contract
     assert "indefinitely suppress" in contract
-    assert "host event loop" in contract
-    assert "strongly" in contract
-    assert "quarantined" in contract
-    assert "host-runtime failure" in contract
+    assert "last-resort" in contract
+    assert "awaiting the exact owned operation" in contract
+    assert "current authorization task" in contract
+    assert "selected provider" in contract
 
 
 def test_readiness_timeout_wins_when_provider_suppresses_cancellation() -> None:

@@ -14,6 +14,11 @@ _FORCE_SERVED_PROFILE_HELP = (
     "Start a separate gateway for this profile even when the default multiplexer already serves it "
     "(not recommended: two pollers on one bot token, port conflicts)")
 
+# `stop`/`restart` refuse while the gateway runs turns, cron jobs or background delegations.
+_INTERRUPT_HELP = (
+    "{verb} even while sessions are live (turns, cron jobs, background delegations): they are "
+    "interrupted. Without it the command names the live work and refuses")
+
 
 class _GatewayCommandParser(argparse.ArgumentParser):
     """Ensure's parser errors share its machine-readable command boundary."""
@@ -135,12 +140,14 @@ def build_gateway_parser(
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
     _add_system_flag(gateway_stop)
     _flag(gateway_stop, "--all", help="Stop ALL gateway processes across all profiles")
+    _flag(gateway_stop, "--interrupt", help=_INTERRUPT_HELP.format(verb="stop"))
 
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    _flag(gateway_restart, "--interrupt", help=_INTERRUPT_HELP.format(verb="restart"))
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

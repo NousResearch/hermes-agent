@@ -9,6 +9,7 @@ from hermes_cli import web_server_chat, web_server
 from hermes_cli.dashboard_auth.ws_tickets import mint_ticket, _reset_for_tests
 from tui_gateway import server, ws
 from tests.tui_gateway import test_host_conditional as hosts
+from tests.waiting import async_wait_until
 
 
 @pytest.fixture
@@ -69,21 +70,16 @@ def test_ticket_owned_host_activation_and_input_survive_pool_hops_without_foreig
             assert hosts.control(supervisor, binding, "inspect")["members"] == 1
             assert (await call(owned, "prompt", "session.invoke_bound", {
                 **params, "operation": {"method": "prompt.submit", "text": "hold"}}))["result"]["operation_result"]["status"] == "streaming"
-            for _ in range(150):
-                if hosts.control(supervisor, binding, "inspect")["holder"]:
-                    break
-                await asyncio.sleep(.02)
-            assert hosts.control(supervisor, binding, "inspect")["holder"]
+            await async_wait_until(lambda: hosts.control(supervisor, binding, "inspect")["holder"],
+                                   what="host turn lease acquired")
             assert (await call(foreign, "foreign", "session.activate_bound", params))["error"]["code"] == 4007
             assert hosts.control(supervisor, binding, "inspect")["members"] == 1
             assert (await call(owned, "bypass", "session.close", {"session_id": binding["session_id"]}))["error"]["code"] == 4007
             assert (await call(owned, "stop", "session.invoke_bound", {
                 **params, "operation": {"method": "session.interrupt"}}))["result"]["operation_result"]["status"] == "interrupted"
-            for _ in range(150):
-                observation = hosts.control(supervisor, binding, "inspect")
-                if not observation["running"]:
-                    break
-                await asyncio.sleep(.02)
+            observation = await async_wait_until(
+                lambda: (state if not (state := hosts.control(supervisor, binding, "inspect"))["running"] else None),
+                what="host turn stopped")
             assert not observation["running"] and observation["holder"] is None
             assert observation["calls"] == ["warm", "hold"]
         finally:

@@ -1,7 +1,6 @@
 """Real host launcher for conditional IPC tests; only provider/bootstrap work is substituted."""
 from __future__ import annotations
 
-import time
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,6 +11,7 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 from tui_gateway import compute_host, server, server_requests
 import model_tools
+from tests.waiting import wait_until
 
 
 def make_agent(sid, key, **kwargs):
@@ -28,9 +28,7 @@ def loop(agent, text, *args, **kwargs):
     if text == "hold":
         server._emit("message.delta", next(sid for sid, s in server._sessions.items() if s["agent"] is agent),
                      {"text": "holding"})
-        deadline = time.monotonic() + 20
-        while not agent._interrupt_requested and time.monotonic() < deadline:
-            time.sleep(.01)
+        wait_until(lambda: agent._interrupt_requested, timeout=20, what="host turn interrupted")
     return {"final_response": "done", "messages": [{"role": "user", "content": text},
              {"role": "assistant", "content": "done"}], "interrupted": bool(agent._interrupt_requested)}
 

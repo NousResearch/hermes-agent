@@ -716,7 +716,10 @@ SESSION_OWNER_UNCONFIRMED = "SESSION_OWNER_UNCONFIRMED"
 
 def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
     """The answer to a refused slot: a ledger refusal of a client submit goes to the owner's FIFO."""
-    if getattr(refusal, "ledger_status", None) is not None and not internal_hosted_submit:
+    from agent.session_identity import conditional_turn_pending
+    # A bound turn is pinned to this engine; another owner's FIFO cannot retain its witness.
+    if (getattr(refusal, "ledger_status", None) is not None
+            and not internal_hosted_submit and not conditional_turn_pending()):
         return _submit_to_ledger_owner(rid, sid, session, text, params, refusal)
     reason = getattr(refusal, "reason", None)
     return _err(rid, 4090, str(refusal), {"reason": reason} if reason else None)

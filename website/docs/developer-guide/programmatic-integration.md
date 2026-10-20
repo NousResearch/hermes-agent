@@ -304,8 +304,10 @@ lock. This does not add revision-CAS for editable request params or outcome look
 An original ready local engine or a child-authoritatively qualified original
 ready compute-host engine can execute an operation. Prompts are plain
 text deliberate new **idle** turns without staged attachments; busy input returns
-`4009` and cannot steer, interrupt, queue or persist a follow-up. Rewinds, media
-staging, slash commands, subagent controls and other mutators are outside this
+`4009` and cannot steer, interrupt, queue or persist a follow-up. A canonical ledger
+already holding work retains its `4090` refusal and does not forward bound input
+to the owner's FIFO. Ordinary legacy input keeps its existing forwarding behavior.
+Rewinds, media staging, slash commands, subagent controls and other mutators are outside this
 catalog. Conditional mode is sticky for the connection, including after removal
 or replacement of its runtime. Legacy mutators and raw JSON-RPC response frames
 cannot bypass the envelope. The gateway permits the documented informational

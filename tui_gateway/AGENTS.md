@@ -56,6 +56,14 @@ New question for the user = `_ask("<method>", sid, params, timeout)` in the emit
 and a `server_request(...)` in `contracts/server_requests.py`.
 New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is checked against it.
 
+Authenticated clients may retain `session.create`/`session.branch_stored`'s `creation_binding` and
+use `session.activate_bound` then `session.invoke_bound` for original-runtime operations. These
+handlers live in `methods_session_activation.py` and `methods_bound_operations.py`; compute-host
+authority lives in `host_conditional*.py`. A binding is a continuity precondition, not a substitute
+for transport authentication or profile/owner checks. Keep its engine witness through durable
+turn admission; refused bound input cannot join another owner's FIFO. Legacy clients retain
+their existing forwarding. See `website/docs/developer-guide/programmatic-integration.md`.
+
 ## Profile scope in RPC methods
 
 One `serve` process may host sessions from several profile homes (Desktop pooled backends launch

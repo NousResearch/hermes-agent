@@ -1,11 +1,11 @@
-"""Main's TUI text for the session reads its sidecar answered itself: /status, /context, /cron.
+"""Main's TUI text for the session reads its sidecar answered itself: /status, /context.
 
 On main the TUI's ``slash.exec`` never reached the messaging gateway's handlers: ``/status`` was
 ``session.status`` (``Hermes TUI Status``), ``/context`` was ``_format_live_context_output`` (the
-conversation counts, then the desktop gauge's category table) and ``/cron`` ran the classic CLI's
-handler in the slash worker. A TUI session on the shared owner gets the same lines here, read
-from the owner's live agent, stored row and the profile's cron store; every other surface keeps
-the gateway's own handlers (``gateway/session_commands.py``).
+conversation counts, then the desktop gauge's category table). A TUI session on the shared owner
+gets the same lines here, read from the owner's live agent and stored row; every other surface keeps
+the gateway's own handlers (``gateway/session_commands.py``). ``/cron``, the classic CLI's handler
+that main's TUI ran in its slash worker, is gateway/session_cron_commands.py.
 """
 from __future__ import annotations
 
@@ -13,18 +13,8 @@ import asyncio
 import contextlib
 from collections import Counter
 
-# The TUI surfaces whose /status, /context and /cron read as main's TUI sidecar did.
+# The TUI surfaces whose /status and /context read as main's TUI sidecar did.
 _TUI_SOURCES = frozenset({'tui'})
-
-
-def _cron_read(arg: str):
-    """``/cron`` (overview) or ``/cron list [--all]``; None for a write (still refused)."""
-    tokens = arg.split()
-    if not tokens:
-        return 'overview'
-    if tokens[0].lower() == 'list' and set(tokens[1:]) <= {'--all', '-a'}:
-        return 'list-all' if tokens[1:] else 'list'
-    return None
 
 
 def tui_read(policy, name: str, arg: str):
@@ -35,8 +25,6 @@ def tui_read(policy, name: str, arg: str):
         return _status
     if name == 'context':
         return _context
-    if name == 'cron' and _cron_read(arg) is not None:
-        return _cron
     return None
 
 
@@ -108,14 +96,6 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
     if count := int(getattr(compressor, 'compression_count', 0) or 0):
         lines.append(f'Compressions: {count:,}')
     return '\n'.join(lines)
-
-
-def _cron(authority, ref, live, policy, agent, arg) -> str:
-    """The classic CLI's ``/cron`` / ``/cron list`` text (main's TUI ran it in the slash worker)."""
-    from hermes_cli.cli_cron_lines import cron_list_lines, cron_overview_lines
-    mode = _cron_read(arg)
-    lines = cron_overview_lines() if mode == 'overview' else cron_list_lines(include_disabled=mode == 'list-all')
-    return '\n'.join(lines).strip('\n')
 
 
 async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:

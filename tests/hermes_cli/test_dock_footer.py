@@ -126,12 +126,13 @@ def test_gateway_backed_dock_lists_the_sessions_children_and_routes_controls_to_
     assert t('cli.subagents.pill_agents_one', count=1) in text and 'Check the build' in text
 
     from hermes_cli.cli_subagent_monitor import subagent_tail
-    from tests.waiting import wait_until
-    tail_cache = {}
-    wait_until(lambda: subagent_tail(monitor.entries[0], tail_cache) == 'child output', what='tail fetched')
     monitor.selected_id = 'sa-9'
+    monitor.detail = True  # the open detail view: the monitor's tick fetches the gateway tail
+    monitor.poll_soon()
+    monitor.tick()
+    assert subagent_tail(monitor, monitor.selected) == 'child output'
     assert monitor.control('stop')['status'] == 'interrupt_requested'
-    assert ('subagent.interrupt', {'session_id': 'sess-1', 'subagent_id': 'sa-9'}) in calls
+    assert ('subagent.interrupt', {'session_id': 'sess-1', 'subagent_id': 'sa-9', 'timeout': 5}) in calls
 
 
 def test_watched_background_processes_count_as_monitors():

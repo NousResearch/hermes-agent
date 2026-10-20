@@ -5092,7 +5092,7 @@
             "default": null,
             "title": "Update Available"
           },
-          "latest_sha": {
+          "update_target": {
             "anyOf": [
               {
                 "type": "string"
@@ -5102,7 +5102,7 @@
               }
             ],
             "default": null,
-            "title": "Latest Sha"
+            "title": "Update Target"
           },
           "pinned_sha": {
             "anyOf": [

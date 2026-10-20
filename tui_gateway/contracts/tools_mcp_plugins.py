@@ -708,8 +708,9 @@ class AgentPluginRow(Result):
     catalog_sha: str | None = None
     catalog_version: str | None = None
     update_available: bool | None = None
-    # git installs: the remote commit the last update check found (``update_available`` is then True).
-    latest_sha: str | None = None
+    # git installs: what the last update check found to move to, a commit or a feed version
+    # (``update_available`` is then True).
+    update_target: str | None = None
     pinned_sha: str | None = None
     settings_schema: list[PluginSettingField] | None = None
 

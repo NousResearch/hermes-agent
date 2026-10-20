@@ -4428,7 +4428,7 @@ export interface AgentPluginRow {
   catalog_sha?: string | null
   catalog_version?: string | null
   update_available?: boolean | null
-  latest_sha?: string | null
+  update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
 }

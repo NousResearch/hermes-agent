@@ -273,7 +273,7 @@ def cmd_check_updates(args: Any | None = None) -> None:
 
     results = run_checks(plugins_dir)
     from hermes_cli.plugins_cadence import record_check_results
-    record_check_results(results)
+    record_check_results(results, plugins_dir)
 
     if getattr(args, "json", False):
         print(json.dumps([r.to_json() for r in results], indent=2))

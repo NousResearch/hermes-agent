@@ -26,7 +26,7 @@ export function scanFindingLines(findings: AgentPluginScanFinding[], more: (n: n
 
   const lines = sorted
     .slice(0, cap)
-    .map(f => `${f.severity.toUpperCase()}  ${f.category}  ${f.file}:${f.line}`)
+    .map(f => `${f.severity.toUpperCase()}  ${f.file}:${f.line}  ${f.description || f.category}`)
 
   return sorted.length > cap ? [...lines, more(sorted.length - cap)] : lines
 }

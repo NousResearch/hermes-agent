@@ -55,8 +55,8 @@ export interface AgentPluginRow {
   /** An update is available: the catalog pin moved past the installed SHA, or (git installs) the last
    *  update check found a newer remote commit. */
   update_available?: boolean
-  /** Git installs: the remote commit the last update check found. */
-  latest_sha?: string
+  /** Git installs: what the last update check found to move to (a commit or a feed version). */
+  update_target?: string
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
   /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */

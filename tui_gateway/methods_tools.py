@@ -1684,8 +1684,8 @@ def _plugin_rows() -> list[dict]:
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
             **cat.catalog_row_fields(_dir, pins, versions),
-            **({"update_available": True, "latest_sha": latest}
-               if _dir_path and (latest := git_updates.get(_dir_path.name)) else {}),
+            **({"update_available": True, "update_target": target}
+               if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 

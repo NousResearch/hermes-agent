@@ -141,11 +141,13 @@ async def get_plugins_hub(request: Request, profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
 
 
-def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
+def _plugin_action(result: dict, fallback_error: str, *, rescan: bool,
+                   client_decides: tuple[str, ...] = ("consent_required",)) -> dict:
     """Common tail of agent-plugin mutations: 400 on ``ok=False``, then invalidate caches
-    (rescanning discovery when files changed on disk). A ``consent_required`` answer is not a failure:
-    nothing changed, the client shows the delta and retries with consent."""
-    if result.get("consent_required"):
+    (rescanning discovery when files changed on disk). An answer flagged by one of *client_decides*
+    is not a failure: nothing changed, the client shows it (the capability delta, the scan findings)
+    and retries with the user's decision."""
+    if any(result.get(flag) for flag in client_decides):
         return result
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
@@ -223,10 +225,11 @@ def _validate_plugin_name(name: str) -> str:
     return name
 
 
-async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
+async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *,
+                               rescan: bool, client_decides: tuple[str, ...] = ("consent_required",)) -> dict:
     _require_token(request)
     return await _plugin_mutation(lambda: _plugin_action(
-        action(_validate_plugin_name(name)), fallback_error, rescan=rescan))
+        action(_validate_plugin_name(name)), fallback_error, rescan=rescan, client_decides=client_decides))
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
@@ -257,7 +260,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     accept, force = body.get("accept_capabilities") is True, body.get("force") is True
     return await _named_plugin_action(
         request, name, lambda n: dashboard_update_user_plugin(n, accept_capabilities=accept, force=force),
-        "Update failed.", rescan=True)
+        "Update failed.", rescan=True, client_decides=("consent_required", "scan_blocked"))
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")

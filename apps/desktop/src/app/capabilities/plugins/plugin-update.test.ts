@@ -24,7 +24,7 @@ describe('runPluginUpdate scan override', () => {
     const done = runPluginUpdate(request, tern, null, p)
 
     await vi.waitFor(() => expect($confirmRequest.get()?.title).toBe(p.updateScanTitle('hermes-tern')))
-    expect($confirmRequest.get()?.description).toContain('HIGH  execution  helper.py:1')
+    expect($confirmRequest.get()?.description).toContain('HIGH  helper.py:1  eval')
     expect($confirmRequest.get()?.destructive).toBe(true)
     expect(request).toHaveBeenCalledTimes(1)
 

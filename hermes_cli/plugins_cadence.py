@@ -35,24 +35,40 @@ def _results_path() -> Path:
     return _marker_path().parent / "results.json"
 
 
-def record_check_results(results: list) -> None:
+def record_check_results(results: list, plugins_dir: Path) -> None:
     """Persist a completed check so surfaces that list plugins (the Desktop Plugins tab) can show an
-    update without a network call per listing. Never raises."""
+    update without a network call per listing. Each row carries the install record it was checked
+    against (source, revision, pin), so a later reader can tell whether the result still applies.
+    Never raises."""
     import json
 
     from utils import atomic_write_text
 
     try:
-        rows = [r.to_json() if hasattr(r, "to_json") else r for r in results]
+        from hermes_cli.plugins_provenance import read_sidecar_rows
+
+        installed = read_sidecar_rows(plugins_dir)
+        rows = []
+        for r in results:
+            row = r.to_json() if hasattr(r, "to_json") else dict(r)
+            rows.append({**row, "checked_install": _install_fingerprint(installed.get(row.get("name")))})
         atomic_write_text(_markers_dir() / "results.json", json.dumps(rows, indent=2) + "\n")
     except (OSError, TypeError, ValueError):
         pass
 
 
+def _install_fingerprint(record) -> dict | None:
+    """The parts of an install record an update check depends on."""
+    if not isinstance(record, dict):
+        return None
+    return {"source": record.get("source"), "revision": record.get("revision"), "pinned": record.get("pinned") is True}
+
+
 def cached_git_updates(install_metadata: dict) -> dict[str, str]:
-    """``{plugin name: latest revision}`` for git installs the last check found behind. An entry is
-    dropped once the install record's revision no longer matches what the check compared against
-    (the plugin was updated since), so a stale result never offers an update that already landed."""
+    """``{plugin name: what the update moves to}`` (a commit or a feed version) for git installs the last
+    check found behind. A result is dropped once the install it was checked against changed (updated,
+    reinstalled from another source, or pinned with ``--ref``), so Desktop never offers an update that
+    already landed or one ``update`` would refuse."""
     import json
 
     try:
@@ -63,8 +79,8 @@ def cached_git_updates(install_metadata: dict) -> dict[str, str]:
     for row in rows if isinstance(rows, list) else ():
         if not isinstance(row, dict) or row.get("class") != "git" or row.get("update_available") is not True:
             continue
-        record = install_metadata.get(row.get("name"))
-        if isinstance(record, dict) and record.get("revision") == row.get("current") and row.get("latest"):
+        current = _install_fingerprint(install_metadata.get(row.get("name")))
+        if current and not current["pinned"] and current == row.get("checked_install") and row.get("latest"):
             out[str(row["name"])] = str(row["latest"])
     return out
 
@@ -188,7 +204,7 @@ def _run_check_locked(
         check_ok = False
 
     if check_ok:
-        record_check_results(results)
+        record_check_results(results, plugins_dir)
 
     try:
         from pm import receipt

@@ -164,9 +164,12 @@ const SERVER_TONE = {
   unsupported_gpu: 'destructive'
 } as const satisfies Record<AgentPluginServerState, 'destructive' | 'success' | 'warn'>
 
-/** What the Update button moves to: the catalog's version label, else the short catalog pin or remote commit. */
+/** What the Update button moves to: the catalog's version label or short pin, else a git install's target. */
 const updateTargetLabel = (agent: AgentPluginRow) =>
-  agent.catalog_version ?? (agent.catalog_sha ?? agent.latest_sha)?.slice(0, 8) ?? ''
+  agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? shortTarget(agent.update_target)
+
+/** A full commit shortens to 8 characters; a feed version stays as it is. */
+const shortTarget = (target?: string) => (target && /^[0-9a-f]{40}$/i.test(target) ? target.slice(0, 8) : (target ?? ''))
 
 function KindBadge({ kind }: { kind: PackageKind }) {
   const { t } = useI18n()

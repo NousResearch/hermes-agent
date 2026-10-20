@@ -387,9 +387,6 @@ def auth_add_command(args) -> None:
         raise _unknown_provider_exit(provider)
     if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
         raise error
-    if configured_provider is not None:
-        _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
-
     is_custom = provider.startswith(CUSTOM_POOL_PREFIX)
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
     if requested_type == "api-key":
@@ -397,6 +394,16 @@ def auth_add_command(args) -> None:
     elif not requested_type:
         oauth_default = provider in _OAUTH_DEFAULT_PROVIDERS and not is_custom
         requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
+
+    if provider == "openai-codex" and requested_type == AUTH_TYPE_API_KEY:
+        raise SystemExit(
+            "The OpenAI Codex subscription endpoint does not accept API keys. "
+            "Sign in with `hermes auth add openai-codex --type oauth`. "
+            "For API-key billing, configure the `openai-api` provider instead."
+        )
+
+    if configured_provider is not None:
+        _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
     pool = load_pool(provider)
     if not is_custom:
@@ -821,7 +828,10 @@ def _interactive_add() -> None:
         raise error
 
     auth_type = "api_key"
-    if provider in _OAUTH_CAPABLE_PROVIDERS:
+    if provider == "openai-codex":
+        print("\nOpenAI Codex subscription uses OAuth login.")
+        auth_type = "oauth"
+    elif provider in _OAUTH_CAPABLE_PROVIDERS:
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")

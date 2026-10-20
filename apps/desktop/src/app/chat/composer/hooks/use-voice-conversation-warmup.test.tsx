@@ -1,6 +1,10 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as SttLeaseModule from '@/lib/stt-lease'
+import { STT_WARMUP_BUDGET_MS } from '@/lib/stt-lease'
+import { notify } from '@/store/notifications'
+
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
 
@@ -22,10 +26,18 @@ vi.mock('./use-mic-recorder', () => ({
 
 const syncSttLeaseSpy = vi.fn(async (..._args: unknown[]): Promise<void> => undefined)
 
-vi.mock('@/lib/stt-lease', () => ({
-  syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...args),
-  VOICE_INPUT_LEASE: 'desktop:voice-input:test'
-}))
+vi.mock('@/lib/stt-lease', async importOriginal => {
+  // Real budget/await: the take-budget path under test races the SAME timer
+  // logic production uses; only the lease transport is stubbed.
+  const actual = await importOriginal<typeof SttLeaseModule>()
+
+  return {
+    STT_WARMUP_BUDGET_MS: actual.STT_WARMUP_BUDGET_MS,
+    awaitSttWarmup: actual.awaitSttWarmup,
+    syncSttLease: (...args: unknown[]) => syncSttLeaseSpy(...args),
+    VOICE_INPUT_LEASE: 'desktop:voice-input:test'
+  }
+})
 
 vi.mock('@/lib/voice-barge-in', () => ({
   monitorSpeechDuringPlayback: () => () => undefined
@@ -91,6 +103,7 @@ vi.mock('@/i18n', () => ({
           playbackFailed: 'playback failed',
           recordingFailed: 'recording failed',
           transcriptionFailed: 'transcription failed',
+          transcriptionUnavailable: 'STT unavailable',
           unavailable: 'unavailable'
         }
       }
@@ -191,6 +204,63 @@ describe('useVoiceConversation STT readiness barrier', () => {
 
     await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
     expect(await transcribe.mock.results[0].value).toBe('hello world')
+  })
+
+  // #137318: an acquire that never answers (model load wedged under the
+  // backend's shared loader lock) must not hang the take in "transcribing"
+  // for the lease request's full 180 s budget — the turn is dropped with a
+  // visible "unavailable" notice and the loop re-arms.
+  it('drops the turn with a visible notice and re-arms when the warm-up never settles', async () => {
+    vi.useFakeTimers()
+
+    try {
+      syncSttLeaseSpy.mockImplementation(() => new Promise<void>(() => undefined))
+
+      const transcribe = vi.fn(async () => 'hello world')
+      const onSubmit = vi.fn()
+      const hook = renderConversation(transcribe, onSubmit)
+
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(micHandle.start).toHaveBeenCalledTimes(1)
+
+      let turnPromise: Promise<void> = Promise.resolve()
+      await act(async () => {
+        turnPromise = Promise.resolve(hook.result.current.stopTurn())
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      // Barrier holds while the budget runs…
+      expect(transcribe).not.toHaveBeenCalled()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(STT_WARMUP_BUDGET_MS)
+      })
+      await act(async () => {
+        await turnPromise
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      // …then the turn is dropped with a notice, never submitted.
+      expect(transcribe).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(vi.mocked(notify)).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'warning', title: 'unavailable', message: 'STT unavailable' })
+      )
+      // The loop re-armed: back to listening (not wedged in 'transcribing'),
+      // so the next utterance gets a fresh warm-up on the recovered backend.
+      expect(hook.result.current.status).toBe('listening')
+      expect(micHandle.start).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // #128668 review (P1): end() while the warm-up is still settling fences the

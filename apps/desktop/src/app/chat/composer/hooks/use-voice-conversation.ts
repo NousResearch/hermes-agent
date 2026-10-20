@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
-import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
+import { awaitSttWarmup, syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
@@ -272,8 +272,25 @@ export function useVoiceConversation({
           // Readiness first: let the listening-start warm-up settle before
           // handing the clip to transcription (#105955) — a cold model load
           // must not run inside the transcription request's decode budget.
-          // syncSttLease never rejects.
-          await conversation.warmup
+          // syncSttLease never rejects. The take only waits so long for that
+          // readiness: a backend whose load is wedged never answers, and
+          // abandoning the take with a visible notice beats swallowing it
+          // silently for the lease request's full 180 s budget (#137318).
+          if ((await awaitSttWarmup(conversation.warmup)) === 'unavailable') {
+            if (!live()) {
+              return
+            }
+
+            notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
+
+            if (enabledRef.current && !mutedRef.current && !busyRef.current) {
+              pendingStartRef.current = true
+            }
+
+            setStatus('idle')
+
+            return
+          }
 
           if (!live()) {
             return
@@ -346,7 +363,9 @@ export function useVoiceConversation({
       onTranscribeAudio,
       voiceCopy.microphoneFailed,
       voiceCopy.recordingFailed,
-      voiceCopy.transcriptionFailed
+      voiceCopy.transcriptionFailed,
+      voiceCopy.transcriptionUnavailable,
+      voiceCopy.unavailable
     ]
   )
 
@@ -498,8 +517,17 @@ export function useVoiceConversation({
         // Same readiness barrier as handleTurn: the barge capture transcribes
         // with the warm-up issued when this conversation last started
         // listening (the monitor is armed through the whole turn, so the
-        // barrier is normally already settled by speech time).
-        await conversation.warmup
+        // barrier is normally already settled by speech time). Same budget:
+        // a wedged backend drops the captured interruption with a notice
+        // instead of hanging the take (#137318).
+        if ((await awaitSttWarmup(conversation.warmup)) === 'unavailable') {
+          if (live()) {
+            notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
+            resumeListening()
+          }
+
+          return
+        }
 
         if (!live()) {
           return
@@ -580,7 +608,15 @@ export function useVoiceConversation({
         }
       }
     },
-    [consumePendingResponse, focusInput, onTranscribeAudio, parkText, voiceCopy.transcriptionFailed]
+    [
+      consumePendingResponse,
+      focusInput,
+      onTranscribeAudio,
+      parkText,
+      voiceCopy.transcriptionFailed,
+      voiceCopy.transcriptionUnavailable,
+      voiceCopy.unavailable
+    ]
   )
 
   /**

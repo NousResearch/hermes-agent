@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
+import { awaitSttWarmup, syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
 import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
 import { recordFeatureUse } from '@/store/desktop-metrics'
@@ -108,8 +108,18 @@ export function useVoiceRecorder({
       // Readiness first: let the mic-open warm-up settle before handing the
       // clip to transcription, so a cold model load no longer runs inside the
       // transcription request's timeout (#105955). syncSttLease never rejects,
-      // and its budget is the lease request's own 180 s timeout.
-      await dictation.warmup
+      // and its budget is the lease request's own 180 s timeout — but the take
+      // only waits STT_WARMUP_BUDGET_MS of it: a wedged backend gets a visible
+      // "unavailable" notice instead of silently swallowing the take (#137318).
+      if ((await awaitSttWarmup(dictation.warmup)) === 'unavailable') {
+        if (!live()) {
+          return
+        }
+
+        notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
+
+        return
+      }
 
       if (!live()) {
         return

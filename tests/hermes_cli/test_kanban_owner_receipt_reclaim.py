@@ -234,6 +234,63 @@ def test_an_interpreter_bound_after_the_gate_keeps_its_claim(board, monkeypatch,
     assert (row["status"], row["current_run_id"]) == ("running", run)
 
 
+
+@pytest.mark.parametrize("path", ["ttl", "stale"])
+def test_a_foreign_host_interpreter_bound_after_the_gate_keeps_its_claim(board, monkeypatch, path):
+    """No local signal was sent for a foreign-host claim, so its bound interpreter's pid says
+    nothing here: an absent local pid is no proof that the remote attempt ended."""
+    run = board.dead_attempt("t_remote", lock_host="some-other-host", admission=("terminal", "completed"))
+    real_gate, calls = owner_reclaim_blocked, []
+
+    def gate_then_remote_bind(conn, task_id, **kwargs):
+        verdict = real_gate(conn, task_id, **kwargs)
+        if not calls:  # the remote owner admits and binds an interpreter right after the first look
+            board.event(task_id, run, "worker_bound", {"pid": _absent_pid(base=3_700_000)}, NOW)
+            board.conn.commit()
+            with sqlite3.connect(board.ledger) as store:
+                store.execute("UPDATE session_admissions SET status = 'unknown', outcome = NULL")
+        calls.append(verdict)
+        return verdict
+
+    monkeypatch.setattr(kanban_owner_recovery, "owner_reclaim_blocked", gate_then_remote_bind)
+    assert not _RECLAIM_PATHS[path](board.conn)
+    row = board.state("t_remote")
+    assert (row["status"], row["current_run_id"]) == ("running", run)
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_timed_out_managed_run_is_booked_timed_out_not_left_for_the_crash_sweep(board):
+    """Killing a managed run's worker takes its bound interpreter down with it, and the owner
+    settles the admission ``unknown``. The under-lock re-check must not read that pause, which
+    the timeout itself caused, as an owner still in flight: the run is ``timed_out``, never left
+    running for the crash sweep to book ``crashed`` on the next tick."""
+    worker, interpreter = (subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
+                           for _ in range(2))
+    try:
+        run = board.dead_attempt(
+            "t_slow", worker_pid=worker.pid, worker_fingerprint=kbd._process_fingerprint(worker.pid),
+            owner_pid=os.getpid(), owner_birth=process_birth(psutil.Process()), admission=("started", None))
+        board.event("t_slow", run, "worker_bound", {"pid": interpreter.pid,
+                    "started_at": kbd._process_fingerprint(interpreter.pid)}, NOW)
+        board.conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = 't_slow'")
+        board.conn.commit()
+
+        def sigterm_ends_the_attempt(pid, sig):
+            os.kill(pid, sig)
+            interpreter.kill()  # _watch_submitter: the interpreter exits with its worker
+            interpreter.wait()
+            with sqlite3.connect(board.ledger) as store:  # the owner settles the lost turn
+                store.execute("UPDATE session_admissions SET status = 'unknown'")
+
+        assert kbd.enforce_max_runtime(board.conn, signal_fn=sigterm_ends_the_attempt) == ["t_slow"]
+        outcome = board.conn.execute("SELECT outcome FROM task_runs WHERE id = ?", (run,)).fetchone()[0]
+        assert (board.state("t_slow")["status"], outcome) == ("ready", "timed_out")
+        assert kbd.detect_crashed_workers(board.conn) == []
+    finally:
+        for child in (worker, interpreter):
+            child.kill()
+            child.wait()
+
+
 @pytest.mark.platforms("linux", "macos")
 def test_an_exited_unreaped_owner_no_longer_holds_the_slot(board):
     """A zombie keeps its birth until reaped, but it has exited: it cannot be executing anything."""

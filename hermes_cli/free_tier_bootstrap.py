@@ -190,14 +190,29 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
     broadcast. Idempotent per process: a second call returns the existing record. Never raises.
     ``announce=False`` skips the ``setup.ready`` event."""
     global _record, _started
+    wait_for_owner = False
     with _lock:
         if _record is not None:
             return _record
         if _started:
-            _done.wait(SETUP_READY_WAIT_SECONDS)
+            wait_for_owner = True
+        else:
+            _started = True
+
+    if wait_for_owner:
+        # The owner needs the lock to publish; a waiter must never become a second owner.
+        _done.wait(SETUP_READY_WAIT_SECONDS)
+        with _lock:
             if _record is not None:
                 return _record
-        _started = True
+        return SetupRecord(
+            provider_configured=False,
+            inference_provider="",
+            free_tier_account=False,
+            has_identity=False,
+            other_providers=False,
+            error="free tier bootstrap is still running",
+        )
 
     try:
         from hermes_cli import anon_auth

@@ -476,7 +476,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
-| `pre_subagent_route` | Directive/control | Once per `delegate_task` child, before its runtime is resolved; first valid route wins (run-all-then-pick-first). Return `None` or a dict with `provider` (requires `model`), `model`, `reasoning_effort`. | `parent_session_id`, `parent_subagent_id`, `task_index`, `task_count`, `child_goal`, `child_context`, `child_role`, `default_provider`, `default_model`, `default_reasoning_effort` | Goal and context may contain user/project content; a remote router receives whatever the plugin sends it. |
+| `pre_subagent_route` | Directive/control | Once per `delegate_task` child, before its runtime is resolved; first valid route wins (run-all-then-pick-first). Return `None` or a dict with `provider` (requires `model`), `model`, `reasoning_effort`. | `parent_session_id`, `parent_subagent_id`, `task_index`, `task_count`, `child_goal`, `child_context`, `child_role`, `task`, `default_provider`, `default_model`, `default_reasoning_effort` | Goal and context may contain user/project content; a remote router receives whatever the plugin sends it. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
@@ -1253,11 +1253,14 @@ def my_router(parent_session_id: str | None,
               child_goal: str,
               child_context: str | None,
               child_role: str,
+              task: dict,
               default_provider: str | None,
               default_model: str | None,
               default_reasoning_effort,
               **kwargs) -> dict | None:
 ```
+
+`task` is a shallow copy of the `delegate_task` task entry as the model sent it (trusted-config-only fields such as `acp_command` removed). A plugin can read its own fields from it, for example a `model_role` the model was told to set.
 
 **Return value:** `None` keeps the batch route. Otherwise a dict with any of:
 

@@ -41,9 +41,9 @@ def _build_with_hook(monkeypatch, hook, tasks, routing_cfg):
     return err, resolved, built
 
 
-def test_provider_route_resolves_its_own_credentials_or_fails_the_spawn(monkeypatch):
-    def hook(child_goal, **_):
-        if child_goal.startswith("review"):
+def test_task_field_routes_child_to_own_provider_or_fails_the_spawn(monkeypatch):
+    def hook(child_goal, task=None, **_):
+        if (task or {}).get("model_role") == "deep":
             return {"provider": "anthropic", "model": "claude-opus-5-5", "reasoning_effort": "high"}
         if child_goal.startswith("broken"):
             return {"provider": "no-such-provider", "model": "m"}
@@ -52,7 +52,7 @@ def test_provider_route_resolves_its_own_credentials_or_fails_the_spawn(monkeypa
     routing_cfg = {"reasoning_effort": "low", "base_url": "https://batch.example/v1", "api_key": "batch-key",
                    "api_mode": "chat_completions", "provider": "openai-codex", "model": "batch-model"}
     err, resolved, built = _build_with_hook(
-        monkeypatch, hook, [{"goal": "review the diff"}, {"goal": "list the files"}], routing_cfg)
+        monkeypatch, hook, [{"goal": "review the diff", "model_role": "deep"}, {"goal": "list the files"}], routing_cfg)
     assert err is None
     # The batch endpoint never leaks into the new provider's route config.
     assert resolved == [{"reasoning_effort": "low", "provider": "anthropic", "model": "claude-opus-5-5"}]

@@ -2,7 +2,8 @@
 
 The hook fires once per delegate_task child, on the main thread, BEFORE the child's runtime is resolved.
 Kwargs: parent_session_id, parent_subagent_id, task_index, task_count, child_goal, child_context,
-child_role, default_provider, default_model, default_reasoning_effort. A callback returns ``None`` to keep
+child_role, task (a shallow copy of the task entry as the model sent it, so a plugin can read its own
+fields such as ``model_role``), default_provider, default_model, default_reasoning_effort. A callback returns ``None`` to keep
 the batch route, or a dict with any of ``provider`` (requires ``model``), ``model`` and
 ``reasoning_effort``. Privacy: goal and context may contain user and project content.
 
@@ -57,7 +58,7 @@ def sanitize_subagent_route(result: Any) -> Optional[dict[str, Any]]:
 def get_plugin_subagent_route(
     *, parent_session_id: Any = None, parent_subagent_id: Any = None, task_index: int = 0, task_count: int = 1,
     child_goal: str = "", child_context: Optional[str] = None, child_role: str = "leaf",
-    default_provider: Optional[str] = None, default_model: Optional[str] = None,
+    task: Optional[dict[str, Any]] = None, default_provider: Optional[str] = None, default_model: Optional[str] = None,
     default_reasoning_effort: Any = None,
 ) -> Optional[dict[str, Any]]:
     """Consult ``pre_subagent_route`` hooks for one delegate_task child.
@@ -73,7 +74,7 @@ def get_plugin_subagent_route(
     hook_results = plugins.invoke_hook(
         HOOK_NAME, parent_session_id=parent_session_id, parent_subagent_id=parent_subagent_id,
         task_index=task_index, task_count=task_count, child_goal=child_goal, child_context=child_context,
-        child_role=child_role, default_provider=default_provider, default_model=default_model,
+        child_role=child_role, task=task, default_provider=default_provider, default_model=default_model,
         default_reasoning_effort=default_reasoning_effort,
     )
     valid = [route for result in hook_results if (route := sanitize_subagent_route(result)) is not None]

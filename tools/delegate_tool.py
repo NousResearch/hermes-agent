@@ -440,7 +440,7 @@ def _plugin_route(
         parent_session_id=getattr(parent_agent, "session_id", None),
         parent_subagent_id=getattr(parent_agent, "_subagent_id", None),
         task_index=task_index, task_count=task_count, child_goal=task.get("goal") or "",
-        child_context=task.get("context"), child_role=role,
+        child_context=task.get("context"), child_role=role, task=dict(task),
         default_provider=creds.get("provider") or getattr(parent_agent, "provider", None),
         default_model=creds.get("model") or getattr(parent_agent, "model", None),
         default_reasoning_effort=(routing_cfg or {}).get("reasoning_effort"),

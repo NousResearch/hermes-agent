@@ -277,16 +277,13 @@ def _is_external_process_provider(provider: str) -> bool:
 def _external_process_provider_streams(provider: str) -> bool:
     """Whether an external-process provider opted back into streaming via its profile's
     ``supports_streaming`` — most ACP-style agent CLIs answer request/response, so the default
-    stays off (same registry order as :func:`_is_external_process_provider`)."""
+    stays off. Unlike :func:`_is_external_process_provider` there is no registry-first lookup:
+    the flag exists only on ``ProviderProfile``, and a plugin mirrored into ``PROVIDER_REGISTRY``
+    by ``register_plugin_provider`` lands there as a bare ``ProviderConfig`` that would shadow
+    the profile's opt-in."""
     name = (provider or "").strip().lower()
     if not name:
         return False
-    try:
-        pconfig = _rp().PROVIDER_REGISTRY.get(name)
-    except Exception:  # health: allow BLE001 -- registry probe only: a failure falls through to the profile registry below
-        pconfig = None
-    if pconfig is not None:
-        return bool(getattr(pconfig, "supports_streaming", False))
     try:
         from providers import get_provider_profile
 

@@ -117,3 +117,21 @@ def test_should_stream_honors_external_process_streaming_opt_in(monkeypatch):
     assert _should_stream(make("acme-acp")) is False
     assert _should_stream(make("acme-stream")) is True
     assert _should_stream(make("acme-stream", "acp://acme")) is False
+
+
+def test_streaming_opt_in_survives_plugin_mirror_in_registry(monkeypatch):
+    """A plugin provider that opted in via its profile must stream even after
+    ``register_plugin_provider`` mirrored it into ``PROVIDER_REGISTRY`` as a bare
+    ``ProviderConfig`` — that mirror carries no ``supports_streaming``, so the flag lives on the
+    profile alone and a registry-first lookup would shadow the opt-in (#140606)."""
+    from hermes_cli.auth import ProviderConfig
+    from hermes_cli.runtime_provider_backends import _external_process_provider_streams
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name="claude-sub-direct", auth_type="external_process", supports_streaming=True)
+    monkeypatch.setattr("providers.get_provider_profile", lambda _name: profile)
+    monkeypatch.setattr("hermes_cli.runtime_provider.PROVIDER_REGISTRY", {
+        "claude-sub-direct": ProviderConfig("claude-sub-direct", "Claude Sub", "external_process"),
+    })
+
+    assert _external_process_provider_streams("claude-sub-direct") is True

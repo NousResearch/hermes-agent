@@ -181,14 +181,16 @@ RECEIPT_TARGETS = {
 
 # The staged handoffs each receipt is assembled from. The Windows bundle
 # receipt reads the per-arch metadata handoffs plus the universal bundle
-# handoff; fetch() re-verifies every staged byte against its receipt digest,
-# and validate_receipt enforces the signing facts (teamId, publisher).
+# handoff. Only the metadata is downloaded: package bytes are bound by their
+# handoff receipt digests here and re-downloaded and digest-checked by
+# release_artifacts.publish before anything goes live. validate_receipt
+# enforces the signing facts (teamId, publisher).
 RECEIPT_HANDOFFS = {
     "darwin-arm64": ("darwin-arm64",),
     "darwin-x64": ("darwin-x64",),
     "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
 }
-RECEIPT_INCLUDES = ("metadata-*.json", "*.zip", "*.msixbundle")
+RECEIPT_INCLUDES = ("metadata-*.json",)
 
 
 def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
@@ -342,8 +344,6 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
     names = RECEIPT_HANDOFFS.get(receipt)
     if names is None:
         raise ValueError(f"Unknown receipt: {receipt}")
-    # Re-downloading the staged bytes proves the group's handoff is complete
-    # and matches its receipt before this receipt is published.
     fetch(tag=archive, commit=commit, names=list(names), root=root,
           includes=list(RECEIPT_INCLUDES))
     digests = {}
@@ -354,14 +354,14 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
             for file in sorted(root.glob("metadata-*.json"))]
     universal = None
     if receipt == "win32-bundle":
-        bundles = [file.name for file in root.glob("*.msixbundle") if not file.name.startswith("Store-")]
+        bundles = [name for name in digests if name.endswith(".msixbundle") and not name.startswith("Store-")]
         if len(bundles) != 1:
             raise ValueError(f"Expected one universal bundle, found {len(bundles)}")
         universal = bundles[0]
     packages = []
     for row in rows:
         filename = universal if row["platform"] == "windows" else row.get("filename")
-        if not filename or filename not in digests or not (root / filename).is_file():
+        if not filename or filename not in digests:
             raise ValueError(f"Receipt {receipt} is missing staged bytes for "
                              f"{row['platform']}/{row['arch']}")
         packages.append({
@@ -373,11 +373,6 @@ def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: 
         })
         if row["platform"] != "windows" and not filename.endswith(".zip"):
             raise ValueError(f"Receipt {receipt} needs a signed app ZIP for {row['platform']}/{row['arch']}")
-    if receipt == "win32-bundle":
-        from scripts.bundles.release_artifacts import validate_windows_bundle
-
-        validate_windows_bundle(root / universal,
-                                [row for row in rows if row["platform"] == "windows"])
     return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
             "archive": archive, "packages": packages}
 
@@ -797,7 +792,7 @@ SMOKE_CALLS = {
 }
 CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
                       "termux", "windows-universal")
-CANDIDATE_INCLUDES = ("metadata-*.json", "*.msixbundle")
+CANDIDATE_INCLUDES = ("metadata-*.json",)
 
 
 def candidate_manifest(env: dict) -> None:
@@ -831,8 +826,9 @@ def candidate_manifest(env: dict) -> None:
     archive = claim["claim_tag"]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        # A Store-only claim stages no metadata: its receipts alone bind the bytes.
         fetch(tag=archive, commit=commit, names=list(handoffs), root=root,
-              includes=list(CANDIDATE_INCLUDES))
+              includes=list(CANDIDATE_INCLUDES), require_files=False)
         out = root / "release-candidates.json"
         assemble(root, tag, commit, base, out, smoke_results=smoke,
                  release_epoch=claim["claim_epoch"], archive=archive, lanes=lanes)

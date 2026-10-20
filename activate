@@ -21,7 +21,14 @@
 # recorded tool digest instead of re-hashing every entry. `hermes pm
 # install` and `hermes update` keep that check.
 # ============================================================================
-_HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# zsh leaves BASH_SOURCE empty; there `%x` names the file being sourced. The
+# eval keeps that zsh-only expansion away from bash's parser.
+if [ -n "${ZSH_VERSION-}" ]; then
+    eval '_HERMES_REPO=${(%):-%x}'
+else
+    _HERMES_REPO="${BASH_SOURCE[0]}"
+fi
+_HERMES_REPO="$(cd "$(dirname "$_HERMES_REPO")" && pwd)"
 # Options: `--test-extras a,b` selects the test environment's runtime extras
 # (default: [all]); `--` ends options.
 # A bare `source ./activate` inherits the caller's positional parameters.
@@ -62,7 +69,7 @@ unset _hermes_test_env
 # no-op re-save; we keep it idempotent by deactivating first). Key on the
 # function, not the sentinel: child shells inherit __HERMES_ACTIVATED from an
 # activated parent but never the function, and there is nothing to undo there.
-if [ "$(type -t deactivate 2>/dev/null)" = "function" ]; then
+if typeset -f deactivate >/dev/null 2>&1; then
     deactivate
 fi
 
@@ -71,17 +78,22 @@ _hermes_script="$(hermes_compose_env "$_HERMES_REPO" sh)" || {
     unset _hermes_script
     return 1 2>/dev/null || exit 1
 }
-_hermes_keys="$(printf '%s\n' "$_hermes_script" | sed -n 's/^export \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')"
+# One key per line, read back with `read`: zsh does not word-split an unquoted
+# parameter, so `for k in $keys` would see every key as one word.
+_hermes_keys="$(printf '%s\n' "$_hermes_script" | sed -n 's/^export \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p')"
 
 # --- snapshot what we are about to change (deactivate restores this) ---
 # __HERMES_ACTIVATED is part of the composed env below (it carries the
 # installed-state path this environment was built from), so it is snapshotted
 # and exported with every other key — no separate assignment here.
 __HERMES_SAVED_PATH="$PATH"
-for _hermes_k in $_hermes_keys; do
+while IFS= read -r _hermes_k; do
+    [ -n "$_hermes_k" ] || continue
     eval "__HERMES_SAVED_$_hermes_k=\"\${$_hermes_k+set}\""
     eval "__HERMES_PRIOR_$_hermes_k=\${$_hermes_k-__HERMES_UNSET__}"
-done
+done <<_HERMES_KEYS_
+$_hermes_keys
+_HERMES_KEYS_
 hermes_apply_env "$_hermes_script"
 
 # This checkout, not whichever `hermes` PATH finds. A function beats PATH, an
@@ -145,7 +157,8 @@ _hermes_prompt
 
 deactivate() {
     export PATH="$__HERMES_SAVED_PATH"
-    for _hermes_k in $__HERMES_KEY_LIST; do
+    while IFS= read -r _hermes_k; do
+        [ -n "$_hermes_k" ] || continue
         eval "_hermes_was=\"\$__HERMES_SAVED_$_hermes_k\""
         eval "_hermes_old=\"\$__HERMES_PRIOR_$_hermes_k\""
         if [ "$_hermes_was" != "set" ]; then
@@ -154,7 +167,9 @@ deactivate() {
             export "$_hermes_k=$_hermes_old"
         fi
         unset "__HERMES_SAVED_$_hermes_k" "__HERMES_PRIOR_$_hermes_k"
-    done
+    done <<_HERMES_KEYS_
+$__HERMES_KEY_LIST
+_HERMES_KEYS_
     if [ "$__HERMES_SAVED_PS1" = "__HERMES_UNSET__" ]; then
         unset PS1
     else

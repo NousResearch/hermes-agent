@@ -550,3 +550,100 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_run", run)
     found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
     assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
+
+
+@pytest.mark.parametrize("dump,expected", [
+    # The user's exact reported case: fish exports MANPAGER set to a shell snippet,
+    # start-umbriel re-imports it, ``show-environment`` returns it ANSI-C-quoted.
+    # Before the fix this refused the whole environment with service_identity_unverified.
+    ("MANPAGER=$'sh -c \\'col -bx | bat -l man -p\\''\nHOME=/home/b3low-z3r0\nPATH=/usr/bin",
+     {"MANPAGER": "sh -c 'col -bx | bat -l man -p'",
+      "HOME": "/home/b3low-z3r0",
+      "PATH": "/usr/bin"}),
+    # Simple un-quoted values still work.
+    ("HOME=/home/b3low-z3r0\nPATH=/usr/bin",
+     {"HOME": "/home/b3low-z3r0", "PATH": "/usr/bin"}),
+    ("MANPAGER=bat", {"MANPAGER": "bat"}),
+    # Hex escapes decode to their bytes.
+    ("KEY=$'\\x41\\x42\\x43'", {"KEY": "ABC"}),
+    # Unicode escapes decode to multibyte characters.
+    ("KEY=$'\\u00e9\\u00e1'", {"KEY": "éá"}),
+    # Newline and tab are valid in ANSI-C values and decode to actual control chars.
+    ("KEY=$'line1\\nline2\\tcol'", {"KEY": "line1\nline2\tcol"}),
+    # A leading ``HOME=/`` is fine even on a single-line input.
+    ("HOME=/", {"HOME": "/"}),
+    # Empty input yields an empty dict (no lines to parse).
+    ("", {}),
+    # ``$''`` is a valid ANSI-C empty value.
+    ("FOO=$''", {"FOO": ""}),
+    # Plain values with spaces (systemd emits ``KEY=val with space`` as-is,
+    # without wrapping; shlex.split used to reject this). Now handled correctly.
+    ("KEY=val with space", {"KEY": "val with space"}),
+    # Plain values containing ``#`` are preserved literally — systemd does not
+    # treat ``#`` as a comment introducer, so neither do we.
+    ("FOO=hello#world", {"FOO": "hello#world"}),
+    # Plain value with a space followed by ``#`` is also preserved literally.
+    # The previous shlex-based parser produced extra tokens here and refused
+    # the dump; v1 accepts the whole line as a single KEY=VAL pair.
+    ("FOO=a #b", {"FOO": "a #b"}),
+    # Shell-style ``'val'`` outer wrapping is stripped to match what
+    # shlex.split did before; systemd does not actually emit this form, but
+    # we keep the symmetry for any future caller that hands us shell output.
+    ("FOO='hello world'", {"FOO": "hello world"}),
+    # A literal value of ``'foo'`` (5 chars: quote-f-o-o-quote), delivered
+    # via systemd's ANSI-C form ``$'\'foo\''``, must round-trip exactly:
+    # the decoder emits ``'foo'`` and the strip-once-before step ensures
+    # the post-decode value is not re-stripped into ``foo``.
+    ("FOO=$'\\'foo\\''", {"FOO": "'foo'"}),
+])
+def test_environment_pairs_decodes_systemd_c_quoting(dump, expected):
+    """ANSI-C (``$'...'``)-quoted values from ``systemctl show-environment`` decode cleanly.
+
+    Regression for the case where a fish-set ``MANPAGER="sh -c 'col -bx | bat -l man -p'"``
+    reached the user manager via ``start-umbriel``'s ``import-environment`` and the strict
+    ``if "\\\\" in value: _unverified()`` rejected the entire environment.
+    """
+    from hermes_cli.gateway_runtime_service_identity import environment_pairs
+    assert environment_pairs(dump) == expected
+
+
+@pytest.mark.parametrize("dump", [
+    # Stray backslash outside any ``$'...'`` wrapper means the source is not our install.
+    "FOO=bar\\baz",
+    # Line without ``=`` cannot express a KEY=VAL pair.
+    "FOOBAR",
+    # ``$'`` opened but never closed is malformed systemd output.
+    "FOO=$'unterminated",
+    # Bare opener with no body is also malformed.
+    "FOO=$'",
+    # Empty key (``=val``) is not a name we trust.
+    "=val",
+])
+def test_environment_pairs_rejects_malformed_output(dump):
+    from hermes_cli.gateway_runtime_service_identity import environment_pairs
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        environment_pairs(dump)
+
+
+@pytest.mark.platforms("linux")
+def test_environment_pairs_end_to_end_against_systemd_quoted_dump():
+    """End-to-end: a ``show-environment`` dump that mixes ANSI-C and plain values decodes cleanly.
+
+    Mirrors the gateway verifier's call site (``inherited = environment_pairs(manager_env)``)
+    and asserts nothing in ``MANPAGER``'s actual value trips the unverified branch.
+    """
+    from hermes_cli.gateway_runtime_service_identity import environment_pairs
+    dump = (
+        "HOME=/home/b3low-z3r0\n"
+        "USER=b3low-z3r0\n"
+        # The exact MANPAGER value fish exports; this round-trip was the original bug.
+        "MANPAGER=$'sh -c \\'col -bx | bat -l man -p\\''\n"
+        "PATH=/usr/local/bin:/usr/bin:/bin\n"
+        # Octal escape via systemd's ANSI-C wrapper is also fine.
+        "LANG=$'en\\n'\n"
+    )
+    pairs = environment_pairs(dump)
+    assert pairs["MANPAGER"] == "sh -c 'col -bx | bat -l man -p'"
+    assert pairs["HOME"] == "/home/b3low-z3r0"
+    assert pairs["LANG"] == "en\n"
+    assert pairs["PATH"].startswith("/usr/local/bin")

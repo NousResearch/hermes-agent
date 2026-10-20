@@ -24,6 +24,7 @@ from agent.model_metadata_llamacpp import llamacpp_context
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
+from agent.model_metadata_stale_aliases import rejects_openrouter_entry, stale_alias_underreport
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, UNPRICED_REPLAY_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
@@ -2192,8 +2193,8 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     # and the family catch-all (a brand-new slug would otherwise fall to the generic "claude": 200K).
     if effective_provider == "openrouter":
         or_ctx = (fetch_model_metadata().get(model) or {}).get("context_length")
-        # Guard against the known OpenRouter Kimi-family 32k underreport.
-        if isinstance(or_ctx, int) and or_ctx > 0 and not (or_ctx == 32768 and _model_name_suggests_kimi(model)):
+        # Guard against the known OpenRouter Kimi-family 32k underreport and stale alias entries.
+        if isinstance(or_ctx, int) and or_ctx > 0 and not (or_ctx == 32768 and _model_name_suggests_kimi(model)) and not stale_alias_underreport(model, or_ctx):
             return or_ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
@@ -2302,14 +2303,12 @@ def get_model_context_length(
     if ctx is not None:
         return ctx
     # 6. OpenRouter metadata, provider-unaware fallback — only when the provider is unknown (OR
-    # data is community-maintained); 32K underreport guard.
+    # data is community-maintained); 32K underreport and stale-alias guards.
     if not effective_provider:
         metadata = fetch_model_metadata()
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
-            if or_ctx == 32768 and _model_name_suggests_stale_32k_underreport(model):
-                logger.info("Rejecting OpenRouter metadata context=%s for %r (known 32K underreport); falling through to hardcoded defaults", or_ctx, model)
-            else:
+            if not rejects_openrouter_entry(model, or_ctx, _model_name_suggests_stale_32k_underreport(model)):
                 return or_ctx
     # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``
     # (131072) even when vLLM runs at a lower ``--max-model-len``.

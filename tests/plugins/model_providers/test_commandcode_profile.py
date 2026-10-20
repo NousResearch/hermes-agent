@@ -49,7 +49,8 @@ def commandcode_anthropic_profile():
 
 class TestCommandCodeReasoningWireControls:
     """DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so the profile
-    must put the user's setting on the wire (#95232); other families stay a no-op."""
+    must put the user's setting on the wire (#95232); other families forward the
+    effort top-level (#125628)."""
 
     def test_deepseek_disabled_reasoning_sends_thinking_disabled(self, commandcode_profile):
         extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
@@ -58,7 +59,7 @@ class TestCommandCodeReasoningWireControls:
         assert extra_body.get("thinking") == {"type": "disabled"}
         assert top_level == {}
 
-    def test_deepseek_effort_matches_native_profile_and_others_noop(self, commandcode_profile):
+    def test_deepseek_effort_matches_native_profile(self, commandcode_profile):
         from plugins.model_providers.deepseek import deepseek
 
         rc = {"enabled": True, "effort": "low"}
@@ -67,8 +68,43 @@ class TestCommandCodeReasoningWireControls:
         assert commandcode_profile.build_api_kwargs_extras(
             reasoning_config=rc, model="deepseek/deepseek-v4.1-flash"
         ) == expected
-        assert commandcode_profile.build_api_kwargs_extras(
-            reasoning_config=rc, model="Qwen/Qwen3.7-Max"
+
+
+class TestCommandCodeTopLevelReasoningEffort:
+    """The relay accepts the standard top-level ``reasoning_effort`` for every non-DeepSeek
+    family and silently drops ``extra_body.reasoning`` (#125628) — without this the WebUI
+    reasoning pill was cosmetic for those models."""
+
+    def test_non_deepseek_effort_goes_top_level(self, commandcode_profile):
+        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"}, model="meta/muse-spark-1.3-contributor",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_qwen_effort_goes_top_level(self, commandcode_profile):
+        _, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"}, model="Qwen/Qwen3.7-Max",
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_ladder_external_effort_clamps_to_max(self, commandcode_profile):
+        _, top_level = commandcode_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "ultra"}, model="moonshotai/Kimi-K2.6",
+        )
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_disabled_and_none_omit_the_field(self, commandcode_profile):
+        for rc in ({"enabled": False, "effort": "high"}, {"enabled": True, "effort": "none"}, None):
+            assert commandcode_profile.build_api_kwargs_extras(
+                reasoning_config=rc, model="zai-org/GLM-5.1"
+            ) == ({}, {}), rc
+
+    def test_anthropic_profile_stays_noop(self, commandcode_anthropic_profile):
+        """Claude ids ride the Anthropic Messages wire; a top-level OpenAI-style
+        ``reasoning_effort`` would ship there as an unknown request field."""
+        assert commandcode_anthropic_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model="claude-sonnet-4-6",
         ) == ({}, {})
 
 

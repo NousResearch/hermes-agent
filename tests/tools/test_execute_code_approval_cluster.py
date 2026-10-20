@@ -158,6 +158,7 @@ def gw_session(monkeypatch):
         A._gateway_notify_cbs.pop(session_key, None)
         A._permanent_approved.discard("execute_code")
         A._session_approved.get(session_key, set()).discard("execute_code")
+        _scrub_execute_code_keys(session_key)
     try:
         yield session_key
     finally:
@@ -165,6 +166,17 @@ def gw_session(monkeypatch):
         with A._lock:
             A._gateway_queues.pop(session_key, None)
             A._gateway_notify_cbs.pop(session_key, None)
+            _scrub_execute_code_keys(session_key)
+
+
+def _scrub_execute_code_keys(*session_keys: str) -> None:
+    """Drop every content-addressed execute_code approval (caller holds ``A._lock``)."""
+    prefix = A._EXECUTE_CODE_KEY_PREFIX
+    A._permanent_approved.difference_update({k for k in A._permanent_approved if k.startswith(prefix)})
+    for sk in session_keys:
+        approved = A._session_approved.get(sk)
+        if approved:
+            approved.difference_update({k for k in approved if k.startswith(prefix)})
 
 
 def _register_resolver(session_key: str, result):
@@ -267,18 +279,138 @@ def test_guard_gateway_user_approves_is_one_shot(gw_session):
 
 
 def test_guard_session_approval_short_circuits_prompt(gw_session):
-    """Once session-approved, execute_code skips the approval prompt (#39275)."""
-    # Manually set session approval.
-    A.approve_session(gw_session, "execute_code")
+    """Once session-approved, the *same* script skips the approval prompt (#39275)."""
+    # Manually set session approval for this exact script.
+    A.approve_session(gw_session, A.execute_code_approval_key("import os", "local"))
+    # Even with a denier registered, the is_approved check short-circuits.
+    _register_resolver(gw_session, "deny")
+    res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is True
+
+
+# ---------------------------------------------------------------------------
+# GHSA-g29c-57jh-8xcf: a standing execute_code approval names one exact script,
+# never the tool. A benign approval must not authorize a later, different script.
+# ---------------------------------------------------------------------------
+
+BENIGN = "print('hello')"
+DISTINCT = "import subprocess; subprocess.run(['echo', 'pwned'])"
+
+
+def _counting_resolver(session_key: str, result):
+    """Like _register_resolver but counts how many times a human was actually asked."""
+    calls = {"n": 0}
+
+    def cb(_approval_data):
+        calls["n"] += 1
+        with A._lock:
+            entries = A._gateway_queues.get(session_key, [])
+            if entries:
+                entries[-1].result = result
+                entries[-1].event.set()
+
+    with A._lock:
+        A._gateway_notify_cbs[session_key] = cb
+    return calls
+
+
+def test_execute_code_approval_key_is_content_addressed():
+    key = A.execute_code_approval_key(BENIGN, "local")
+    assert key.startswith(A._EXECUTE_CODE_KEY_PREFIX)
+    assert key == A.execute_code_approval_key(BENIGN, "local")           # stable
+    assert key != A.execute_code_approval_key(DISTINCT, "local")         # script-bound
+    assert key != A.execute_code_approval_key(BENIGN, "docker")          # env-bound
+    assert key != "execute_code"                                         # never the generic key
+
+
+def test_guard_gateway_payload_carries_script_key(gw_session):
+    """The key the gateway persists on /approve session|always is the digest key, not the tool name."""
+    shown = _register_capturing_resolver(gw_session, "once")
+    A.check_execute_code_guard(BENIGN, "local")
+    expected = A.execute_code_approval_key(BENIGN, "local")
+    assert shown["approval_data"]["pattern_key"] == expected
+    assert shown["approval_data"]["pattern_keys"] == [expected]
+
+
+def test_guard_session_approval_does_not_cover_distinct_script(gw_session):
+    calls = _counting_resolver(gw_session, "session")
+    first = A.check_execute_code_guard(BENIGN, "local")
+    assert first["approved"] is True and calls["n"] == 1
+    assert A.is_approved(gw_session, A.execute_code_approval_key(BENIGN, "local")) is True
+    assert A.is_approved(gw_session, "execute_code") is False
+
+    # Same script again: the session choice is honored without a second prompt (#39275).
+    again = A.check_execute_code_guard(BENIGN, "local")
+    assert again["approved"] is True and calls["n"] == 1
+
+    # A different script must reach the human; here the human denies it.
+    calls = _counting_resolver(gw_session, "deny")
+    other = A.check_execute_code_guard(DISTINCT, "local")
+    assert other["approved"] is False
+    assert other["outcome"] == "denied"
+    assert calls["n"] == 1
+
+
+def test_guard_session_approval_does_not_cover_other_env(gw_session, monkeypatch):
+    """Same bytes, different execution environment: prompt again."""
+    monkeypatch.setattr(A, "_should_skip_container_guards", lambda env_type, has_host_access=False: False)
+    calls = _counting_resolver(gw_session, "session")
+    assert A.check_execute_code_guard(BENIGN, "local")["approved"] is True
+    assert calls["n"] == 1
+    calls = _counting_resolver(gw_session, "deny")
+    res = A.check_execute_code_guard(BENIGN, "docker")
+    assert res["approved"] is False and calls["n"] == 1
+
+
+def test_guard_always_approval_does_not_cover_distinct_script_in_future_session(gw_session, monkeypatch):
+    saved = []
+    monkeypatch.setattr(A, "save_permanent_allowlist", lambda patterns: saved.append(set(patterns)))
+    calls = _counting_resolver(gw_session, "always")
+    assert A.check_execute_code_guard(BENIGN, "local")["approved"] is True
+    assert calls["n"] == 1
+
+    benign_key = A.execute_code_approval_key(BENIGN, "local")
+    with A._lock:
+        permanent = set(A._permanent_set())
+    assert benign_key in permanent
+    assert "execute_code" not in permanent
+    assert saved and benign_key in saved[-1] and "execute_code" not in saved[-1]
+
+    # A brand-new session inherits the permanent entry for the same script only.
+    future = "cluster-test-future-session"
+    token = approval_context.set_current_session_key(future)
     try:
-        # Even with a denier registered, the is_approved check short-circuits.
-        _register_resolver(gw_session, "deny")
-        res = A.check_execute_code_guard("import os", "local")
-        assert res["approved"] is True
+        with A._lock:
+            A._gateway_queues.pop(future, None)
+        calls = _counting_resolver(future, "deny")
+        assert A.check_execute_code_guard(BENIGN, "local")["approved"] is True
+        assert calls["n"] == 0
+        res = A.check_execute_code_guard(DISTINCT, "local")
+        assert res["approved"] is False and res["outcome"] == "denied"
+        assert calls["n"] == 1
+    finally:
+        approval_context.reset_current_session_key(token)
+        with A._lock:
+            A._gateway_queues.pop(future, None)
+            A._gateway_notify_cbs.pop(future, None)
+            _scrub_execute_code_keys(future)
+
+
+def test_guard_legacy_generic_execute_code_key_is_ignored(gw_session):
+    """A stale generic ``execute_code`` entry (session or command_allowlist) written by an
+    older build must not auto-approve any script."""
+    A.approve_session(gw_session, "execute_code")
+    A.approve_permanent("execute_code")
+    try:
+        calls = _counting_resolver(gw_session, "deny")
+        res = A.check_execute_code_guard(BENIGN, "local")
+        assert res["approved"] is False
+        assert res["outcome"] == "denied"
+        assert calls["n"] == 1
     finally:
         with A._lock:
-            s = A._session_approved.get(gw_session, set())
-            s.discard("execute_code")
+            A._permanent_approved.discard("execute_code")
+            A._session_approved.get(gw_session, set()).discard("execute_code")
 
 
 def test_guard_gateway_missing_notify_is_pending(gw_session):

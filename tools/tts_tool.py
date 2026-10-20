@@ -150,7 +150,9 @@ def _get_provider(tts_config: dict[str, Any]) -> str:
 
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
-OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+# Discord is here because its voice-message upload hard-codes ``voice-message.ogg`` +
+# ``audio/ogg`` (flags=8192) without transcoding, so MP3 bytes arrive unplayable — issue #123680.
+OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal", "discord"})
 
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result
@@ -245,7 +247,13 @@ def _finalize_voice_delivery(
 
     Command/plugin providers are documents unless they opt in via ``voice_compatible``; native-Opus
     built-ins qualify when the platform wants Opus and they wrote .ogg; MP3/WAV built-ins are
-    ffmpeg-converted only when the platform needs Opus."""
+    ffmpeg-converted only when the platform needs Opus.
+
+    The opt-in itself only says the provider's output MAY be delivered as a voice bubble — it does
+    not say Opus is required. Conversion stays gated on ``want_opus`` (``OPUS_VOICE_PLATFORMS``),
+    matching the built-in branch above: a platform that plays MP3/M4A natively (Slack renders those
+    in its inline player, while Ogg/Opus lands as a plain file attachment) keeps the provider's own
+    bytes instead of a forced transcode."""
     if command_provider_config is not None:
         opted_in = _is_command_tts_voice_compatible(command_provider_config)
     elif provider not in BUILTIN_TTS_PROVIDERS:
@@ -258,11 +266,14 @@ def _finalize_voice_delivery(
         return file_str, native and want_opus and file_str.endswith(".ogg")
     if not opted_in:
         return file_str, False
-    # Plugin-registered provider (issue #30398). Voice-bubble delivery opts in via
-    # ``TTSProvider.voice_compatible`` (mirrors the command-provider opt-in). Plugins that already write
-    # Opus skip the ffmpeg conversion.
-    if not file_str.endswith(".ogg"):
-        file_str = _convert_to_opus(file_str) or file_str
+    # Opted-in command provider or plugin-registered backend (issue #30398). A provider that already
+    # wrote Opus needs no ffmpeg pass; otherwise convert only when the target platform's voice bubble
+    # is Ogg-only, so MP3/M4A platforms keep the provider's native bytes.
+    if file_str.endswith(".ogg"):
+        return file_str, True
+    if not want_opus:
+        return file_str, False
+    file_str = _convert_to_opus(file_str) or file_str
     return file_str, file_str.endswith(".ogg")
 
 

@@ -136,6 +136,21 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - Message-level ``reasoning`` on assistant messages — Hermes
+          trajectory-storage format (session DB, codex projector). The
+          agent loop's contract is that ``reasoning`` never reaches the
+          wire and ``reasoning_content`` is the replay field, but paths
+          that bypass the per-message build loop (prefill injection,
+          session restore, fallback re-entry) can leak storage-format
+          messages carrying BOTH keys. vLLM-hosted reasoning models
+          (GLM/Qwen via LiteLLM) declare ``reasoning`` with serde alias
+          ``reasoning_content`` in their chat protocol, so one message
+          with both keys fails JSON parsing with HTTP 400
+          ``duplicate field 'reasoning'`` — before any provider
+          validation runs. When ``reasoning_content`` is absent the value
+          is promoted first (mirroring
+          ``_copy_reasoning_content_for_api()``) so replayed reasoning
+          context is preserved.
         """
         needs_sanitize = False
         for msg in messages:
@@ -145,6 +160,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or (msg.get("role") == "assistant" and "reasoning" in msg)
             ):
                 needs_sanitize = True
                 break
@@ -172,6 +188,15 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            # Storage-format ``reasoning`` must never coexist with
+            # ``reasoning_content`` on the wire (vLLM serde-alias trap)
+            # nor leak to strict providers at all. Promote it first when
+            # ``reasoning_content`` is missing so replayed reasoning
+            # context survives.
+            if msg.get("role") == "assistant" and "reasoning" in msg:
+                if not isinstance(msg.get("reasoning_content"), str) or not msg["reasoning_content"]:
+                    msg["reasoning_content"] = msg["reasoning"]
+                msg.pop("reasoning", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

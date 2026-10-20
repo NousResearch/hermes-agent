@@ -98,6 +98,44 @@ class TestChatCompletionsBasic:
         ]
         assert transport.convert_messages(msgs) is msgs
 
+    def test_convert_messages_strips_storage_reasoning(self, transport):
+        """Message-level ``reasoning`` is Hermes trajectory-storage format.
+
+        Session DB restore and codex projector replay attach it to assistant
+        messages alongside ``reasoning_content``. vLLM-hosted reasoning
+        models (GLM/Qwen behind LiteLLM) declare ``reasoning`` with serde
+        alias ``reasoning_content``, so a message carrying both keys fails
+        JSON parsing with HTTP 400 ``duplicate field 'reasoning'``. The
+        wire copy must keep ``reasoning_content`` only — promoting
+        ``reasoning`` into it when missing so replayed thinking survives.
+        """
+        msgs = [
+            {"role": "user", "content": "hi"},
+            # Both keys — the exact shape vLLM rejects with 400.
+            {"role": "assistant", "content": "ok", "reasoning": "R1",
+             "reasoning_content": "R1"},
+            # Storage-only reasoning — must be promoted, not dropped.
+            {"role": "assistant", "content": "more", "reasoning": "R2"},
+            {"role": "user", "content": "continue"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert result[1]["reasoning_content"] == "R1"
+        assert "reasoning" not in result[1]
+        assert result[2]["reasoning_content"] == "R2"
+        assert "reasoning" not in result[2]
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["reasoning"] == "R1"
+        assert "reasoning_content" not in msgs[2]
+
+    def test_convert_messages_reasoning_content_only_is_identity(self, transport):
+        """``reasoning_content`` is the wire replay field — never stripped,
+        never copied when ``reasoning`` is absent (identity return)."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok", "reasoning_content": "R1"},
+        ]
+        assert transport.convert_messages(msgs) is msgs
+
 
 class TestChatCompletionsBuildKwargs:
 

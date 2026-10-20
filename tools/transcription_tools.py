@@ -111,7 +111,10 @@ def _resolve_stt_language(
     if isinstance(stt_config, dict):
         candidates.append(stt_config.get("language"))
     candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
-    return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+    lang = next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
+    # "auto" is a common way to write "detect it": providers reject it as a language code (faster-whisper raises
+    # "'auto' is not a valid language code"), so it means the same as leaving the language unset.
+    return None if lang and lang.lower() == "auto" else lang
 
 
 def _openai_audio_unavailable_reason() -> Optional[str]:

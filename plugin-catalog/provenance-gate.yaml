@@ -17,7 +17,7 @@ description: >-
   never asks for approval.
 maintainer: simin-yuan
 tier: community
-category: memory
+category: general
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/simin-yuan/hermes-provenance-gate#readme
 platforms: []

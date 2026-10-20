@@ -1229,15 +1229,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     return True, _consumer_reply
                 if getattr(event, "_fifo_only", False) and event._stop_epoch != self._route_stop_epoch(_quick_key):
                     return True, None  # a /stop or /new came after its command, as it clears the slot
-                from hermes_state_runtime import RuntimeStoreError
-                try:
-                    return True, await admit_message(authority, event)
-                except RuntimeStoreError:
-                    # The running turn was already interrupted. The FIFO does not have this
-                    # send, so keep it for that turn's drain instead of dropping it.
-                    if self._is_session_running(_quick_key):
-                        self._queue_or_replace_pending_event(_quick_key, event)
-                    raise
+                # A failed admit stays the authority's answer (refusal notice or turn error), never a
+                # pending legacy turn: that would run unadmitted, outside the FIFO's order.
+                return True, await admit_message(authority, event)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
             # Scoped to a home this process does not serve: never fall back to the launch ledger.

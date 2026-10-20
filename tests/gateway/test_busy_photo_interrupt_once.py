@@ -2,8 +2,8 @@
 
 The authority path interrupts the running turn with the caption and also admits the
 photo to the durable FIFO. The drain used to promote that same caption into a
-follow-up, so the send ran twice. Outside an admission the interrupt text is still
-the only copy, and it must still become the next turn.
+follow-up, so the send ran twice. A refused admit is the authority's answer: the send
+never runs as an unadmitted legacy turn behind its back.
 """
 import threading
 
@@ -14,49 +14,14 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
-from gateway.session_ingress import executing_admission
-
-
-class _Slot:
-    def __init__(self):
-        self._pending_messages = {}
-
-    def get_pending_message(self, session_key):
-        return self._pending_messages.pop(session_key, None)
-
-
-def _source():
-    from gateway.session import SessionSource
-    return SessionSource(platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="42")
-
-
-@pytest.mark.asyncio
-async def test_interrupt_text_still_becomes_the_next_turn_outside_an_admission():
-    runner = GatewayRunner(GatewayConfig())
-    pending_event, pending = await runner._run_agent_drain_pending(
-        {"interrupted": True, "interrupt_message": "keep me"}, _Slot(), _source(), "sk")
-    assert pending_event is None
-    assert pending == "keep me"
-
-
-@pytest.mark.asyncio
-async def test_interrupt_text_is_not_a_second_turn_during_an_admission():
-    runner = GatewayRunner(GatewayConfig())
-    token = executing_admission.set(True)
-    try:
-        pending_event, pending = await runner._run_agent_drain_pending(
-            {"interrupted": True, "interrupt_message": "caption"}, _Slot(), _source(), "sk")
-    finally:
-        executing_admission.reset(token)
-    assert pending_event is None
-    assert pending is None
 
 
 async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=False):
-    """Run one turn, deliver ``event`` while it is in progress, and return the interrupt text.
+    """Run one turn, deliver ``event`` while it is in progress; return the follow-up turns, the
+    interrupt text and what was sent to the chat.
 
     The running turn stays inside its tool until the inbound handler returns, so a failed
-    admit is visible to the drain. ``fail_admit`` makes that admit raise ``invalid_params``.
+    admit is visible to the drain. ``fail_admit`` makes that admit refuse (``admission_conflict``).
     """
     from gateway.session_authority import initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -66,7 +31,10 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
     runner = GatewayRunner(GatewayConfig())
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
 
+    sent = []
+
     async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
         return SendResult(success=True, message_id="s1")
 
     monkeypatch.setattr(adapter, "send", send)
@@ -120,58 +88,56 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
     if fail_admit:
         async def deny(authority, event):
             from hermes_state_runtime import RuntimeStoreError
-            raise RuntimeStoreError("invalid_params")
+            raise RuntimeStoreError("admission_conflict")
 
         monkeypatch.setattr("gateway.session_ingress.admit_message", deny)
     from hermes_state_runtime import RuntimeStoreError
     try:
         await adapter.handle_message(event)
-    except RuntimeStoreError:
+    except RuntimeStoreError as exc:  # the refusal surfaces to the caller, as on main
         if not fail_admit:
             raise
+        sent.append(exc.reason)
     finally:
         release.set()
     await opening
-    await async_wait_until(
-        lambda: len(seen) >= 2 and not runner._is_session_running(key), what="the follow-up to finish")
-    followups = seen[1:]
-    assert len(followups) == 1, seen
-    assert marker in followups[0], seen
-    return agent._interrupt_message
+    await async_wait_until(lambda: len(seen) >= 1 + (not fail_admit) and not runner._is_session_running(key)
+                           and not adapter._background_tasks, what="the follow-up to finish")
+    return seen[1:], agent._interrupt_message, sent
 
 
-@pytest.mark.asyncio
-async def test_photo_during_a_running_turn_is_admitted_once(monkeypatch, tmp_path):
+def _photo(tmp_path):
     photo = tmp_path / "photo.jpg"
     photo.write_bytes(bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffd9"))
-    interrupt = await _followup_while_running(monkeypatch, MessageEvent(
-        text="caption", message_type=MessageType.PHOTO, message_id="P",
-        media_urls=[str(photo)], media_types=["image/jpeg"],
-    ), "photo.jpg")
-    assert interrupt == "caption"
+    return MessageEvent(text="caption", message_type=MessageType.PHOTO, message_id="P",
+                        media_urls=[str(photo)], media_types=["image/jpeg"]), "photo.jpg", "caption"
 
 
-@pytest.mark.asyncio
-async def test_voice_during_a_running_turn_is_admitted_once(monkeypatch, tmp_path):
+def _voice(tmp_path):
     voice = tmp_path / "note.ogg"
     voice.write_bytes(b"OggS" + b"\x00" * 32)
-    interrupt = await _followup_while_running(monkeypatch, MessageEvent(
-        text="", message_type=MessageType.VOICE, message_id="V",
-        media_urls=[str(voice)], media_types=["audio/ogg"],
-    ), "note.ogg")
-    assert interrupt == "heard this"
+    return MessageEvent(text="", message_type=MessageType.VOICE, message_id="V",
+                        media_urls=[str(voice)], media_types=["audio/ogg"]), "note.ogg", "heard this"
+
+
+def _text(tmp_path):
+    return MessageEvent(text="later", message_id="T"), "later", "later"
 
 
 @pytest.mark.asyncio
-async def test_plain_text_during_a_running_turn_is_admitted_once(monkeypatch):
-    interrupt = await _followup_while_running(
-        monkeypatch, MessageEvent(text="later", message_id="T"), "later")
-    assert interrupt == "later"
+@pytest.mark.parametrize("make", [_photo, _voice, _text], ids=["photo", "voice", "text"])
+async def test_send_during_a_running_turn_is_admitted_once(monkeypatch, tmp_path, make):
+    event, marker, interrupt_text = make(tmp_path)
+    followups, interrupt, _ = await _followup_while_running(monkeypatch, event, marker)
+    assert len(followups) == 1 and marker in followups[0], followups
+    assert interrupt == interrupt_text
 
 
 @pytest.mark.asyncio
-async def test_failed_admit_still_runs_the_interrupt_text_once(monkeypatch):
-    """A failed FIFO admit must not drop the send. The interrupt text runs once."""
-    interrupt = await _followup_while_running(
-        monkeypatch, MessageEvent(text="later", message_id="T"), "later", fail_admit=True)
-    assert interrupt == "later"
+async def test_refused_admit_never_runs_as_an_unadmitted_turn(monkeypatch):
+    """A refused replay (``admission_conflict``) is not saved: it must not run anyway through the
+    legacy pending slot, outside durable admission and FIFO order."""
+    followups, _, sent = await _followup_while_running(
+        monkeypatch, MessageEvent(text="changed replay", message_id="T"), "changed replay", fail_admit=True)
+    assert followups == []
+    assert "admission_conflict" in sent, sent  # refused, not swallowed

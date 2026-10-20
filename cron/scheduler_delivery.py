@@ -708,6 +708,24 @@ def bot_chat_message(job: dict, content: str) -> str:
     )
 
 
+# Owner-state refusals the authority withdraws its pin for (``gateway.session_bot._OWNER_STATE_REFUSALS``:
+# a live CLI holding the session, a full or draining FIFO, compression busy, a fenced epoch, ...).
+# Nothing was admitted under the delivery id, and a same-id resend admits once the owner's state
+# clears, so these defer like an absent authority instead of ending in the failed lane (#141890).
+_TRANSIENT_OWNER_REFUSALS = frozenset({
+    'queue_full', 'runtime_draining', 'runtime_retired', 'stale_epoch', 'stale_generation',
+    'storage_unavailable', 'runtime_coordination_required', 'session_busy', 'not_found',
+})
+
+
+def _owner_state_refusal(exc: Exception) -> Optional[str]:
+    """The bounded refusal code of one of ``_TRANSIENT_OWNER_REFUSALS`` a bot-relay RPC refusal
+    carried, or None (transport failures and every other refusal keep today's unverified outcome)."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    reason = str(exc) if isinstance(exc, GatewayRPCError) else ""
+    return reason if reason in _TRANSIENT_OWNER_REFUSALS else None
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
                          for_failure: bool = False) -> Optional[str]:
     """Admit job output to the target profile's authority as a real inbound Bot Chat turn.
@@ -770,8 +788,20 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
             if owner is None:
                 return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
             # A failure notice rides as ``diagnostic`` so the target's reply stays muted.
-            receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
-                **({"notification_category": "diagnostic"} if for_failure else {}))
+            try:
+                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
+                    **({"notification_category": "diagnostic"} if for_failure else {}))
+            except Exception as exc:
+                reason = _owner_state_refusal(exc)
+                if reason is None:
+                    raise
+                # The authority pinned nothing for this id (a same-id resend admits once the
+                # owner's state clears), so a busy target parks in the durable defer lane the
+                # next tick drains — never a dropped page (#141890).
+                from cron.bot_chat_legacy import defer
+                defer(key, job, content, home, for_failure=for_failure)
+                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {"status": "queued", "delivery_id": key}
+                return f"{target} queued (receipt {key}): owner busy ({reason}); admitted once it clears"
         if (receipt["message"] != message
                 or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
             raise ValueError("delivery id already belongs to a different payload")

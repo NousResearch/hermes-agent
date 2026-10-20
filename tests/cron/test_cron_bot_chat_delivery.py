@@ -156,6 +156,51 @@ def test_deliver_without_authority_is_parked_not_a_second_writer(tmp_path, monke
     assert err is not None and "queued" in err and "not running" in err
 
 
+def test_busy_owner_refusal_defers_instead_of_failing(tmp_path, monkeypatch):
+    """A transient owner-state refusal (a live CLI holding the session, compression busy, a full
+    FIFO) admitted nothing under the id, so the payload parks in the durable defer lane a later
+    tick drains — it must not end in the failed lane (#141890)."""
+    import json
+
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", mock.Mock(
+        side_effect=GatewayRPCError("runtime_coordination_required")))
+
+    job = {"id": "j1", "name": "n", "execution_id": "r1"}
+    err = _deliver_to_bot_chat(job, "the page", "")
+    assert err is not None and "queued" in err and "runtime_coordination_required" in err
+    receipt = job["_bot_chat_delivery_receipts"]["bot-chat:(own)"]
+    assert receipt["status"] == "queued"
+    pending = tmp_path / "cron" / "bot_chat_pending"
+    records = list(pending.glob("*.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record["status"] == "queued" and record["content"] == "the page"
+    assert record["id"] == receipt["delivery_id"]
+
+
+def test_terminal_refusal_stays_unverified_and_defers_nothing(tmp_path, monkeypatch):
+    """Every other RPC refusal (permission_denied, admission_conflict, ...) is final for the
+    delivery: today's unverified outcome, never a parked record."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tools import bot_live_delivery as mailbox
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "bot"})
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", mock.Mock(
+        side_effect=GatewayRPCError("permission_denied")))
+
+    job = {"id": "j1", "name": "n", "execution_id": "r1"}
+    err = _deliver_to_bot_chat(job, "the page", "")
+    assert err is not None and "unverified" in err and "permission_denied" in err
+    assert "_bot_chat_delivery_receipts" not in job
+    assert not list((tmp_path / "cron" / "bot_chat_pending").glob("*.json"))
+
+
 def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_path, monkeypatch):
     """A ``for_failure`` notice whose TARGET profile hides warning notifications is booked as a
     durable ``suppressed`` disposition (flagged on the job), never admitted to the owner; a

@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.context_compressor_recovery import reserve_overflow_probe_budget
 from agent.conversation_compression import (
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, compression_blocked_transiently,
@@ -430,6 +431,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
             compression_exhausted=False, reason=FailoverReason.server_error.value, retryable=True,
         )
 
+    st.compression_attempts = reserve_overflow_probe_budget(agent.context_compressor, st.compression_attempts, st.max_compression_attempts)
     exhausted = st.count_attempt()
     if exhausted is not None:
         return exhausted

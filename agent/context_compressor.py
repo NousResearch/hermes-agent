@@ -2298,6 +2298,9 @@ class ContextCompressor(
         self._last_summary_fallback_used = self._last_feasibility_skip = False
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._ineffective_growth_tokens = 0
+        self._ineffective_growth_probe_pending = False
+        self._ineffective_overflow_probe_used = False
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._structural_no_op_len = 0
@@ -2494,6 +2497,10 @@ class ContextCompressor(
 
     def _record_ineffective_compression_verdict(self, count: int) -> None:
         """Set the anti-thrash strike counter; persists only on change."""
+        if count == 0:
+            self._ineffective_growth_tokens = 0
+            self._ineffective_growth_probe_pending = False
+            self._ineffective_overflow_probe_used = False
         if count == self._ineffective_compression_count:
             return
         self._ineffective_compression_count = count
@@ -2913,38 +2920,9 @@ class ContextCompressor(
         self._verify_compaction_cleared_threshold = self.awaiting_real_usage_after_compression = False
 
     def _apply_real_prompt_verdict(self) -> None:
-        """Pair the real prompt count with its rough estimate and judge the armed compaction verdict."""
-        if self.last_prompt_tokens > 0:
-            self.last_real_prompt_tokens = self.last_prompt_tokens
-            self._provider_omits_usage = False
-            if self.last_prompt_tokens < self.threshold_tokens:
-                # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
-                self._record_ineffective_compression_verdict(0)
-            # Anti-thrash verdict lives HERE: effectiveness is "prompt under threshold" per the provider's real count,
-            # not "messages shrank"; should_compress() runs twice per turn with mixed measures and would reset it.
-            # Anti-thrashing verdict, judged HERE because this is the only place that sees the provider's
-            # real prompt count for the just-compacted conversation. Effectiveness is "did the prompt get
-            # under the threshold?", not "did the message list shrink?": compaction can only shrink
-            # messages, while the system prompt and tool schemas are an incompressible floor (with 50+
-            # tools, 20-30K tokens — see #14695). When that floor alone meets the threshold, every pass
-            # shrinks messages by a healthy margin yet leaves the prompt over the line, so the next turn
-            # compacts again, forever. It must NOT live in should_compress(): that runs twice per turn with
-            # two different measures (a rough preflight estimate and the real post-response count, #36718),
-            # and the rough one can dip below the threshold and reset the strike every turn, re-opening the
-            # loop. Keying on real usage compares like with like and fires exactly once per compaction.
-            if self._verify_compaction_cleared_threshold:
-                if self.last_prompt_tokens >= self.threshold_tokens:
-                    self._record_ineffective_compression_verdict(self._ineffective_compression_count + 1)
-                    if not self.quiet_mode:
-                        logger.warning(
-                            "Compaction did not clear the threshold: %d real tokens still >= %d. The "
-                            "incompressible prompt (system prompt + tool schemas) may already exceed it, "
-                            "in which case shrinking messages cannot help. ineffective_compression_count=%d",
-                            self.last_prompt_tokens, self.threshold_tokens,
-                            self._ineffective_compression_count,
-                        )
-                else:
-                    self._record_ineffective_compression_verdict(0)
+        from agent.context_compressor_recovery import apply_real_prompt_verdict
+
+        apply_real_prompt_verdict(self)
 
     def maybe_seed_preflight_display_tokens(self, preflight_tokens: int) -> None:
         """Display-only seed of ``last_prompt_tokens`` from the 0 state; the -1 sentinel and real readings are preserved."""

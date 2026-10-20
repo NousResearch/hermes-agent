@@ -155,6 +155,8 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 Under a [multiplexed multi-profile gateway](./multi-profile-gateways.md), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved (kept verbatim, warning logged) unless B defines the variable itself. This holds wherever B's config is loaded inside the multiplexer: routed gateway turns, B's adapter startup, and B's cron jobs. Single-profile runs are unchanged. See [What is isolated per profile](./multi-profile-gateways.md#what-is-isolated-per-profile) for the full list.
 
+A local `hermes chat` / TUI session served by the gateway resolves these references, `provider_routing` and `prefill_messages_file` when the gateway creates the session, from its profile's current `config.yaml` and `.env`. Edits to them apply to the next new session without a gateway restart, and open sessions keep their creation-time values. A gateway restart doesn't re-read them either: a session restored after a restart keeps the routing and prefill path stored with it, and reads the prefill file's contents again, from that stored path, the first time it needs them. On the profile the gateway was launched with, a variable you remove from `.env` still resolves to the value loaded at gateway start, because a miss falls back to the process environment; restart the gateway to drop it.
+
 Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](../integrations/providers.md).
@@ -231,6 +233,7 @@ terminal:
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
+  client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
   sync_back_max_bytes: 2147483648  # Remote backends: refuse to extract a state archive larger than this (bytes)
   singularity_image: "docker://nousresearch/hermes-sandbox:desktop"  # Container image for Singularity backend
   modal_image: "nousresearch/hermes-sandbox:desktop"                 # Container image for Modal backend
@@ -258,10 +261,24 @@ directory. Hermes only sets these when they are not already set — a `TMPDIR` e
 by you or by the OS (macOS `/var/folders`, Windows `%TEMP%`) is left alone. Entries are
 pruned at startup (at most once per hour) once they have been **idle for 24 hours**: an entry
 stays as long as anything anywhere inside it was written in the last day, and goes a day after
-the last write. Before an idle entry is deleted, Hermes also stops any process still running
+the last write. Hardlinked files do not count as writes (a `git clone --local` shares pack files
+with its source repo, whose activity would otherwise keep the clone forever). Before an idle entry is deleted, Hermes also stops any process still running
 with its working directory inside that entry (or inside a scratch path that no longer exists,
 such as a headless browser left behind by a test run) and drops any `git worktree`
-registration that pointed into it. `hermes doctor` reports the directory and its size, and
+registration that pointed into it. A process Hermes itself started and still tracks (a
+background `terminal` process, the gateway, a CLI session, or anything they launched that is
+still their child) is never stopped: an idle entry one of them is working inside is kept
+instead. Each entry is re-checked right before it is deleted, so
+one written to while the prune was stopping processes is kept. Every removal, stopped
+process and kept entry is recorded in `~/.hermes/logs/scratch-prune.log`. An entry holding
+files your user may not read or delete (typically root-owned output of a Docker container that
+wrote into a bind mount) is never deleted partially-blind: it is logged once with the command that
+removes it (`sudo rm -rf '<path>'`, or a `docker run … rm -rf` alternative when Docker is
+installed) and then skipped, not re-scanned every hour, until it is gone, its top directory
+changes, or the directories that refused access become accessible to you (for example after
+`sudo chown -R`); it is also re-checked once a week regardless. Hermes never runs that command
+itself. `hermes doctor`
+reports the directory, its size and any such skipped entries, and
 warns about directories over 1 GB elsewhere under `cache/` that no pruner covers.
 
 `desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
@@ -683,7 +700,7 @@ Anything listed in `docker_forward_env` becomes visible to commands run inside t
 
 ### Running the Container as Your Host User
 
-By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. The `terminal.docker_run_as_host_user` flag fixes this:
+By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. On Linux, when Hermes stops and removes a root container, it first hands the files in its own sandbox bind mounts (`/root` and `/workspace` under `TERMINAL_SANDBOX_DIR`) back to your user (not your `docker_volumes` or mounted host directory; skipped on rootless Docker and userns-remap). Those sandbox files also lose setuid/setgid bits and file capabilities, whatever their owner, so nothing the container left there runs with elevated rights when you execute it on the host; a long-lived container that is never removed gets that strip (without any owner change) whenever a session detaches from it or reattaches, and before the stale-container sweep removes it. The `terminal.docker_run_as_host_user` flag fixes this for every mount and for long-lived containers that are never removed:
 
 ```yaml
 terminal:
@@ -917,7 +934,7 @@ tool_output:
 
 ### Tool-Result Spillover Budget
 
-Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars, scaled down automatically for small-context models.
+Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars, scaled down automatically for small-context models. A spill file is kept as long as any session's transcript still points at it, and leaves with its session when that session is deleted or pruned; the gateway's hourly housekeeping and the first spill of each process only sweep unreferenced files older than the session retention window (`sessions.retention_days`, default 90 days, never less than 24 hours), so a session resumed later still finds what its transcript points at.
 
 MCP tool results (tools named `mcp_*`) spill at a tighter **50,000-char** default: MCP servers routinely return large un-paginated payloads (tool-discovery catalogs, batched executions) that would otherwise sit under the generic threshold and bloat context on every subsequent turn. Nothing is lost — the full result is preserved on disk. Override the threshold via:
 
@@ -1028,7 +1045,7 @@ The same limit is also a **fail-closed bound on what the model is sent** wheneve
 
 `hygiene_timeout_seconds` is the gateway's **inactivity budget** for this pre-agent compression pass — not a total wall-clock cap. The compression summary call streams from the model, and each arriving token counts as forward progress: a slow reasoning model that is still generating keeps extending its own deadline, so slow-but-healthy summary models are never cut off mid-generation. Only when the summary model produces **no output** for this many seconds (backend down, hung connection, silent provider) does the gateway warn the user, continue the incoming message without compression, and record a temporary per-session failure cooldown instead of appearing stuck.
 
-`hygiene_total_ceiling_seconds` (default `600`) bounds the total wait even while tokens are still moving, so a degenerate trickle stream can't hold a turn hostage indefinitely. It is clamped to at least `hygiene_timeout_seconds`.
+`hygiene_total_ceiling_seconds` (default `600`) bounds the total wait even while tokens are still moving, so a degenerate trickle stream can't hold a turn hostage indefinitely. It is clamped to at least `hygiene_timeout_seconds`. Time a llama.cpp server spends reading the prompt does not count toward it (see `context_total_ceiling_seconds`).
 
 `hygiene_max_turn_hold_seconds` (default `10`) is the gateway's **turn-hold budget** — the maximum wall-clock the incoming message is held waiting on hygiene compression before the gateway stops waiting and proceeds on the uncompressed transcript. It exists because `hygiene_total_ceiling_seconds` alone can leave the wire silent for far longer than a chat transport's idle-timeout: a summary model that keeps streaming tokens keeps resetting the inactivity slice, so without a turn-hold budget the wait can stretch toward the ceiling while zero bytes reach the user — Telegram (and similar transports) then drop the connection and the turn appears frozen. Capping the turn's wait at this budget (well under the typical ~30s transport idle-timeout) guarantees the message is answered promptly. **The compression is not lost when the budget expires**: the worker keeps running detached and — when its commit is watermark-fenced (the normal case with a session DB) — it keeps its commit admission, so the finished summary is adopted at the next safe boundary and turns appended after the wait was abandoned survive verbatim as concurrent tail. This matters especially for **thinking/reasoning summary models** (DeepSeek, QwQ, etc.) whose reasoning phase alone can exceed the budget: their summaries land one turn late instead of never. If the commit cannot be safely fenced, the late result is discarded (`CompressionCommitFence`) and it cannot overwrite newer turns. Raise the budget if you'd rather have compression apply within the same turn and your transport tolerates the wait; lower it for snappier recovery on very slow backends.
 
@@ -1038,7 +1055,7 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 
 `context_timeout_seconds` (default `120`) is the same **inactivity budget** for in-agent `compress_context` — the conversation loop, preflight compaction, and manual `/compress` — so a hung summary model cannot stall a session indefinitely. Streamed summary tokens extend the wait; only a silent worker is cut off. The budget is floored at the auxiliary compression request's own timeout (`auxiliary.compression.timeout`, minimum 300s), so the host never gives up on a silent summariser before the request itself would — a reasoning summariser thinking before its first token, or a route that cannot stream, gets the same budget the provider call has. On timeout Hermes retries the summary once against the first entry of `auxiliary.compression.fallback_chain` — a stalled route never raises, so the auxiliary client's own fallback handling cannot see it. That retry, and the deterministic fallback summary described below, run inside the same `context_total_ceiling_seconds`: their window (the entry's own `timeout`, else one inactivity budget; at most half the ceiling) is reserved from the primary attempt's and shared between them, so the pass ends by the ceiling (only an already-admitted commit may finish past it). If that attempt also fails, or no fallback chain is configured, what happens next depends on whether the request still fits the model's context window: a request that fits is sent uncompressed this turn (the summary-failure cooldown stops the retry from repeating every turn); a request above the window cannot be sent at all, so Hermes commits its deterministic fallback summary (old tool results pruned, a static handoff in place of the summarised middle) instead of ending the turn — ending the turn with the "compression timed out" recovery result (and, on the messaging gateway, the automatic session reset) is the last resort, reached only when even the deterministic pass cannot shrink the transcript. Set to `0` to disable. A preflight pass that reclaims nothing on a request still above the window ends the turn immediately with guidance to start a new session (`/new`) instead of sending a request the model cannot accept. Gateway session hygiene keeps its own `hygiene_timeout_seconds` path and is not double-wrapped.
 
-`context_total_ceiling_seconds` (default `600`) bounds the in-agent **pre-commit** wait (summary / stream phase) even while tokens are still moving. It is clamped to at least `context_timeout_seconds`. For a request already above the model's context window the pre-commit wait is bounded by one `context_timeout_seconds` budget instead of this ceiling: such a request cannot be sent uncompressed anyway, and a summary that keeps streaming while reclaiming nothing would otherwise hold the session (and the Desktop UI) for the full ceiling on every turn — the deterministic fallback summary then carries the compaction. Raise `context_timeout_seconds` if your summariser legitimately needs longer. The exact guarantee: **the summary phase is bounded by this ceiling; the commit phase is logged and surfaced if it exceeds it.** Once the worker has entered the compression commit fence and SessionDB mutation is in flight, the commit is never abandoned mid-flight — that would risk transcript divergence — but the wait is no longer silent: if the commit runs past the ceiling, Hermes logs the overrun (WARNING, escalating to ERROR on repeat), sends a one-shot warning through the user-visible warning channel, and keeps waiting in bounded increments until the commit completes. When the ceiling expires during the summary phase, the summary model's stream is closed at that same instant on every auxiliary wire (chat.completions, Codex Responses, Anthropic Messages) — an abandoned summary is not billed to completion on a connection nobody is waiting for, and its session lease is freed for the next attempt.
+`context_total_ceiling_seconds` (default `600`) bounds the in-agent **pre-commit** wait (summary / stream phase) even while tokens are still moving. It is clamped to at least `context_timeout_seconds`. Time a llama.cpp server spends reading the prompt does not count toward it: on a laptop GPU, reading a 150K-token conversation alone can take longer than the ceiling. The server reports its reading as progress, and each report of newly read tokens pushes the deadline back by the reading time; a server that reports without reading anything gets no extra time, and the idle timeout still applies between reports. For a request already above the model's context window the pre-commit wait is bounded by one `context_timeout_seconds` budget instead of this ceiling: such a request cannot be sent uncompressed anyway, and a summary that keeps streaming while reclaiming nothing would otherwise hold the session (and the Desktop UI) for the full ceiling on every turn — the deterministic fallback summary then carries the compaction. Raise `context_timeout_seconds` if your summariser legitimately needs longer. The exact guarantee: **the summary phase is bounded by this ceiling; the commit phase is logged and surfaced if it exceeds it.** Once the worker has entered the compression commit fence and SessionDB mutation is in flight, the commit is never abandoned mid-flight — that would risk transcript divergence — but the wait is no longer silent: if the commit runs past the ceiling, Hermes logs the overrun (WARNING, escalating to ERROR on repeat), sends a one-shot warning through the user-visible warning channel, and keeps waiting in bounded increments until the commit completes. When the ceiling expires during the summary phase, the summary model's stream is closed at that same instant on every auxiliary wire (chat.completions, Codex Responses, Anthropic Messages) — an abandoned summary is not billed to completion on a connection nobody is waiting for, and its session lease is freed for the next attempt.
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 
@@ -1128,6 +1145,43 @@ message. The user receives a rejection notice and must resend. Hermes does not
 automatically requeue the message because doing so without durable ordering and
 idempotency could process it twice. Non-positive values use the 5-second
 default.
+
+## Gateway Restart Drain
+
+When the gateway stops or restarts (SIGTERM, `hermes update`, `hermes gateway stop`, or the final
+phase of `hermes gateway restart` / `/restart`), `agent.restart_drain_timeout` is how many seconds
+it lets in-flight chat turns keep running before it interrupts them:
+
+```yaml
+agent:
+  restart_drain_timeout: 0          # default: interrupt in-flight chat turns at once
+  cron_drain_timeout: 30            # floor for cron jobs and api_server (/v1) runs
+  restart_after_turn_timeout: 1800  # /restart and `gateway restart`: wait for turns BEFORE stopping
+```
+
+With the default `0`, a restart interrupts a running turn immediately. The turn settles as
+interrupted and is never run again; the TUI and Desktop show a "Gateway restarting" (or "Gateway
+shutting down") notice on that turn, and you send the message again once Hermes reconnects.
+Queued messages behind it are kept and run in order on the new gateway.
+
+Set a positive value if you would rather let turns finish:
+
+```yaml
+agent:
+  restart_drain_timeout: 60
+```
+
+A longer drain makes every restart and update wait up to that long. `HERMES_RESTART_DRAIN_TIMEOUT`
+overrides the config value.
+
+:::caution systemd `TimeoutStopSec`
+The generated systemd unit sizes `TimeoutStopSec` from this value: the larger of
+`restart_drain_timeout` and `cron_drain_timeout` + 10 s, plus 30 s of headroom, and at least 60 s
+(`gateway/restart.py`, `resolve_systemd_timeout_stop_sec`). If you raise `restart_drain_timeout`,
+re-run `hermes gateway install` so the unit picks up the new budget. Otherwise systemd SIGKILLs the
+gateway in the middle of its drain. launchd caps its stop timeout at 60 s, so on macOS the drain
+is limited to what fits inside that.
+:::
 
 ## Session Stall Watchdog
 
@@ -1661,7 +1715,7 @@ Each entry supports the same three knobs as any auxiliary task config:
 
 ### Native vision embed budgets (top-level `vision:`)
 
-Separate from `auxiliary.vision` (which picks the describer model): when the *main* model is vision-capable, `vision_analyze` and browser screenshots embed real pixels into tool results that are re-sent every later turn. `vision.embed_target_bytes` (default `262144`, clamped 64 KiB..4 MiB) sizes one embed; `vision.max_calls_per_image` caps how often the same image may be embedded per session (unset = 3 inside delegated subagents, unlimited for the main agent; `0` = unlimited). See [Vision → Native embeds ride the session](./features/vision.md#native-embeds-ride-the-session-visionembed_target_bytes-and-visionmax_calls_per_image).
+Separate from `auxiliary.vision` (which picks the describer model): when the *main* model is vision-capable, `vision_analyze` and browser screenshots embed real pixels into tool results that are re-sent every later turn. `vision.embed_target_bytes` (default `262144`, clamped 64 KiB..4 MiB) sizes one embed; `vision.max_calls_per_image` caps how often the same image may be embedded per session (unset = 3 inside delegated subagents, unlimited for the main agent; `0` = unlimited); `vision.replay_recent_images` (default `3`, `0` = off) re-sends the newest user images on turns rebuilt from the session database (API server, `--resume`). See [Vision → Native embeds ride the session](./features/vision.md#native-embeds-ride-the-session-visionembed_target_bytes-and-visionmax_calls_per_image).
 
 ### Limiting auxiliary concurrency
 

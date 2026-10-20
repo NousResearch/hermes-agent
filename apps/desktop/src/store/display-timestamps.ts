@@ -15,6 +15,15 @@ import { atom } from 'nanostores'
 
 export const $displayTimestamps = atom<boolean>(false)
 
+// `/timestamps` is a this-window choice: it outranks the config default until the window closes,
+// so a routine config refresh does not undo it.
+let windowOverride: boolean | null = null
+
 export function setDisplayTimestampsFromConfig(value: unknown): void {
-  $displayTimestamps.set(value === true || value === 'true' || value === 1)
+  $displayTimestamps.set(windowOverride ?? (value === true || value === 'true' || value === 1))
+}
+
+export function setDisplayTimestampsWindowOverride(value: boolean): void {
+  windowOverride = value
+  $displayTimestamps.set(value)
 }

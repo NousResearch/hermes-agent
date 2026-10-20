@@ -1,11 +1,12 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { ruAuxTasks } from './ru_aux_tasks'
+import { ruBoot } from './ru_boot'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
+import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
@@ -101,56 +102,7 @@ export const ruOverrides = {
     pathCopied: 'Путь скопирован',
     revealMissing: 'Этой папки нет на этом компьютере'
   },
-  boot: {
-    ready: 'Hermes Desktop готов',
-    desktopBootFailedWithMessage: message => `Не удалось запустить приложение: ${message}`,
-    steps: {
-      connectingGateway: 'Подключение к шлюзу',
-      loadingSettings: 'Загрузка настроек Hermes',
-      loadingSessions: 'Загрузка последних сеансов',
-      retryingRemoteBackend: 'Переподключение к удалённому бэкенду Hermes…',
-      startingDesktopConnection: 'Запуск подключения приложения',
-      startingHermesDesktop: 'Запуск Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited: 'Фоновый процесс Hermes завершён.',
-      backgroundExitedDuringStartup: 'Фоновый процесс Hermes завершился при запуске.',
-      backendStopped: 'Бэкенд остановлен',
-      desktopBootFailed: 'Не удалось запустить приложение',
-      gatewayConnectionLost: 'Соединение с шлюзом потеряно',
-      gatewaySignInRequired: 'Требуется вход в шлюз',
-      ipcBridgeUnavailable: 'IPC-мост приложения недоступен.'
-    },
-    failure: {
-      title: 'Hermes не удалось запустить',
-      description:
-        'Фоновый шлюз не запустился. Попробуйте один из шагов восстановления ниже. Ничто из этого не удаляет ваши чаты и настройки.',
-      remoteTitle: 'Требуется вход в удалённый шлюз',
-      remoteDescription:
-        'Сессия удалённого шлюза истекла. Войдите снова, чтобы переподключиться. Ничто из этого не удаляет ваши чаты и настройки.',
-      retry: 'Повторить',
-      repairInstall: 'Восстановить установку',
-      useLocalGateway: 'Использовать локальный шлюз',
-      gatewaySettings: 'Настройки шлюза',
-      back: 'Назад',
-      openLogs: 'Открыть журналы',
-      repairHint: 'Восстановление перезапускает установщик — на чистой машине это может занять несколько минут.',
-      remoteSignInHint: signInLabel =>
-        `Выход из сохранённой сессии удалённого браузера, затем открытие ${signInLabel}. Чтобы перейти на встроенный бэкенд, используйте локальный шлюз.`,
-      signOutAndSignIn: 'Выйти и войти',
-      remoteFailureHint: 'Проверьте URL шлюза и вход в настройках шлюза или переключитесь на локальный шлюз.',
-      hideRecentLogs: 'Скрыть недавние журналы',
-      showRecentLogs: 'Показать недавние журналы',
-      signedInTitle: 'Вы вошли в систему',
-      signedInMessage: 'Переподключение к удалённому шлюзу…',
-      signInIncompleteTitle: 'Вход не завершён',
-      signInIncompleteMessage: 'Окно входа закрылось до завершения аутентификации.',
-      signInFailed: 'Не удалось войти',
-      signInToRemoteGateway: 'Войти в удалённый шлюз',
-      signInWithProvider: provider => `Войти через ${provider}`,
-      identityProvider: 'вашему провайдеру аутентификации'
-    }
-  },
+  boot: ruBoot.boot,
   notifications: {
     sharedProfileWarning:
       'Другая установка Hermes использует этот профиль. Обе установки используют общие настройки и данные, поэтому изменения могут конфликтовать. Можно продолжить работу или закрыть другую установку перед внесением изменений.',
@@ -1349,59 +1301,7 @@ export const ruOverrides = {
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
       deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
     },
-    model: {
-      moaPreset: 'Пресет',
-      moaDescription:
-        'Настройте именованные пресеты, которые появятся как модели провайдера Mixture of Agents. Модель-агрегатор выполняет каждый шаг цикла инструментов; почти вся стоимость запуска списывается у её провайдера. По умолчанию референсные модели дают совет один раз на сообщение пользователя.',
-      moaAggregator: 'Модель-агрегатор',
-      moaAggregatorBilled: 'исполняющая модель · на неё приходится стоимость запуска',
-      moaReferenceHint: 'по умолчанию советует один раз за ход',
-      setupProviderFallback: 'провайдер',
-      setUpProvider: name => `Настроить ${name}`,
-      staleAuxBefore: (count, names) => `Вспомогательные задачи (${count}: ${names}) по-прежнему используют `,
-      staleAuxAfter: ', а не основную модель.',
-      staleAuxOtherProviders: 'других провайдеров',
-      moaEnabled: 'Включено',
-      moaSetDefault: 'Сделать основным',
-      moaNewPresetPlaceholder: 'новый пресет',
-      moaAddPreset: 'Добавить пресет',
-      customModel: 'Своя модель…',
-      customModelPlaceholder: 'ID модели',
-      chooseFromList: 'Выбрать из списка',
-      moaDefault: 'По умолчанию:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Отключить' : 'Включить'} референс ${index}`,
-      moaReferenceTitle: index => `Референс ${index}`,
-      moaAddReference: 'Добавить референсную модель',
-      loading: 'Загрузка конфигурации модели…',
-      appliesDesc:
-        'Применяется к новым сеансам. Для горячей смены модели в активном чате используйте выборщик модели в композере.',
-      provider: 'Провайдер',
-      model: 'Модель',
-      applying: 'Применение…',
-      defaultsLabel: 'По умолчанию',
-      reasoning: 'Рассуждения',
-      reasoningOff: 'Выкл',
-      speed: 'Скорость',
-      speedStandard: 'Стандартная',
-      defaultsFailed: 'Не удалось сохранить модель по умолчанию',
-      auxiliaryTitle: 'Вспомогательные модели',
-      resetAllToMain: 'Сбросить всё на основную',
-      staleAuxDismiss: 'Больше не показывать',
-      auxiliaryDesc:
-        'Вспомогательные задачи по умолчанию выполняются основной моделью. Назначьте отдельную модель любой задаче, чтобы переопределить.',
-      setToMain: 'На основную',
-      change: 'Изменить',
-      autoUseMain: 'авто · использовать основную модель',
-      inheritMainEffort: 'наследовать · усилие основной модели',
-      inheritsFrom: task => `наследует ${task}`,
-      followTask: task => `Как ${task}`,
-      providerDefault: '(по умолчанию провайдера)',
-      fallbackAdd: 'Добавить запасную',
-      fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
-      notInCatalog: 'нет в списке моделей этого провайдера — вызовы могут уходить на запасную.',
-      moaTitle: 'Смесь агентов',
-      tasks: ruAuxTasks
-    },
+    model: ruModelSettings,
     providers: {
       connectAccount: 'Подключить аккаунт',
       haveApiKey: 'Ввести API-ключ вместо этого?',
@@ -2680,6 +2580,7 @@ export const ruOverrides = {
     openDirective: 'Открыть',
     queueMessage: 'Вставить сообщение в очередь',
     steer: 'Направить текущий запуск',
+    redirect: 'Перенаправить текущий запуск',
     stop: 'Стоп',
     send: 'Отправить',
     speaking: 'Говорит',
@@ -2814,6 +2715,12 @@ export const ruOverrides = {
     queueSteer: 'Направить — изменить текущий ход сейчас',
     queueSend: 'Отправить',
     queueDelete: 'Удалить',
+    queueLostNote: 'Ход потерян при перезапуске',
+    restoreImageDraft: 'Восстановить черновик с изображением',
+    queueCancelFailed: 'Не удалось удалить ход из очереди',
+    queueLostDiscard: 'Отбросить',
+    queueLostDiscardTip:
+      'Шлюз перезапустился посреди хода и не может его завершить. Отбросьте его, чтобы очередь продолжилась.',
     queueResume: 'Продолжить',
     queueResumeTip: 'Приостановлено стопом — продолжить отправку ходов из очереди',
     queueStuckTitle: 'Сообщение из очереди не отправлено',
@@ -2989,7 +2896,7 @@ export const ruOverrides = {
       heartbeatEveryHours: hours => `каждые ${hours}ч`,
       heartbeatEverySeconds: seconds => `каждые ${seconds}с`,
       heartbeatNext: time => `следующий ${time}`,
-      heartbeatDueWaitingForIdle: 'пора — ожидание простоя',
+      dueWaitingForIdle: 'пора — ожидание простоя',
       heartbeatActions: 'Действия пульса',
       pauseHeartbeat: 'Приостановить пульс',
       resumeHeartbeat: 'Возобновить пульс',
@@ -3746,7 +3653,7 @@ export const ruOverrides = {
       hideNames: 'скрыть имена',
       skill: name => `навык ${name}`,
       kind: { plugin: 'плагин', skill: 'навык' },
-      tier: { official: 'официальный', community: 'сообщество' },
+      tier: { official: 'официальный', verified: 'проверенный', community: 'сообщество' },
       targetProfile: profile => `Установка в ваш профиль ${profile}`,
       sendFailed: 'Не удалось отправить ответ. Попробуйте ещё раз.',
       commitLabel: 'Коммит',

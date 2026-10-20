@@ -39,6 +39,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -48,7 +49,6 @@ import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import { isStaleTargetError } from '../session/hooks/use-prompt-actions'
 import {
-  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -61,6 +61,7 @@ import {
   rebindSurvivorRowIds,
   revalidateEditPlan,
   runRewindSubmit,
+  sealAcceptedCorrection,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
@@ -269,6 +270,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 attachedSessionId: next.attachedSessionId,
                 label: next.label,
                 path: next.path,
+                mime: next.mime,
                 refText: next.refText,
                 uploadState: next.uploadState
               })
@@ -313,6 +315,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
     scope: {
       removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
+      patchAttachment: (expected, patch) => void scope.attachments.updateIfCurrent(expected, patch),
       readAttachments: () => scope.attachments.$attachments.get(),
       // Busy/messages flow through updateSession -> the tile's state slice;
       // the primary view atoms must never see a tile turn.
@@ -422,7 +425,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   )
 
   const steerPrompt = useCallback(
-    async (rawText: string): Promise<boolean> => {
+    async (rawText: string, mode: 'interrupt' | 'steer' = 'interrupt'): Promise<boolean> => {
       const text = rawText.trim()
       const sessionId = runtimeIdRef.current
 
@@ -435,20 +438,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
-      // Match the primary composer: record the correction in arrival order —
-      // sealed already-streamed output above, correction below, post-redirect
-      // deltas below that — before awaiting the redirect RPC, whose completion
-      // can race us. The old insert-before-the-active-reply splice put the
-      // bubble above output the user had already read (#73793), and its
-      // last-assistant fallback could land it mid-thread when the stream id
-      // was missing or stale (#83151).
-      mutate(state =>
-        appendMidTurnUserMessage(state, {
-          id: messageId,
-          role: 'user' as const,
-          parts: [textPart(text)]
-        })
-      )
+      // Reserve the correction's arrival position without sealing the stream.
+      // Deltas arriving during a refused RPC must keep their live bubble.
+      mutate(state => {
+        const message = { id: messageId, role: 'user' as const, parts: [textPart(text)] }
+
+        return { ...state, messages: [...state.messages, message] }
+      })
 
       const discardOptimisticMessage = () =>
         mutate(state => ({
@@ -469,7 +465,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+              session_id: liveId,
+              text
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
@@ -477,29 +477,41 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         )
 
         if (result?.status === 'redirected') {
+          if (mode === 'interrupt') {
+            flushStreamDeltas(sessionId)
+            mutate(state => sealAcceptedCorrection(state, messageId))
+          }
+
           triggerHaptic('submit')
 
           return true
         }
 
         if (result?.status === 'queued') {
-          moveOptimisticMessageToEnd()
+          // A redirect queued in the build window is the next turn; an
+          // accepted steer joins this one after its running tool.
+          if (mode === 'steer') {
+            flushStreamDeltas(sessionId)
+            mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+          } else {
+            moveOptimisticMessageToEnd()
+          }
+
           triggerHaptic('submit')
 
           return true
         }
-      } catch {
+      } catch (err) {
         discardOptimisticMessage()
-        // Swallow — the caller queues the text so nothing is lost.
-
-        return false
+        notifyError(err, copy.promptFailed)
+        throw err
       }
 
       discardOptimisticMessage()
 
       return false
     },
-    [bindRecoveredRuntime, requestSessionGateway]
+    [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

@@ -19,7 +19,7 @@ from agent.context_compressor import (
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
@@ -126,11 +126,19 @@ def _durable_content(content: Any) -> Any:
     if not isinstance(content, list):
         return content
     txt = [
-        str(p.get("text", "")) if p.get("type") == "text" else "[screenshot]"
+        str(p.get("text", "")) if p.get("type") == "text" else _image_marker(p)
         for p in content
         if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
     ]
     return "\n".join(txt) if txt else None
+
+
+def _image_marker(part: dict) -> str:
+    """``[screenshot]`` at the image's position; a caller-chosen ``detail`` rides along so a replay
+    (``agent.image_replay``) rebuilds the part the live turn sent."""
+    url = part.get("image_url")
+    detail = part.get("detail") or (url.get("detail") if isinstance(url, dict) else None)
+    return f"[screenshot detail={detail}]" if detail in ("low", "high", "auto") else "[screenshot]"
 
 
 def _persist_lock(agent):
@@ -149,13 +157,13 @@ def adopt_unanswered_turn(history: list[dict[str, Any]], query: Any, agent: Any)
     A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
     instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
     so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
-    reuse it as this turn's user dict and the flush writes no second row. What differs per lane is only HOW
-    the dispatcher knows the DM is unanswered:
-
-    * ``hermes_cli.quiet_single_query.adopt_unanswered_turn`` — the delivery lanes' re-run is a fresh CLI
-      process, told so through ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``.
-    * ``gateway.platforms.api_server`` — the peer-DM lane re-runs the turn in-process and calls this
-      directly on the agent it just built for the re-run (#115325).
+    reuse it as this turn's user dict and the flush writes no second row. The one user is the peer-DM
+    lane's re-run (``resume_unanswered_turn`` in ``gateway.platforms.api_server``, #115325): in process it
+    calls this on the agent it just built for the re-run; under the session authority the admission
+    carries ``resume_unanswered`` and ``gateway.run_turn_runner`` calls it on the admitted history
+    when its tail is that bare user row (a tool suffix there keeps the completed work in view).
+    The owner-side Bot Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed
+    turn is already closed by the durable failed-turn boundary, which this function declines by design.
 
     The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
     ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the

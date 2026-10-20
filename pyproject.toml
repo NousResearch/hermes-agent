@@ -92,10 +92,13 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2; python_version >= '3.14'",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0; python_version >= '3.14'",  # PYSEC-2026-175/177/178/179
-  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
-  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
-  "urllib3>=2.7.0,<3; python_version >= '3.14'",
+  "PyJWT[crypto]==2.15.1; python_version >= '3.14'",  # PYSEC-2026-175/177/178/179 + GHSA-ffc3-869f-jxw9, GHSA-42vr-xj54-vc7v (fixed in 2.14.0/2.15.0)
+  # urllib3 2.8.0 fixes GHSA-8988-9cw3-xx77 (proxy TLS config ignored),
+  # GHSA-gh4c-6fx4-qh6g (chunked-deflate infinite loop) and
+  # GHSA-vxq7-64xx-v4gw (unbounded chunk buffering). 2.8.0 is the latest
+  # release older than 3 days and still supports Python >= 3.10
+  # (3.11 bridge intact).
+  "urllib3>=2.8.0,<3; python_version >= '3.14'",
   # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
   # that the WeCom and Weixin crypto paths cannot fall below the patched
   # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
@@ -385,7 +388,7 @@ pty = []
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 #
-# mcp 2.0.0 implements MCP revision 2026-07-28 and moved its own HTTP stack
+# mcp 2.x implements MCP revision 2026-07-28 and moved its own HTTP stack
 # from `httpx` to `httpx2`. httpx2 arrives transitively, but tools/mcp_tool.py
 # and tools/mcp_oauth_manager.py import it by name to build the client objects
 # they hand to the SDK, so it is pinned here explicitly rather than left to
@@ -393,8 +396,8 @@ pty = []
 # unaffected — the two distributions install side by side under different
 # module names.
 mcp = [
-  "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "mcp==2.3.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
@@ -408,8 +411,8 @@ teams = [
 # Computer use talks to PM's pinned cua-driver over MCP stdio. This extra
 # provides the MCP client, independently of the native driver package.
 computer-use = [
-  "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "mcp==2.3.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
@@ -530,8 +533,8 @@ dev = [
   "debugpy==1.8.20",
   "pytest==9.1.1",
   "pytest-asyncio==1.3.0",
-  "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "mcp==2.3.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
   "ty==0.0.82",
   "ruff==0.15.10",

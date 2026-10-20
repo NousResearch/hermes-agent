@@ -16,5 +16,6 @@ export const frUpdateChannel = {
   rollbackTitle: (v: string) => `Revenir à la version stable ${v}`,
   rollbackBody: (v: string) =>
     `Cette build est plus récente que la version stable ${v}. L’installer ramène Hermes à cette version.`,
-  rollbackAction: (v: string) => `Revenir à ${v}`
+  rollbackAction: (v: string) => `Revenir à ${v}`,
+  allChanges: 'Voir toutes les modifications'
 }

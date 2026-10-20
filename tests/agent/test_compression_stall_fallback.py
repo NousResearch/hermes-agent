@@ -228,6 +228,10 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
         worker.release.set()
 
     assert worker.attempts == 2, "the fallback is attempted once, not in a loop"
+    # The primary leaves the fallback the entry's 2.0s timeout; the fallback ends by the pass's own deadline.
+    assert abs(worker.fences[1].deadline_monotonic - (worker.fences[0].deadline_monotonic + 2.0)) < 1e-3, (
+        "the fallback must not mint a second total ceiling"
+    )
     assert msgs is original, "no messages may be dropped when both routes stall"
     assert prompt == "degraded-prompt"
     assert len(timeouts) == 1, "the degrade must be reported exactly once"
@@ -321,6 +325,43 @@ def test_fallback_with_no_time_left_in_the_pass_is_skipped(caplog):
     assert recovered is None
     assert not minted and not ran
     assert "no time left for fallback_chain[0](custom)" in caplog.text
+
+
+class _ReadThenStallWorker(_StalledSummaryWorker):
+    """The primary attempt's server reads the prompt (pushing the fence deadline back) past the pass's own
+    deadline, then stalls."""
+
+    def __call__(self, fence: CompressionCommitFence):
+        if not self.routes:
+            assert fence.extend_deadline(10.0)
+            reading_until = time.monotonic() + 2.5
+            while time.monotonic() < reading_until:
+                fence.touch_progress()
+                self.release.wait(0.05)
+        return super().__call__(fence)
+
+
+def test_stall_after_prompt_reading_still_funds_the_fallback():
+    """Prompt reading moves the fence deadline; the fallback must be budgeted from the moved deadline,
+    not the primary attempt's original one, or a long read followed by a stall skips the fallback."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "summary"}]
+    worker = _ReadThenStallWorker(compressed)
+    timeouts = []
+
+    try:
+        msgs, prompt = _run(
+            # Without the extension the 2.5s read runs past the pass's 2s and leaves the fallback nothing.
+            worker, chain=[dict(CHAIN_ENTRY, timeout=2.0)], timeouts=timeouts, messages=original,
+            idle=2.0, ceiling=2.0,
+        )
+    finally:
+        worker.release.set()
+
+    assert worker.attempts == 2, "the extended budget must fund the fallback attempt"
+    assert msgs == compressed
+    assert prompt == "summarized-prompt"
+    assert not timeouts
 
 
 def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_path, monkeypatch):

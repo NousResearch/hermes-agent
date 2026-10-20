@@ -174,9 +174,11 @@ def test_docker_keeps_the_host_dir(launch_dir, monkeypatch, mount):
 
 def test_sandbox_resume_drops_a_stored_hermes_home_cwd(launch_dir, monkeypatch):
     """A row persisted before the fix with a launch dir (the Hermes home, its subprocess home) as cwd is not
-    re-adopted as the sandbox workspace."""
+    re-adopted as the sandbox workspace. ssh keeps its own rule: a remote ``/`` someone picked survives."""
     hermes_home = server.get_hermes_home()
     (hermes_home / "home").mkdir(exist_ok=True)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    assert server._resumable_stored_cwd("/", None) == "/"
     _backend(monkeypatch, "modal")
     for launch in (str(hermes_home), str(hermes_home / "home")):
         assert server._resumable_stored_cwd(launch, None) == ""

@@ -374,7 +374,8 @@ def _resumable_stored_cwd(cwd, profile_home) -> str:
     cwd = str(cwd or "")
     if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
         return ""
-    if cwd and not _host_cwd_is_terminal_cwd(profile_home) and _is_launch_dir(cwd, profile_home):
+    if cwd and not _cwd_is_remote(profile_home) and not _host_cwd_is_terminal_cwd(profile_home) \
+            and _is_launch_dir(cwd, profile_home):
         return ""
     if cwd and _is_other_profiles_cwd(cwd, profile_home):
         return ""

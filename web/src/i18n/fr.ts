@@ -653,6 +653,16 @@ export const fr: Translations = {
     showArchived: "Afficher les archivés",
     lanesByProfile: "Couloirs par profil",
     nudgeDispatcher: "Solliciter le dispatcher",
+    pauseBoard: "Mettre le tableau en pause",
+    pauseTip:
+      "Arrête de lancer de nouvelles tâches — les workers en cours terminent. Reprise à tout moment.",
+    resumeBoard: "Reprendre le tableau",
+    resumeTip: "Reprend le dispatch — les tâches en file démarrent au prochain cycle.",
+    pausedBadge: "EN PAUSE",
+    pausedBadgeCount: "{count} EN PAUSE",
+    pauseBannerTitle: "Tableau en pause",
+    pauseBannerBody:
+      "Aucune nouvelle tâche ne démarrera. Les workers en cours terminent normalement ; le travail en file attend la reprise.",
     refresh: "Rafraîchir",
     selected: "sélectionné(s)",
     complete: "Terminer",

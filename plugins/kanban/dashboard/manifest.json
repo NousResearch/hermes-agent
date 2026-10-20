@@ -6,7 +6,14 @@
   "version": "1.0.0",
   "tab": {
     "path": "/kanban",
-    "position": "after:skills"
+    "position": "after:skills",
+    "badge": {
+      "endpoint": "/api/plugins/kanban/paused",
+      "path": "paused",
+      "countPath": "count",
+      "labelKey": "kanban.pausedBadge",
+      "labelCountKey": "kanban.pausedBadgeCount"
+    }
   },
   "entry": "dist/index.js",
   "css": "dist/style.css",

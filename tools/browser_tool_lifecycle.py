@@ -10,7 +10,7 @@ import signal
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -23,7 +23,7 @@ from tools import browser_tool_install as _install
 from tools import browser_tool_real_profile as _real_profile
 
 
-def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
+def _session_expiry_timestamp(session_info: dict[str, Any]) -> Optional[float]:
     """Provider-authoritative session expiry as epoch seconds; None when absent or
     malformed (cloud providers may omit ``expires_at``; local browsers never have one)."""
     value = session_info.get("expires_at")
@@ -41,12 +41,12 @@ def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
         _bt.logger.warning("Ignoring invalid cloud browser session expiry timestamp")
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
 def _session_has_expired(
-    session_info: Dict[str, Any], *, now: Optional[float] = None
+    session_info: dict[str, Any], *, now: Optional[float] = None
 ) -> bool:
     """Whether a cached browser session crossed its provider deadline."""
     expires_at = _session_expiry_timestamp(session_info)
@@ -294,7 +294,7 @@ def _read_pid_file(path: str) -> Optional[int]:
         return None
 
 
-def _owner_pid_alive(socket_dir: str, session_name: str) -> Tuple[Optional[int], Optional[bool]]:
+def _owner_pid_alive(socket_dir: str, session_name: str) -> tuple[Optional[int], Optional[bool]]:
     """Read ``<session>.owner_pid`` and report ``(pid, alive)``; ``(None, None)`` when missing/corrupt."""
     owner_pid = _read_pid_file(os.path.join(socket_dir, f"{session_name}.owner_pid"))
     if owner_pid is None:
@@ -477,7 +477,7 @@ def _update_session_activity(task_id: str):
         _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
 
 
-def _kill_process_tree(proc: "subprocess.Popen") -> None:
+def _kill_process_tree(proc: subprocess.Popen) -> None:
     """Best-effort kill of *proc* and every descendant; never raises.
 
     ``Popen.kill()`` only signals the direct child; npm/npx helpers and the detached
@@ -504,9 +504,12 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
         _legacy_kill_process_tree(proc)
 
 
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Local tree-kill (SIGTERM then SIGKILL to the process group) — fallback when
-    agent.deadline is unavailable; tests pin this signal sequence."""
+def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
+    """Local tree-kill (fallback when agent.deadline is unavailable; tests pin
+    the signal sequence). A child leading its own group gets SIGTERM then
+    SIGKILL via killpg; a shared-group child can never be killpg'd (that is OUR
+    group), so it and its psutil-snapshotted descendants are killed
+    individually."""
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
@@ -526,12 +529,38 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
-        return
-    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+        pgid = None
+    # Signal the group only when the child leads it (start_new_session / process_group=0):
+    # a child spawned into our group resolves pgid to OUR process group and killpg would
+    # take the whole Hermes tree down with it, and a recycled PID can resolve to a foreign
+    # group. The direct child still gets proc.kill() either way. Same ownership check as
+    # hermes_cli/_subprocess_compat._legacy_kill_process_tree.
+    descendants = []
+    if pgid is not None and pgid == proc.pid:
+        for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+            try:
+                killpg(pgid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                break
+    else:
+        # No group signal is safe, so descendants are killed individually;
+        # a bare proc.kill() would leave them holding the capture pipe's write
+        # end open (the #68915 communicate() hang). The snapshot must precede
+        # the parent kill: once the parent exits, children reparent and psutil
+        # can no longer find them (process_registry._terminate_host_pid).
         try:
-            killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
+            import psutil
+
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            descendants = []
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    for child in descendants:
+        with contextlib.suppress(Exception):
+            child.kill()
 
 
 def _pid_exists(pid: int) -> bool:
@@ -623,7 +652,7 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
         return False
 
 
-def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> None:
+def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> None:
     """Untrack ``task_id``, close its cloud provider session, kill its daemon — the
     unconditional tail of a teardown, and the whole of the janitor's force-reap path.
 
@@ -631,15 +660,20 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
     """
-    bb_session_id = session_info.get("bb_session_id", "unknown")
     _forget_session_tracking(task_id, session=True)
+    _release_session_backend(task_id, session_info)
 
+
+def _release_session_backend(task_id: str, session_info: dict[str, Any]) -> None:
+    """Close ``session_info``'s cloud provider session and kill its daemon, by object: no shared
+    session map is read or written (an unpublished session releases through this alone)."""
+    bb_session_id = session_info.get("bb_session_id", "unknown")
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
         provider = _cloud._get_cloud_provider()
         if provider is not None:
             try:
                 provider.close_session(bb_session_id)
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- teardown boundary moved unchanged from _release_session_resources; a provider error must never abort the daemon kill below
                 _bt.logger.warning("Could not close cloud browser session: %s", e)
 
     session_name = session_info.get("session_name", "")
@@ -713,6 +747,29 @@ def _cleanup_single_browser_session(task_id: str) -> None:
     _bt.logger.debug("Removed task %s from active sessions", task_id)
 
 
+def cleanup_profile_browsers(home_key: str) -> None:
+    """Close one profile home's browser sessions, CDP supervisors and harness daemons, and drop its
+    cached config slots (``/browser connect`` on a multiplexed gateway). Other profiles' browsers stay."""
+    with _bt._cleanup_lock:
+        task_ids = [task for task, info in _bt._active_sessions.items() if info.get("home_key") == home_key]
+    for task_id in task_ids:
+        _cleanup_single_browser_session(task_id)
+        _drop_last_active_binding(task_id)
+
+    def _stop_supervisors():
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        SUPERVISOR_REGISTRY.stop_home(home_key)
+    _best_effort("CDP supervisor stop", _stop_supervisors)
+
+    def _stop_harness():
+        from tools.browser_use_cli import stop_harness_daemons
+        stop_harness_daemons(home_key)
+    _best_effort("Browser Use harness daemon stop", _stop_harness)
+    for cache in ("_cached_command_timeout", "_cached_snapshot_threshold"):
+        with contextlib.suppress(AttributeError, TypeError):
+            getattr(_bt, cache).pop(home_key, None)
+
+
 def cleanup_all_browsers() -> None:
     """Clean up all active browser sessions (shutdown) and reset cached lookups."""
     with _bt._cleanup_lock:
@@ -725,6 +782,11 @@ def cleanup_all_browsers() -> None:
         SUPERVISOR_REGISTRY.stop_all()
     except Exception:
         pass
+
+    def _stop_harness():
+        from tools.browser_use_cli import stop_harness_daemons
+        stop_harness_daemons()
+    _best_effort("Browser Use harness daemon stop", _stop_harness)
 
     _install._discover_homebrew_node_dirs.cache_clear()
     _bt._chromium_autoinstall_attempted = False

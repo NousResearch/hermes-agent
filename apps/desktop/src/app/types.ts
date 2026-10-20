@@ -52,6 +52,8 @@ export interface BrowserManageResponse {
   connected?: boolean
   url?: string
   messages?: string[]
+  /** `status` / `use`: new chats on this profile get browser_exec (Browser Use mode). */
+  browser_use?: boolean
 }
 
 /** Response from the `session.compress` RPC. `messages` is the post-compress
@@ -93,6 +95,8 @@ export interface SessionSteerResponse {
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
+  /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
+  voice_stopped?: boolean
 }
 
 export interface SessionTitleResponse {
@@ -189,6 +193,9 @@ export interface ClientSessionState {
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean
+  /** Epoch ms this renderer attached to the live runtime. Per-runtime so a
+   *  cached session keeps its elapsed anchor when it becomes foreground again. */
+  runtimeStartedAt: number
   /** Epoch ms the current turn started, or null when idle. Per-session so a
    *  background turn's elapsed timer keeps counting while another session is
    *  focused, and switching sessions doesn't zero a still-running turn's clock.

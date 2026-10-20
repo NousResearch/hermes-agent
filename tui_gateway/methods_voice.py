@@ -18,7 +18,14 @@ method = _registry.method
 
 _voice_sid_lock = threading.Lock()
 _voice_event_sid: str = ""
-_voice_wake_owner: "Optional[Transport]" = None
+_voice_wake_owner: Optional[Transport] = None
+# The transport that started the capture. A shared-owner (canonical) session is not in this process's
+# ``_sessions``, so ``write_json`` cannot route its voice events by sid; they go to this caller instead.
+_voice_event_transport: Optional[Transport] = None
+# The session whose push-to-talk capture is live, and a generation that invalidates its callbacks
+# when that session's voice mode goes off (a late transcript must not land after /voice off).
+_voice_capture_sid: str = ""
+_voice_capture_gen = 0
 
 
 def _caller_transport():
@@ -28,8 +35,13 @@ def _caller_transport():
 def _voice_emit(event: str, payload: dict | None = None) -> None:
     """Emit toward the session that most recently turned voice on (empty sid = active session)."""
     with _voice_sid_lock:
-        sid = _voice_event_sid
-    _emit(event, sid, payload)
+        sid, transport = _voice_event_sid, _voice_event_transport
+    token = bind_transport(transport) if transport is not None else None
+    try:
+        _emit(event, sid, payload)
+    finally:
+        if token is not None:
+            reset_transport(token)
 
 
 def _resume_voice_wake() -> None:
@@ -44,6 +56,61 @@ def _voice_mode_enabled() -> bool:
     return os.environ.get("HERMES_VOICE", "").strip() == "1"
 
 
+def _session_voice_enabled(session_id) -> bool:
+    """Push-to-talk gate: a shared-owner local session's own gateway ``/voice`` mode (what Ink's
+    ``/voice on`` sets through slash.exec, T9); the sidecar's env flag for its own sessions."""
+    try:
+        from gateway.session_config import local_voice_enabled
+        held = local_voice_enabled(session_id)
+    except ImportError:
+        held = None
+    return _voice_mode_enabled() if held is None else held
+
+
+def _set_session_voice_off(session_id) -> bool:
+    """Turn a shared-owner session's own voice mode off (spoken stop, no-speech limit); False when
+    no owner in this process holds it (the sidecar's env flag is the state)."""
+    try:
+        from gateway.session_config import set_local_voice_mode
+        return set_local_voice_mode(session_id, "off") is True
+    except ImportError:
+        return False
+
+
+def _stop_session_voice_capture(session_id) -> None:
+    """End *session_id*'s live capture (not another session's) and drop its late text callbacks."""
+    global _voice_capture_gen
+    with _voice_sid_lock:
+        if not session_id or session_id != _voice_capture_sid:
+            return
+        _voice_capture_gen += 1
+    with contextlib.suppress(Exception):
+        from hermes_cli.voice import stop_continuous
+        stop_continuous()
+    _resume_voice_wake()
+
+
+def _capture_live() -> bool:
+    try:
+        from hermes_cli.voice import is_continuous_active
+    except ImportError:  # an older voice wrapper without the probe
+        return False
+    return bool(is_continuous_active())
+
+
+def _voice_capture_callback(fn):
+    """*fn* while the capture it was registered for is still current; a no-op once invalidated."""
+    with _voice_sid_lock:
+        gen = _voice_capture_gen
+
+    def call(*args):
+        with _voice_sid_lock:
+            current = gen == _voice_capture_gen
+        if current:
+            fn(*args)
+    return call
+
+
 def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
@@ -56,6 +123,16 @@ def _end_voice_chat(*, stop_loop: bool, stop_tts: bool) -> None:
             from hermes_cli.voice import stop_continuous
             stop_continuous()
     if stop_tts:
+        with contextlib.suppress(Exception):
+            _tts_stream_stop(user_barge=False)
+
+
+def _end_session_voice_chat(session_id, *, stop_loop: bool, stop_tts: bool) -> None:
+    """A stop phrase (spoken, typed or full-duplex) ends *session_id*'s voice chat: a shared-owner
+    session through its own mode (which ends only its capture); else the sidecar's env flags."""
+    if not _set_session_voice_off(session_id):
+        _end_voice_chat(stop_loop=stop_loop, stop_tts=stop_tts)
+    elif stop_tts:
         with contextlib.suppress(Exception):
             _tts_stream_stop(user_barge=False)
 
@@ -142,7 +219,7 @@ def _tts_stream_stop(user_barge: bool = True) -> None:
 
 _fd_listener_lock = threading.Lock()
 _fd_listener_active = False
-_fd_speak_pipelines: "set[tuple[threading.Event, threading.Event]]" = set()
+_fd_speak_pipelines: set[tuple[threading.Event, threading.Event]] = set()
 
 
 def _arm_full_duplex_listener() -> None:
@@ -255,7 +332,9 @@ def _deliver_fd_transcript(text: str) -> None:
     except Exception:
         is_stop = False
     if is_stop:  # turn already interrupted / TTS cut at trip time; now end the chat
-        _end_voice_chat(stop_loop=True, stop_tts=False)
+        with _voice_sid_lock:
+            sid = _voice_event_sid
+        _end_session_voice_chat(sid, stop_loop=True, stop_tts=False)
     _voice_emit("voice.transcript", {"stop_phrase": True, "text": text} if is_stop else {"text": text})
 
 
@@ -311,7 +390,7 @@ def _voice_status_payload(**extra) -> dict:
 # wake.detected and the client opens a session + its own capture. The detector yields the mic
 # to voice.record (pause/resume) and to the desktop's browser mic (wake.pause/resume RPCs).
 _wake_lock = threading.Lock()
-_wake_owner_transport: "Optional[Transport]" = None
+_wake_owner_transport: Optional[Transport] = None
 _wake_owner_surface = ""
 
 
@@ -320,7 +399,7 @@ def _wake_owner_snapshot():
         return _wake_owner_transport, _wake_owner_surface
 
 
-def _release_wake_for_transport(transport: "Transport") -> bool:
+def _release_wake_for_transport(transport: Transport) -> bool:
     """Release the wake lease iff ``transport`` is the current gateway owner."""
     global _wake_owner_transport, _wake_owner_surface
     with _wake_lock:
@@ -344,7 +423,7 @@ _wake_resume_retry_lock = threading.Lock()
 _wake_resume_retry_active = False
 
 
-def _wake_resume_if_owner(owner: "Transport", *, retry_seconds: float = 15.0,
+def _wake_resume_if_owner(owner: Transport, *, retry_seconds: float = 15.0,
                           retry_interval: float = 1.0) -> bool:
     """Resume the wake detector for ``owner``, self-healing a busy microphone: reopening right after
     a voice turn can fail while the device is still being released (browser WebRTC tracks release
@@ -447,7 +526,7 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import server_requests
     from tui_gateway.contracts import registry as contracts
     server_requests.advertise(_caller_transport(), bool(params.get("server_requests")))
-    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS)})
+    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True})
 
 
 @method("ping")
@@ -701,8 +780,13 @@ def _vr_transcript(payload: dict) -> None:
 def _vr_on_stop_phrase(t):
     # A SPOKEN bare stop phrase: end the chat like /voice off and emit a distinct signal so
     # clients end the conversation instead of treating it as a no-speech timeout.
-    _end_voice_chat(stop_loop=False, stop_tts=True)
+    _end_session_voice_chat(_voice_capture_sid, stop_loop=False, stop_tts=True)
     _vr_transcript({"stop_phrase": True, "text": t})
+
+
+def _vr_on_silent_limit():
+    _set_session_voice_off(_voice_capture_sid)
+    _vr_transcript({"no_speech_limit": True})
 
 
 def _vr_on_status(state):
@@ -724,16 +808,25 @@ def _(rid, params: dict) -> dict:
     if wake_owner is not None and wake_owner is not transport:
         return _ok(rid, {"status": "busy", "reason": "wake_owned"})
     try:
-        global _voice_event_sid, _voice_wake_owner
-        if action == "start" and not _voice_mode_enabled():
+        global _voice_event_sid, _voice_event_transport, _voice_wake_owner, _voice_capture_sid
+        if action == "start" and not _session_voice_enabled(params.get("session_id")):
             return _err(rid, 4015, "voice mode is off — enable with /voice on")
+        sid = params.get("session_id") or ""
+        if _voice_capture_sid and sid != _voice_capture_sid and _capture_live():
+            return _err(rid, 4016, "voice capture is busy in another session")
         with _voice_sid_lock:
-            _voice_event_sid = params.get("session_id") or _voice_event_sid
+            _voice_event_sid = sid or _voice_event_sid
+            _voice_event_transport = transport
         if action == "stop":
             from hermes_cli.voice import stop_continuous
             stop_continuous(force_transcribe=True)
             _resume_voice_wake()
             return _ok(rid, {"status": "stopped"})
+        # PTT barge-in (#40010): arming the mic cuts in-flight TTS so a stale
+        # reply can't talk over the user — mirrors the CLI record-key handler.
+        # user_barge=True also marks the speech interrupted for the next turn's
+        # model note, and stop_playback() releases the file player.
+        _tts_stream_stop(user_barge=True)
         from hermes_cli.voice import start_continuous
         # Busy probe holds the no-speech counter during long agent turns; safe to re-register every
         # start (older wrappers lack the setter).
@@ -755,15 +848,20 @@ def _(rid, params: dict) -> dict:
         if wake_paused:
             with _voice_sid_lock:
                 _voice_wake_owner = transport
+        live = _voice_capture_callback
         started = start_continuous(
-            on_transcript=lambda t: _vr_transcript({"text": t}), on_status=_vr_on_status,
-            on_silent_limit=lambda: _vr_transcript({"no_speech_limit": True}),
+            on_transcript=live(lambda t: _vr_transcript({"text": t})), on_status=_vr_on_status,
+            on_silent_limit=live(_vr_on_silent_limit),
             silence_threshold=_voice_cfg_number(voice_cfg.get("silence_threshold"), 200),
             silence_duration=_voice_cfg_number(voice_cfg.get("silence_duration"), 3.0),
             auto_restart=False, max_recording_seconds=max_rec if max_rec > 0 else 0.0,
-            on_stop_phrase=_vr_on_stop_phrase)
+            on_stop_phrase=live(_vr_on_stop_phrase),
+            on_partial=live(lambda t: _voice_emit("voice.partial", {"text": t})))
         if started is False:
             _resume_voice_wake()
+        else:
+            with _voice_sid_lock:
+                _voice_capture_sid = sid
         return _ok(rid, {"status": "busy" if started is False else "recording"})
     except Exception as e:
         if wake_paused or action == "stop":
@@ -779,7 +877,7 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4020, "text required")
     try:
-        import hermes_cli.voice  # noqa: F401  (a missing module must answer 5026, not die in a thread)
+        import hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()

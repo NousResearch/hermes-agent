@@ -38,6 +38,15 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// `approval.respond` rides the SAME deadline the backend grants the user to
+// answer: tools/approval_context.py reads `approvals.timeout` (default 300s —
+// gateway push notifications may not be seen for minutes). A shorter client
+// timeout races that window: answer at t=130s and the frontend has already
+// rejected its own RPC while the backend happily applies the decision — the
+// desktop shows "request timed out" and freezes on a card that is actually
+// resolved (#60654). Match the backend default so the client only gives up
+// when the backend itself fails the approval closed.
+export const APPROVAL_RESPOND_TIMEOUT_MS = 300_000
 
 const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the
@@ -113,6 +122,19 @@ interface SessionReplay {
   resolve: (valid: boolean) => void
 }
 
+/**
+ * Most reconnect cursors one client keeps (least recently advanced retire first). Owners keep
+ * replay rings for at most 64 sessions (`tui_gateway/event_replay.py::_REPLAY_SESSIONS_MAX`), so a
+ * cursor idle behind this many busier sessions is almost never still servable. Retiring it says
+ * so the way the owner would: a `session.replay_gap`, after which a pane still showing that
+ * session re-snapshots (exactly what `snapshot_required` asks for); nothing is silently lost.
+ */
+export const REPLAY_CURSOR_MAX = 256
+
+/** The canonical owner's typed refusal for a session it no longer has. */
+const replaySessionGone = (error: unknown): boolean =>
+  (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'not_found'
+
 export class JsonRpcGatewayClient {
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
@@ -138,6 +160,8 @@ export class JsonRpcGatewayClient {
    * silently believe nothing was missed.
    */
   private replayEpoch: string | null = null
+  /** Canonical authorities number events per session; a session's own epoch outranks the process one. */
+  private replayEpochBySession = new Map<string, string>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<
     Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
@@ -434,6 +458,8 @@ export class JsonRpcGatewayClient {
       return
     }
 
+    // Parked frames adopt their epoch when flushed, after the replayed gap.
+    if (sid) { this.adoptSessionReplayEpoch(sid, event.replay_epoch) }
     this.recordSeq(event)
     this.dispatchEvent(event)
   }
@@ -453,7 +479,26 @@ export class JsonRpcGatewayClient {
     const prev = this.lastSeenSeq.get(sid) ?? 0
 
     if (seq > prev) {
-      this.lastSeenSeq.set(sid, seq)
+      this.advanceCursor(sid, seq)
+    }
+  }
+
+  /** Move a session's cursor to `seq` as its most recent; retire the least recently advanced. */
+  private advanceCursor(sid: string, seq: number): void {
+    this.lastSeenSeq.delete(sid)
+    this.lastSeenSeq.set(sid, seq)
+
+    for (const oldest of this.lastSeenSeq.keys()) {
+      if (this.lastSeenSeq.size <= REPLAY_CURSOR_MAX) { break }
+
+      // A replay in flight still owns its cursor; it is retired by a later advance.
+      if (this.replayHold?.has(oldest)) { continue }
+
+      const latest = this.lastSeenSeq.get(oldest)
+      const epoch = this.replayEpochBySession.get(oldest)
+      this.lastSeenSeq.delete(oldest)
+      this.replayEpochBySession.delete(oldest)
+      this.dispatchEvent({ type: 'session.replay_gap', session_id: oldest, payload: { replay_epoch: epoch, latest_seq: latest } })
     }
   }
 
@@ -528,10 +573,23 @@ export class JsonRpcGatewayClient {
     }
 
     try {
+      // Only a canonical session's own epoch qualifies the watermark on the wire. The legacy
+      // process epoch (gateway.ready) is compared with the answer's `epoch` in applyReplayEpochs.
+      // An older legacy `session.events.since` refuses any other key, so sending the process
+      // epoch here makes the reconnect replay fail and drops pending approval and clarify requests.
+      const sessionEpochBefore = this.replayEpochBySession.get(sid)
+
       // `open_requests` on the answer are re-delivered by the channel itself.
-      const result = await this.request<{ events?: GatewayEvent[]; epoch?: string }>(
+      const result = await this.request<{
+        epoch?: string
+        events?: GatewayEvent[]
+        latest_seq?: number
+        replay_epoch?: unknown
+        snapshot_required?: unknown
+        truncated?: boolean
+      }>(
         'session.events.since',
-        { session_id: sid, last_seen: lastSeen },
+        { session_id: sid, last_seen: lastSeen, ...(sessionEpochBefore ? { replay_epoch: sessionEpochBefore } : {}) },
         REPLAY_REQUEST_TIMEOUT_MS
       )
 
@@ -542,17 +600,21 @@ export class JsonRpcGatewayClient {
         return
       }
 
-      const epoch = result?.epoch
-
-      if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
-        // The old cursor no longer describes this process's numbering.
-        this.adoptReplayEpoch(epoch)
-
+      if (this.applyReplayEpochs(sid, result)) {
         return
       }
 
-      if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
-        this.replayEpoch = epoch
+      if (result?.truncated === true) {
+        // The ring evicted events between our watermark and its oldest
+        // retained seq: the tail has a hole (missing message prefix, tool
+        // state, or terminal event), so never paint it as the gap. Skip the
+        // whole window up to the server's head; the barrier then resolves
+        // true, which lets the waiting history reads (the reconnect backstop,
+        // #94779) resync from the authoritative transcript. Parked live
+        // frames newer than that head still dispatch in the finally below.
+        this.skipTruncatedWindow(sid, result)
+
+        return
       }
 
       if (!Array.isArray(result?.events)) {
@@ -569,13 +631,72 @@ export class JsonRpcGatewayClient {
           this.dispatchIfNewer({ ...event, replayed: true })
         }
       }
-    } catch {
-      // Replay is an optimization over lossy-reconnect; never surface errors.
+    } catch (error) {
+      // Replay is an optimization over lossy-reconnect; never surface errors. But the owner's
+      // `not_found` is an answer, not a lost request: the session is gone (deleted, pruned),
+      // nothing will ever replay under that cursor, and keeping it re-asked on every reconnect
+      // while each session ever observed stayed in both maps for the client's lifetime.
+      if (this.replayGeneration === replayGeneration && replaySessionGone(error)) {
+        this.lastSeenSeq.delete(sid)
+        this.replayEpochBySession.delete(sid)
+      }
     } finally {
       if (this.replayGeneration === replayGeneration) {
         this.flushReplayHold(sid, replayGeneration)
       }
     }
+  }
+
+  /** Adopt the replay answer's epoch identity; true when the window must not be dispatched. */
+  private applyReplayEpochs(
+    sid: string,
+    result: { epoch?: string; latest_seq?: number; replay_epoch?: unknown; snapshot_required?: unknown } | undefined
+  ): boolean {
+    const epoch = result?.epoch
+    const sessionEpoch = result?.replay_epoch
+
+    if (result?.snapshot_required === true) {
+      // The canonical authority could not replay our window (epoch changed,
+      // ring truncated, cursor ahead). Keeping the watermark would make the
+      // next reconnect believe nothing was missed; drop it and tell the
+      // consumer to re-resume for a snapshot. A legacy backend reports a
+      // bare `truncated` instead; that skips the window below (#100122).
+      // The session's epoch goes with its cursor: it only ever qualifies that cursor, and the
+      // re-resumed session's next live frame re-establishes both. Keeping it leaked one entry per
+      // session ever observed on this client.
+      this.lastSeenSeq.delete(sid)
+      this.replayEpochBySession.delete(sid)
+      this.dispatchEvent({ type: 'session.replay_gap', session_id: sid, payload: { replay_epoch: sessionEpoch, latest_seq: result.latest_seq } })
+
+      return true
+    }
+
+    if (typeof sessionEpoch === 'string' && sessionEpoch) {
+      // Canonical responses also include `epoch`, but it is session-local,
+      // not the legacy process identity. Never reset unrelated cursors.
+      if (this.adoptSessionReplayEpoch(sid, sessionEpoch)) { return true }
+    } else if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
+      // The old cursor no longer describes this process's numbering.
+      this.adoptReplayEpoch(epoch)
+
+      return true
+    } else if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
+      this.replayEpoch = epoch
+    }
+
+    return false
+  }
+
+  /** Advance the watermark past a truncated replay window without dispatching any of it. */
+  private skipTruncatedWindow(sid: string, result: { events?: GatewayEvent[]; latest_seq?: number }): void {
+    const seqs = (Array.isArray(result.events) ? result.events : []).map(event => event?.seq)
+
+    const head = Math.max(
+      this.lastSeenSeq.get(sid) ?? 0,
+      ...[result.latest_seq, ...seqs].filter((seq): seq is number => typeof seq === 'number' && Number.isFinite(seq))
+    )
+
+    this.advanceCursor(sid, head)
   }
 
   /**
@@ -586,6 +707,9 @@ export class JsonRpcGatewayClient {
     const sid = event.session_id
     const seq = event.seq
 
+    // Parked frames reach here only after the replay window has been applied.
+    if (sid) { this.adoptSessionReplayEpoch(sid, event.replay_epoch) }
+
     if (sid && typeof seq === 'number' && Number.isFinite(seq)) {
       const prev = this.lastSeenSeq.get(sid) ?? 0
 
@@ -593,7 +717,7 @@ export class JsonRpcGatewayClient {
         return
       }
 
-      this.lastSeenSeq.set(sid, seq)
+      this.advanceCursor(sid, seq)
     }
 
     this.dispatchEvent(event)
@@ -613,7 +737,11 @@ export class JsonRpcGatewayClient {
     this.replayEpoch = epoch
 
     if (changed) {
-      this.lastSeenSeq.clear()
+      // Sessions numbered by their own authority epoch keep their cursors.
+      for (const sid of this.lastSeenSeq.keys()) {
+        if (!this.replayEpochBySession.has(sid)) { this.lastSeenSeq.delete(sid) }
+      }
+
       // Revoke requests/cursors from the old numbering, but retain live
       // frames already received on this still-open socket. The socket is
       // still ours and no replay can cover the old numbering, so waiting
@@ -660,6 +788,18 @@ export class JsonRpcGatewayClient {
     }
 
     replay.resolve(true)
+  }
+
+  /** Returns true when an established session numbering has changed. */
+  private adoptSessionReplayEpoch(sid: string, epoch: unknown): boolean {
+    if (typeof epoch !== 'string' || !epoch) { return false }
+    const previous = this.replayEpochBySession.get(sid)
+    const changed = previous !== undefined && previous !== epoch
+
+    if (changed) { this.lastSeenSeq.delete(sid) }
+    this.replayEpochBySession.set(sid, epoch)
+
+    return changed
   }
 
   private cancelReplay(readsMayProceed: boolean): Map<string, SessionReplay> | null {

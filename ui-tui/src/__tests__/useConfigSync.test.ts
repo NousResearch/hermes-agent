@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $uiState, resetUiState } from '../app/uiStore.js'
+import { $uiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
   hydrateFullConfig,
@@ -440,6 +440,49 @@ describe('syncMcpReload (revision-aware ack)', () => {
 // + apply body is now shared as ``hydrateFullConfig()``, exercised
 // directly from both the initial hydration and the poll-tick body.
 describe('hydrateFullConfig', () => {
+  it('hydrates the session busy preference instead of profile defaults and preserves it on read failure', async () => {
+    patchUiState({ sid: 'owner', busyInputMode: 'queue' })
+
+    const request = vi.fn(async (_method: string, params: any) =>
+      params.key === 'busy' ? { value: 'steer' } : { config: { display: { busy_input_mode: 'interrupt' } } }
+    )
+
+    const gw = { isCanonical: true, request } as any
+    const scope = { sid: 'owner', isCurrent: () => true }
+    await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'full', session_id: 'owner' })
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'owner' })
+    expect($uiState.get().busyInputMode).toBe('steer')
+    request.mockImplementation(async (_method, params) => {
+      if (params.key === 'busy') {throw new Error('disconnected')}
+
+      return { config: { display: { busy_input_mode: 'interrupt' } } }
+    })
+    await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
+    expect($uiState.get().busyInputMode).toBe('steer')
+  })
+
+  it('discards delayed full and busy hydration after focus changes', async () => {
+    patchUiState({ sid: 'old', busyInputMode: 'queue' })
+    let current = true
+    const replies: Array<(value: any) => void> = []
+
+    const gw = {
+      isCanonical: true,
+      request: vi.fn(() => new Promise(resolve => replies.push(resolve)))
+    } as any
+
+    const setBell = vi.fn()
+    const pending = hydrateFullConfig(gw, setBell, undefined, undefined, { sid: 'old', isCurrent: () => current })
+    current = false
+    patchUiState({ sid: 'new', busyInputMode: 'interrupt' })
+
+    for (const reply of replies) {reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })}
+    await pending
+    expect(setBell).not.toHaveBeenCalled()
+    expect($uiState.get().busyInputMode).toBe('interrupt')
+  })
+
   beforeEach(() => {
     resetUiState()
   })
@@ -504,5 +547,21 @@ describe('hydrateFullConfig', () => {
     // display flags (round-2 / round-8 invariant).
     await expect(hydrateFullConfig(gw, setBell)).resolves.toBeTruthy()
     expect(setBell).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('hydrateVoiceMode (T9)', () => {
+  it("seeds the voice bit from the session's gateway /voice mode on the shared owner", async () => {
+    const request = vi.fn(async () => ({ value: 'voice_only' }))
+    const setVoiceEnabled = vi.fn()
+    const { hydrateVoiceMode } = await import('../app/useConfigSync.js')
+
+    await hydrateVoiceMode({ isCanonical: true, request } as never, setVoiceEnabled, { isCurrent: () => true, sid: 's1' })
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'voice', session_id: 's1' })
+    expect(setVoiceEnabled).toHaveBeenCalledWith(true)
+
+    request.mockClear()
+    await hydrateVoiceMode({ isCanonical: false, request } as never, setVoiceEnabled, { isCurrent: () => true, sid: 's1' })
+    expect(request).not.toHaveBeenCalled()
   })
 })

@@ -26,6 +26,7 @@ function startupOptions<T extends Record<string, unknown> = Record<string, never
     waitForDecision: vi.fn(async () => 'continue-local' as const),
     waitForLocalStart: vi.fn(async () => {})
   }
+
   return { ...base, ...overrides } as typeof base & T
 }
 

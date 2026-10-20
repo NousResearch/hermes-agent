@@ -100,6 +100,24 @@ describe('PreviewBrowserBar', () => {
     expect(spy).toHaveBeenCalledOnce()
   })
 
+  it('closes the preview from the visible toolbar control', () => {
+    const onClose = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onClose={onClose} />)
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Close' }))
+
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  // #92500: the pane fills the layout with no strip ✕ in reach, so the bar's
+  // close is not optional chrome — but embedders that never pass the verb
+  // (the popped-out Browser shell) must not grow a dead button either.
+  it('renders no close control when no close verb is supplied', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+
+    expect(rendered.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+
   it('toggles the console and DevTools, and labels them by current state', () => {
     const onToggleConsole = vi.fn()
     const onToggleDevTools = vi.fn()

@@ -1,11 +1,5 @@
 export type WindowAcceleratorAction =
-  | 'close-tab'
-  | 'reload'
-  | 'zoom-in'
-  | 'zoom-out'
-  | 'zoom-reset'
-  | 'swallow'
-  | 'ignore'
+  'close-tab' | 'reload' | 'zoom-in' | 'zoom-out' | 'zoom-reset' | 'swallow' | 'ignore'
 
 /**
  * How long after the window gains focus a Close Tab / Reload keyDown is

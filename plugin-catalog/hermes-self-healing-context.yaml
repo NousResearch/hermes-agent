@@ -1,0 +1,17 @@
+name: hermes-self-healing-context
+repo: https://github.com/forumevi/hermes-self-healing-context
+sha: b8ca86d6cc6f5eda445654d7e2cb08289a347cbf
+tier: community
+category: general
+maintainer: forumevi
+version: "2.0.0"
+title: Hermes Self-Healing Context
+capabilities:
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - post_tool_call
+    - pre_llm_call
+description: |
+  Intercepts runtime errors and dynamically patches the context window 
+  using local SQLite FTS5 memory for zero-downtime recovery.

@@ -17,7 +17,8 @@ import { cn } from '@/lib/utils'
 // Reuse these instead of re-deriving per menu so every searchable/compact menu
 // reads identically.
 export const dropdownMenuRow = 'gap-2 rounded-none px-2.5 py-1 text-xs'
-export const dropdownMenuSectionLabel = 'px-2.5 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide'
+export const dropdownMenuSectionLabel =
+  'px-2.5 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-secondary)'
 
 // Keys that must reach Radix's menu handler (navigation/close). Everything else
 // is a filter keystroke and is stopped so the menu's typeahead doesn't hijack it.
@@ -487,6 +488,12 @@ function DropdownMenuSubContent({
     // `overflow` clip. Radix Popper still anchors it to the SubTrigger and
     // handles collision/flip. React events still bubble through the portal, so
     // the parent menu doesn't treat a press here as an outside click.
+    //
+    // `updatePositionStrategy="always"` makes Floating UI's autoUpdate use a
+    // continuous rAF loop instead of the default "optimized" passive scroll
+    // listeners. Without it, a portaled submenu visibly lags behind its trigger
+    // while the parent Content scrolls: the scroll → getBoundingClientRect →
+    // reposition pipeline cannot keep pace with fast wheel events.
     <DropdownMenuPrimitive.Portal container={container}>
       <DropdownMenuPrimitive.SubContent
         // Fixed `max-h-80` rather than the Radix available-height variable:
@@ -516,6 +523,10 @@ function DropdownMenuSubContent({
         // first (child effects run first), so Radix marks it `none`.
         style={{ ...(container ? { pointerEvents: 'auto' } : null), ...style }}
         {...props}
+        // Placed after the spread so callers cannot override it: the rAF loop
+        // is load-bearing for scroll-tracked submenus and must never revert to
+        // the default passive-listener strategy.
+        updatePositionStrategy="always"
       />
     </DropdownMenuPrimitive.Portal>
   )

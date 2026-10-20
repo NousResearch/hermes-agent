@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { appVersionInfo, assertSourceUpdateChannel } from './app-version'
+import { appVersionInfo, assertSourceUpdateChannel, nativeAboutVersion } from './app-version'
 import type { InstallStamp } from './install-stamp'
 
 describe('artifact version identity', (): void => {
@@ -81,5 +81,45 @@ describe('artifact version identity', (): void => {
   it('keeps source installs on their runtime version without a fixed package channel', (): void => {
     expect(appVersionInfo(null, '9.9.9-runtime', '1.2.3')).toMatchObject({ appVersion: '9.9.9-runtime' })
     expect((): void => assertSourceUpdateChannel(null)).not.toThrow()
+  })
+
+  // #124581: the desktop package.json carries a 0.0.0 placeholder, so the
+  // About panel must never repeat it as the running version.
+  it('skips the 0.0.0 package placeholder for builds without a baked display version', (): void => {
+    const stamp: InstallStamp = {
+      payload: 'bundled',
+      tag: null,
+      displayVersion: null,
+      baseVersion: '1.2.3',
+      source: 'local',
+      updateMechanism: 'external'
+    } as InstallStamp
+
+    expect(appVersionInfo(stamp, '', '0.0.0').appVersion).toBe('1.2.3')
+  })
+
+  it('keeps an offline source install unknown instead of reporting 0.0.0', (): void => {
+    const stamp: InstallStamp = {
+      payload: 'bootstrap',
+      tag: null,
+      displayVersion: null,
+      baseVersion: null,
+      commit: 'a'.repeat(40),
+      branch: 'main',
+      dirty: false,
+      source: 'local',
+      updateMechanism: 'self'
+    } as InstallStamp
+
+    const info = appVersionInfo(stamp, '', '0.0.0')
+    expect(info.appVersion).not.toBe('0.0.0')
+    // The native panel cannot render empty; it gets a truthful label.
+    expect(nativeAboutVersion(info)).toBe(`git.${'a'.repeat(7)}`)
+  })
+
+  it('maps an unresolvable native About version to unknown, never empty', (): void => {
+    expect(nativeAboutVersion({ appVersion: '9.9.9' })).toBe('9.9.9')
+    expect(nativeAboutVersion({ appVersion: '0.0.0', baseVersion: '1.2.3' })).toBe('1.2.3')
+    expect(nativeAboutVersion({ appVersion: '' })).toBe('unknown')
   })
 })

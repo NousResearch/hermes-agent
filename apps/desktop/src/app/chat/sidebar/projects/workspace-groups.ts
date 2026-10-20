@@ -1,4 +1,4 @@
-import type { HermesGitWorktree } from '@/global'
+import type { HermesGitBranch, HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
 
@@ -28,6 +28,12 @@ export interface SidebarSessionGroup {
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
   isKanban?: boolean
+  // False ONLY for the non-git heuristic lane of a plain folder (backend
+  // `_place_by_heuristic`): it renders like a main lane but `git switch` on it
+  // dies with "fatal: not a git repository", so branch-targeted actions must
+  // skip it (#61362). Absent (undefined) on lanes from older backends — treat
+  // missing as git, matching the historical behavior.
+  isGit?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
   // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
@@ -127,14 +133,40 @@ export function kanbanWorktreeDir(path: string): null | string {
 /** Label for a main-checkout lane whose session recorded no branch. */
 export const DEFAULT_BRANCH_LABEL = 'main'
 
+/**
+ * The branch "+" on a lane should `git switch` to before opening a session, or
+ * null to open on whatever the checkout is on now. A main-checkout lane label
+ * is a display value: a row with no recorded `git_branch` falls back to
+ * DEFAULT_BRANCH_LABEL (backend and live overlay alike). `git switch main` then
+ * dies with "invalid reference: main" on a `master` repo (#108694). Only a
+ * label that git lists as a branch (local, or a remote-tracking ref
+ * `git switch` can DWIM) counts as a switch target.
+ */
+export function laneSwitchTarget(
+  group: Pick<SidebarSessionGroup, 'isGit' | 'isMain' | 'label' | 'path'>,
+  branches: readonly Pick<HermesGitBranch, 'isRemote' | 'name'>[]
+): null | string {
+  const label = group.label.trim()
+
+  if (!group.isMain || group.isGit === false || !group.path || !label) {
+    return null
+  }
+
+  const known = branches.some(branch =>
+    branch.isRemote ? branch.name.slice(branch.name.indexOf('/') + 1) === label : branch.name === label
+  )
+
+  return known ? label : null
+}
+
 /** Id of the Home bucket (must match the backend tree's `NO_PROJECT_ID`). */
 export const NO_PROJECT_ID = '__no_project__'
 
 /**
  * A session with nowhere to be placed: no cwd and no recorded repo root. These
- * are the rows the Home bucket owns, and the only ones the live overlay can
- * hand it — a row WITH a cwd that the backend still couldn't place (junk root,
- * deleted workspace) needs the backend's probes, so it waits for the snapshot.
+ * are the rows the Home bucket owns on sight — a row WITH a cwd that the
+ * backend couldn't place (junk root, deleted workspace) needs the backend's
+ * probes, so Home takes it only once the snapshot's owner map files it there.
  */
 export const isDetachedSession = (session: SessionInfo): boolean =>
   !(session.cwd || '').trim() && !(session.git_repo_root || '').trim()
@@ -455,12 +487,17 @@ export function liveSessionProjectId(
   return repoRoot
 }
 
-/** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
+/** The lane a row files under: Home when the backend filed it there or it is
+ *  detached (cwd-less), else its live project. */
 export function sessionBucketId(
   session: SessionInfo,
   explicitProjects: ProjectInfo[],
   owners: ReadonlyMap<string, string> = NO_OWNERS
 ): null | string {
+  if (ownerOf(owners, session) === NO_PROJECT_ID) {
+    return NO_PROJECT_ID
+  }
+
   return liveSessionProjectId(session, explicitProjects, owners) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
 }
 
@@ -768,11 +805,13 @@ export function overlayRepoLanes(
 }
 
 /**
- * Home's overlay: its rows have no cwd to place, so this is a plain upsert of
- * detached live sessions into its single lane — a brand-new project-less chat
- * shows the instant it's created, matching the flat Recents list. A chat the
- * authoritative owner map gives to a named project stays out, even while its
- * live copy is briefly detached (else it lists in both places).
+ * Home's overlay: a plain upsert into its single lane of the live sessions
+ * that are detached or that the owner map already files in Home — a brand-new
+ * project-less chat shows the instant it's created, and a chat the backend put
+ * in Home despite its cwd (the bare home dir, a deleted workspace) shows even
+ * though the unhydrated tree carries only its id (#139909). A chat the owner
+ * map gives to a named project stays out, even while its live copy is briefly
+ * detached (else it lists in both places).
  */
 function overlayHomeLane(
   project: SidebarProjectTree,
@@ -788,14 +827,18 @@ function overlayHomeLane(
 
   const belongs = (session: SessionInfo): boolean => !removed.has(session.id) && !ownedElsewhere(session)
   const lane = project.repos[0]?.groups[0]
-  const detached = live.filter(session => isDetachedSession(session) && belongs(session))
+
+  const homed = (session: SessionInfo): boolean =>
+    isDetachedSession(session) || ownerOf(owners, session) === NO_PROJECT_ID
+
+  const arrivals = live.filter(session => homed(session) && belongs(session))
   const kept = (lane?.sessions ?? []).filter(belongs)
 
-  if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
+  if (!arrivals.length && kept.length === (lane?.sessions.length ?? 0)) {
     return project
   }
 
-  const sessions = detached.reduce(upsertSession, kept)
+  const sessions = arrivals.reduce(upsertSession, kept)
   const nextLane = { id: NO_PROJECT_ID, label: project.label, path: null, sessions }
 
   return {

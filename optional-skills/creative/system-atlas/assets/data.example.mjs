@@ -1,6 +1,6 @@
 // Single source of truth for one atlas. Copy to <atlas home>/data.mjs and edit.
 // Build: bun <atlas home>/build.mjs  → writes ../SYSTEM.md and ../atlas.html
-// The atlas home is docs/<system>/atlas/ in repos that commit design docs, or a
+// The atlas home is docs/{system}/atlas/ in repos that commit design docs, or a
 // git-ignored scratch directory in repos that only commit ADRs + CONTEXT.md.
 
 export const META = {

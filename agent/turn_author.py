@@ -55,7 +55,7 @@ def local_origin() -> str:
     return (_clean_text(host) or "").replace("/", "")
 
 
-def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
+def parse_turn_author(raw: Any) -> Optional[dict[str, Any]]:
     """Normalize a dict or JSON string into ``{"id", "name", "is_bot"}``; None for anything else or without id and name.
     The id is whatever the transport knows the sender by: ``bot:<profile>`` on a bot-mode delivery inside one
     install, ``bot:<connection>/<profile>`` when the Desktop relayed it from another machine,
@@ -81,22 +81,22 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
-def turn_author_from_env(environ: Mapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:
+def turn_author_from_env(environ: Mapping[str, str] = os.environ) -> Optional[dict[str, Any]]:
     """The author the dispatcher placed in ``HERMES_TURN_AUTHOR``, or None."""
     return parse_turn_author(environ.get(TURN_AUTHOR_ENV))
 
 
-def take_turn_author_from_env(environ: MutableMapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:
+def take_turn_author_from_env(environ: MutableMapping[str, str] = os.environ) -> Optional[dict[str, Any]]:
     """Read and remove ``HERMES_TURN_AUTHOR`` so subprocesses started during the turn do not inherit it."""
     return parse_turn_author(environ.pop(TURN_AUTHOR_ENV, None))
 
 
-def turn_author_env(author: Dict[str, Any]) -> Dict[str, str]:
+def turn_author_env(author: dict[str, Any]) -> dict[str, str]:
     """The environment entry a dispatcher merges into a child's env."""
     return {TURN_AUTHOR_ENV: json.dumps(author, separators=(",", ":"))}
 
 
-def a2a_key(author: Optional[Dict[str, Any]]) -> Optional[str]:
+def a2a_key(author: Optional[dict[str, Any]]) -> Optional[str]:
     """``a2a:<bot id>``, the shared name for a bot author's turns. None for a human or an id-less bot."""
     if not isinstance(author, dict) or not author.get("is_bot") or not author.get("id"):
         return None

@@ -118,3 +118,42 @@ def test_browser_back_returns_url_when_landed_page_is_public(monkeypatch):
     out = json.loads(browser_tool.browser_back(task_id="task-1"))
 
     assert out == {"success": True, "url": "https://example.com/"}
+
+
+# ---------------------------------------------------------------------------
+# Content-less pages: the attach path deliberately parks the browser on
+# about:blank (see the _attach_initial_page fix), so the page guard must treat
+# it as "no page loaded yet", not as a private/internal target. Otherwise the
+# agent reads the block as "the target site is forbidden" and loops on
+# navigate-retry instead of recognising the empty page.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("url", "blocked"),
+    [
+        ("about:blank", False),
+        ("about:srcdoc", False),
+        ("about:newtab", False),
+        ("", False),
+        ("http://127.0.0.1:8080", True),
+        ("http://[::1]:8080/", True),
+        ("http://10.0.0.5/", True),
+        ("http://169.254.169.254/latest/meta-data/", True),
+        ("chrome://settings", True),
+        ("file:///etc/passwd", True),
+    ],
+)
+def test_current_page_private_url_predicate(monkeypatch, url, blocked):
+    """_current_page_private_url() must report exactly the private/internal
+    pages; content-less and public pages resolve to None."""
+
+    def fake_run(task_id, command, args, **kwargs):
+        return {"success": True, "data": {"result": url}}
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+
+    result = bt_eval_policy._current_page_private_url("task-1")
+
+    assert (result is not None) is blocked
+    if blocked:
+        assert result == url.strip()

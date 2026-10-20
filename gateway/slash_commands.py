@@ -382,7 +382,17 @@ class GatewaySlashCommandsMixin(
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
-        source has no platform/chat to route back to."""
+        source has no platform/chat to route back to.
+
+        DM sources are intentionally NOT auto-subscribed. A DM operator is already in the chat and
+        sees replies via the normal inbound stream; auto-subscribing a DM with ``notify+wake`` floods
+        the DM with one ping + one agent wake-up per terminal event (the t_silence_kanban_dm_notifications
+        incident: 95 homelab-board notify subs accumulated over 1.5 days because every ``/kanban
+        create`` from Bryan's DM at 8943042074 hard-coded ``delivery_mode=notify+wake`` below). Topic
+        sources keep auto-subscribe because the operator needs the bot to re-engage in the topic when
+        the worker finishes. Operators who really do want DM notifications on a specific card can
+        subscribe explicitly with ``/kanban notify-subscribe``.
+        """
         source = event.source
 
         def _field(name: str) -> Optional[str]:
@@ -390,6 +400,11 @@ class GatewaySlashCommandsMixin(
         platform = getattr(source, "platform", None)
         platform_str = (platform.value if hasattr(platform, "value") else str(platform or "")).lower()
         chat_id, chat_type = _field("chat_id"), _field("chat_type")
+        # Skip DM sources — see docstring. ``chat_type`` is the canonical source kind (DM vs topic);
+        # missing chat_type falls back to legacy behavior for compatibility, since pre-existing rows
+        # could land either way and we don't want to break a long-running topic channel by guessing.
+        if chat_type and chat_type.lower() == "dm":
+            return False
         delivery_metadata = self._reply_metadata(event) or None
         if isinstance(delivery_metadata, dict) and chat_type:
             delivery_metadata.setdefault("chat_type", chat_type)

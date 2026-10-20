@@ -1167,6 +1167,41 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert subs[0]["delivery_mode"] == "notify"
 
 
+def test_create_does_not_subscribe_dm_session(monkeypatch, worker_env):
+    """DM sessions must NOT auto-subscribe on ``kanban create``.
+
+    Regression guard for t_silence_kanban_dm_notifications_1792455353: every
+    ``kanban create`` from Bryan's DM at 8943042074 used to create a
+    ``notify+wake`` subscription. Over 1.5 days this accumulated 95 homelab
+    subscriptions, each producing a 4-message wall per terminal event.
+    DMs intentionally skip auto-subscribe: a DM operator is already in the
+    chat, so a passive ping is redundant and an agent wake-up is noise.
+    Operators who want DM notifications on a specific card call
+    ``hermes kanban notify-subscribe`` explicitly.
+    """
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "bryan-dm-8943042074")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "8943042074")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "dm")
+
+    out = kt._handle_create({
+        "title": "auto-sub DM",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    # Card is created but auto-subscribe is skipped for DM sources.
+    assert d["subscribed"] is False, (
+        f"DM source auto-subscribed; this is the t_silence_kanban_dm_notifications regression. "
+        f"output: {d!r}"
+    )
+
+    subs = _list_subs_for_task(d["task_id"])
+    assert subs == [], f"DM auto-subscribe wrote {len(subs)} row(s); expected 0"
+
+
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     """CLI / cron / test sessions have no persistent delivery channel.
     _maybe_auto_subscribe returns False and no row is written."""

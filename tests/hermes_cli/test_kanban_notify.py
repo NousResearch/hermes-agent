@@ -622,10 +622,14 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True
+    # Use chat_type=thread (not DM) for this board-routing test — DMs intentionally skip
+    # auto-subscribe per t_silence_kanban_dm_notifications, see ``_kanban_auto_subscribe``
+    # in gateway/slash_commands.py. The DM-skip path is exercised by
+    # ``test_gateway_create_does_not_autosubscribe_dm_sources`` below.
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
-        chat_type="dm",
+        chat_type="thread",
         thread_id="20197",
         user_id="u1",
     )
@@ -664,6 +668,77 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         assert kbn.list_notify_subs(conn) == []
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_does_not_autosubscribe_dm_sources(kanban_home):
+    """DM sources must NOT auto-subscribe on ``/kanban create``.
+
+    Regression guard for t_silence_kanban_dm_notifications_1792455353: every
+    ``/kanban create`` from Bryan's DM at 8943042074 used to create a
+    ``notify+wake`` subscription. Over 1.5 days this accumulated 95 homelab
+    subscriptions, each producing a 4-message wall per terminal event
+    (``✓ done`` text ping + agent wake-up reply + auto-echo messages). DMs
+    intentionally skip auto-subscribe: a DM operator is already in the chat,
+    so a passive ping is redundant and an agent wake-up is noise. Operators
+    who want DM notifications on a specific card call ``/kanban notify-subscribe``
+    explicitly.
+
+    Test bypasses the full ``gateway.run`` import chain (which has a separate
+    pre-existing test-isolation bug reading ``<hermes-agent-parent>/manifest.json``
+    — see ``test_gateway_create_autosubscribes_on_explicit_board`` for the same
+    failure mode on clean tree) and exercises ``_kanban_auto_subscribe``
+    directly via the mixin.
+    """
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from gateway.config import Platform
+
+    runner = object.__new__(GatewaySlashCommandsMixin)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._reply_metadata = lambda event: {}
+    runner._active_profile_name = lambda: "friday"
+
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="bryan-dm-8943042074",
+        chat_type="dm",
+        thread_id=None,
+        user_id="8943042074",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "DM hit here" --assignee friday',
+        source=source,
+        message_id="999",
+        reply_to_message_id=None,
+    )
+
+    # Direct call: the DM guard at line ~406 short-circuits to False.
+    auto_sub = await runner._kanban_auto_subscribe(event, task_id="probe-task-id", requested_board=None)
+    assert auto_sub is False, (
+        "DM source auto-subscribed; this is the t_silence_kanban_dm_notifications regression. "
+        f"_kanban_auto_subscribe returned {auto_sub!r}"
+    )
+
+    # Contrast: a topic source (chat_type=thread) is NOT short-circuited.
+    topic_source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="wa-services-topic",
+        chat_type="thread",
+        thread_id="20197",
+        user_id="u1",
+    )
+    topic_event = SimpleNamespace(
+        text='/kanban create "topic hit" --assignee friday',
+        source=topic_source,
+        message_id="1000",
+        reply_to_message_id=None,
+    )
+    auto_sub_topic = await runner._kanban_auto_subscribe(topic_event, task_id="probe-task-topic", requested_board=None)
+    assert auto_sub_topic is True, (
+        "Topic source auto-subscribe broke; the DM guard should not affect topics. "
+        f"_kanban_auto_subscribe returned {auto_sub_topic!r}"
+    )
+
 
 @pytest.mark.parametrize(
     "chat_type,thread_id,thread_sessions_per_user",

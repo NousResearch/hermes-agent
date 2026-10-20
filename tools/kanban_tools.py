@@ -1185,7 +1185,18 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
     those are cleared but the subprocess inherits ``HERMES_SESSION_KEY`` -> ``platform="tui"``
     for the TUI poller. ``HERMES_SESSION_ID`` is deliberately NOT a fallback: it is set for
-    every CLI/ACP invocation and would auto-subscribe every CLI run."""
+    every CLI/ACP invocation and would auto-subscribe every CLI run.
+
+    DM sources intentionally return ``None`` — a DM operator is already in the chat and
+    sees replies via the normal inbound stream; auto-subscribing a DM with ``notify+wake``
+    floods the DM with one ping + one agent wake-up per terminal event (the
+    t_silence_kanban_dm_notifications incident: 95 homelab-board notify subs accumulated
+    over 1.5 days because every ``kanban create`` from Bryan's DM at 8943042074 wrote a
+    DM-target sub with ``notify+wake``). Topic sources keep auto-subscribe because the
+    operator needs the bot to re-engage in the topic when the worker finishes. Operators
+    who want DM notifications on a specific card call ``hermes kanban notify-subscribe``
+    explicitly.
+    """
     from gateway.session_context import get_session_env as env
     platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
     if not platform or not chat_id:
@@ -1194,6 +1205,9 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
             return None
         platform, chat_id = "tui", session_key
     chat_type = env("HERMES_SESSION_CHAT_TYPE", "") or None
+    # Skip DM sources — see docstring. ``chat_type`` is the canonical source kind.
+    if chat_type and chat_type.lower() in {"dm", "direct", "private"}:
+        return None
     thread_id = env("HERMES_SESSION_THREAD_ID", "") or None
     message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
     notifier_profile = env("HERMES_SESSION_PROFILE", "")

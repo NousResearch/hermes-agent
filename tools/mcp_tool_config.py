@@ -3,11 +3,13 @@ interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
 import codecs
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -179,6 +181,21 @@ _CONTEXT_VAR_RESOLVERS = {
     "workspaceFolderBasename": _workspace_basename, "pathSeparator": lambda: os.sep, "/": lambda: os.sep}
 
 
+class _RenderedStr(str):
+    """A config string after ``${...}`` rendering, carrying how it resolved, so later steps never
+    guess from text that may itself look like ``${...}``. ``missed``: some env reference was unset
+    (or empty) and kept its placeholder; a re-render (connect renders again under the owner's fresh
+    scope) retries from ``template``, while a fully resolved value is final. ``unset_ref``: the
+    template was one whole env reference that missed."""
+
+    def __new__(cls, text: str = "", template: Optional[str] = None, missed: bool = False, unset_ref: bool = False):
+        rendered = super().__new__(cls, text)
+        rendered.template = text if template is None else template
+        rendered.missed = missed
+        rendered.unset_ref = unset_ref
+        return rendered
+
+
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
@@ -199,7 +216,13 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         if key in os.environ:
             env[key] = os.environ[key]
     if user_env:
-        env.update(user_env)
+        # An entry rendered from one whole ``${VAR}`` that is unset (or empty) counts as absent, so
+        # a plugin can forward an optional var without the child seeing the literal placeholder.
+        # The key keeps its baseline value, if any: the MCP SDK re-adds its own inherited set
+        # (PATH, HOME, TERM, ...) at spawn anyway, so popping here would not unset it.
+        for key, value in user_env.items():
+            if not getattr(value, "unset_ref", False):
+                env[key] = value
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
@@ -259,6 +282,20 @@ def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
     if executable is None:
         raise RuntimeError(f"Hermes-managed {command} is not installed; run `hermes pm install {package}`")
     return executable, dirs
+
+
+def _outside_package(launcher: str, managed: str, dirs: list[str]) -> tuple[str, list[str]]:
+    """Hermes's npm/node *launcher* and toolchain *dirs*, swapped for PM's copies outside a
+    sealed Windows payload (``pm.user_facing.copies``). npm starts each package bin through
+    cmd.exe, and cmd.exe cannot start the packaged ``node.exe``."""
+    from pm.user_facing import copies
+
+    moved = copies(dirs)
+    if moved == dirs:
+        return managed, dirs
+    # Plain which(): Hermes's own copy dirs hold one real node.exe/npx.cmd, so the parent's
+    # PATHEXT is the right question (unlike a user server's config env, see _which_with_config_pathext).
+    return shutil.which(launcher, path=os.pathsep.join(moved)) or managed, moved
 
 
 def _is_hermes_managed_bin_dir(directory: str) -> bool:
@@ -342,6 +379,8 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     managed = _managed_launcher(launcher) if launcher in _MANAGED_LAUNCHERS else None
     if managed is not None:
         resolved_command, dirs = managed
+        if _MANAGED_LAUNCHERS[launcher] == "npm":
+            resolved_command, dirs = _outside_package(launcher, resolved_command, dirs)
         # Moved to the front even when already on PATH behind a user's copy.
         keys = {os.path.normcase(d) for d in dirs}
         rest = [p for p in resolved_env.get("PATH", "").split(os.pathsep) if p and os.path.normcase(p) not in keys]
@@ -445,16 +484,97 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     return None
 
 
+def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
+    """``(node.exe, [bin script, *args])`` for ``npx [-y] <pkg> ...`` when *command* is a sealed
+    Windows payload's own npx, else None.
+
+    That npx starts the package bin through cmd.exe, and cmd.exe cannot start the packaged
+    ``node.exe`` (``pm.user_facing``). Hermes gets here only without a host Node and without
+    a copy that PM may make. The payload's Python CAN start the packaged ``node.exe``, so the
+    package is installed with npm's own script and the bin's script runs on that node.
+    Install scripts stay off, because npm runs them through cmd.exe too. None keeps plain
+    npx (an honest failure) for any other argv shape, a non-registry spec (git, URL, path:
+    npm installs those under a name the spec does not show), a failed install, or an
+    unclear bin.
+
+    Like npx, only an exact version is reused as installed. Any other spec re-resolves on
+    each start and keeps the previous install when npm cannot run (offline).
+    """
+    from pm.user_facing import _sealed_dirs, applies
+
+    if not applies() or not isinstance(args, list):
+        return None
+    npm_dirs = {os.path.normcase(d): d for d in _sealed_dirs("npm")}
+    npm_dir = npm_dirs.get(os.path.normcase(os.path.dirname(str(command))))
+    node = shutil.which("node", path=os.pathsep.join(_sealed_dirs("node")))
+    npm_cli = os.path.join(npm_dir or "", "node_modules", "npm", "bin", "npm-cli.js")
+    if npm_dir is None or node is None or not os.path.isfile(npm_cli):
+        return None
+    rest = list(args)
+    while rest and rest[0] in ("-y", "--yes"):
+        rest.pop(0)
+    spec = str(rest[0]) if rest else ""
+    if not spec or spec.startswith("-") or any(str(a) in ("-y", "--yes") for a in rest[1:]):
+        return None
+    if ":" in spec or spec.startswith((".", "/", "\\", "~")) or ("/" in spec and not spec.startswith("@")):
+        return None
+    scope, _, bare = spec.rpartition("/") if spec.startswith("@") else ("", "", spec)
+    base, _, version = bare.partition("@")
+    name = (f"{scope}/" if scope else "") + base
+    from hermes_constants import get_hermes_home
+
+    prefix = Path(get_hermes_home()) / "cache" / "mcp-npx" / hashlib.sha256(spec.encode()).hexdigest()[:16]
+    manifest = prefix / "node_modules" / name / "package.json"
+    exact = re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?", version) is not None
+    if not (exact and manifest.is_file()):
+        install = [node, npm_cli, "install", "--prefix", str(prefix), "--no-save", "--ignore-scripts",
+                   "--no-audit", "--no-fund", "--loglevel=error", spec]
+        try:
+            result = subprocess.run(install, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    stdin=subprocess.DEVNULL, timeout=600, check=False)
+        except (subprocess.SubprocessError, OSError) as exc:  # hang, unwritable prefix, AV lock, node not startable
+            result = subprocess.CompletedProcess(install, 1, "", str(exc))
+        if result.returncode != 0 or not manifest.is_file():
+            logger.warning("npm install of %s with the packaged node failed: %s", spec,
+                           (result.stderr or result.stdout).strip()[-500:])
+            if not manifest.is_file():
+                return None
+    try:
+        bin_field = (json.loads(manifest.read_text(encoding="utf-8-sig")) or {}).get("bin")
+    except (OSError, ValueError):
+        return None
+    if isinstance(bin_field, dict):
+        bin_field = bin_field.get(base) or (
+            next(iter(bin_field.values())) if len(bin_field) == 1 else None)
+    if not isinstance(bin_field, str):
+        return None
+    return node, [str(manifest.parent / bin_field), *rest[1:]]
+
+
 def _interpolate_env_vars(value):
     """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
     refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder."""
+    value, not another profile's in ``os.environ``). Unset (or empty) vars keep the literal placeholder;
+    a templated string comes back as a ``_RenderedStr`` recording how it resolved."""
     from agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
+        if isinstance(value, _RenderedStr) and not value.missed:
+            return value
+        template = getattr(value, "template", value)
+        missed = []
+
         def _replace(m):
             resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
-            return resolver() if resolver is not None else (_get_secret(_env_ref_name(m.group(1)), m.group(0)) or m.group(0))
-        return _ENV_VAR_PATTERN.sub(_replace, value)
+            if resolver is not None:
+                return resolver()
+            resolved = _get_secret(_env_ref_name(m.group(1)), None)
+            if not resolved:
+                missed.append(m.group(0))
+            return resolved or m.group(0)
+        if not _ENV_VAR_PATTERN.search(template):
+            return value
+        text = _ENV_VAR_PATTERN.sub(_replace, template)
+        return _RenderedStr(text, template, missed=bool(missed), unset_ref=missed == [template])
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -542,6 +662,9 @@ def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
 
 def _load_mcp_config() -> dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        return {}
     try:
         from hermes_cli.config import load_config
         from utils import env_var_enabled as _env_enabled

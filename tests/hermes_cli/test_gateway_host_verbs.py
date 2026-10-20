@@ -64,6 +64,8 @@ def host_owner(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     home = tmp_path / "root"
+    # A live owner holds the host lock for its lifetime; a record without that flock is a corpse.
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     _write_record(child.pid, home, ("default", "ops", "coder"))
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -72,6 +74,7 @@ def host_owner(tmp_path, monkeypatch):
     try:
         yield SimpleNamespace(pid=child.pid, home=home, proc=child)
     finally:
+        hr.release_host_lock(hr.ROLE_GATEWAY)
         child.terminate()
         child.wait(timeout=10)
 

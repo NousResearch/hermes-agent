@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (solo per il prossimo turno — viene ripristinato dopo una risposta)"
     switch_cancelled: "🟡 Cambio di modello annullato. Modello attuale invariato ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Fallback testuale: rispondi `{prefix}approve` per cambiare o `{prefix}cancel` per mantenere il modello attuale._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Agenti e attività attivi**"
     active_agents: "**Agenti attivi:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
     share_hint: "Condividi questi link con il team Hermes per ricevere supporto."
     report_label: "Report"
+    local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug` per caricare il report riepilogativo."
   deny:
     stale: "❌ Comando negato (l'approvazione era obsoleta)."
     no_pending: "Nessun comando in attesa da negare."
@@ -184,8 +187,8 @@ gateway:
     choice_normal: "normal — elaborazione standard"
     choice_auto: "auto — veloce nei primi secondi di ogni turno"
     choice_cold: "cold — veloce solo nel primo turno di una sessione"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prezzo x6)"
-    ultrafast_not_supported: "⚡ Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, prezzo x6"
+    ultrafast_not_supported: "⚡ Ultrafast non è disponibile per `{model}` su questo account o percorso."
   footer:
     status: "📎 Footer di runtime: **{state}**\nCampi: `{fields}`\nPiattaforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -435,7 +438,6 @@ gateway:
     last_activity: "**Ultima attività:** {timestamp}"
     model: "**Modello:** `{model}`"
     model_provider: "**Modello:** `{model}` ({provider})"
-    free_tier: "Nous · piano gratuito · nous/welcome · /login per accedere"
     context: "**Contesto:** {used} / {total} ({pct}%)"
     context_used: "**Contesto:** ~{used} token"
     tokens: "**Token fatturati in totale:** {tokens} _(non è la dimensione attuale del contesto; usa `/context`)_"
@@ -444,6 +446,9 @@ gateway:
     state_no: "No"
     queued: "**Follow-up in coda:** {count}"
     platforms: "**Piattaforme connesse:** {platforms}"
+  discard:
+    nothing: "Niente da scartare: questa chat non ha turni persi in un riavvio."
+    done: "🗑️ Scartati {count} turni persi; non sono stati rieseguiti. I tuoi messaggi salvati riceveranno ora risposta."
   stop:
     stopped_pending: "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."
     stopped: "⚡ Fermato. Puoi continuare questa sessione."
@@ -779,8 +784,6 @@ gateway:
   plan:
     ack_task: "Pianificazione: {task}"
     ack_conversation: "Pianificazione dal contesto di questa conversazione…"
-  initiate_setup:
-    ack: "Avvio della configurazione…"
   init:
     start_failed: "Impossibile avviare /init — riprova."
     ack_update: "Aggiornamento di AGENTS.md da una scansione del progetto…"
@@ -843,7 +846,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway riavviato correttamente. La tua sessione continua."
-    free_tier_line: "Inferenza: piano gratuito Nous (nous/welcome). Accedi per avere di più: /login"
     online: "♻️ Gateway online — Hermes è tornato ed è pronto."
     db_corrupt: "⚠️ Rilevata corruzione del database delle sessioni. I messaggi potrebbero non essere salvati. Opzioni di ripristino:\n1. Esegui `hermes {profile_arg}doctor --fix`\n2. Ferma il gateway, poi ripristina con:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (se segnala che è recuperabile) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — il ripristino crea prima uno snapshot del file danneggiato; NON eseguire `sqlite3 ... \".recover\"` sullo state.db attivo, una CLI sqlite3 vulnerabile può corromperlo ulteriormente\n3. Ripristina da un backup in {backups_dir}/\nEsegui `hermes {profile_arg}doctor` per una diagnostica sanificata."
     db_fts_corrupt: "⚠️ Il database delle sessioni ha segnalato un errore di corruzione limitato all'indice di ricerca (FTS5); le tabelle dei messaggi non sono danneggiate. I messaggi potrebbero non essere salvati finché non viene riparato: esegui `hermes {profile_arg}doctor --fix`, poi riavvia il gateway. Non eseguire strumenti di ripristino né ripristinare un backup a meno che `hermes {profile_arg}doctor` non confermi il danno."
@@ -1532,6 +1534,8 @@ slash:
     description: "Importa un archivio di profilo condiviso come nuovo profilo"
   stop:
     description: "Termina tutti i processi in background in esecuzione"
+  discard:
+    description: "Scarta un turno perso al riavvio di Hermes così la coda di questa chat riprende"
   pause:
     description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); '/pause off' riprende"
   deny:
@@ -1558,8 +1562,6 @@ slash:
     description: "Riesegui un prompt a intervalli ricorrenti in questa sessione"
   plan:
     description: "Scrivi un piano di implementazione in markdown in .hermes/plans/ senza eseguire nulla"
-  initiate-setup:
-    description: "Avvia la configurazione iniziale: conoscerti e adattare Hermes a te"
   moa:
     description: "Esegui un prompt con il preset Mixture of Agents predefinito, poi ripristina il tuo modello"
   subgoal:
@@ -1687,6 +1689,21 @@ slash:
   quit:
     description: "Esci dalla CLI (usa --delete per eliminare anche la cronologia della sessione)"
 cli:
+  modern:
+    thought_for: "Ha pensato per {seconds}s"
+    thought: "Ha pensato"
+    working: "Al lavoro…"
+    preparing: "Preparazione di {what}…"
+    hint_steer: "guida"
+    hint_queue: "accoda"
+    hint_interrupt: "interrompi"
+    hint_stop: "ferma"
+    hint_commands: "comandi"
+    hint_files: "file"
+    hint_shell: "shell"
+    placeholder_busy_steer: "scrivi per guidare questo turno · Tab lo accoda per dopo"
+    placeholder_busy_interrupt: "scrivi per reindirizzare questo turno · Tab lo accoda per dopo"
+    placeholder_busy_queue: "scrivi per accodare un messaggio dopo questo turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Impossibile caricare la fatturazione"
@@ -1972,6 +1989,7 @@ cli:
     desc_switch_anyway: "Usa questo modello per la sessione Hermes corrente."
     choice_cancel: "Annulla"
     desc_keep_current_model: "Mantieni il modello attuale."
+    confirm_choice_prompt: "Scelta [1/2]: "
     switch_cancelled: "Cambio di modello annullato."
     selection_failed: "✗ Selezione del modello non riuscita: {error}"
     switch_failed: "⚠ Passaggio al modello {model} non riuscito ({error}); resto su {old_model}."
@@ -2229,6 +2247,7 @@ cli:
     queue_heading: "Coda · {count} in coda · /queue list{controls}"
     more_queued: "+{count} altri"
     transcript_unavailable: "Trascrizione in tempo reale non ancora disponibile."
+    control_pending: "Invio in corso…"
     steer_prompt: "Indirizza: "
     roster_empty: "Nessun subagente attivo né processo in background. I risultati arrivano nella conversazione."
     entry_gone: "Questa voce non è più attiva."
@@ -2279,6 +2298,7 @@ cli:
     failed: "Connessione non riuscita"
     authorized_no_tools: "Autorizzato. Strumenti non disponibili."
     connected: "Connesso"
+    named_account: "Hermes ha chiamato questo account {name} {alias}. Puoi rinominarlo quando vuoi."
     waiting: "In attesa…"
   editor:
     only_interactive: "L'editor esterno è disponibile solo nella CLI interattiva."
@@ -2366,6 +2386,14 @@ cli:
     move_out_of_range: "Spostamento fuori dai limiti della coda. Dimensione attuale: {size}"
     moved: "Elemento {source} della coda spostato in posizione {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "Il gateway non l'ha accodato: {error}. Nulla è stato accodato; invialo di nuovo a fine turno."
+    submit_unknown: "Il gateway non ha risposto ({error}), quindi il prompt potrebbe essere già in coda. Controlla /queue list prima di inviarlo di nuovo."
+    move_gateway_fifo: "Il gateway esegue i prompt in coda nell'ordine di invio; modificane o rimuovine uno invece."
+    remove_refused: "Impossibile rimuovere l'elemento {index} della coda: {error}"
+    edit_refused: "Impossibile modificare l'elemento {index} della coda: {error}"
+    already_started: "L'elemento {index} della coda è già partito; viene eseguito così come è stato inviato."
+    started_stopped: "L'elemento {index} della coda era già partito; il gateway lo ha fermato."
+    change_unknown: "Il gateway non ha risposto sull'elemento {index} della coda ({error}); controlla /queue list prima di riprovare."
   reload:
     env_reloaded: "Ricaricato .env (variabili aggiornate: {count})"
   steer:
@@ -2660,7 +2688,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: {model})."
+      ultrafast_not_supported: "(._.) Ultrafast non è disponibile per {model} su questo account o percorso."
       usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} impostato su {value} {scope}"
@@ -2918,8 +2946,6 @@ cli:
     plan:
       planning: "📋 Pianificazione: {task}"
       from_conversation: "📋 Pianificazione dal contesto di questa conversazione..."
-    initiate_setup:
-      starting: "🧭 Avvio della configurazione..."
     init:
       updating: "⚡ Aggiornamento di AGENTS.md da una scansione del progetto..."
       generating: "⚡ Generazione di AGENTS.md da una scansione del progetto..."
@@ -3008,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   Torna al backend browser predefinito"
       usage_status: "status       Mostra la modalità browser attuale"
       usage_use: "use [off]    Passa alla modalità Browser Use (CLI 3.0) / torna agli strumenti integrati"
+      remote_gateway: "/browser connect e /browser disconnect gestiscono un browser Chromium sull'host del gateway — disponibile solo con un gateway locale."
+      checking: "Verifica del debug remoto del browser Chromium su {url}..."
+      new_sessions_only: "Si applica alle nuove sessioni — questa mantiene gli strumenti attuali (/new per avviarne una)."
+      status_gateway_default: "🌐 Browser: backend browser predefinito del gateway (nessuna connessione CDP attiva)"
     heartbeat:
       label: "Heartbeat"
       paused: "⏸ Heartbeat in pausa: {prompt}"
@@ -3116,6 +3146,10 @@ cli:
     loaded: "(caricato)"
     not_found: "(non trovato)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Non impostata!"
     value_not_set: "non impostato"
     section_model: "Modello"
@@ -3297,8 +3331,22 @@ cli:
     next_session_deepens: "La prossima sessione `hermes -w` approfondisce il clone ed elimina automaticamente i worktree già uniti."
     unpushed_keeping: "⚠ Il worktree ha commit non inviati, mantengo: {path}"
     uncommitted_keeping: "⚠ Il worktree ha modifiche non committate, mantengo: {path}"
+    kept_reason: "⚠ Worktree mantenuto ({reason}): {path}"
     clean_up_manually: "Per pulire manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree pulito: {path}"
+    exit_question_dirty: "Questo worktree ha modifiche non committate: {path}"
+    exit_question_unpushed: "Questo worktree ha commit non inviati: {path}"
+    exit_choice_keep: "Mantieni il worktree (predefinito)"
+    exit_choice_archive: "Archivialo e rimuovilo (ripristinabile)"
+    exit_choice_discard: "Rimuovilo e scarta le modifiche"
+    archiving: "Archiviazione di {path} … (può richiedere tempo per un albero grande)"
+    archived: "✓ Worktree archiviato in {ref} e rimosso: {path}"
+    restore_hint: "Ripristinalo con: hermes worktree restore {name}"
+    archive_failed: "✗ Impossibile archiviare {path}, lo mantengo: {error}"
+    archived_kept: "✓ Worktree archiviato in {ref} ma mantenuto ({reason}): {path}"
+    sweep_archived_removed: "archiviato + rimosso → {ref}"
+    sweep_archived_kept: "archiviato, mantenuto ({reason}) → {ref}"
+    discarded: "Worktree rimosso e modifiche scartate: {path}"
 display:
   verb:
     web_search: "Ricerca sul web"
@@ -3727,7 +3775,7 @@ tips:
   t241: "Il gateway mette in cache le istanze AIAgent per sessione — distruggere questa cache rompe il prompt caching di Anthropic."
   t242: "Qualsiasi sito web può esporre skill tramite /.well-known/skills/index.json — l'hub delle skill le scopre automaticamente."
   t243: "Il log di audit delle skill in ~/.hermes/skills/.hub/audit.log traccia ogni operazione di installazione e rimozione."
-  t244: "I worktree git obsoleti vengono puliti automaticamente all'avvio: gli alberi puliti e completamente uniti vengono rimossi; il lavoro non committato o non pushato viene sempre preservato."
+  t244: "I worktree git obsoleti vengono puliti automaticamente: gli alberi puliti e già uniti vengono rimossi; quelli inattivi con modifiche non committate o non inviate vengono prima archiviati e si possono ripristinare con hermes worktree restore."
   t245: "I profili delimitano lo stato di Hermes tramite HERMES_HOME; i sottoprocessi degli strumenti host mantengono la tua HOME reale a meno che terminal.home_mode sia profile."
   t246: "La variabile d'ambiente HERMES_HOME_MODE (ottale, es. 0701) imposta permessi di directory personalizzati per l'attraversamento da parte del server web."
   t247: "Modalità container: metti .container-mode in HERMES_HOME e la CLI host passa automaticamente in esecuzione nel container."

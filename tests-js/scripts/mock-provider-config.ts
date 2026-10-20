@@ -14,11 +14,15 @@ const configSchema = z.object({
   auxiliary: z.object({ title_generation: section.optional() }).passthrough().optional(),
   approvals: section.optional(),
   display: section.optional(),
+  onboarding: section.optional(),
 }).passthrough()
 
 //: Entry name this writer owns in ``custom_providers``; reconfiguring replaces
 //: it rather than stacking duplicates.
 const MOCK_PROVIDER_NAME = 'Mock'
+
+/** The model id the seeded config selects; the chat smoke waits for the app to show it. */
+export const MOCK_MODEL_ID = 'mock-model'
 
 export function validateMockUrl(value: string): string {
   const url = new URL(value)
@@ -60,7 +64,7 @@ export function writeMockProviderConfig(
     // environment. `providers:` stays untouched (a provider named 'mock' only
     // resolved on trees that had registered such a profile, so older refs died
     // with "Unknown provider 'mock'").
-    model: { ...config.model, default: 'mock-model', provider: 'custom', base_url: `${url}/v1`, context_length: modelContextLength ?? 64000 },
+    model: { ...config.model, default: MOCK_MODEL_ID, provider: 'custom', base_url: `${url}/v1`, context_length: modelContextLength ?? 64000 },
     providers: { ...config.providers },
     custom_providers: [
       ...(config.custom_providers ?? []).filter(entry => entry?.name !== MOCK_PROVIDER_NAME),
@@ -68,6 +72,10 @@ export function writeMockProviderConfig(
     ],
     auxiliary: { ...config.auxiliary, title_generation: { ...config.auxiliary?.title_generation, enabled: false } },
     approvals: { ...config.approvals, mode: 'off' },
+    // A fresh desktop install opens the first-run onboarding chat, which takes the
+    // first message the smoke sends; these journeys test install and update, so
+    // the root config records onboarding as done.
+    onboarding: { ...config.onboarding, run: false },
     ...extra,
   }
 

@@ -532,8 +532,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: ci-timings-html
         with:
-          name: ci-timings-report
           path: ci-timings-report.html
+          archive: false
           retention-days: 14
 
       - name: Build linked review status

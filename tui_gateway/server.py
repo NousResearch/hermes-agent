@@ -1485,8 +1485,17 @@ DESKTOP_BACKEND_CONTRACT = 8
 def _session_usage_snapshot(session: dict | None) -> dict:
     sess = session or {}
     mirror_usage = _metadata_mirror(session).get("usage")
-    if sess.get("agent") is not None and not (sess.get("_compute_host_active") and isinstance(mirror_usage, dict)):
-        return _get_usage(sess["agent"])
+    agent = sess.get("agent")
+    # Even when a session routes to a compute host (Mac Studio), the local agent still has
+    # _api_latency_history and _api_output_history populated from turns that completed on
+    # the remote host — read them so the desktop can show token speed for local proxy
+    # sessions.  Mirror usage is still the fallback when the local agent is absent.
+    if agent is not None and not (sess.get("_compute_host_active") and isinstance(mirror_usage, dict)):
+        return _get_usage(agent)
+    # Local agent exists but the session is compute-host active: read from the local copy
+    # so the desktop shows token-speed even when the actual inference happens remotely.
+    if agent is not None:
+        return _get_usage(agent)
     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
 
 
@@ -1571,6 +1580,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo, approval_mode = False, "manual"
     # A switch queued mid-turn applies at next turn start (agent.model still reads the OLD model); report the
     # pending pick so the end-of-turn settle doesn't blip the UI back first.
+    # Add working_model/provider that always reflects the agent's actual running model regardless
+    # of pending switches, so the desktop can distinguish "what's running" from "what's requested".
     pending_switch = sess.get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
@@ -1581,6 +1592,11 @@ def _session_info(agent, session: dict | None = None) -> dict:
         with _profile_build_scope(sess.get("profile_home") or _hermes_home):
             provider = _runtime_model_config(agent).get("provider", provider)
     model = pending_model or mirror.get("model", getattr(agent, "model", ""))
+    # working_model/provider: the actual agent's model, even when a pending switch shows a different
+    # pick.  Useful so the desktop can show "running qwen3.6-35b-splash (switching to splash-m5-38)"
+    # instead of just "splash-m5-38" when the old model is still doing the work.
+    working_model = getattr(agent, "model", "") or mirror.get("model", "")
+    working_provider = getattr(agent, "provider", "") or mirror.get("provider", "")
     # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
     # Hermes-internal step (#61634) as a wire level the route does not have.
@@ -1596,6 +1612,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
                                                                     route_known=not pending_provider, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
+        "working_model": working_model, "working_provider": working_provider,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),

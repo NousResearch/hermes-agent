@@ -6,7 +6,7 @@ description: "First-party TinyFish plugin: free Search and Fetch as a web provid
 maintainer: tinyfish-io
 title: TinyFish
 version: "0.2.2"
-tier: community
+tier: verified
 category: web
 requires_hermes: ">=0.19"
 docs_url: https://docs.tinyfish.ai

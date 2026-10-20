@@ -1241,6 +1241,18 @@ def _run_foreground(
     to ``session_key``) anchors the durable cwd record — the subagent-child
     task_id, so a child ``cd`` stays off the parent's record (#140395)."""
     cwd_record_key = cwd_session_key or session_key
+    # Mirror key for a TOP-LEVEL turn whose cwd anchor moved off the caller's
+    # bound session key (gateway/TUI: task_id ≠ HERMES_SESSION_KEY): session-keyed
+    # readers (the /init ladder) must still track its cd. A subagent child is
+    # excluded via its container alias (seed_workspace registers child→parent) —
+    # for a child, ``session_key`` is the PARENT's key, exactly the record a
+    # child cd must not rewrite (#140395).
+    mirror_key: Optional[str] = None
+    if session_key and cwd_record_key != session_key:
+        with _container_alias_lock:
+            is_registered_child = cwd_record_key in _container_aliases
+        if not is_registered_child:
+            mirror_key = session_key
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
@@ -1296,7 +1308,8 @@ def _run_foreground(
         record_terminal_outcome(command, env_type, result)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
-        task_id=task_id, session_id=session_id, session_key=cwd_record_key, workdir=workdir,
+        task_id=task_id, session_id=session_id, session_key=cwd_record_key,
+        mirror_session_key=mirror_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
     )
 

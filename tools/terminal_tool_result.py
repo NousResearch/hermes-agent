@@ -206,6 +206,7 @@ def _verification_evidence(command, cwd, session_id, returncode, output) -> Opti
 def finalize_foreground_result(
     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
+    mirror_session_key: Optional[str] = None,
     workdir: Optional[str], command_cwd: Optional[str], approval_note: Optional[str],
 ) -> str:
     """Turn a raw ``env.execute`` result into the tool's JSON result string."""
@@ -222,6 +223,14 @@ def finalize_foreground_result(
         observed_cwd = (result or {}).get("cwd") or getattr(env, "cwd", None)
     if not workdir and observed_cwd:
         record_session_cwd(session_key, observed_cwd)
+        # Mirror a TOP-LEVEL cd onto the caller's bound session key: the durable
+        # record moved to the turn task_id (#140395), but session-keyed readers —
+        # the /init ladder (_resolve_session_cwd), gateway/TUI dispatch — must
+        # still track it. Subagent children never mirror (their task_id is
+        # alias-registered, so no mirror key is passed): the parent's session
+        # key is exactly the record a child cd must not rewrite.
+        if mirror_session_key:
+            record_session_cwd(mirror_session_key, observed_cwd)
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)

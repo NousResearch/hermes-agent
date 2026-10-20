@@ -43,11 +43,15 @@ def _install(monkeypatch, env):
 
 
 def test_child_cd_does_not_rewrite_parent_record(monkeypatch):
-    """A child's observed cwd lands on its own task_id record, not the parent's."""
+    """A child's observed cwd lands on its own task_id record, not the parent's.
+    The container alias is what seed_workspace registers for every real child
+    (child→parent), so an alias-registered task_id is never treated as a
+    top-level turn whose cd should mirror onto the caller's session key."""
     env = _ObservingEnv(observed="/child/dir")
     child, parent = "child-task-1", "parent-session-1"
     _install(monkeypatch, env)
     record_session_cwd(parent, "/parent/start")
+    terminal_tool.register_container_alias(child, parent)
 
     token = set_current_session_key(parent)
     try:
@@ -93,3 +97,76 @@ def test_top_level_call_without_task_id_keeps_session_key_anchor(monkeypatch):
 
     assert result["exit_code"] == 0
     assert get_session_cwd("session-anchor-3") == "/top/dir"
+
+
+def test_top_level_cd_mirrors_onto_bound_gateway_session_key(monkeypatch):
+    """A top-level turn under a bound gateway/TUI session (contextvar session key
+    differs from the turn task_id) still tracks its cd on BOTH keys: the task_id
+    record (what seed_workspace and the turn-workspace binding read) and the
+    session-key record (what session-keyed readers — the /init ladder
+    ``_resolve_session_cwd``, gateway ``run_inbound`` / TUI ``methods_tools``
+    dispatch — read via HERMES_SESSION_KEY). Without the mirror, /init would
+    stop following a top-level cd once the anchor moved to the task_id."""
+    env = _ObservingEnv(observed="/moved/dir")
+    task, gateway_key = "turn-task-4", "agent:main:conv-4"
+    _install(monkeypatch, env)
+    record_session_cwd(gateway_key, "/original/start")
+
+    token = set_current_session_key(gateway_key)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(command="cd /moved/dir && pwd", task_id=task)
+        )
+    finally:
+        reset_current_session_key(token)
+
+    assert result["exit_code"] == 0
+    assert get_session_cwd(task) == "/moved/dir"
+    assert get_session_cwd(gateway_key) == "/moved/dir"
+
+
+def test_child_background_command_resolves_own_cwd_record(monkeypatch):
+    """A child's background spawn resolves its start directory from the child's
+    own record, not the parent session-keyed one the contextvar carries."""
+    from types import SimpleNamespace
+
+    import tools.process_registry as process_registry_mod
+
+    class FakeRegistry:
+        def __init__(self):
+            self.calls = []
+
+        def spawn_local(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(id="proc_test", pid=1234)
+
+    registry = FakeRegistry()
+    child, parent = "child-task-5", "parent-session-5"
+    _install(monkeypatch, _ObservingEnv())
+    record_session_cwd(parent, "/parent/dir")
+    record_session_cwd(child, "/child/dir")
+    terminal_tool.register_container_alias(child, parent)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool, "_resolve_container_task_id", lambda value: value or "default"
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+    monkeypatch.setattr(process_registry_mod, "process_registry", registry)
+
+    token = set_current_session_key(parent)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(
+                command="sleep 1", task_id=child, background=True
+            )
+        )
+    finally:
+        reset_current_session_key(token)
+
+    assert result["exit_code"] == 0
+    assert len(registry.calls) == 1
+    assert registry.calls[0]["cwd"] == "/child/dir"

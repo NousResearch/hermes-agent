@@ -114,7 +114,8 @@ _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE
 # Is any ancestor unset, walking up parent_session_id through compressed parents on the same
 # surface? One query, so a fully stamped chain is skipped without the per-hop validated walk below.
 # A parent that did not end by compression (a reset or branch source) is not a chain edge, so an
-# unset row behind one does not send every write down that walk.
+# unset row behind one does not send every write down that walk. CROSS JOIN keeps ``up`` outer, so
+# each hop is a primary-key lookup; a plain JOIN lets SQLite scan ``sessions`` on every stamp.
 _UNSET_ANCESTOR_SQL = """
     WITH RECURSIVE up(pid, n) AS (
         SELECT parent_session_id, 1 FROM sessions WHERE id = ?
@@ -122,7 +123,7 @@ _UNSET_ANCESTOR_SQL = """
         SELECT s.parent_session_id, up.n + 1 FROM up JOIN sessions s ON s.id = up.pid
         WHERE s.end_reason = 'compression' AND s.created_source = ? AND up.n < ?
     )
-    SELECT 1 FROM up JOIN sessions s ON s.id = up.pid
+    SELECT 1 FROM up CROSS JOIN sessions s ON s.id = up.pid
     WHERE s.end_reason = 'compression' AND """ + _UNSET_CREATED_SQL.format(col="s.created_source") + """
     LIMIT 1
 """

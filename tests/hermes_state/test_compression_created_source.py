@@ -118,3 +118,22 @@ def test_unset_parent_behind_a_reset_edge_takes_the_fast_path(tmp_path):
         assert _created(db, "legacy") is None
     finally:
         db.close()
+
+
+def test_the_unset_ancestor_lookup_never_scans_the_sessions_table(tmp_path):
+    """The stamp runs on every usage write of a stamped row, under the writer lock: each hop of
+    its ancestor lookup must be a primary-key search, never a scan of ``sessions`` (#141955)."""
+    from hermes_state_compression import _UNSET_ANCESTOR_SQL
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        with db._lock:
+            db._conn.executemany(
+                "INSERT INTO sessions (id, source, started_at, created_source) VALUES (?, 'local', 0, 'cli')",
+                [(f"s{i}",) for i in range(200)])
+            db._conn.execute("ANALYZE")
+            plan = [row[-1] for row in db._conn.execute(
+                "EXPLAIN QUERY PLAN " + _UNSET_ANCESTOR_SQL, ("s1", "cli", 50))]
+        assert not [step for step in plan if step.startswith("SCAN s")], plan
+    finally:
+        db.close()

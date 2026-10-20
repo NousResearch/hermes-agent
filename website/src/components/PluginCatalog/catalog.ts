@@ -40,6 +40,8 @@ export interface CatalogPlugin {
   /** ISO dates from git history (first listing / last re-pin); present once the dates extractor runs. */
   addedAt?: string | null;
   updatedAt?: string | null;
+  /** 1-based curated hero rank from catalog-curation.json; absent when uncurated. */
+  featured?: number | null;
   /** Lowercase pre-joined haystack for the search filter (built at load). */
   _search?: string;
 }
@@ -177,9 +179,10 @@ export function formatDate(iso?: string | null): string | null {
 }
 
 /** Split a description into prose and its "Disclosure — …" sentences (catalog convention for
- *  behaviour a user opts into: auto-payments, vendor client identity, etc.). */
+ *  behaviour a user opts into: auto-payments, vendor client identity, etc.). Entries write the
+ *  marker with an em dash, en dash, hyphen or colon. */
 export function splitDisclosure(description: string): { prose: string; disclosures: string[] } {
-  const marker = /\bDisclosure\s*[—–-]\s*/g;
+  const marker = /\bDisclosure\s*[—–:-]\s*/g;
   const idx = description.search(marker);
   if (idx === -1) return { prose: description, disclosures: [] };
   const prose = description.slice(0, idx).trim();
@@ -189,4 +192,10 @@ export function splitDisclosure(description: string): { prose: string; disclosur
     .map((s) => s.trim())
     .filter(Boolean);
   return { prose, disclosures };
+}
+
+/** The one-line summary a card shows: the description minus its disclosure, or the whole
+ *  description when it opens with the disclosure and has no separate summary. */
+export function cardSummary(description: string): string {
+  return splitDisclosure(description).prose || description;
 }

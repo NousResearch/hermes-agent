@@ -209,3 +209,82 @@ def test_tool_is_registered_in_the_mobile_device_toolset():
     entry = registry.get_entry("device_request")
     assert entry is not None
     assert entry.toolset == "mobile_device"
+
+
+# ── the phone answers the card (W1) ───────────────────────────────────────────────────────────
+
+def _gateway_turn(monkeypatch, *, answer_after=0.0, choice="once", timeout=2.0):
+    """A gateway turn with a phone on it: the gate parks on the approval queue and the card is what
+    ``register_gateway_notify`` shows. Returns the list of cards the client was asked to render."""
+    import threading
+    import time
+
+    _config_with(monkeypatch)
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setattr(approval, "is_approved", lambda sk, pk: False)
+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+    from tools import approval_gateway_wait as wait_mod
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: timeout)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+
+    cards: list[dict] = []
+    key = approval.get_current_session_key()
+    approval.register_gateway_notify(key, cards.append)
+    if answer_after is not None:
+        def later():
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not cards:
+                time.sleep(0.01)
+            if cards:
+                approval.resolve_gateway_approval(key, choice)
+        threading.Thread(target=later, daemon=True).start()
+    return cards
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_notifier():
+    yield
+    approval.unregister_gateway_notify(approval.get_current_session_key())
+
+
+def test_gateway_card_approved_still_asks_the_device(monkeypatch):
+    """``ask`` + a phone that taps "once": the capture is requested. Before W1 this turn was
+    BLOCKED("the attached client cannot answer approval requests") because the tool always ran
+    ``fail_closed_when_no_human`` without a notifier of its own."""
+    cards = _gateway_turn(monkeypatch, choice="once")
+    calls = []
+
+    payload = json.loads(device_request_tool("camera", callback=lambda p: calls.append(p) or {"value": "shot"}))
+
+    assert cards, "the approval card never reached the client"
+    assert cards[0]["pattern_key"] == "device:camera"
+    assert cards[0]["command"] == "device_request: camera"
+    assert calls == [{"capability": "camera"}]
+    assert payload["success"] is True and payload["value"] == "shot"
+
+
+def test_gateway_card_denied_never_asks_the_device(monkeypatch):
+    cards = _gateway_turn(monkeypatch, choice="deny")
+    calls = []
+
+    payload = json.loads(device_request_tool("camera", callback=lambda p: calls.append(p) or {"value": "shot"}))
+
+    assert cards
+    assert calls == []
+    assert payload["denied"] is True and payload["success"] is False
+    assert "denied" in payload["reason"].lower()
+
+
+def test_gateway_card_timeout_is_a_denial(monkeypatch):
+    """Silence is not consent: an unanswered card denies, and the model is told not to retry."""
+    cards = _gateway_turn(monkeypatch, answer_after=None, timeout=0.2)
+    calls = []
+
+    payload = json.loads(device_request_tool("microphone", callback=lambda p: calls.append(p) or {"value": "audio"}))
+
+    assert cards
+    assert calls == []
+    assert payload["denied"] is True
+    assert "timed out" in payload["reason"]

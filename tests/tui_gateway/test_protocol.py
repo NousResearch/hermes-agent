@@ -2498,3 +2498,124 @@ def test_every_agent_callback_the_gateway_binds_is_accepted_by_the_agent(server)
     # locals to init_agent: both signatures must carry every name.
     assert set(_CALLBACK_PARAMS) <= set(inspect.signature(init_agent).parameters)
     assert set(_CALLBACK_PARAMS) <= set(inspect.signature(AIAgent.__init__).parameters)
+
+
+def _open_approval(server, sid, monkeypatch, *, pattern_key="device:camera", request_id="appr-device-1"):
+    """A device approval on the server's approval queue, sent the way ``_emit_approval_request`` sends it."""
+    from tools import approval as approval_mod
+
+    monkeypatch.setattr(approval_mod, "register_gateway_settle", lambda *a, **k: True)
+    server._emit_approval_request(sid, {
+        "request_id": request_id, "command": f"device_request: {pattern_key.split(':', 1)[-1]}",
+        "description": "Allow the connected device to hand over `camera`?",
+        "pattern_key": pattern_key, "pattern_keys": [pattern_key],
+        "allow_permanent": True, "allow_session": True})
+
+
+def test_device_approval_reaches_a_client_that_only_advertised_a_device(server, monkeypatch):
+    """W1: a phone advertises ``camera`` and nothing else. ``device.approval.camera: ask`` used to be
+    withdrawn before the frame was written ("the attached client cannot answer approval requests"),
+    so the default policy was a block — never a card. Serving ``device.request`` already means the
+    client answers server→client requests, so THAT card is answerable to it."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-device-only", peer)
+    _advertise(server, peer, server_requests=False, device_capabilities=["camera"])
+    assert server_requests.answers_requests(peer) is False  # the client never claimed server_requests
+
+    _open_approval(server, "ws-device-only", monkeypatch)
+
+    cards = [frame for frame in peer.frames if frame.get("method") == "approval"]
+    assert len(cards) == 1, f"the device approval never reached the phone: {peer.frames}"
+    assert cards[0]["params"]["pattern_key"] == "device:camera"
+    assert "deny" in cards[0]["params"]["choices"]
+    # The phone answers with the ordinary RPC; the queue entry is what unblocks the agent.
+    answered = server.dispatch({"jsonrpc": "2.0", "id": cards[0]["id"], "result": {"choice": "once", "all": False}})
+    assert answered is None
+    assert server_requests.open_requests("ws-device-only") == []
+
+
+def test_device_approval_is_scoped_to_the_advertised_capability(server, monkeypatch):
+    """The widening is one card wide: a device client that offered ``camera`` is not asked about a
+    ``location`` capture, and never about a non-device approval."""
+    peer = _silent_ws()
+    _ws_session(server, "ws-device-scope", peer)
+    _advertise(server, peer, server_requests=False, device_capabilities=["camera"])
+
+    _open_approval(server, "ws-device-scope", monkeypatch, pattern_key="device:location", request_id="a-loc")
+    _open_approval(server, "ws-device-scope", monkeypatch, pattern_key="dangerous_command", request_id="a-cmd")
+    assert [f for f in peer.frames if f.get("method") == "approval"] == []
+
+
+def test_device_approval_is_not_written_to_a_client_that_advertised_nothing(server, monkeypatch):
+    """A build that never sent ``client.capabilities`` can answer neither the device request nor the
+    card: fail closed, and never park a frame nobody reads."""
+    peer = _silent_ws()
+    _ws_session(server, "ws-nothing", peer)
+
+    _open_approval(server, "ws-nothing", monkeypatch, request_id="a-none")
+    assert peer.frames == []
+
+
+def test_device_answer_without_captures_is_still_a_valid_answer(server):
+    """W3: ``captures`` is optional on the wire. A client built before the field existed (or a
+    capability with no binary part, like ``location``) answers with ``value`` alone and the bridge
+    must not lose it, invent a capture, or fail the turn."""
+    from tui_gateway import server_requests
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-old-client", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["location"])
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", _device_request("s-old-client", "location")),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "{\"lat\":37.5,\"lon\":127.0}"}}) is None
+    thread.join(timeout=5)
+    assert box["r"]["success"] is True
+    assert box["r"]["captures"] == []
+    assert "37.5" in box["r"]["value"]
+
+
+def test_device_answer_contract_accepts_a_payload_without_captures():
+    """The contract, not just the bridge: ``captures`` defaults to ``[]``, so a client that omits it
+    validates (a required field here would reject every pre-#11911 client)."""
+    from tui_gateway.contracts import registry as contracts
+
+    contract = contracts.SERVER_REQUESTS["device.request"]
+    assert contract.result.model_validate({"value": "", "denied": False}) is not None
+    parsed = contract.result.model_validate({"captures": [{"mime_type": "image/jpeg", "data": "AA=="}]})
+    assert [capture.mime_type for capture in parsed.captures] == ["image/jpeg"]
+    schema = contract.result.model_json_schema()
+    assert schema["properties"]["captures"]["items"]["$ref"].endswith("DeviceCapture")
+    assert "captures" not in schema.get("required", [])
+
+
+def test_device_request_reaches_a_client_that_only_advertised_the_capability(server):
+    """The other half of W1: advertising ``camera`` is the request to be SENT ``device.request`` — a
+    phone build that never sent ``server_requests: true`` used to get neither the request nor its
+    approval card, so the whole surface was unreachable without a second flag nobody documented."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-device-request-only", peer)
+    _advertise(server, peer, server_requests=False, device_capabilities=["camera"])
+    assert server_requests.answers_requests(peer) is False
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("r", server_requests.send(
+            "device.request", "ws-device-request-only", {"capability": "camera"}, timeout=5)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    _wait_for_frame(peer, req.id)
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"denied": False, "value": "", "captures": []}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"denied": False, "value": "", "captures": []}

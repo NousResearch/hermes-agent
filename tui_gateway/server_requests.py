@@ -190,8 +190,49 @@ def answers_requests(transport: Any) -> bool:
         return transport in _answering_clients
 
 
-def _unanswerable(method: str, sid: str) -> bool:
+# ── device approvals ──────────────────────────────────────────────────────────────────────────
+# A phone advertises ``camera`` because it can serve ``device.request`` — which IS a server→client
+# request. Requiring the same client to ALSO send ``{server_requests: true}`` made the device
+# approval unanswerable in exactly the case the tool exists for: ``device.approval.<capability>:
+# ask`` (the default) was withdrawn before it was written and the tool reported
+# "the attached client cannot answer approval requests", i.e. a block instead of a card (#11911).
+# So an ``approval`` whose pattern key names a capability some attached client advertised is
+# answerable to that client, and to nothing else: a device-only client gains no other surface.
+
+def _device_approval_capability(params: dict | None) -> str:
+    """The capability a ``device.approval`` names in ``pattern_key``/``pattern_keys``, else ``""``."""
+    keys = [str((params or {}).get("pattern_key") or "")]
+    keys += [str(k) for k in ((params or {}).get("pattern_keys") or [])]
+    for key in keys:
+        if key.startswith("device:") and len(key) > len("device:"):
+            return key.split(":", 1)[1]
+    return ""
+
+
+def _device_answerable(method: str, sid: str, params: dict | None) -> bool:
+    """True when *method* is a device-shaped request a client on *sid* advertised the capability for.
+
+    Two shapes: ``device.request`` with ``capability``, and an ``approval`` whose pattern key is
+    ``device:<capability>`` (the gate's card for the same capture). Both are answerable to a client
+    that advertised that capability in ``device_capabilities`` — which is the same client, by
+    construction, since advertising a capability is how it asks to be sent these frames.
+    """
+    params = params or {}
+    from tui_gateway.contracts import registry as contracts
+
+    if method.startswith(contracts.DEVICE_REQUEST_PREFIX):
+        capability = str(params.get("capability") or "")
+    elif method == "approval":
+        capability = _device_approval_capability(params)
+    else:
+        return False
+    return bool(capability) and _device_capable(sid, capability)
+
+
+def _unanswerable(method: str, sid: str, params: dict | None = None) -> bool:
     if _answerable(sid):
+        return False
+    if _device_answerable(method, sid, params):
         return False
     logger.info("server request %s for %s not sent: the attached client predates server→client requests "
                 "(update the Hermes app)", method, sid)
@@ -250,7 +291,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that settled returns
     ``{"answers": <locked so far>, "outcome"}`` (``submitted`` / ``cancelled`` / ``timed_out``).
     """
-    if _unanswerable(method, sid) or _device_declined(method, sid, params):
+    if _unanswerable(method, sid, params) or _device_declined(method, sid, params):
         return None
     req = ServerRequest(sid, method, params, qids=qids)
     _register(req)
@@ -284,7 +325,7 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     """Send one request whose wait is owned elsewhere (the approval queue's own timeout). ``on_result``
     runs on the dispatching thread when the response lands. Returns ``settle(reason)``: call it when
     the underlying wait ends; if the request is still open it is withdrawn with ``request.cancel``."""
-    if _unanswerable(method, sid) or _device_declined(method, sid, params):
+    if _unanswerable(method, sid, params) or _device_declined(method, sid, params):
         on_result(None)
         return lambda reason: None
     req = ServerRequest(sid, method, params, on_result=on_result)

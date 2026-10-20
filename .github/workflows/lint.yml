@@ -258,6 +258,13 @@ jobs:
       - name: Forbid unmarked macOS fakes in tests
         run: python scripts/ci/check_os_marker_fakes.py
 
+      # Windows does not enforce POSIX file-mode bits (os.chmod(0o600) still reports 0o666), so a
+      # test asserting stat().st_mode against an octal literal fails on every Windows checkout while
+      # the OS lanes stay green - they import only the files carrying a matching platforms() marker.
+      # Judged only on the lines this change adds (tests/AGENTS.md § Don't fake the host OS).
+      - name: Forbid unmarked POSIX mode-bit assertions in added tests
+        run: python scripts/ci/check_os_marker_mode_bits.py --base HEAD^1
+
       # Every AGENTS.md from the git root down to the working directory loads as one
       # project-context block (30,720 chars on a 128k window); chains are capped at 30k.
       - name: Keep every AGENTS.md under its truncation cap

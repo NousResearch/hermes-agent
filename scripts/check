@@ -113,8 +113,11 @@ _GUARDS = {
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
-# (blob-size-check.yml).
-_DIFF_GUARDS = {"blob-size": ["scripts/ci/check_blob_size.py"]}
+# (blob-size-check.yml, and the mode-bit guard, which judges only the lines a change adds).
+_DIFF_GUARDS = {
+    "blob-size": ["scripts/ci/check_blob_size.py"],
+    "os-marker-mode-bits": ["scripts/ci/check_os_marker_mode_bits.py"],
+}
 _CHECKS = (*_GUARDS, *_DIFF_GUARDS, "ruff", "health")
 
 

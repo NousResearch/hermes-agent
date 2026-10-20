@@ -55,6 +55,23 @@ def discord_triggering_note(message_id: Any) -> str:
     )
 
 
+def discord_message_ids_note(event: Any, source: Any) -> str:
+    """Model-facing id line for a Discord turn without the discord toolset: the three ids of a
+    message jump URL, plus the URL. Empty when the message or channel id is unknown (slash and
+    voice turns)."""
+    message_id = getattr(event, "message_id", None)
+    channel_id = getattr(getattr(getattr(event, "raw_message", None), "channel", None), "id", None)
+    if not isinstance(channel_id, (int, str)) or not channel_id:
+        channel_id = getattr(source, "chat_id", None)
+    if not message_id or not channel_id:
+        return ""
+    guild_id = getattr(source, "guild_id", None) or "@me"
+    return (
+        f"[Message ids] guild={guild_id} channel={channel_id} message={message_id} "
+        f"link=https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+    )
+
+
 def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     """Authored text for the durable user row: peel off exactly the note
     ``_prepend_inbound_reply_context`` added for THIS event, if present. The note is a
@@ -64,8 +81,11 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     message_id = getattr(event, "message_id", None)
     if not message_id or not isinstance(message_text, str):
         return message_text
-    prefix = f"{discord_triggering_note(message_id)}\n\n"
-    return message_text.removeprefix(prefix)
+    ids_note = discord_message_ids_note(event, getattr(event, "source", None))
+    for note in (ids_note, discord_triggering_note(message_id)):
+        if note:
+            message_text = message_text.removeprefix(f"{note}\n\n")
+    return message_text
 
 
 class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
@@ -1573,6 +1593,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             from gateway.session import _discord_tools_loaded as _disc_tools_loaded
             if _disc_tools_loaded():
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
+            else:
+                _ids_note = discord_message_ids_note(event, source)
+                if _ids_note:
+                    message_text = f"{_ids_note}\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

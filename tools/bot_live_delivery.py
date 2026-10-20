@@ -69,6 +69,13 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
                 lease_id=discovery.endpoint.instance_id, live_session_id=tip or '')
 
 
+class PreDialError(ValueError):
+    """The authority call died before its RPC reached the socket: nothing was admitted, so
+    this is a definite no-send the sender may safely retry — never the ambiguous
+    post-admission state that orders 'do not resend' (#139303). A ``ValueError`` like the
+    "authority is not ready" refusals it wraps, so existing ``except ValueError`` callers hold."""
+
+
 def authority_delivery(home, params):
     """Call only this home's already-running authority; never start a fallback."""
     return _authority_rpc(home, 'bot_relay.deliver', params)
@@ -87,8 +94,10 @@ def _authority_rpc(home, method, params):
     from websockets.asyncio.client import connect
 
     home = Path(home).resolve()
+    rpc_started = False
 
     async def request():
+        nonlocal rpc_started
         discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=5)
         if discovery.state != 'ready' or discovery.endpoint is None:
             raise ValueError('profile authority is not ready')
@@ -100,9 +109,22 @@ def _authority_rpc(home, method, params):
             if ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise ValueError('authority protocol mismatch')
             async with GatewayClient(ws) as client:
+                rpc_started = True  # the RPC is going out: past here a failure may have been admitted
                 return await client.rpc(method, **params)
 
-    return asyncio.run(request())
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(request())
+        # A gateway-hosted tool call runs on a thread with a live loop, where asyncio.run() raises
+        # before anything is dialed (#139303).
+        from model_tools import _run_async
+        return _run_async(request())
+    except Exception as exc:
+        if not rpc_started:
+            raise PreDialError(str(exc)) from exc
+        raise
 
 
 def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:

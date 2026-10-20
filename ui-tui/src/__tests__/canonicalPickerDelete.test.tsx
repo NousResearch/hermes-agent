@@ -10,8 +10,22 @@ import { DEFAULT_THEME } from '../theme.js'
 // The shared gateway has no `session.delete` (-32601): the picker's two-press delete is its
 // revision-fenced `session.mutate operation=delete`, and a refusal stays on screen.
 
-const stored = { id: 'old', session_id: 'old', title: 'Retained old conversation', source: 'cli', started_at: 1, message_count: 2 }
-const live = { id: 'live', session_id: 'live', title: 'Current conversation', started_at: 2, message_count: 1, running: false }
+const stored = {
+  id: 'old',
+  session_id: 'old',
+  title: 'Retained old conversation',
+  source: 'cli',
+  started_at: 1,
+  message_count: 2
+}
+const live = {
+  id: 'live',
+  session_id: 'live',
+  title: 'Current conversation',
+  started_at: 2,
+  message_count: 1,
+  running: false
+}
 
 function mount(
   mutate: (params: any) => Promise<unknown>,
@@ -53,6 +67,7 @@ function mount(
   stdout.on('data', chunk => {
     out.text += chunk.toString()
   })
+
   const element = (
     <ActiveSessionSwitcher
       currentSessionId={current}
@@ -66,6 +81,7 @@ function mount(
       t={DEFAULT_THEME}
     />
   )
+
   const instance = renderSync(element, {
     stdin: stdin as any,
     stdout: stdout as any,
@@ -91,7 +107,10 @@ function mount(
 
 it('deletes a stored session through session.mutate with the resume CAS tuple', async () => {
   const { deleteStored, element, instance, out, request } = mount(async params => ({
-    session_id: params.session_id, operation: 'delete', revision: 5, deleted_ids: [params.session_id]
+    session_id: params.session_id,
+    operation: 'delete',
+    revision: 5,
+    deleted_ids: [params.session_id]
   }))
 
   try {
@@ -128,9 +147,12 @@ it('keeps a refused delete on screen past the live-status poll', async () => {
     await deleteStored()
     const polls = request.mock.calls.filter(([method]) => method === 'session.list').length
     // The 1.5s quiet poll used to reset the error line to the (empty) history error.
-    await vi.waitFor(() => expect(request.mock.calls.filter(([m]) => m === 'session.list').length).toBeGreaterThan(polls + 1), {
-      timeout: 4000
-    })
+    await vi.waitFor(
+      () => expect(request.mock.calls.filter(([m]) => m === 'session.list').length).toBeGreaterThan(polls + 1),
+      {
+        timeout: 4000
+      }
+    )
     out.text = ''
     instance.rerender(React.cloneElement(element))
     await vi.waitFor(() => expect(out.text).toContain('error: session_busy'))

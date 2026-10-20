@@ -17,5 +17,5 @@ export const esPluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Actualizar de todos modos',
   updateScanBlocked: (name: string) =>
     `El análisis de seguridad bloqueó la actualización de ${name} (veredicto «peligroso»). No se puede omitir.`,
-  updatedGit: (name: string) => `${name} se actualizó al último commit.`,
+  updatedGit: (name: string) => `${name} se actualizó al último commit.`
 }

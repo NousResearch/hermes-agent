@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.gateway as gateway_cli
+from hermes_cli import gateway_service_owner
 
 
 @pytest.fixture
@@ -30,7 +31,8 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
     monkeypatch.setattr(gateway_cli, "user_systemd_unit_dir", lambda: tmp_path / "no-user-units")
     monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-    monkeypatch.setattr(gateway_cli, "_account_default_hermes_home", lambda: account, raising=False)
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_account_home", lambda: account.parent)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     # Never reach a real systemd: preamble/privilege checks are not under test, systemctl is recorded.
     monkeypatch.setattr(gateway_cli, "_systemd_scope_preamble", lambda action, system, **_k: system)
@@ -43,15 +45,20 @@ def host(tmp_path, monkeypatch):
 
 
 def _sandbox(monkeypatch, host):
+    """A sandbox home whose resolved unit name collides with a unit pinning the production home. The
+    naming root no longer gives a throwaway HOME the bare name, but names still collide (a custom root's
+    ``profiles/<name>``, a pre-pinning unit), so the guard is what keeps the verb off that unit."""
     monkeypatch.setenv("HOME", str(host["sandbox_home"]))
     monkeypatch.setenv("HERMES_HOME", str(host["sandbox_home"] / ".hermes"))
+    collided = gateway_cli._SYSTEM_UNIT_DIR / f"{gateway_cli.get_service_name()}.service"
+    collided.write_text(f'[Service]\nEnvironment="HERMES_HOME={host["prod"]}"\nExecStart=/bin/true\n', encoding="utf-8")
 
 
 @pytest.mark.platforms("linux")
-def test_sandbox_home_resolves_the_bare_name_but_the_unit_is_not_installed_for_it(host, monkeypatch):
+def test_sandbox_home_does_not_name_the_bare_unit_and_a_colliding_unit_is_not_installed_for_it(host, monkeypatch):
     _sandbox(monkeypatch, host)
-    assert gateway_cli.get_service_name() == gateway_cli._SERVICE_BASE      # the hazard's precondition
-    assert gateway_cli._foreign_systemd_unit_home(True) == str(host["prod"])
+    assert gateway_cli.get_service_name() != gateway_cli._SERVICE_BASE      # naming root: account, not $HOME
+    assert gateway_service_owner.foreign_systemd_unit_home(True) == str(host["prod"])
     assert gateway_cli._systemd_unit_installed() is False                   # `gateway stop` -> PID path
     assert gateway_cli._installed_service_kind_for(lambda: False) is None
 
@@ -79,7 +86,7 @@ def test_sudo_from_the_account_default_home_still_operates_the_unit(host, monkey
     """#108674: root's default home driving a unit that pins the invoking user's home is the operator."""
     monkeypatch.setenv("HOME", str(host["account"].parent))
     monkeypatch.setenv("HERMES_HOME", str(host["account"]))
-    assert gateway_cli._foreign_systemd_unit_home(True) is None
+    assert gateway_service_owner.foreign_systemd_unit_home(True) is None
     gateway_cli.systemd_stop(system=True)
     assert host["calls"] == [["stop", gateway_cli.get_service_name()]]
     assert Path(os.environ["HERMES_HOME"]) == host["prod"]                       # adopted, as before

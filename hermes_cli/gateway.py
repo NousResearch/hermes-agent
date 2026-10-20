@@ -1253,62 +1253,6 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
     return _hermes_home_pinned_by_unit(get_systemd_unit_path(system=system))
 
 
-def _account_default_hermes_home() -> Path | None:
-    """``<account home>/.hermes`` from the passwd database — NOT ``$HOME``, which test harnesses and
-    profile isolation repoint. None where the account is unknown."""
-    try:
-        import pwd
-        return Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".hermes"
-    except (ImportError, KeyError, OSError):
-        return None
-
-
-def _foreign_systemd_unit_home(system: bool) -> str | None:
-    """``HERMES_HOME`` of the unit at this scope when it belongs to ANOTHER install, else None.
-
-    The service name only encodes the home relative to the process's own ``$HOME``, so a process whose
-    ``HERMES_HOME`` is ``$HOME/.hermes`` under a throwaway ``HOME`` (test harnesses, CI sandboxes,
-    scripted installs) resolves the bare ``hermes-gateway`` name — and a system unit is global, so it
-    resolves the PRODUCTION unit. ``_sync_hermes_home_from_systemd_unit`` would then adopt that unit's
-    home and ``stop``/``restart`` would take the live gateway down. Must be evaluated BEFORE that sync.
-
-    Foreign means: the unit pins a home, it differs from this process's home, and this process's home
-    is not the account's own default root. The last clause keeps the ``sudo`` remap (#108674): root's
-    default home operating a unit that pins the invoking user's home is the operator, not a stranger.
-    """
-    unit_home = _hermes_home_pinned_by_unit(get_systemd_unit_path(system=system))
-    if not unit_home:
-        return None
-    try:
-        unit = Path(unit_home).expanduser().resolve()
-        mine = get_hermes_home().resolve()
-    except OSError:
-        return None
-    if unit == mine:
-        return None
-    account_default = _account_default_hermes_home()
-    if account_default is not None:
-        try:
-            if mine == account_default.resolve():
-                return None
-        except OSError:
-            pass
-    return unit_home
-
-
-def _refuse_foreign_systemd_unit(action: str, system: bool) -> None:
-    """Exit non-zero instead of operating another install's unit (see ``_foreign_systemd_unit_home``)."""
-    unit_home = _foreign_systemd_unit_home(system)
-    if unit_home is None:
-        return
-    print_error(
-        f"Refusing to {action} {get_service_name()}: that {_service_scope_label(system)} unit runs "
-        f"HERMES_HOME={unit_home}, but this process has HERMES_HOME={get_hermes_home()}.\n"
-        f"It belongs to another Hermes install. Run this from that install's HERMES_HOME."
-    )
-    sys.exit(1)
-
-
 def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
     """Adopt a system-scope unit's ``HERMES_HOME``: under ``sudo`` it is stripped and HOME=/root, so
     get_hermes_home() would pick the wrong profile for runtime-status/PID reads."""
@@ -1779,9 +1723,17 @@ def _gateway_list() -> None:
 
 def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None, all_profiles: bool = False) -> int:
     """Kill running gateway processes (force-kill if ``force``); ``exclude_pids`` skips e.g. just-
-    restarted service PIDs. Returns count killed."""
+    restarted service PIDs. Returns count killed. ``all_profiles`` sweeps only gateways whose live home
+    is this install's root or one of its profiles: the process scan is account-wide, and a scratch-home
+    ``gateway stop --all`` would otherwise SIGTERM the account's real gateway."""
     killed = 0
-    for pid in find_gateway_pids(exclude_pids=exclude_pids, all_profiles=all_profiles):
+    pids = find_gateway_pids(exclude_pids=exclude_pids, all_profiles=all_profiles)
+    if all_profiles:
+        from hermes_cli.update_fleet_scope import partition_gateway_pids_by_scope
+        pids, foreign = partition_gateway_pids_by_scope(pids)
+        for pid, home in foreign:
+            print(f"↷ PID {pid}: gateway of {'another Hermes home (' + home + ')' if home else 'an unreadable home'} — left alone")
+    for pid in pids:
         try:
             expected_start_time = None
             if force:
@@ -2261,11 +2213,13 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
 
 
 def _native_service_homes() -> set[Path]:
-    """This process's native default home plus, when root under sudo, the invoking user's (see
-    ``_profile_suffix`` for why sudo matters)."""
-    from hermes_constants import _get_platform_default_hermes_home, sudo_invoker_default_home
+    """The account's native default home plus, when root under sudo, the invoking user's (see
+    ``_profile_suffix`` for why sudo matters). The ACCOUNT home, not the process HOME: the unit dir
+    follows the account (``user_systemd_unit_dir``), so a scratch ``HOME`` that called its own
+    ``.hermes`` native resolved the bare name onto the account's real unit."""
+    from hermes_constants import account_default_hermes_home, sudo_invoker_default_home
 
-    homes = {_get_platform_default_hermes_home().resolve()}
+    homes = {account_default_hermes_home().resolve()}
     sudo_home = sudo_invoker_default_home()
     if sudo_home is not None:
         homes.add(sudo_home.resolve())
@@ -3708,7 +3662,7 @@ def _systemd_scope_preamble(
 def _systemd_unit_belongs_to_current_home(system: bool = False) -> bool:
     """False (with a warning) when the installed unit pins a HERMES_HOME other than this process's: the
     service name then resolved to ANOTHER install's gateway, and stop/disable/unlink would take it down."""
-    foreign = _foreign_systemd_unit_home(system)  # before the sync below rewrites this process's home
+    foreign = gateway_service_owner.foreign_systemd_unit_home(system)  # before the sync below rewrites this process's home
     if foreign is not None:
         print_warning(
             f"Refusing to remove {get_systemd_unit_path(system=system)}: it runs HERMES_HOME={foreign}, "
@@ -3756,7 +3710,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
 
 def systemd_start(system: bool = False):
     system = _systemd_scope_preamble("start", system, preflight_user=True)
-    _refuse_foreign_systemd_unit("start", system)
+    gateway_service_owner.refuse_foreign_systemd_unit("start", system)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; the unit is guaranteed to exist here.
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
@@ -3765,7 +3719,7 @@ def systemd_start(system: bool = False):
 
 def systemd_stop(system: bool = False):
     system = _systemd_scope_preamble("stop", system)
-    _refuse_foreign_systemd_unit("stop", system)
+    gateway_service_owner.refuse_foreign_systemd_unit("stop", system)
     _sync_hermes_home_from_systemd_unit(system=system)
     _mark_planned_stop()
     try:
@@ -3781,7 +3735,7 @@ def systemd_stop(system: bool = False):
 
 def systemd_restart(system: bool = False):
     system = _systemd_scope_preamble("restart", system, preflight_user=True)
-    _refuse_foreign_systemd_unit("restart", system)
+    gateway_service_owner.refuse_foreign_systemd_unit("restart", system)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; its os.environ mutation
     # persists for the get_running_pid / drain-timeout reads below.
     refresh_systemd_unit_if_needed(system=system)
@@ -4821,7 +4775,7 @@ def _systemd_unit_installed() -> bool:
     operating the other install's service."""
     if not supports_systemd_services():
         return False
-    return any(get_systemd_unit_path(system=s).exists() and _foreign_systemd_unit_home(s) is None
+    return any(get_systemd_unit_path(system=s).exists() and gateway_service_owner.foreign_systemd_unit_home(s) is None
                for s in (False, True))
 
 
@@ -4862,7 +4816,8 @@ def _service_backend(*, windows: bool = True) -> str | None:
 
 def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
     """Run ``verb`` (start/stop/restart/uninstall) on ``backend``. Names resolve at call time so tests
-    can monkeypatch them; only systemd takes a scope, and ``system=None`` omits it (wizard restart)."""
+    can monkeypatch them; only systemd takes a scope, and ``system=None`` omits it (wizard restart).
+    Each systemd/launchd verb refuses a definition pinning another HERMES_HOME itself."""
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
     if backend == "launchd":
@@ -5393,6 +5348,8 @@ def _cmd_stop(args):
         print(f"    hermes {owner_flag}gateway stop      # takes every served profile offline")
         print(f"    hermes {owner_flag}gateway restart")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+    from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
+    refuse_while_sessions_live("stop", args)
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
         return
@@ -5494,38 +5451,6 @@ def _restart_all_as_host(owner, system: bool) -> None:
     run_gateway(verbose=0, replace=True)
 
 
-def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
-    """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
-
-    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the fallback's
-    stop + in-process ``run_gateway`` SIGKILLed a live service-managed gateway and spawned an
-    unsupervised orphan in the caller's cgroup while the unit flapped against the stolen lock
-    (#126474). Reuses the dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone
-    (the caller itself started under some unit) never proves ownership.
-    """
-    if not pid or pid <= 1:
-        return
-    from hermes_cli import main_dashboard as _dash
-
-    owner = _dash._systemd_owner_for_pid(pid)
-    if owner is None:
-        return
-    unit, scope = owner
-    cmds = _dash._systemd_restart_commands(unit, scope)
-    _print_lines(
-        "",
-        f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
-        "  `hermes gateway restart` cannot restart it from here: the fallback would",
-        "  kill a live gateway and spawn an unsupervised replacement in this shell's",
-        "  cgroup while the unit keeps failing against the stolen lock.",
-        "  Restart it through its unit instead:",
-        *(f"    {c}" for c in cmds),
-        "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
-        "  removes the legacy unit so the canonical one can own the gateway.)",
-    )
-    sys.exit(1)
-
-
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
@@ -5539,6 +5464,8 @@ def _cmd_restart(args):
     # unreachable for `-p X gateway restart --all` (it printed a bare `gateway restart` instead).
     if not restart_all:
         _guard_named_profile_under_multiplexer(force=force)
+    from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
+    refuse_while_sessions_live("restart", args)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
@@ -5595,13 +5522,14 @@ def _cmd_restart(args):
     # run below would stamp this CLI's PID as the gateway and wedge every respawn (#110637).
     from gateway.status import get_running_pid
     from hermes_cli.gateway_supervised_restart import (
-        gateway_declares_external_supervisor, restart_externally_supervised_gateway,
+        gateway_declares_external_supervisor, refuse_restart_of_service_managed_gateway,
+        restart_externally_supervised_gateway,
     )
     supervised_pid = get_running_pid()
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
         restart_externally_supervised_gateway(supervised_pid)
         return
-    _refuse_restart_of_service_managed_gateway(supervised_pid)
+    refuse_restart_of_service_managed_gateway(supervised_pid)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")

@@ -83,6 +83,21 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert run["outcome"] == "rate_limited"
 
 
+def test_log_exit_code_ignores_trailer_before_current_attempt_boundary(kanban_home):
+    """A killed current attempt has no trailer and must not inherit an older one."""
+    tid = "t_attempt_boundary"
+    log = kb.worker_log_path(tid)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+        "[kanban-worker-attempt]\n"
+        "worker started but was killed\n",
+        encoding="utf-8",
+    )
+
+    assert kbd._worker_log_exit_code(tid) is None
+
+
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
     """The third consecutive clean exit trips the violation budget and ``recompute_ready``
     must not promote the card back the same tick (``consecutive_failures`` is still below

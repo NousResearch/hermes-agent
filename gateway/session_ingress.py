@@ -280,7 +280,8 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        with await _execution_scope(authority, home):
+        from agent.runtime_scope import bind_turn
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id']):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])

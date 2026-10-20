@@ -118,6 +118,29 @@ Both scopes are `contextvars`, so they propagate into executor worker threads
 via `copy_context()` and unwind deterministically — nothing is written to
 `os.environ`, ever.
 
+### One scope value
+
+The home override, the secret scope and the terminal policy all derive from one
+value, `hermes_scope.Scope(tenant, agent, actor)`, held in a single contextvar.
+`actor` is `Principal(id)` (a person) or `System(reason)` (cron, kanban,
+housekeeping); a `TurnScope` adds `session_id` and `turn_id`.
+`agent/runtime_scope.py` is the only module that turns a scope into profile
+state:
+
+- `bind_profile_scope(home, turn=None)` binds the scope plus all three pieces and
+  restores them on exit. The process's own home keeps its launch semantics;
+  any other home is hydrated from that profile's sources and stamped as routed.
+- `bind_state(scope, ...)` is for a host that deliberately binds less (the
+  managed worker).
+- `bind_turn(session_id, turn_id)` marks a turn inside a bound scope.
+
+The legacy setters (`set_hermes_home_override`, `set_secret_scope`,
+`set_terminal_scope`, `install_profile_terminal_scope`) keep working. Inside a
+bound scope, a call naming another profile moves the whole scope in a local
+install and raises `ScopeSwitchRefused` in a hosted one, so the three pieces
+never describe different profiles. The code-health rule HX014 blocks new direct
+calls; existing ones migrate when their function is next edited.
+
 ## Workstream A: context-local secret scope
 
 `agent/secret_scope.py` exists because the obvious implementation — union all

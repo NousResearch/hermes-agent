@@ -157,6 +157,7 @@ it.each([null, 'remote'])(
         updateSessionState: (_id, update) => (state = update(state)),
         scope: {
           readAttachments: () => attachments,
+          patchAttachment: vi.fn(),
           removeAttachments: remove,
           setAwaitingResponse: vi.fn(),
           setBusy: vi.fn(),
@@ -317,6 +318,7 @@ it.each(
         },
         scope: {
           readAttachments: () => [attachment],
+          patchAttachment: vi.fn(),
           removeAttachments: remove,
           setAwaitingResponse: vi.fn(),
           setBusy: vi.fn(),
@@ -439,6 +441,7 @@ it.each([undefined, null, '/fixtures'])(
         updateSessionState: (_id, update) => (state = update(state)),
         scope: {
           readAttachments: () => [],
+          patchAttachment: vi.fn(),
           removeAttachments: remove,
           setAwaitingResponse: vi.fn(),
           setBusy: vi.fn(),

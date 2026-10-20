@@ -33,10 +33,12 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     """Provider-advertised window from LOCAL sources only (persistent cache learned on this
     endpoint, models.dev disk cache, hardcoded catalog). Never a network probe: users pin
     precisely when the endpoint cannot report its window, so the check must not add startup
-    latency or a failing request."""
+    latency or a failing request. A catalog hit on a different variant of the tag (uncatalogued
+    ``:`` deployment suffix) is not an advertised value — returns None so the pin warning stays
+    silent instead of defending a variant the deployment is not running."""
     from agent.model_metadata import (
         DEFAULT_CONTEXT_LENGTHS, _load_model_metadata_disk_cache, _longest_key_match,
-        _strip_provider_prefix, get_cached_context_length,
+        _normalize_model_version, _strip_provider_prefix, get_cached_context_length,
     )
     model = _strip_provider_prefix(str(model or ""))
     if not model:
@@ -50,7 +52,16 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     if isinstance(ctx, int) and ctx > 0:
         return ctx
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
-    return hit[1] if hit else None
+    if not hit:
+        return None
+    suffix = hit[0] + ":"
+    tag = model.lower()
+    if suffix in tag or _normalize_model_version(suffix) in _normalize_model_version(tag):
+        # The tag carries a deployment/variant segment the catalog has no entry for (Ollama
+        # "glm-5.3:cloud" hitting the hosted "glm-5.3"): the hit describes a different variant
+        # of the model, not this deployment, so there is nothing advertised to compare against.
+        return None
+    return hit[1]
 
 
 def warn_once_on_pin_disagreement(model: str, base_url: str, config_context_length) -> bool:

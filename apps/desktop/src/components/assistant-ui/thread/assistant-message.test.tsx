@@ -175,17 +175,20 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
+  user = userMessage(),
   onBranchInNewChat,
   onReload
 }: {
   assistant?: ThreadMessage
+  user?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
   onReload?: () => Promise<void>
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: [user, assistant],
     isRunning: false,
     onNew: async () => {},
+    onEdit: async () => {},
     ...(onReload ? { onReload } : {})
   })
 
@@ -195,6 +198,56 @@ function Harness({
     </AssistantRuntimeProvider>
   )
 }
+
+describe('PR review regression probes', () => {
+  it('keeps exactly one user heading while editing and after cancellation', async () => {
+    const { container } = render(<Harness />)
+    await screen.findByText('done')
+    expect(screen.getAllByRole('heading', { level: 2, name: en.assistant.thread.userMessageHeading })).toHaveLength(1)
+
+    const button = screen
+      .getAllByRole('button', { name: 'Edit message' })
+      .find(b => b.textContent?.includes('question one'))
+
+    expect(button).toBeTruthy()
+    fireEvent.click(button!)
+    await waitFor(() => expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).not.toBeNull())
+    expect(screen.getAllByRole('heading', { level: 2, name: en.assistant.thread.userMessageHeading })).toHaveLength(1)
+    const editor = container.querySelector('[contenteditable="true"][role="textbox"]')!
+    fireEvent.keyDown(editor, { key: 'Escape' })
+    await waitFor(() => expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeNull())
+    expect(screen.getAllByRole('heading', { level: 2, name: en.assistant.thread.userMessageHeading })).toHaveLength(1)
+  })
+
+  it('keeps the assistant heading on a completed inter-agent reply', async () => {
+    const user = {
+      ...userMessage(),
+      content: [{ type: 'text', text: 'Message from 🤖 reviewer: Please check this' }]
+    } as ThreadMessage
+
+    render(<Harness user={user} />)
+    await screen.findByText('Replied to reviewer')
+    expect(
+      screen.queryAllByRole('heading', { level: 2, name: en.assistant.thread.assistantMessageHeading })
+    ).toHaveLength(1)
+  })
+})
+
+describe('message navigation headings', () => {
+  it('labels the user message with a level-two heading', async () => {
+    render(<Harness />)
+
+    expect(await screen.findByRole('heading', { level: 2, name: en.assistant.thread.userMessageHeading })).toBeTruthy()
+  })
+
+  it('labels the Hermes message with a level-two heading', async () => {
+    render(<Harness />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: en.assistant.thread.assistantMessageHeading })
+    ).toBeTruthy()
+  })
+})
 
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('shows the Branch in new chat button when a handler is provided (open chat)', async () => {

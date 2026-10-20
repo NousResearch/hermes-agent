@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { type OwnerScope, profileScopeKey } from '@/api/client'
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
 import {
   capturePreviewAnnotateDestination,
@@ -46,6 +47,7 @@ import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBr
 export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
+  fileOwner?: OwnerScope
   binary?: boolean
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —
@@ -831,7 +833,12 @@ function canonicalFileKey(target: Pick<PreviewTarget, 'path' | 'url'>): string {
 function fileTabFor(tabs: readonly PreviewTab[], target: PreviewTarget): PreviewTab | undefined {
   const key = canonicalFileKey(target)
 
-  return tabs.find(tab => tab.target.kind === 'file' && canonicalFileKey(tab.target) === key)
+  return tabs.find(
+    tab =>
+      tab.target.kind === 'file' &&
+      canonicalFileKey(tab.target) === key &&
+      profileScopeKey(tab.target.fileOwner) === profileScopeKey(target.fileOwner)
+  )
 }
 
 /** `base`, suffixed until no tab holds it: a file's owner-derived id can be

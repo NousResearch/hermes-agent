@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify'
 
+import type { OwnerScope } from '@/api/client'
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import type { PreviewTarget } from '@/store/preview'
@@ -267,7 +268,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
 async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
   if (
-    !isDesktopFsRemoteMode() ||
+    (!target?.fileOwner && !isDesktopFsRemoteMode()) ||
     !target ||
     target.kind !== 'file' ||
     target.previewKind === 'image' ||
@@ -278,7 +279,9 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
   if (target.previewKind === 'html') {
     try {
-      const dataUrl = validatedRemoteHtmlDataUrl(await readDesktopFileDataUrl(target.path || target.source))
+      const dataUrl = validatedRemoteHtmlDataUrl(
+        await readDesktopFileDataUrl(target.path || target.source, target.fileOwner)
+      )
 
       return dataUrl ? { ...target, dataUrl } : { ...target, renderMode: 'source', transient: true }
     } catch {
@@ -287,7 +290,7 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
   }
 
   try {
-    const result = await readDesktopFileText(target.path || target.source)
+    const result = await readDesktopFileText(target.path || target.source, target.fileOwner)
 
     return {
       ...target,
@@ -304,8 +307,15 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
-  cwd?: string | null
+  cwd?: string | null,
+  fileOwner?: OwnerScope
 ): Promise<PreviewTarget | null> {
+  if (fileOwner) {
+    const target = localPreviewTarget(rawTarget, cwd)
+
+    return enrichPreviewTarget(target ? { ...target, fileOwner } : null)
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 

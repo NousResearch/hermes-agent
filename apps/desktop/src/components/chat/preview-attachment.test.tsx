@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import type * as PreviewStore from '@/store/preview'
+import type * as SessionStates from '@/store/session-states'
 
 // #101683 regression coverage: the delivered-file card must branch on the
 // target's LOCAL filesystem state — an existing directory opens natively with
@@ -31,6 +32,12 @@ vi.mock('@/store/preview', async importOriginal => ({
   $previewTabSources: atom<string[]>([]),
   closePreviewForSource: vi.fn(),
   openPreview
+}))
+
+const sessionOwner = vi.hoisted(() => vi.fn())
+vi.mock('@/store/session-states', async importOriginal => ({
+  ...(await importOriginal<typeof SessionStates>()),
+  knownOwnerForSession: sessionOwner
 }))
 
 const previousDesktop = window.hermesDesktop
@@ -66,12 +73,37 @@ async function buttons() {
 describe('PreviewAttachment local target classification (#101683)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionOwner.mockReturnValue(undefined)
     isDesktopFsRemoteMode.mockReturnValue(false)
   })
 
   afterEach(() => {
     cleanup()
     window.hermesDesktop = previousDesktop
+  })
+
+  it('downloads and previews from Secondary bot rather than the primary connection', async () => {
+    sessionOwner.mockReturnValue({ connectionId: 'secondary', profile: 'default' })
+    mountDesktopStub(() => null)
+    const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+    window.hermesDesktop!.saveGatewayFile = saveGatewayFile
+    render(<PreviewAttachment target="/home/secondary/report.pdf" />)
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Download' }))
+    })
+    expect(saveGatewayFile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'secondary', profile: 'default', path: '/home/secondary/report.pdf' })
+    )
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Open preview' }))
+    })
+    expect(openPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ fileOwner: { connectionId: 'secondary', profile: 'default' } }),
+      null,
+      null,
+      'default'
+    )
+    expect(window.hermesDesktop!.normalizePreviewTarget).not.toHaveBeenCalled()
   })
 
   it('opens a Windows file:///C:/... directory link natively with no Download or preview action', async () => {

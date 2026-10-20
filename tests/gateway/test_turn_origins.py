@@ -11,7 +11,7 @@ import asyncio
 import copy
 import json
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -203,7 +203,7 @@ def test_an_edited_message_is_a_distinct_revision():
     adapter = _make_telegram_adapter()
     original = adapter._build_message_event(_make_message(), MessageType.TEXT, update_id=7001)
     edited_message = _make_message(text="follow-up, fixed")
-    edited_message.edit_date = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    edited_message.edit_date = datetime(2026, 1, 2, tzinfo=UTC)
     edited = adapter._build_message_event(edited_message, MessageType.TEXT, update_id=7002)
 
     assert edited.source_origins == (MessageOrigin("111", "1001", 7002, 1767312000),)

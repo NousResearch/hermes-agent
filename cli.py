@@ -7788,7 +7788,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "user_provs": user_provs,
             "custom_provs": custom_provs,
         }
-        self._invalidate(min_interval=0.0)
+        # Paint immediately: this is the picker's ONLY entry repaint, and a
+        # user-blocking modal must never be dropped by the _invalidate throttle
+        # or the resize-recovery guard — otherwise the picker never renders
+        # while its key filters are already active, freezing the console with
+        # no visible prompt. Same failure class as #41098; see _invalidate's
+        # docstring for why modals route through _paint_now().
+        self._paint_now()
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
@@ -7834,7 +7840,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _close_model_picker(self) -> None:
         self._model_picker_state = None
         self._restore_modal_input_snapshot()
-        self._invalidate(min_interval=0.0)
+        # Paint immediately: same rationale as _open_model_picker — a throttled
+        # or resize-suppressed close repaint leaves the picker on screen after
+        # its state is already cleared, which reads as a dead console.
+        self._paint_now()
 
     def _snapshot_model_runtime(self) -> dict:
         """Capture current CLI and agent model runtime for one-turn restore."""
@@ -8210,7 +8219,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 if ctx is None:
                     raise RuntimeError("inventory context unavailable")
-                providers = build_models_payload(ctx)["providers"]
+                # Do NOT live-probe every saved custom endpoint here. The
+                # default (probe_custom_providers=True) fires a synchronous
+                # HTTP /models request per custom provider on the prompt_toolkit
+                # UI thread, so /model blocks for 1–2s on a cold or slow
+                # endpoint before the picker can paint. The GUI and TUI pickers
+                # already pass False for normal opens and only probe on an
+                # explicit refresh; the CLI was the lone outlier still taking
+                # the default. `/model --refresh` keeps the live path.
+                providers = build_models_payload(
+                    ctx, probe_custom_providers=False
+                )["providers"]
             except Exception:
                 providers = []
 

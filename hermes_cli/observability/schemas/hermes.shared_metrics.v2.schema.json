@@ -395,11 +395,13 @@
         "api",
         "batch",
         "cli",
+        "curator",
         "desktop",
         "gateway",
         "other",
         "python",
         "scheduled_task",
+        "subagent",
         "tui",
         "unknown"
       ]

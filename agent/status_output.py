@@ -156,13 +156,18 @@ class StatusOutputMixin:
 
         When compression is explicitly disabled (compression.enabled: false), long sessions can grow past
         the model context window with no compression to shrink them (#89297). Surface an actionable warning
-        so the user knows to run /compact or enable compression.
+        so the user knows to run /compact or enable compression. When the flag was flipped off after init
+        by an embedding host (config still enabled), the copy must stay neutral instead (#123500).
         """
         _warn_key = ("uncompressed_ctx_overflow", context_length)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
-            self._emit_warning(t("display.notice.uncompressed_context_overflow",
-                                 tokens=f"{preflight_tokens:,}", context_length=f"{context_length:,}"))
+            if getattr(self, "compression_enabled_from_config", None) is False:
+                self._emit_warning(t("display.notice.uncompressed_context_overflow",
+                                     tokens=f"{preflight_tokens:,}", context_length=f"{context_length:,}"))
+            else:
+                self._emit_warning(t("display.notice.uncompressed_context_overflow_session_scoped",
+                                     tokens=f"{preflight_tokens:,}", context_length=f"{context_length:,}"))
 
     def _clear_context_overflow_warn(self) -> None:
         """Reset the blocked-overflow warning dedup so it can re-fire on the next blocked turn."""

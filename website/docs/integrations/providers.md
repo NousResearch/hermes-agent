@@ -264,12 +264,14 @@ hermes chat --provider alibaba --model qwen3.5-plus
 hermes chat --provider xiaomi --model mimo-v2-pro
 # Requires: XIAOMI_API_KEY in ~/.hermes/.env
 
-# Tencent TokenHub (Hy4 preview)
+# Tencent TokenHub (Hy4 preview or stable Hy4)
 hermes chat --provider tencent-tokenhub --model hy4-preview
+hermes chat --provider tencent-tokenhub --model hy4
 # Requires: TOKENHUB_API_KEY in ~/.hermes/.env
 
-# Tencent TokenPlan (Hy4 preview via Anthropic Messages endpoint)
+# Tencent TokenPlan (Hy4 preview or stable Hy4 via Anthropic Messages endpoint)
 hermes chat --provider tencent-tokenplan --model hy4-preview
+hermes chat --provider tencent-tokenplan --model hy4
 # Requires: TOKENPLAN_API_KEY in ~/.hermes/.env
 
 # Arcee AI (Trinity models)

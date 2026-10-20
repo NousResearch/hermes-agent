@@ -218,6 +218,10 @@
           "description": ""
         },
         {
+          "id": "tencent/hy4",
+          "description": ""
+        },
+        {
           "id": "tencent/hy3",
           "description": ""
         },
@@ -464,6 +468,9 @@
         },
         {
           "id": "tencent/hy4-preview"
+        },
+        {
+          "id": "tencent/hy4"
         },
         {
           "id": "tencent/hy3"

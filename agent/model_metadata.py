@@ -353,7 +353,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
-    "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
+    "hy4-preview": 1_048_576, "hy4": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
     # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
     # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
     # except 3.5 Lightning and 3.5 Super); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.

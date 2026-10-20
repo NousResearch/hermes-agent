@@ -465,8 +465,9 @@ register_provider(ProviderProfile(
 ```
 
 Hermes then owns the whole lifecycle: `hermes auth add example-pkce [--no-browser]` opens the browser (or
-prints the URL; in a remote session, or where no browser opens, it also asks for the address the browser ends
-on, see [OAuth over SSH](../guides/oauth-over-ssh.md)), listens on `http://127.0.0.1:<port>/callback`,
+prints the URL; in a remote session, on a machine without a graphical browser, or when the browser does not
+start, it also asks for the address the browser ends on, see [OAuth over SSH](../guides/oauth-over-ssh.md)),
+listens on `http://127.0.0.1:<port>/callback`,
 checks the CSRF `state`, exchanges the code with S256 PKCE and stores the grant as a pooled `oauth`
 credential (`source: manual:loopback_pkce`, `expires_at_ms`, `refresh_token`); `auth status` reports
 logged in / expired; `auth logout` removes the rows; `auth refresh` and the 401 recovery paths rotate via

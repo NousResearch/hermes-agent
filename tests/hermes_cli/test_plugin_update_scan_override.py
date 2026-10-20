@@ -108,20 +108,24 @@ def test_desktop_rows_offer_a_git_update_only_while_the_check_still_matches_the_
     that revision, reinstalled from another source, or pinned with ``--ref`` (which ``update`` refuses)."""
     import json
 
-    from hermes_cli.plugins_cadence import cached_git_updates, record_check_results
+    from hermes_cli.plugins_cadence import cached_git_updates, record_check_results, snapshot_installs
     from hermes_cli.plugins_updates import CheckResult
 
     checked = {"source": "https://example.invalid/tern.git", "revision": "a" * 40, "pinned": False}
-    (tmp_path / ".install-metadata.json").write_text(json.dumps({"tern": checked, "feed": checked}), encoding="utf-8")
+    sidecar = tmp_path / ".install-metadata.json"
+    sidecar.write_text(json.dumps({"tern": checked, "feed": checked}), encoding="utf-8")
+    before_check = snapshot_installs(tmp_path)
+    # An update that finishes while the check is still running must not be stamped onto its own result.
+    sidecar.write_text(json.dumps({"tern": {**checked, "revision": "b" * 40}, "feed": checked}), encoding="utf-8")
     record_check_results([
         CheckResult(name="tern", klass="git", current="a" * 40, latest="b" * 40, update_available=True),
         # An approved update_url feed reports versions, not commits; the target is still offered.
         CheckResult(name="feed", klass="git", current="1.0.0", latest="1.1.0", update_available=True),
         CheckResult(name="spotify", klass="catalog", current="c" * 40, latest="d" * 40, update_available=True),
-    ], tmp_path)
+    ], before_check)
 
     assert cached_git_updates({"tern": checked, "feed": checked}) == {"tern": "b" * 40, "feed": "1.1.0"}
-    assert cached_git_updates({"tern": {**checked, "revision": "b" * 40}}) == {}
+    assert cached_git_updates({"tern": {**checked, "revision": "b" * 40}}) == {}, "an update that landed mid-check"
     assert cached_git_updates({"tern": {**checked, "source": "https://example.invalid/fork.git"}}) == {}
     assert cached_git_updates({"tern": {**checked, "pinned": True}}) == {}
 

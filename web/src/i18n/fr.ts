@@ -79,6 +79,7 @@ export const fr: Translations = {
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Compétences",
+    system: "Système",
     },
     modelToolsSheetSubtitle: "& outils",
     modelToolsSheetTitle: "Modèle",

@@ -351,7 +351,9 @@ method, without a Python subprocess:
   model. Omitted, it is `title_generation`.
 - `schema` (a JSON Schema object) asks for JSON through the prompt and the
   provider's JSON mode. The reply is `{"text": ..., "parsed": <value>}`. An
-  answer that is not JSON, or does not match the schema, is an error.
+  answer that is not JSON, or does not match the schema, is an error. An
+  install without the `jsonschema` package (not a core dependency) refuses
+  a `schema` request before the model is called.
 - `redact: true` masks secrets in `input` with the agent's redactor before
   the model sees it.
 - A `session_id` lends that session's model instead of the task's.

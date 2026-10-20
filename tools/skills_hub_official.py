@@ -218,7 +218,8 @@ class OptionalSkillSource(SkillSource):
 
     def _upstream_pointer_from_content(self, content: str | bytes) -> Optional[dict[str, str]]:
         """Parse ``metadata.hermes.upstream: {repo: owner/name, path: ...}`` out of SKILL.md content
-        (a catalog stub); None for vendored skills."""
+        (a catalog stub); None for vendored skills. ``path: .`` is the repo-root layout (SKILL.md
+        beside README.md); it must be spelled out so a forgotten path never means "whole repo"."""
         if isinstance(content, bytes):
             try:
                 content = content.decode("utf-8")
@@ -234,6 +235,8 @@ class OptionalSkillSource(SkillSource):
         # repo must be exactly owner/name; path must be a clean relative path.
         if not repo or repo.count("/") != 1 or not path:
             return None
+        if path == ".":
+            return {"repo": repo, "path": ""}
         parts = _clean_rel_parts(path)
         return None if parts is None else {"repo": repo, "path": "/".join(parts)}
 
@@ -246,8 +249,9 @@ class OptionalSkillSource(SkillSource):
             logger.warning("Upstream fetch failed for optional skill %s (%s:%s)",
                            rel_id, upstream["repo"], upstream["path"])
             return None
+        # Named after the catalog entry: a repo-root skill's bundle is otherwise named after the repo.
         return SkillBundle(
-            name=bundle.name, files=bundle.files, source="official", identifier=f"official/{rel_id}",
+            name=rel_id.rsplit("/", 1)[-1], files=bundle.files, source="official", identifier=f"official/{rel_id}",
             # Curated endorsement, but the content is live third-party:
             # "trusted", not "builtin", so a dangerous scan verdict still blocks.
             trust_level="trusted",

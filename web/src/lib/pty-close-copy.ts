@@ -62,6 +62,20 @@ export const PTY_SESSION_ENDED_MESSAGE =
  *  (native Windows), where retrying cannot help, so the text must not promise a fix. */
 export const PTY_START_FAILED_MESSAGE = 'Chat could not start. The reason is printed above.'
 
+/**
+ * Overlay copy for a 1011 close, surfacing the reason the server put in the close frame
+ * (the same sentence it printed in the terminal; RFC 6455 truncates it to 123 bytes, which
+ * is why the tail may end in "..."). An empty reason — older server, or a platform-PTY
+ * close that carries none — keeps the generic copy that points at the terminal.
+ */
+export function ptyStartFailedMessage(reason: string): string {
+  const trimmed = (reason ?? '').trim()
+  if (!trimmed) {
+    return PTY_START_FAILED_MESSAGE
+  }
+  return trimmed
+}
+
 /** Terminal footer line replacing `[session ended (code N)]`. */
 export const PTY_SESSION_ENDED_TERMINAL_LINE = '[chat session ended]'
 

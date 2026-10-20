@@ -279,3 +279,38 @@ def test_active_work_verb_scoped_to_a_profile_names_only_its_turns(monkeypatch):
     scoped = handler({"profile": "coder"})
     assert scoped["active_agents"] == 1 and [u["session"] for u in scoped["active_work"]] == ["agent:coder:telegram:dm:7"]
 
+
+
+def test_active_work_verb_counts_a_profiles_side_agent_and_reads_it_on_the_loop(monkeypatch):
+    """A profile whose only work is a running /bg side agent is not idle (unserving it interrupts the
+    agent), and every live read happens inside the loop callback, never on the socket thread."""
+    from gateway.run_active_work_verb import active_work_verb
+    from tools import async_delegation
+    monkeypatch.setattr(async_delegation, "list_async_delegations", list)
+    on_loop = []
+    authority = SimpleNamespace(_managed_workers={}, _cron_cancellations={},
+                                _side_agents={object(): [object()]})
+    reads = []
+    registry = SimpleNamespace(for_home=lambda home: reads.append(on_loop[-1]) or authority)
+    runner = SimpleNamespace(_describe_active_work=list, _active_work_count=lambda: 1,
+                             _served_profile_homes={"coder": "/h/coder"}, session_authorities=registry)
+
+    def _call_soon(fn):
+        on_loop.append(True)
+        fn()
+        on_loop.append(False)
+
+    loop = SimpleNamespace(call_soon_threadsafe=_call_soon)
+    answer = active_work_verb(runner, loop)({"profile": "coder"})
+    assert answer["active_agents"] == 1 and answer["active_work"][0]["kind"] == "side_agent"
+    assert reads == [True], "the authority must be read inside the loop callback"
+
+
+def test_profile_stop_fails_closed_when_the_host_does_not_report(monkeypatch, capsys):
+    """No answer from the host that serves the profile is not "idle": refuse unless --interrupt."""
+    from hermes_cli import gateway_lifecycle_guards as guards
+    monkeypatch.setattr(guards, "live_work", lambda home, profile=None: None)
+    with pytest.raises(SystemExit):
+        guards.refuse_while_sessions_live("stop", SimpleNamespace(interrupt=False), host_home="/h", profile="coder")
+    assert "did not report its live work" in capsys.readouterr().out
+    guards.refuse_while_sessions_live("stop", SimpleNamespace(interrupt=True), host_home="/h", profile="coder")

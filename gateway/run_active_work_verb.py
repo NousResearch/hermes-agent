@@ -39,32 +39,41 @@ def _profile_units(runner, profile: str, units: list[dict[str, Any]]) -> list[di
     home = (getattr(runner, "_served_profile_homes", None) or {}).get(profile)
     registry = getattr(runner, "session_authorities", None)
     authority = registry.for_home(home) if registry is not None and home is not None else None
+    from gateway.session_runtime_workers import side_agents
+
     managed = sum(not w.closed.is_set() for w in getattr(authority, "_managed_workers", {}).values())
     crons = len(getattr(authority, "_cron_cancellations", None) or {})
-    return mine + [{"kind": "managed", "pid": os.getpid()}] * managed + [{"kind": "cron", "job_id": "?", "pid": os.getpid()}] * crons
+    sides = len(side_agents(authority)) if authority is not None else 0
+    pid = os.getpid()
+    return (mine + [{"kind": "managed", "pid": pid}] * managed + [{"kind": "cron", "job_id": "?", "pid": pid}] * crons
+            + [{"kind": "side_agent", "pid": pid}] * sides)
 
 
 def active_work_verb(runner, loop) -> Callable[[], dict[str, Any]]:
     """Handler for the control socket: runs on its executor thread, reads the runner on the loop."""
 
     def _handler(params: dict[str, Any]) -> dict[str, Any]:
-        box: list[list] = []
+        profile = params.get("profile")
+        scoped = isinstance(profile, str) and bool(profile)
+        box: list[dict[str, Any]] = []
         done = threading.Event()
 
         def _collect() -> None:
+            # Everything that reads live authority state runs here, on the loop: a read on the socket
+            # thread can race a worker being added and raise, and an error reads as "no work".
             try:
-                box.append(runner._describe_active_work())
+                units = list(runner._describe_active_work()) + _delegation_units(time.time())
+                if scoped:
+                    units = _profile_units(runner, profile, units)
+                    box.append({"active_agents": len(units), "active_work": units, "profile": profile})
+                else:
+                    box.append({"active_agents": runner._active_work_count(), "active_work": units})
             finally:
                 done.set()
 
         loop.call_soon_threadsafe(_collect)
-        done.wait(timeout=5.0)
-        units = list(box[0]) if box else []
-        units += _delegation_units(time.time())
-        profile = params.get("profile")
-        if isinstance(profile, str) and profile:
-            units = _profile_units(runner, profile, units)
-            return {"active_agents": len(units), "active_work": units, "pid": os.getpid(), "profile": profile}
-        return {"active_agents": runner._active_work_count(), "active_work": units, "pid": os.getpid()}
+        if not done.wait(timeout=5.0) or not box:
+            raise RuntimeError("active-work: the gateway loop did not answer")
+        return {**box[0], "pid": os.getpid()}
 
     return _handler

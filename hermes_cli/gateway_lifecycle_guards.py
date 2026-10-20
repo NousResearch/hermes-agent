@@ -70,14 +70,16 @@ def _candidate_homes(system: bool = False) -> list[Path]:
 def refusal_lines(verb: str, homes: list[Path], *, flag_hint: str = f"hermes gateway {{verb}} {INTERRUPT_FLAG}",
                   profile: Optional[str] = None) -> list[str]:
     """Refusal text for ``verb`` while the first answering gateway among ``homes`` has live work, else []."""
-    from hermes_cli.update_cmd_drain_report import describe_active_work_unit
-
     for home in homes:
         work = live_work(home, profile)
         if work is not None:
-            break
-    else:
-        return []
+            return _work_lines(verb, home, work, flag_hint)
+    return []
+
+
+def _work_lines(verb: str, home: Path, work: dict[str, Any], flag_hint: str) -> list[str]:
+    from hermes_cli.update_cmd_drain_report import describe_active_work_unit
+
     units = [u for u in work.get("active_work") or [] if isinstance(u, dict)]
     count = max(len(units), int(work.get("active_agents") or 0))
     if not count:
@@ -96,8 +98,15 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
     ``host_home``/``profile``: a served profile's stop/restart unserves only that profile in the host,
     so only its work counts."""
     if profile:
-        lines = refusal_lines(verb, [Path(host_home)], profile=profile,
-                              flag_hint=f"hermes -p {profile} gateway {{verb}} {INTERRUPT_FLAG}")
+        hint = f"hermes -p {profile} gateway {{verb}} {INTERRUPT_FLAG}"
+        work = live_work(Path(host_home), profile)
+        if work is None:
+            # The host serving this profile is up; no answer is not "idle", so fail closed.
+            lines = [f"Refusing to {verb} the gateway: profile '{profile}' did not report its live work.",
+                     "  Retry in a moment, or interrupt whatever it is running deliberately:",
+                     f"    {hint.format(verb=verb)}"]
+        else:
+            lines = _work_lines(verb, Path(host_home), work, hint)
     else:
         lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
     if not lines:

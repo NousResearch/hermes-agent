@@ -121,6 +121,7 @@ DEFAULT_WORKFLOW = Workflow(
         Column("blocked", "Blocked", "⊘"),
         Column("review", "Review", "◎", drag_target=False),
         Column("done", "Done", "✓"),
+        Column("hold", "Hold", "⏏", drag_target=False),
     ),
     manual=_frozen_manual({
         "triage": ("todo", "ready"),
@@ -133,6 +134,7 @@ DEFAULT_WORKFLOW = Workflow(
         # (reopen_review_task ignores the requested target). Phase 1 fixes it.
         "review": ("triage", "todo", "ready", "done"),
         "done": ("triage", "todo", "ready"),
+        "hold": (),  # cleared only via kanban_unhold (creator) or `hermes kanban unhold`
         ARCHIVED: ("triage", "todo", "ready"),  # restore from the archive filter
     }),
 )

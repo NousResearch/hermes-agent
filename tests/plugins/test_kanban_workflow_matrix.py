@@ -62,6 +62,8 @@ def _task_in(client, src: str) -> str:
             assert kb.request_review(conn, tid, summary="s", force=True)
         elif src == "done":
             assert kb.complete_task(conn, tid, summary="s", force=True)
+        elif src == "hold":
+            tid = kb.create_task(conn, title="hold", assignee="a", hold=True)
         elif src == kw.ARCHIVED:
             assert kb.archive_task(conn, tid)
         assert kb.get_task(conn, tid).status == src

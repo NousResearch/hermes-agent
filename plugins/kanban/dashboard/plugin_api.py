@@ -749,7 +749,9 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
         prev = conn.execute(
             "SELECT status, current_run_id, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
             (task_id,)).fetchone()
-        if prev is None:
+        if prev is None or prev["status"] == "hold":
+            # A create-time hold is released only via ``unhold_task`` (creator
+            # in-process, or ``hermes kanban unhold`` for an orphaned hold).
             return False
         if prev["status"] == "running" and new_status == "ready":
             resume_status = kanban_db._retry_status_for_run(conn, task_id, prev["current_run_id"])

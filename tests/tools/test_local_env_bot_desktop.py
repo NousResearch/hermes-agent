@@ -28,6 +28,24 @@ def test_running_bot_desktop_display_rides_along(monkeypatch):
     assert "WAYLAND_DISPLAY" not in env
 
 
+def test_terminal_does_not_inherit_bot_desktop_xdg_directories(monkeypatch):
+    _publish(
+        monkeypatch,
+        {
+            "DISPLAY": ":20",
+            "XAUTHORITY": "/run/hermes/bot-desktop/xauth",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/hermes/bot-desktop/bus",
+            "XDG_CONFIG_HOME": "/root/.hermes/bot-desktop/xdg",
+            "XDG_DATA_HOME": "/root/.hermes/bot-desktop/xdg/.local-share",
+            "XDG_CACHE_HOME": "/root/.hermes/bot-desktop/xdg/.cache",
+        },
+    )
+    env = _make_run_env({})
+    assert "XDG_CONFIG_HOME" not in env
+    assert "XDG_DATA_HOME" not in env
+    assert "XDG_CACHE_HOME" not in env
+
+
 def test_running_bot_desktop_beats_the_session_snapshot(monkeypatch):
     _publish(monkeypatch, {"DISPLAY": ":20"})
     monkeypatch.setenv("DISPLAY", ":0")

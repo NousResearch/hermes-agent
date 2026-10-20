@@ -1,14 +1,11 @@
 """Session-switch plumbing shared by /resume, /sessions and /branch.
 
 The switch itself lives in ``cli_commands_mixin``; the handoff it needs sits here: end the row
-being left, open the row being entered on this viewer, then repoint an already-built agent.
+being left, then repoint an already-built agent.
 """
 from __future__ import annotations
 
 from contextlib import suppress
-
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import RESUME_GONE
 
 
 def _end_current_session(cli, reason: str) -> None:
@@ -20,35 +17,6 @@ def _end_current_session(cli, reason: str) -> None:
                 cli.conversation_history, conversation_history=cli.conversation_history)
     with suppress(Exception):
         cli._session_db.end_session(cli.session_id, reason)
-
-
-def _open_switched_session(cli, session_id: str) -> str | None:
-    """Subscribe ``session_id`` on this viewer's connection before a switch commits.
-
-    Reads at the switch are local by design, the write side is a gateway verb: the gateway
-    refuses ``prompt.submit`` for a session its connection never resumed
-    (``gateway/session_controls.py``: ``submit`` -> ``permission_denied``). Startup resume and
-    the agent's ``session_id`` setter reach the store's ``attach``; a switch typed before the
-    first turn reaches neither, because ``_sync_agent_to_session`` only repoints an agent that
-    already exists, so the first prompt after the switch was refused instead of answering.
-
-    Returns ``None`` when the switch may proceed, else the refusal reason for the caller to
-    report. Printing stays with the caller: its copy and its seams are the handler's.
-    """
-    store = getattr(cli, "_session_db", None)
-    attach = getattr(store, "attach", None)
-    if not callable(attach):
-        return None
-    try:
-        attach(session_id)
-    except GatewayRPCError as exc:
-        # The owner answered: only an ownership refusal stops the switch.
-        reason = str(exc)
-        return reason if reason in RESUME_GONE else None
-    except GatewayClientError:
-        # No answer (unavailable, disconnected, timeout). The switch's reads are local, so it
-        # proceeds as before; the turn reports the lost connection itself.
-        return None
 
 
 def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:

@@ -31,12 +31,12 @@ from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
-from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id, _retire_agent
+from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
     _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
 from hermes_cli.cli_session_switch import (
-    _end_current_session, _open_switched_session, _sync_agent_to_session)
+    _end_current_session, _sync_agent_to_session)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -177,7 +177,7 @@ def _cron_api(**kwargs) -> dict:
     return json.loads(cronjob_tool(**kwargs))
 
 
-# Session-switch plumbing (end, open, repoint) lives in ``hermes_cli/cli_session_switch.py``.
+# Session-switch plumbing (end, repoint) lives in ``hermes_cli/cli_session_switch.py``.
 
 
 def _without_session_meta(messages) -> list:
@@ -881,11 +881,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
         if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
             return _cp(f"  {kanban_refusal}")
-        read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
-        # Subscribe the target on this viewer before anything changes: the write side is the
-        # gateway's and /resume can land before any agent exists (also covers already-on after a
-        # refused launch attach). The agent setter's later attach is free: attach caches per id.
-        if (refusal := _open_switched_session(self, target_id)):
+        # One session.resume, before anything changes: it subscribes the target and names its receipt
+        # owner; a target the gateway refuses this viewer stops the switch, so the current session is
+        # neither ended nor swapped for one whose next prompt would be refused.
+        read_id, (target_id, refusal) = target_id, _gateway_open(self._session_db, target_id)
+        if refusal:
             return _cp(f"  {_gt('resume.switch_failed')} {target_id} ({refusal})")
         if target_id == self.session_id:
             return _cp(f"  {_t('resume.already_on')}")

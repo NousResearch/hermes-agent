@@ -112,18 +112,25 @@ def answer_label(timestamp: str = "") -> str:
     return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
 
 
-def thought_title(text: str) -> str:
-    """Short title for a reasoning block: its first ``**bold**`` heading, else its first sentence."""
+def _full_title(text: str) -> str:
+    """The reasoning's first ``**bold**`` heading, else its first sentence, whitespace-collapsed."""
     text = (text or "").strip()
     match = re.search(r"\*\*(.+?)\*\*", text)
     title = match.group(1) if match else re.split(r"(?<=[.!?])\s|\n", text, maxsplit=1)[0]
-    title = " ".join(title.split()).strip("*# ")
+    return " ".join(title.split()).strip("*# ")
+
+
+def thought_title(text: str) -> str:
+    """Short title for a reasoning block: its first ``**bold**`` heading, else its first sentence."""
+    title = _full_title(text)
     return title if len(title) <= _TITLE_MAX else title[:_TITLE_MAX - 1].rstrip() + "…"
 
 
 def thought_line(seconds: float | None, text: str) -> str:
     """``∴ Thought for 3s · Planning the change`` (dim italic), closing a reasoning block."""
-    title = thought_title(text)
+    # The reasoning is printed above this line; a title that IS the whole reasoning would repeat it.
+    whole = _full_title(text) == " ".join((text or "").split()).strip("*# ")
+    title = "" if whole else thought_title(text)
     took = t("cli.modern.thought_for", seconds=f"{max(seconds or 0.0, 0.0):.0f}") if seconds else t("cli.modern.thought")
     body = f"{took} · {title}" if title else took
     return f"\x1b[2;3m∴ {body}{_RST}"

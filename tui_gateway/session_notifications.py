@@ -172,19 +172,22 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-# An addressed notification whose owner session is not LIVE must not be discarded: the session layer
-# reaps a session whose client is gone (ws_orphan_reap, eviction), while a background process it
-# started is still running and ``resume`` brings the very same ``session_key`` back. Park the event
-# for a bounded window -- the owner's own poller claims it on its next pass -- and drop it once past
-# the TTL, so a client that never returns cannot pin memory. Parking keeps the event OUT of
-# ``completion_queue``: a foreign event parked in the queue would keep every live poller's queue
-# non-empty and spin that loop (see the back-off note in ``_notif_handle_event``). Delegations have
-# their own return path (``return_completion_offer``); this is the same idea for the other types.
+# An addressed notification whose owner session is not LIVE must not be discarded: a session can end
+# by a route that leaves no live owner (a backend restart / startup_orphan_reap, an explicit close),
+# while a background process it started is still running and ``resume`` brings the very same
+# ``session_key`` back. Park the event for a bounded window -- the owner's own poller claims it on
+# its next pass -- and drop it once past the TTL, so a client that never returns cannot pin memory.
+# Parking keeps the event OUT of ``completion_queue``: a foreign event parked in the queue would keep
+# every live poller's queue non-empty and spin that loop (see the back-off note in
+# ``_notif_handle_event``). Delegations have their own return path (``return_completion_offer``);
+# this is the same idea for the other types.
 #
-# Both discard doors park: the foreign poller's drain AND the finalizing session's own shutdown
-# drain (the reaped owner is ``_finalized`` by then, so it no longer proves ownership of its own
-# events). The caps are total AND per owner, so a session that is gone for good cannot spend the
-# whole budget and refuse the next reaped session's first completion.
+# The keepalive paths (idle/TTL reap, LRU cap, WS-orphan reap) keep a session resident while a
+# background process it started can still notify it, so they no longer reach this discard. The end
+# routes above do, and both discard doors park for them: the foreign poller's drain AND the closing
+# session's own shutdown drain (the owner is ``_finalized`` by then, so it no longer proves
+# ownership of its own events). The caps are total AND per owner, so a session that is gone for good
+# cannot spend the whole budget and refuse the next ended session's first completion.
 _UNOWNED_RETENTION_SECONDS = 600.0
 _UNOWNED_RETAINED_MAX = 16
 _UNOWNED_RETAINED_PER_KEY_MAX = 4
@@ -225,6 +228,8 @@ def _claim_parked_notifications(sid: str, session: dict) -> list:
                 keep.append((deadline, parked))
         _unowned_parked[:] = keep
     return claimed
+
+
 # A retried notice the canonical ledger refuses (SESSION_NOT_OWNED persists while a gateway owns the
 # chat) waits before its requeue, doubling per session up to the kanban/loop poll period so the
 # poller thread never delays those polls by more than one period.
@@ -681,7 +686,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         elif is_delegation:
             deferred.append(evt)
         elif _park_unowned_notification(evt):
-            # The draining session is not the owner (a reaped one is ``_finalized`` and no longer owns
+            # The draining session is not the owner (a closing one is ``_finalized`` and no longer owns
             # its events), and the owner's resume can still claim it -- park on the way out too.
             logger.debug("Parked unowned %s notification (origin=%r key=%r) during shutdown drain",
                          evt_type, origin, key)
@@ -790,8 +795,8 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
 
 def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
-    (ownership routing: _notif_handle_event), claims the events parked for this session while it was reaped
-    (_claim_parked_notifications), and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
+    (ownership routing: _notif_handle_event), claims the events parked for this session while it had
+    no live owner (_claim_parked_notifications), and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
     delivery path for platform="tui" rows.
 
     Also polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` for this session's TUI kanban
@@ -812,7 +817,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
         async_delegation.maybe_sweep_orphaned_completions(queue)
-        # Addressed events parked while this session was reaped (see _park_unowned_notification): the
+        # Addressed events parked while this session had no live owner (see _park_unowned_notification): the
         # moment the session is live again they are its to deliver, ahead of the shared queue.
         parked = _claim_parked_notifications(sid, session)
         if parked:

@@ -1,11 +1,14 @@
 """A completion addressed to a session that is not live must survive until its owner claims it.
 
-The session layer reaps a session whose client is gone (``ws_orphan_reap``, eviction) while a
-``notify_on_complete`` process it started is still running, and ``resume`` brings the very same
-``session_key`` back. Both discard doors used to lose that completion: whichever *foreign* poller
-drained the shared queue first, and the reaped session's own shutdown drain (``_finalized``, so it no
-longer proves ownership). The event is parked (bounded, per owner too) instead, and the owner's
-poller claims it on its first pass after it is live again.
+A session can end by a route that leaves no live owner (a backend restart / ``startup_orphan_reap``,
+an explicit close) while a ``notify_on_complete`` process it started is still running, and
+``resume`` brings the very same ``session_key`` back. Both discard doors used to lose that
+completion: whichever *foreign* poller drained the shared queue first, and the closing session's own
+shutdown drain (``_finalized``, so it no longer proves ownership). The event is parked (bounded, per
+owner too) instead, and the owner's poller claims it on its first pass after it is live again.
+
+The keepalive added for the idle/TTL reap, LRU cap and WS-orphan reap keeps those sessions resident
+while a background process can still notify them; these tests cover the end routes that remain.
 """
 
 from __future__ import annotations
@@ -54,7 +57,7 @@ def _isolated_state(monkeypatch):
     yield
 
 
-def test_a_foreign_poller_parks_a_reaped_owners_completion(monkeypatch):
+def test_a_foreign_poller_parks_an_ended_owners_completion(monkeypatch):
     """The foreign drain must neither deliver it to the wrong session nor push it back into the
     shared queue: a foreign event left in the queue keeps ``queue.get`` returning immediately, so
     every live poller spins until its owner returns or the process ends."""
@@ -128,7 +131,7 @@ class _Batch:
 
 
 def test_the_finalizing_owners_drain_parks_instead_of_dropping(monkeypatch):
-    """The reaped session's own shutdown drain runs with a non-null ``deferred`` list, and the session
+    """The closing session's own shutdown drain runs with a non-null ``deferred`` list, and the session
     is already ``_finalized`` — so it can no longer prove ownership of its own events. They must still
     reach the resumed successor instead of being discarded on the way out."""
     owner = _session(OWNER_KEY)
@@ -145,7 +148,7 @@ def test_the_finalizing_owners_drain_parks_instead_of_dropping(monkeypatch):
 
 def test_one_absent_session_cannot_fill_the_park(monkeypatch):
     """The budget is per owner as well as total: a session that never comes back must not spend the
-    whole park and refuse the next reaped session's first completion."""
+    whole park and refuse the next ended session's first completion."""
     monkeypatch.setattr(server, "_UNOWNED_RETAINED_PER_KEY_MAX", 1, raising=False)
     assert server._park_unowned_notification(_completion("proc_first")) is True
     assert server._park_unowned_notification(_completion("proc_second")) is False

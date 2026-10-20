@@ -910,13 +910,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
-            gate_err = _goal_gate_error(
-                conn, tid, (summary or args.result or "").strip(), "completion",
-                "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
-                "Provide evidence matching the task's acceptance criteria.")
-            if gate_err:
-                fail_msg[tid] = gate_err
-                return False
+            from hermes_cli.kanban_db_review import is_review_completion
+            if not is_review_completion(conn, tid, expected_run_id=_worker_run_id_for(tid)):
+                gate_err = _goal_gate_error(
+                    conn, tid, (summary or args.result or "").strip(), "completion",
+                    "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
+                    "Provide evidence matching the task's acceptance criteria.")
+                if gate_err:
+                    fail_msg[tid] = gate_err
+                    return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,

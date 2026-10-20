@@ -216,6 +216,11 @@ What gets imported from OpenClaw:
 
 ---
 
+Plugins can review final answers before delivery. The
+[`before_turn_end` hook](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks/#before_turn_end)
+can request another evidence check or return a controlled failure. It applies to all
+regular SDK transports and leaves delivery unchanged when no callback registers it.
+
 ## Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.

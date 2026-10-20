@@ -73,6 +73,26 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
     assert uncapped["task"]["max_runtime_seconds"] is None
 
 
+def test_kanban_unblock_reason_comment_follows_success(kanban_home, monkeypatch):
+    """A rejected unblock must not leave its operator reason behind as an audit comment."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    with kbc.connect_closing() as conn:
+        rejected_id = kb.create_task(conn, title="already ready")
+        released_id = kb.create_task(conn, title="blocked task")
+        assert kb.block_task(conn, released_id, reason="wait for dependency")
+
+    rejected = kc.run_slash(f"unblock {rejected_id} --reason 'stale release'")
+    released = kc.run_slash(f"unblock {released_id} --reason 'dependency resolved'")
+
+    assert f"cannot unblock {rejected_id}" in rejected
+    assert f"Unblocked {released_id}: dependency resolved" in released
+    with kbc.connect_closing() as conn:
+        assert kb.list_comments(conn, rejected_id) == []
+        comments = kb.list_comments(conn, released_id)
+    assert [comment.body for comment in comments] == ["UNBLOCK: dependency resolved"]
+
+
 def test_kanban_recover_stale_failure_cli_uses_audited_lifecycle(kanban_home):
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="provider hold", assignee="worker")

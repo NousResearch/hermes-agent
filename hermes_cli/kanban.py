@@ -1090,11 +1090,13 @@ def _cmd_rebind_contract(args: argparse.Namespace) -> int:
 
 
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
+    """Record a ``PREFIX: reason`` comment only after a per-task op succeeds."""
     def run(tid):
+        if not op(tid):
+            return False
         if reason:
             kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
+        return True
     return run
 
 

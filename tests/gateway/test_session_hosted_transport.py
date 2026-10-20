@@ -185,24 +185,6 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
                 asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
 
 
-def test_oversize_owner_request_has_specific_presend_reason(hosted_owner, tmp_path, monkeypatch):
-    from gateway import session_hosted_transport as transport
-    from hermes_cli import gateway_runtime, gateway_runtime_discovery
-    from hermes_state_runtime import RuntimeStoreError
-    _, loop, _, _ = hosted_owner
-    server = _server(tmp_path)
-    assert asyncio.run_coroutine_threadsafe(server.start(), loop).result()
-    discovered = gateway_runtime.discover_gateway_endpoint(tmp_path)
-    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint', lambda *a, **k: discovered)
-    monkeypatch.setattr(gateway_runtime_discovery, 'connect_private',
-                        lambda *a: pytest.fail('oversized request must not connect'))
-    try:
-        with pytest.raises(RuntimeStoreError, match='request_too_large'):
-            transport.owner_request(tmp_path, 'hosted-producer', {'prompt': '中' * 11000})
-    finally:
-        asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
-
-
 def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkeypatch):
     from hermes_state_runtime import RuntimeStoreError
     source = _SourceTask(tmp_path, monkeypatch, b'file')

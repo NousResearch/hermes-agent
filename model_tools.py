@@ -578,10 +578,17 @@ def _resolve_active_context_length() -> int:
             # Credential resolution failing (offline, no keys) degrades to a
             # provider+base_url-only lookup so static fallbacks still apply.
             try:
+                from agent.azure_identity_adapter import is_token_provider
                 from hermes_cli.runtime_provider import resolve_runtime_provider
                 rt = resolve_runtime_provider(requested=provider, target_model=model_id) or {}
                 base_url = str(rt.get("base_url") or base_url or "").strip()
-                api_key = str(rt.get("api_key") or "").strip()
+                # key_cmd (and Entra ID) providers resolve to a callable token source, not a string.
+                # str() turned it into "<CommandTokenSource object at 0x...>", and the probe layer,
+                # which mints callables itself (#104902), then sent that text verbatim as the bearer:
+                # one 401 per metadata probe at every startup. Hand the credential through unchanged,
+                # as every other get_model_context_length caller does.
+                rt_key = rt.get("api_key")
+                api_key = rt_key if is_token_provider(rt_key) else str(rt_key or "").strip()
             except Exception as rt_exc:
                 logger.debug("Runtime credential resolution failed for tool-search "
                              "context gate (provider=%s): %s — using config values only", provider, rt_exc)

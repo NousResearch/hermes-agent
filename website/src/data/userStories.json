@@ -1,5 +1,16 @@
 [
   {
+    "id": "blog-taskaway-five-profiles",
+    "source": "blog",
+    "author": "Taskaway",
+    "url": "https://www.taskaway.fr/en/how-we-run-taskaway-with-hermes-agent",
+    "date": "2026-10-18",
+    "category": "business-ops",
+    "headline": "A small French company runs its back office on five Hermes profiles, with the rules enforced in code",
+    "quote": "A prompt is a request; an agent can forget it. So the rules that matter live in code the agents cannot change.",
+    "size": "md"
+  },
+  {
     "id": "blog-razorpay-employee-agents",
     "source": "blog",
     "author": "Razorpay Engineering",

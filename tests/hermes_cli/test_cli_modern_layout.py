@@ -179,3 +179,26 @@ def test_tool_rows_keep_the_classic_tool_emoji():
         assert _plain(tool_row(name, args, 0.2)).startswith(classic_emoji + " "), (name, classic_emoji)
     failed = _plain(tool_row("terminal", {"command": "false"}, 0.2, result='{"exit_code": 1, "output": ""}'))
     assert failed.startswith("✗ ") and "[exit 1]" in failed, failed
+
+
+def test_a_blank_line_separates_the_user_message_from_the_first_tool_row(monkeypatch):
+    """Reasoning and answers open under a blank line + bar; the first tool row of a turn gets the
+    same blank line, so the user's message never runs straight into the tool calls. Later rows
+    stay tight."""
+    from cli import HermesCLI
+    import cli as climod
+    from hermes_cli import cli_modern_layout as layout
+
+    emitted: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli.show_timestamps = True, False
+    cli._print_user_message_preview("read the hostname")
+    first = layout.completed_tool_line(cli, "read_file", {"path": "/etc/hostname"}, 0.2)
+    second = layout.completed_tool_line(cli, "terminal", {"command": "echo hi"}, 0.1)
+    assert first.startswith("\n") and _plain(first).lstrip("\n").startswith("📖 "), repr(first)
+    assert not second.startswith("\n"), repr(second)
+    # A reasoning block opened first already printed its own blank line + bar: no double gap.
+    cli._print_user_message_preview("again")
+    layout.separator(False)
+    assert not layout.completed_tool_line(cli, "read_file", {"path": "/etc/hostname"}, 0.2).startswith("\n")

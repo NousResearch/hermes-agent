@@ -252,6 +252,9 @@ class CLIStreamMixin:
             ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        if modern:
+            from hermes_cli.cli_modern_layout import owe_gap_after_user_message
+            owe_gap_after_user_message()
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.

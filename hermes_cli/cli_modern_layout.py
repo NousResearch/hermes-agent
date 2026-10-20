@@ -70,10 +70,29 @@ def prompt_glyph() -> str:
 _SEPARATOR_WIDTH = 40
 
 
+_GAP_PENDING = False  # a user message was just echoed and nothing has opened a block under it yet
+
+
 def separator(accent: bool) -> str:
-    """The bar above each user message and answer (accent) or reasoning block (dim)."""
+    """The bar above each user message and answer (accent) or reasoning block (dim). Every caller
+    prints a blank line ahead of it, so it also settles the gap a fresh user message owes."""
+    global _GAP_PENDING
+    _GAP_PENDING = False
     color = _fg(_skin_hex("ui_accent", "#FFBF00")) if accent else _DIM
     return f"{color}{'─' * _SEPARATOR_WIDTH}{_RST}"
+
+
+def owe_gap_after_user_message() -> None:
+    """Called once the user's message is echoed: the next tool row opens with a blank line, as
+    reasoning and answers already do, so the message never runs straight into the tool calls."""
+    global _GAP_PENDING
+    _GAP_PENDING = True
+
+
+def _take_gap() -> str:
+    global _GAP_PENDING
+    gap, _GAP_PENDING = ("\n" if _GAP_PENDING else ""), False
+    return gap
 
 
 def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
@@ -129,7 +148,7 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
                         is_error: bool = False) -> str:
     """The scrollback line for a finished tool call in the active layout."""
     if is_modern(cli):
-        return tool_row(function_name, args, duration, result, is_error)
+        return _take_gap() + tool_row(function_name, args, duration, result, is_error)
     from agent.display import get_cute_tool_message
     return f"  {get_cute_tool_message(function_name, args, duration, result=result)}"
 

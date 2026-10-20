@@ -389,7 +389,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
     from tools.approval_context import (background_approval_task, release_background_approval_task,
-                                        reserve_background_approval_task, revoke_background_approval_task,
+                                        reserve_background_approval_task,
                                         approval_task_revoked)
     if approval_task_revoked():
         return {"status": "rejected", "error": "The originating approval task was stopped or superseded."}
@@ -398,7 +398,9 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     completion_reservation = reserve_background_approval_task()
 
     def _interrupt():
-        revoke_background_approval_task(reservation)
+        # Only this unit ends. Native child interrupts fence its descendants;
+        # the parent still owns the completion report and independent siblings.
+        release_background_approval_task(reservation)
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
 

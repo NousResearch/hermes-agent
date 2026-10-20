@@ -8,7 +8,7 @@ gate in :mod:`tools.approval`.
 import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import RLock
+from threading import Event, RLock
 from typing import Callable
 import logging
 import os
@@ -108,8 +108,9 @@ _approval_task_context: contextvars.ContextVar[tuple[ApprovalTaskLease, Approval
 class ApprovalTaskReservation:
     """One transferable child reservation; settlement may race cancellation."""
 
-    def __init__(self, lease: ApprovalTaskLease, evidence: ApprovalTaskContext):
+    def __init__(self, lease: ApprovalTaskLease, evidence: ApprovalTaskContext, stop_events: tuple[Event, ...] = ()):
         self.lease, self.evidence = lease, evidence
+        self.stop_events = stop_events
         self._lock = RLock()
         self._released = False
 
@@ -121,11 +122,12 @@ class ApprovalTaskReservation:
         self.lease.release_child()
 
     def active(self) -> bool:
+        # Native child owners supply cancellation; settling here also prevents a
+        # later clearing of their interrupt latch from reviving observed stale work.
+        if any(event.is_set() for event in self.stop_events):
+            self.release()
         with self._lock:
             return not self._released
-
-    def revoke(self) -> None:
-        self.lease.revoke()
 
     def child(self, child_id: str) -> ApprovalTaskContext:
         parent = self.evidence
@@ -136,6 +138,7 @@ class ApprovalTaskReservation:
 class _ReservationBundle:
     def __init__(self, reservations):
         self.reservations = tuple(reservations)
+        self.stop_events = tuple(event for r in self.reservations for event in r.stop_events)
 
     def active(self):
         return all(reservation.active() for reservation in self.reservations)
@@ -199,7 +202,7 @@ def approval_task_revoked() -> bool:
 
 
 @contextmanager
-def delegated_approval_task(child_id: str):
+def delegated_approval_task(child_id: str, *, stop_event: Event | None = None):
     """Narrow inherited context to a real child run; copied contexts alone grant nothing."""
     bound = _approval_task_context.get()
     if bound is None:
@@ -217,7 +220,10 @@ def delegated_approval_task(child_id: str):
     lease, parent = bound[:2]
     child = ApprovalTaskContext(parent.text, parent.identity, parent.profile, parent.session,
                                 parent.task_id, parent.run_id, (*parent.ancestry, child_id))
-    reservation = ApprovalTaskReservation(lease, child)
+    stop_events = bound[2].stop_events if bound[2] is not None else ()
+    if stop_event is not None:
+        stop_events = (*stop_events, stop_event)
+    reservation = ApprovalTaskReservation(lease, child, stop_events)
     token = _approval_task_context.set((lease, child, reservation))
     try:
         yield
@@ -231,17 +237,12 @@ def reserve_background_approval_task():
     bound = _approval_task_context.get()
     if bound is None or approval_task_revoked() or not bound[0].reserve_child():
         return None
-    return ApprovalTaskReservation(bound[0], bound[1])
+    return ApprovalTaskReservation(bound[0], bound[1], bound[2].stop_events if bound[2] is not None else ())
 
 
 def release_background_approval_task(reservation) -> None:
     if reservation is not None:
         reservation.release()
-
-
-def revoke_background_approval_task(reservation) -> None:
-    if reservation is not None:
-        reservation.revoke()
 
 
 @contextmanager

@@ -92,3 +92,20 @@ def test_attach_without_an_owner_reports_the_bootstrap_verdict(home):
     assert result["state"] == "absent" and result["endpoint"] is None
     assert result["message"] == "gateway absent: not ready" and "gateway absent: not ready" in run.stderr
     assert "ticket" not in result and "url" not in result
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_ready_owner_that_refuses_the_ticket_is_one_bounded_verdict(home):
+    """No ticket store: the owner answers identify (ready) but refuses session-ticket. A client that
+    retries on this reply needs one JSON line, exit 7 and no credential, never a traceback."""
+    stop = _serve(home, None)
+    try:
+        run = _attach(home)
+    finally:
+        stop()
+    assert run.returncode == 7, run.stderr
+    assert len(run.stdout.splitlines()) == 1 and "Traceback" not in run.stderr
+    result = json.loads(run.stdout)
+    assert (result["state"], result["reason_code"]) == ("inaccessible", "ticket_unavailable")
+    assert result["message"].startswith("gateway inaccessible: ticket_unavailable")
+    assert "ticket" not in result and "url" not in result

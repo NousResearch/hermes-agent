@@ -135,7 +135,7 @@ prompt(..., session_id)
 
 ### Fork
 
-`fork_session()` 将消息历史深拷贝至新的活跃会话，在保留对话状态的同时为 fork 分配独立的 session ID 和 cwd。
+`fork_session()` 将消息历史深拷贝至新的活跃会话，在保留对话状态的同时为 fork 分配独立的 session ID 和 cwd。fork 的 agent 沿用源会话的模型、provider、base URL 和 API mode，因此已切换到非默认 provider 的会话在 fork 后仍使用同一路由。
 
 ## Provider/认证行为
 

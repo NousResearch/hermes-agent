@@ -56,7 +56,7 @@ for prompt in prompts:
 ```bash
 # Start server with batching
 ./llama-server -m model-q4_k_m.gguf \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --port 8080 \
     -ngl 35 \
     -c 4096 \
@@ -466,11 +466,9 @@ def find_optimal_config(model_path, target_vram_gb=8):
 ### Python Multi-GPU
 
 ```python
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-
 from llama_cpp import Llama
 
+# Start this process with CUDA_VISIBLE_DEVICES=0,1 set by the launcher.
 llm = Llama(
     model_path="large-model-q4_k_m.gguf",
     n_gpu_layers=60,

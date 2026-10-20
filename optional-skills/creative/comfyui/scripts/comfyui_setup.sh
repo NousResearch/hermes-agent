@@ -116,8 +116,8 @@ if [ -z "$GPU_FLAG" ]; then
         fi
         echo "$HW_JSON" | tee -a "$LOG_FILE" >&2
 
-        VERDICT="$(echo "$HW_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("verdict",""))')"
-        FLAG="$(echo "$HW_JSON"   | python3 -c 'import sys,json; print(json.load(sys.stdin).get("comfy_cli_flag") or "")')"
+        VERDICT="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("verdict", ""))' "$HW_JSON")"
+        FLAG="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("comfy_cli_flag") or "")' "$HW_JSON")"
 
         if [ "$VERDICT" = "cloud" ] && [ "$FORCE_CLOUD_OVERRIDE" -ne 1 ]; then
             log ""
@@ -170,40 +170,8 @@ elif command -v pipx >/dev/null 2>&1; then
         fi
     fi
 else
-    log "Neither pipx nor uvx found. Falling back to pip install --user…"
-    log "  (Recommend installing pipx: https://pipx.pypa.io)"
-    if ! pip install --user comfy-cli >>"$LOG_FILE" 2>&1; then
-        # macOS: PEP 668 externally-managed-environment may block --user
-        log "pip install --user failed. Retrying with --break-system-packages…"
-        pip install --user --break-system-packages comfy-cli >>"$LOG_FILE" 2>&1 || {
-            err "Could not install comfy-cli. Install pipx or uv first."
-            exit 1
-        }
-    fi
-    # Resolve the actual `comfy` script — pip --user puts it in:
-    #   Linux: ~/.local/bin/comfy
-    #   macOS: ~/Library/Python/<ver>/bin/comfy  OR  ~/.local/bin/comfy
-    COMFY_BIN=""
-    for candidate in "$HOME/.local/bin/comfy" \
-                     "$HOME/Library/Python/3.13/bin/comfy" \
-                     "$HOME/Library/Python/3.12/bin/comfy" \
-                     "$HOME/Library/Python/3.11/bin/comfy" \
-                     "$HOME/Library/Python/3.10/bin/comfy"; do
-        if [ -x "$candidate" ]; then
-            COMFY_BIN="$candidate"
-            export PATH="$(dirname "$candidate"):$PATH"
-            break
-        fi
-    done
-    if [ -z "$COMFY_BIN" ]; then
-        if command -v comfy >/dev/null 2>&1; then
-            COMFY_BIN="comfy"
-        else
-            err "Installed comfy-cli but couldn't find the 'comfy' script."
-            err "Add the right Python user-bin directory to PATH and retry."
-            exit 1
-        fi
-    fi
+    err "Neither pipx nor uvx is available. Install one in a user-owned environment, then rerun setup."
+    exit 1
 fi
 
 # --- Step 2: Disable analytics tracking (avoid interactive prompt) ---
@@ -234,10 +202,11 @@ if [ "$SKIP_LAUNCH" -eq 1 ]; then
 fi
 
 # --- Step 4: Detect already-running server ---
-if curl -fsS "http://127.0.0.1:$PORT/system_stats" >/dev/null 2>&1; then
+STATS_FILE="${LOG_FILE}.system_stats.json"
+if curl -fsS "http://127.0.0.1:$PORT/system_stats" -o "$STATS_FILE" 2>/dev/null; then
     log "Server already running on port $PORT — skipping launch."
     log "Stop with \`$COMFY_BIN stop\` if you want a fresh start."
-    curl -fsS "http://127.0.0.1:$PORT/system_stats" | python3 -m json.tool 2>/dev/null || true
+    python3 -m json.tool "$STATS_FILE" 2>/dev/null || true
     log "Done."
     exit 0
 fi
@@ -257,9 +226,9 @@ log "Waiting for server…"
 MAX_WAIT=60
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do
-    if curl -fsS "http://127.0.0.1:$PORT/system_stats" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:$PORT/system_stats" -o "$STATS_FILE" 2>/dev/null; then
         log "Server is running!"
-        curl -fsS "http://127.0.0.1:$PORT/system_stats" | python3 -m json.tool 2>/dev/null || true
+        python3 -m json.tool "$STATS_FILE" 2>/dev/null || true
         break
     fi
     sleep 2

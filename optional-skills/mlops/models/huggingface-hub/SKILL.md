@@ -15,7 +15,9 @@ The `hf` command is the modern command-line interface for interacting with the H
 > **IMPORTANT:** The `hf` command replaces the now deprecated `huggingface-cli` command.
 
 ## Quick Start
-*   **Installation:** `curl -LsSf https://hf.co/cli/install.sh | bash -s`
+*   **Installation:** Create an isolated Python environment, then run
+    `python -m pip install --upgrade huggingface_hub` inside it. Do not pipe a
+    downloaded installer directly into a shell.
 *   **Help:** Use `hf --help` to view all available functions and real-world examples.
 *   **Authentication:** Recommended via `HF_TOKEN` environment variable or the `--token` flag.
 

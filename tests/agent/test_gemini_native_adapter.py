@@ -1040,3 +1040,26 @@ def test_prompt_feedback_without_block_reason_keeps_empty_turn(monkeypatch):
     client = _blocking_client(monkeypatch, {"promptFeedback": {"safetyRatings": []}})
     out = client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
     assert out.choices[0].finish_reason == "stop"
+
+
+_VERTEX_NATIVE_BASE = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+
+
+@pytest.mark.parametrize("api_key,base_url,bearer", [
+    ("ya29.token", _VERTEX_NATIVE_BASE, True),
+    ("opaque-oauth-token", _VERTEX_NATIVE_BASE, True),
+    ("AIzaExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AQ.ExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AIzaStudioKey", "https://generativelanguage.googleapis.com/v1beta", False),
+])
+def test_vertex_oauth_token_sent_as_bearer_but_api_keys_are_not(api_key, base_url, bearer):
+    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+    assert is_native_gemini_base_url(base_url)
+    headers = GeminiNativeClient(api_key=api_key, base_url=base_url)._headers()
+    if bearer:
+        assert headers["Authorization"] == f"Bearer {api_key}"
+        assert "x-goog-api-key" not in headers
+    else:
+        assert headers["x-goog-api-key"] == api_key
+        assert "Authorization" not in headers

@@ -135,37 +135,54 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         assert is_interrupted() is False
 
     def test_interrupt_during_child_api_call_detected(self):
-        """Interrupt set during _interruptible_api_call is detected within 0.5s."""
+        """An interrupt raised mid-_interruptible_api_call surfaces as
+        InterruptedError WITHOUT waiting for the in-flight provider call.
+
+        Deterministic ordering witness (no stopwatch): the fake provider call
+        blocks on an Event the test controls and records when it returns; the
+        caller must raise InterruptedError while that call is still parked.
+        The old ``elapsed < 1.0`` bound measured the poll cadence plus runner
+        scheduling and went red on loaded CI runners (1.31s observed).
+        """
         child = self._make_bare_agent()
         child.api_mode = "chat_completions"
         child.log_prefix = ""
         child._client_kwargs = {"api_key": "test", "base_url": "http://localhost:1234"}
 
-        # Mock a slow API call
+        release_call = threading.Event()   # test-controlled: lets the fake call finish
+        call_entered = threading.Event()   # set once the worker is inside the provider call
+        call_returned = threading.Event()  # set on EVERY exit path of the fake call
+
         mock_client = MagicMock()
-        def slow_api_call(**kwargs):
-            time.sleep(5)  # Would take 5s normally
-            return MagicMock()
-        mock_client.chat.completions.create = slow_api_call
+        def blocking_api_call(**kwargs):
+            call_entered.set()
+            try:
+                release_call.wait(timeout=10)  # finite: a regression fails fast, never hangs
+                return MagicMock()
+            finally:
+                call_returned.set()
+        mock_client.chat.completions.create = blocking_api_call
         mock_client.close = MagicMock()
         child.client = mock_client
 
-        # Set interrupt after 0.2s from another thread
-        def set_interrupt_later():
-            time.sleep(0.2)
+        # Interrupt only once the worker is provably inside the provider call.
+        def set_interrupt_once_inside():
+            call_entered.wait(timeout=10)
             child.interrupt("stop!")
-        t = threading.Thread(target=set_interrupt_later, daemon=True)
+        t = threading.Thread(target=set_interrupt_once_inside, daemon=True)
         t.start()
 
-        start = time.monotonic()
         try:
-            child._interruptible_api_call({"model": "test", "messages": []})
-            self.fail("Should have raised InterruptedError")
-        except InterruptedError:
-            elapsed = time.monotonic() - start
-            # Should detect within ~0.5s (0.2s delay + 0.3s poll interval)
-            assert elapsed < 1.0, f"Took {elapsed:.2f}s to detect interrupt (expected < 1.0s)"
+            with self.assertRaises(InterruptedError):
+                child._interruptible_api_call({"model": "test", "messages": []})
+            assert call_entered.is_set(), "interrupt fired before the provider call started"
+            assert not call_returned.is_set(), (
+                "InterruptedError was raised only AFTER the provider call returned — "
+                "the caller blocked on the in-flight call instead of abandoning it"
+            )
         finally:
+            release_call.set()            # let the abandoned worker exit cleanly
+            call_returned.wait(timeout=10)
             t.join(timeout=2)
             set_interrupt(False)
 

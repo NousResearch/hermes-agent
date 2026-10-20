@@ -10,6 +10,7 @@ import { normalize } from '@/lib/text'
 import type { ComposerAtCompletionSource } from '../contrib'
 import { COMPOSER_AREAS } from '../contrib'
 
+import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
@@ -195,8 +196,12 @@ export function useAtCompletions(options: {
 
   // Cache key: the completion depends on the query AND the directory it's
   // resolved against, so a cwd or session change can't serve another tree's
-  // listing.
-  const cacheKey = useCallback((query: string) => `${cwd ?? ''}|${sessionId ?? ''}|${query}`, [cwd, sessionId])
+  // listing. The owner is part of it too: the listing comes from the session's
+  // owning backend (#141583), and an ambient answer must not stand in for it.
+  const cacheKey = useCallback(
+    (query: string) => `${completionOwnerKey(completionOwner(sessionId))}|${cwd ?? ''}|${sessionId ?? ''}|${query}`,
+    [cwd, sessionId]
+  )
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -225,7 +230,7 @@ export function useAtCompletions(options: {
         // `git ls-files` + rank on the backend (~40ms of the ~50ms round trip
         // measured on this repo's 8k files).
         const result = await cachedPathCompletion(cacheKey(query), () =>
-          gateway.request<{ items?: CompletionEntry[] }>('complete.path', params)
+          requestCompletion<{ items?: CompletionEntry[] }>(gateway, completionOwner(sessionId), 'complete.path', params)
         )
 
         const items = result.items ?? []

@@ -276,6 +276,14 @@ def _container_default_cwd(task_id: str = "default") -> str | None:
         from tools.terminal_tool import _get_env_config
 
         cwd = _get_env_config().get("cwd")
+        if cwd == "~":
+            # A plugin backend's sandbox home is known once its environment connects: bring it up
+            # through the file tools' own creator, as the call that follows would, and use the home
+            # THAT environment resolved.
+            from tools.file_tools import _get_file_ops
+            from tools.terminal_tool_config import plugin_sandbox_home
+
+            cwd = plugin_sandbox_home(_get_file_ops(task_id).env)
         if isinstance(cwd, str) and posixpath.isabs(cwd):
             return cwd
     except Exception:

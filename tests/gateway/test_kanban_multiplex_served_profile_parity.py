@@ -61,7 +61,8 @@ def test_worker_for_served_profile_gets_its_own_env_and_toolset_pin(served, monk
         return SimpleNamespace(pid=4242)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(kbd, "_open_worker_log", lambda task, board: open("/dev/null", "w"))
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch_spawn._open_worker_log",
+                        lambda task, board: open("/dev/null", "w"))
     monkeypatch.setattr(kbd, "_hermes_argv", lambda: ["hermes"], raising=False)
     kbd._default_spawn(task, str(served.alpha), board=None)
 

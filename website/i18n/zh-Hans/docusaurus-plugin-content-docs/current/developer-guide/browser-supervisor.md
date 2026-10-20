@@ -58,7 +58,7 @@ Camofox 在本 PR 中暂不支持；计划在 `jo-inc/camofox-browser` 提交上
 通过 `config.yaml` 中的 `browser.dialog_policy` 配置：
 
 - **`must_respond`**（默认）— 捕获，在 `browser_snapshot` 中呈现，等待显式的 `browser_dialog(action=...)` 调用。在 300s 安全超时后若无响应，则自动关闭并记录日志。防止有缺陷的 agent 永久挂起。
-- `auto_dismiss` — 记录并立即关闭；agent 事后通过 `browser_snapshot` 内的 `browser_state` 查看。
+- `auto_dismiss` — 记录并立即关闭；agent 事后通过 `browser_snapshot` 内的 `recent_dialogs` 查看。
 - `auto_accept` — 记录并接受（适用于用户希望干净导航离开时的 `beforeunload`）。
 
 策略按 task 配置；v1 不支持按对话框覆盖。

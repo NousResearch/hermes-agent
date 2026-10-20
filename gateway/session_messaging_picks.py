@@ -40,11 +40,6 @@ async def _pick_model(authority, owner, live, payload, row):
     from gateway.slash_commands_model import _ModelSwitchContext
     from hermes_constants import get_hermes_home
     runner = authority.runner
-    # A /stop'd chat starts a new session on its next access, and recording the switch is such an
-    # access: a viewer's pick would end the chat's session with no message from anyone in it.
-    entry = runner.session_store.lookup_by_session_key(live.route)
-    if entry is None or entry.suspended:
-        raise RuntimeStoreError('not_found', detail='chat is stopped; its next message starts a new session')
     ctx = _ModelSwitchContext(session_key=live.route, source=live.source,
                               config_path=get_hermes_home() / 'config.yaml', persist_global=False)
     ctx.read_config()

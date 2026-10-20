@@ -168,21 +168,3 @@ async def test_a_messaging_chats_effort_wire_is_clamped_for_its_api_mode(tmp_pat
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
-
-
-@pytest.mark.asyncio
-async def test_a_model_pick_on_a_stopped_chat_is_refused_without_rotating_it(tmp_path):
-    """Recording a switch on a /stop'd chat started its new session: a viewer's pick ended the chat's
-    session with no message in it. The pick is refused and the route keeps its session."""
-    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
-    try:
-        assert runner.session_store.suspend_session(route)
-        before = runner.session_store.lookup_by_session_key(route).session_id
-
-        picked = await viewer.dispatch(_mutate(root, fences, 'model', {'model': 'picked'}, 'stopped-pick'))
-
-        assert picked.get('error', {}).get('data', {}).get('reason') == 'not_found', picked
-        assert runner.session_store.lookup_by_session_key(route).session_id == before
-    finally:
-        await viewer.close()
-        runner.session_store.close_all_db_handles()

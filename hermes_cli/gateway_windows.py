@@ -1862,12 +1862,24 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     return _absent()
 
 
+def _mark_planned_restart() -> None:
+    """Stamp the planned-restart marker before ``stop()``.
+
+    Windows has no SIGUSR1, so ``restart()`` is stop + start: the gateway never runs the in-band
+    restart path that stamps this marker itself, and the next boot would read a plain stop and skip
+    the "Gateway online" home-channel notice.
+    """
+    from gateway.restart_notice import write_planned_restart_marker
+    write_planned_restart_marker()
+
+
 def restart() -> None:
     """Stop then start. Waits for the old gateway to be authoritatively gone first; otherwise
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
     replaces it when it exits (a silent outage). Fails loudly on either side."""
     _assert_windows()
 
+    _mark_planned_restart()
     stop()
 
     if not _wait_for_gateway_absent(timeout_s=30.0):

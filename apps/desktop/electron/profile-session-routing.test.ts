@@ -25,6 +25,7 @@ import {
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
+  tagPrimarySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -1043,6 +1044,29 @@ test('registry paging and splicing keep same-id sessions from different profiles
     merged.filter((row: any) => row.id === 'shared').map((row: any) => row.profile),
     ['default', 'work']
   )
+})
+
+test('primary rows merged into a window pinned elsewhere keep their real owner', () => {
+  const base = () => ({
+    sessions: [
+      { id: 'laptop-chat', profile: 'laptop' },
+      { id: 'tagged', profile: 'default', connection_id: 'homelab' }
+    ]
+  })
+
+  // Pinned to a remote gateway, local primary: untagged rows are this device's.
+  const pinnedRemote = tagPrimarySessionRows(base(), null, 'butler') as any
+  assert.equal(pinnedRemote.sessions[0].connection_id, 'local')
+  assert.equal(pinnedRemote.sessions[1].connection_id, 'homelab')
+
+  // A remote primary names its own registry id.
+  const remotePrimary = tagPrimarySessionRows(base(), 'butler', 'local') as any
+  assert.equal(remotePrimary.sessions[0].connection_id, 'butler')
+
+  // Pinned to the primary itself, or unpinned: leave the renderer's stamp alone.
+  assert.equal((tagPrimarySessionRows(base(), 'local', 'local') as any).sessions[0].connection_id, undefined)
+  assert.equal((tagPrimarySessionRows(base(), null, null) as any).sessions[0].connection_id, undefined)
+  assert.equal((tagPrimarySessionRows(base(), 'butler', 'butler') as any).sessions[0].connection_id, undefined)
 })
 
 test('registry-pinned session responses retain their owning connection', () => {

@@ -186,6 +186,7 @@ import {
   buildAgentRoster,
   connectionDialFieldsChanged,
   connectionIdForPendingLogin,
+  LOCAL_CONNECTION_ID,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
@@ -476,6 +477,7 @@ import {
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
+  tagPrimarySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -15689,7 +15691,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, registryConnectionId)
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -15718,9 +15720,9 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
 
     const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources, registryConnectionId)
     ])
 
     return assembleSidebarSessionSlices(recents, cron, messaging)
@@ -15860,7 +15862,7 @@ async function remoteOwnerProfileForSession(sessionId: string) {
 // returns data (never `undefined`) so a batched caller can compose slices. A
 // specific local profile reads from the local primary; a remote-override profile
 // reads from its remote; 'all' merges every remote into the primary aggregate.
-async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null) {
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null, pinnedConnectionId = null) {
   const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
   if (requested !== 'all') {
@@ -15871,7 +15873,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
     return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
   }
 
-  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
@@ -15880,12 +15882,23 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
 // than breaking the sidebar. Connected registry gateways' sessions are spliced
 // in too (#88880) — the unified Sessions list shows EVERY connected gateway's
 // chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null) {
+async function mergeRemoteProfileSessions(
+  searchParams,
+  remoteProfiles,
+  registrySourcesOverride = null,
+  pinnedConnectionId = null
+) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
+
+  // A window pinned to another gateway still merges the primary's rows here.
+  // Name their real owner, or the renderer files them under the pinned gateway.
+  if (pinnedConnectionId) {
+    tagPrimarySessionRows(base, await primaryAggregateConnectionId(), pinnedConnectionId)
+  }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -15996,6 +16009,19 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
   }
 
   return sources
+}
+
+// Which registry connection the primary session aggregate reads: the registry
+// id stamped on a remote primary's descriptor, else this device. Passive, so a
+// sidebar refresh never spawns or dials for it.
+async function primaryAggregateConnectionId(): Promise<string> {
+  try {
+    const descriptor: any = await ensureBackend(null, { passive: true })
+
+    return String(descriptor?.connectionId || '').trim() || LOCAL_CONNECTION_ID
+  } catch {
+    return LOCAL_CONNECTION_ID
+  }
 }
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).

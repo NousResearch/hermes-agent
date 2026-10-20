@@ -26,6 +26,12 @@ export interface SidebarProjectsTranslations {
   menuAppearance: string
   noColor: string
   menuAddFolder: string
+  menuRemoveFolder: string
+  removeFolderTitle: string
+  removeFolderDesc: string
+  removeFolderNewPrimary: (path: string) => string
+  removeFolderLast: string
+  removeFolderFailed: string
   menuSetActive: string
   menuDelete: string
   moveToProject: string

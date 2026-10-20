@@ -27,6 +27,13 @@ export const enProjects: Translations['sidebar']['projects'] = {
   menuAppearance: 'Appearance',
   noColor: 'No color',
   menuAddFolder: 'Add folder',
+  menuRemoveFolder: 'Remove folder…',
+  removeFolderTitle: 'Remove folder',
+  removeFolderDesc:
+    'Removes the folder from this project. Files are not deleted; chats started in it stop appearing under this project.',
+  removeFolderNewPrimary: path => `${path} becomes the primary folder.`,
+  removeFolderLast: 'A project needs at least one folder.',
+  removeFolderFailed: 'Could not remove folder',
   menuSetActive: 'Set active',
   menuDelete: 'Delete',
   moveToProject: 'Move to project',

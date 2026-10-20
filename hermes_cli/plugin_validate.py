@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.plugin_validate_core_override import check_core_override
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_cli.plugin_validate_private_imports import check_private_imports
 from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
 
@@ -182,6 +183,20 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
         report.add("requires_env", False, "; ".join(problems))
     else:
         report.add("requires_env", True, "all entries UPPER_SNAKE")
+
+
+def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> None:
+    """``oauth:`` clients (hermes_cli.plugin_oauth): shape, https and declared variables fail admission; a
+    host outside the IdP's domains and plugin code that names a token URL are reviewer warnings."""
+    from hermes_cli.plugin_oauth import oauth_admission_problems, oauth_admission_warnings
+
+    if manifest.get("oauth") in (None, []):
+        report.add("oauth", True, "not declared")
+        return
+    problems = oauth_admission_problems(manifest, plugin_dir)
+    report.add("oauth", not problems, "; ".join(problems) or "clients valid")
+    for warning in oauth_admission_warnings(manifest, plugin_dir):
+        report.warn(warning)
 
 
 # ─── Capability probe (subprocess-isolated) ──────────────────────────────────
@@ -353,6 +368,7 @@ def _run_capability_probe(
                 text=True, encoding="utf-8", errors="replace",
                 timeout=_PROBE_TIMEOUT,
                 env=env,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return None, f"capability probe timed out after {_PROBE_TIMEOUT}s"
@@ -527,6 +543,7 @@ def validate_plugin_dir(
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_oauth(report, manifest, plugin_dir)
     _check_loadable(report, plugin_dir, manifest)
     _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir, probe)
@@ -534,6 +551,7 @@ def validate_plugin_dir(
     _check_trusted_inbound(report, recorded)
     _check_security_scan(report, plugin_dir)
     check_core_override(report, plugin_dir)
+    check_private_imports(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
     check_language_packs(report, manifest, plugin_dir)
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
@@ -643,6 +661,8 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    from hermes_cli.agent_plugins import manifest_config_schema
+    _check_config_spec(report, {"config_schema": manifest_config_schema(manifest)})
     for server_name, config in package.mcp_servers.items():
         if config.get("trust") == "untrusted":
             report.add(f"server trust: {server_name}", True,

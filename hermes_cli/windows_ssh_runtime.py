@@ -366,7 +366,7 @@ def _resolve_direct_command(hermes_path: str) -> list[str]:
     No assumption about python.exe beside an external bin launcher is valid.
     """
     out = subprocess.run([hermes_path, "--print-runtime-command"], capture_output=True,
-                         text=True, encoding="utf-8", errors="replace", timeout=30)
+                         text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
     if out.returncode != 0:
         raise ValueError("could not resolve Hermes runtime; refresh this installation's launcher")
     try:
@@ -420,8 +420,8 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     path = os.path.abspath(hermes_path)
     if not os.path.isabs(hermes_path) or not os.path.isfile(path):
         raise ValueError("Hermes path is not an executable file")
-    version = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-    help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    version = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
+    help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
     help_text = help_result.stdout + help_result.stderr
     return {
         "path": path,

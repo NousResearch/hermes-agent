@@ -78,7 +78,7 @@ def test_lease_authority_is_shared_across_processes(tmp_path):
              "except lease.HumanHasControl:\n    print('HUMAN')\n"
              "lease.release('desktop-viewer')\n")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=30,
-                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]})
+                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]}, check=False)
     assert out.stdout.strip() == "HUMAN", out.stderr
     assert lease.get().holder == lease.AGENT, "the other process's release is visible here"
 
@@ -171,7 +171,7 @@ def test_lease_works_without_fcntl(tmp_path):
              "assert lease.release('v1').holder == lease.AGENT\n"
              "print('OK')\n")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=60,
-                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})
+                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)}, check=False)
     assert out.stdout.strip() == "OK", out.stderr
 
 

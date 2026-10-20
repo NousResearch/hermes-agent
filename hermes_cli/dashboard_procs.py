@@ -57,7 +57,7 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
-    result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
+    result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS, check=False)
     if result.returncode == 0:
         for line in getattr(result, "stdout", "").split("\n"):
             parts = line.strip().split(None, 1)
@@ -440,7 +440,7 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
                 result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"], capture_output=True,
                     stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
-                    errors="replace", timeout=10, creationflags=windows_hide_flags())
+                    errors="replace", timeout=10, creationflags=windows_hide_flags(), check=False)
                 if result.returncode == 0:
                     killed.append(pid)
                 else:
@@ -500,7 +500,7 @@ def _posix_descendants(roots: list[int]) -> dict[int, tuple[int, int | None]]:
     """
     from gateway.status import get_process_start_time
     try:
-        result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS)
+        result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,tty="], timeout=10, **_PS_RUN_KWARGS, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return {}
     children: dict[int, list[tuple[int, str]]] = {}
@@ -604,19 +604,23 @@ def _kill_stale_dashboard_processes(
 
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
-    *already_restarted_units* names units (no ``.service`` suffix) the caller already restarted directly —
-    e.g. ``hermes update``'s systemd fleet-restart loop, which restarts ``hermes-serve*`` units before this
-    function runs. Without excluding them, a Serve-only install's freshly restarted process is found again
-    here and restarted a second time for no benefit (review on #83595).
+    *already_restarted_units* names units (no ``.service`` suffix) the caller already handled directly —
+    e.g. ``hermes update``'s systemd fleet-restart loop, which restarts, declines (without root) or fails
+    ``hermes-serve*``/``hermes-dashboard*`` units, reporting each, before this function runs. Without excluding them,
+    a Serve-only install's freshly restarted process is found again here and restarted a second time for
+    no benefit (review on #83595), and a declined system unit is retried into a polkit prompt (#141021).
     """
     from hermes_cli import main_dashboard as _dash
 
-    if restart_managed and _dash._restart_managed_dashboard_service(reason):
+    _dash_unit = str(getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")).removesuffix(".service")
+    # The update's fleet loop already handled the dashboard unit (restarted it, or declined for lack
+    # of root and printed the manual command): a second attempt here restarts a healthy unit twice,
+    # or retries without --no-ask-password and dumps a polkit/tty error under the same advice (#141021).
+    if (restart_managed and _dash_unit not in (already_restarted_units or ())
+            and _dash._restart_managed_dashboard_service(reason)):
         # The dashboard unit is handled but other backends (e.g. hermes-serve.service) are not:
         # mark the unit handled so the filter below drops its PIDs, and keep going.
-        _dash_unit = getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")
-        already_restarted_units = set(already_restarted_units or ()) | {
-            str(_dash_unit).removesuffix(".service")}
+        already_restarted_units = set(already_restarted_units or ()) | {_dash_unit}
     exclude = _exclude_pids_from_env()
     if restart_managed:
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
@@ -814,7 +818,7 @@ def _process_ppid(pid: int) -> int | None:
     try:
         if sys.platform == "win32":
             return None
-        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_PS_RUN_KWARGS)
+        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_PS_RUN_KWARGS, check=False)
         if result.returncode != 0 or not result.stdout:
             return None
         return int(result.stdout.strip().split()[0])

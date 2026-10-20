@@ -104,7 +104,7 @@ def _cli_run_json(cmd: list[str], env: dict[str, str], name: str, timeout: float
         try:
             proc = _subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                    timeout=max(15.0, timeout), creationflags=windows_hide_flags(), env=env,
-                                   stdin=_subprocess.DEVNULL)
+                                   stdin=_subprocess.DEVNULL, check=False)
         except Exception as e:  # pragma: no cover - subprocess spawn failure
             raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
         out, err = (proc.stdout or "").strip(), proc.stderr or ""

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
-    PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
+    CATALOG_TIERS, PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
     find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
     _NAME_RE, _normalize_repo,
 )
@@ -139,6 +139,21 @@ def _adopt_legacy_sidecar(plugin_dir: Path, record: dict) -> Optional[dict]:
     return _write_catalog_block(plugin_dir, record, block)
 
 
+# Archived Nous handoff repos of providers that left core -> the catalog entry that superseded them: a URL
+# install of one is adopted as that entry, so `update` re-pins it instead of pulling the archive forever.
+_HANDOFF_REPOS = {"github.com/nousresearch/hermes-plugin-holographic": "holographic"}
+
+
+def _adopt_handoff_install(plugin_dir: Path, record: dict) -> Optional[dict]:
+    source = str(record.get("source") or "").split("#", 1)[0]
+    entry = get_live_catalog_entry(_HANDOFF_REPOS.get(_normalize_repo(source), ""))
+    if entry is None:
+        return None
+    sha = str(record.get("revision") or "").lower()
+    return _write_catalog_block(plugin_dir, record, {"name": entry.name, "repo": source, "tier": entry.tier,
+                                                     "pin": sha, "sha": sha})
+
+
 def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
     """Catalog provenance of an installed plugin (``catalog_name``/``repo``/``sha``/``tier``/``pin``), or
     ``None`` for a non-catalog install. Read from the installer-owned metadata record, never from the
@@ -168,7 +183,7 @@ def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
             }
             block = _write_catalog_block(plugin_dir, record, block)
         else:
-            block = _adopt_legacy_sidecar(plugin_dir, record)
+            block = _adopt_legacy_sidecar(plugin_dir, record) or _adopt_handoff_install(plugin_dir, record)
     if not block or not block.get("name"):
         return None
     return {"catalog_name": block["name"], "repo": block.get("repo", ""), "sha": block.get("sha", ""),
@@ -481,11 +496,13 @@ class RepinResult(NamedTuple):
 # Surfaces a re-pin can widen without the user seeing a diff: each is a list of identifiers the
 # new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
 _SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
-                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half"}
+                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half",
+                   "requires_auth": "your sign-in for", "oauth": "your OAuth sign-in for"}
 
 
 def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     """What an installed tree exposes: declared host capabilities, tools, hooks, Python deps, Desktop half."""
+    from hermes_cli.plugin_oauth import oauth_surface
     from hermes_cli.plugins_cmd import _declared_capabilities_from_manifest
     manifest = manifest or {}
 
@@ -499,7 +516,8 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     return {
         "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
-        "python_dependencies": _list("python_dependencies"),
+        "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
+        "oauth": oauth_surface(manifest),
         "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
     }
 
@@ -634,10 +652,11 @@ def repin_catalog_plugin(
     return RepinResult(entry.sha, True, installed_name, warnings)
 
 
-def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> None:
+def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> bool:
+    """Re-pin a catalog install, printing progress; True when the pin moved. Refusals raise
+    :class:`RepinConsentRequired` / ``PluginOperationError`` with nothing changed (the caller reports them)."""
     from hermes_cli.plugins_cmd import (
-        PluginOperationError, _ask_yes, _declared_capabilities_from_manifest, _fail, _is_tty, _read_manifest,
-        _run_capability_consent)
+        _ask_yes, _declared_capabilities_from_manifest, _is_tty, _read_manifest, _run_capability_consent)
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
 
     def _confirm_widening(delta: dict[str, list[str]]) -> bool:
@@ -650,19 +669,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
             return False
         return _ask_yes("  Apply this update? [y/N]: ")
 
-    try:
-        result = repin_catalog_plugin(
-            target,
-            sidecar,
-            interactive=interactive,
-            consent_cb=_confirm_widening,
-        )
-    except RepinConsentRequired as exc:
-        _fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
-        raise SystemExit(1)
-    except PluginOperationError as exc:
-        _fail(console, f"[red]Error:[/red] {exc}")
-        raise SystemExit(1)
+    result = repin_catalog_plugin(target, sidecar, interactive=interactive, consent_cb=_confirm_widening)
     verb = "updated to" if result.changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{result.installed_name}[/bold] {verb} {result.sha[:8]}.")
     for warning in result.warnings:
@@ -681,6 +688,7 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
                     console.print(
                         f"[yellow]Plugin {result.installed_name} has new capabilities; review them with "
                         f"`hermes plugins capabilities {result.installed_name}`.[/yellow]")
+    return result.changed
 
 
 
@@ -705,8 +713,10 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     from hermes_cli.plugins_cmd import _table
     table = _table(((("Name", "bold")), ("Category", None), ("Tier", None), ("Description", None),
                     ("Pinned", "dim"), ("Capabilities", "dim")), title="Hermes Plugin Catalog (curated)")
-    for e in sorted(entries, key=lambda e: (e.category, e.tier != "official", e.name)):
-        tier = "[cyan]official[/cyan]" if e.tier == "official" else "[magenta]community[/magenta]"
+    rank = {name: i for i, name in enumerate(CATALOG_TIERS)}
+    style = {"official": "cyan", "verified": "green", "community": "magenta"}
+    for e in sorted(entries, key=lambda e: (e.category, rank.get(e.tier, len(rank)), e.name)):
+        tier = f"[{style.get(e.tier, 'magenta')}]{e.tier}[/{style.get(e.tier, 'magenta')}]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
         table.add_row(e.name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()

@@ -698,8 +698,28 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
+def _apply_staged_archive(name: str) -> str:
+    """Approve a curator archive staged under skills.write_approval (agent/curator.py). Refused, and left
+    pending, when one of the curator's guards (pinned, cron-referenced, used again) now blocks it."""
+    from agent.curator import archive_blocker
+    from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+    from tools.skill_usage import archive_skill
+    if blocker := archive_blocker(name):
+        return json.dumps({"success": False, "error": f"not archived: '{name}' {blocker} (the curator no longer "
+                           "proposes it; reject this entry to drop it)"}, ensure_ascii=False)
+    tok = set_ledger_actor("curator")
+    try:
+        ok, msg = archive_skill(name)
+    finally:
+        reset_ledger_actor(tok)
+    return json.dumps({"success": True, "message": msg} if ok else {"success": False, "error": msg},
+                      ensure_ascii=False)
+
+
 def apply_skill_pending(payload: dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+    if payload.get("action") == "archive":
+        return _apply_staged_archive(payload.get("name", ""))
     token = _skill_gate_bypass.set(True)
     try:
         return _skill_manage_from(payload)

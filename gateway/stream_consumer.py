@@ -285,6 +285,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _append_accumulated(self, text: str) -> None:
         """Append to the live buffer and the split-stable stream ledger."""
+        if not self._stream_ledger:
+            # A segment never opens with blank lines: after a tool boundary the agent's
+            # paragraph break plus the model's own leading "\n\n" would start the new bubble.
+            text = text.lstrip("\n")
         if not text:
             return
         if self._tool_progress_lines:  # real text overwrites the overlay

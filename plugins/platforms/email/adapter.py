@@ -363,11 +363,19 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+def _parse_authserv_ids(value: str) -> tuple[str, ...]:
+    """Comma-separated authserv-ids (``EMAIL_AUTHSERV_ID`` / ``platforms.email.authserv_id``) as a tuple of stripped,
+    lowercased, non-empty ids."""
+    return tuple(i for part in str(value or "").split(",") if (i := part.strip().lower()))
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
-    ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
-    FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
+    ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so for each id in the required
+    *authserv_id* (comma-separated, case-insensitive) only the FIRST header carrying that id is authoritative; the result
+    clauses of those headers are merged (iCloud stamps one header per check). Only the contiguous topmost run of pinned-id headers is read: the first header with another id (or a malformed
+    one) ends it. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
@@ -376,15 +384,25 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, _NO_AUTH_RESULTS_REASON
-    trusted = " ".join(str(headers[0]).split())
-    # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
-    # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
-    if (clauses := _ar_clauses(trusted)) is None:
-        return False, "unbalanced quote or comment in Authentication-Results"
-    if not authserv_id:  # without a pin the topmost header may be one the sender wrote
+    if not (pinned := _parse_authserv_ids(authserv_id)):  # without a pin the topmost header may be one the sender wrote
         return False, _MISSING_AUTHSERV_REASON
-    if clauses[0].strip().lower() != authserv_id:
-        return False, _UNTRUSTED_AUTHSERV_REASON
+    # Per pinned id take only the FIRST (topmost, receiver-stamped) matching header; later ones with the same id may be
+    # sender-forged. Headers for other ids are ignored. _ar_clauses removes RFC 8601 CFWS comments and ignores
+    # semicolons inside them, so a lower field or a related domain cannot satisfy the pin.
+    selected: dict[str, tuple[str, list[str]]] = {}
+    unbalanced = False
+    for header in headers:
+        trusted = " ".join(str(header).split())
+        if (header_clauses := _ar_clauses(trusted)) is None:
+            unbalanced = True
+            break
+        if (hid := header_clauses[0].strip().lower()) not in pinned:
+            break  # the receiver stamps its own ids on top: a foreign id above means nothing below is receiver-written
+        selected.setdefault(hid, (trusted, header_clauses))
+    if not selected:
+        return False, "unbalanced quote or comment in Authentication-Results" if unbalanced else _UNTRUSTED_AUTHSERV_REASON
+    clauses = [c for _, hc in selected.values() for c in hc[1:]]  # drop each header's authserv-id; merge result clauses
+    trusted = "; ".join(text for text, _ in selected.values())
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
     results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}

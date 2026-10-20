@@ -29,7 +29,11 @@ _EXCLUDE_PREFIX = "browser_"  # routed natively by the browser tool family
 
 
 def _cache_path() -> str:
-    base = os.environ.get("PLUGIN_DATA") or os.path.dirname(os.path.abspath(__file__))
+    # PLUGIN_DATA overrides (tests, plugin hosts that provide a data dir); default
+    # is a user-shared path so one profile's discovery seeds every sibling load —
+    # profile sessions run under one home, and the advertised set is identical.
+    base = os.environ.get("PLUGIN_DATA") or os.path.join(
+        os.path.expanduser("~/.hermes/cache"), "gateway_tools")
     return os.path.join(base, "advertised_tools.json")
 
 
@@ -51,17 +55,24 @@ def _write_cache(tools: list[dict]) -> None:
 
 
 def _discover() -> list[dict]:
-    """Advertised tools: live tools/list, disk cache as the fallback.
+    """Advertised tools: disk cache first (instant load), live tools/list only on
+    a cold start, cache write-through on success.
 
-    # ponytail: discovery happens at plugin load only — a down/slow gateway
-    # serves the last cached schema set; no background refresh. A new
-    # server-side tool appears after the first successful re-discovery
-    # (next session load). Add a refresh tool if stale schemas ever bite.
+    # ponytail: cache-first because the remote gateway cold-boots from an idle
+    # drain (first request can take ~60s) while the plugin loader's own load
+    # window is seconds — a blocking discovery there registers nothing. The
+    # cache is shared across profile sessions (one home), so one profile's
+    # successful discovery seeds every other. No background refresh: a new
+    # server-side tool appears after the first cache-less load. Add a refresh
+    # tool if stale schemas ever bite.
     """
     from tools.browser_mcp_transport import _is_gateway_backend, tools_list
 
     if not _is_gateway_backend():
         return []  # local/community REST backend: no MCP surface to consume
+    cached = _cached_tools()
+    if cached:
+        return cached
     try:
         tools = tools_list(timeout=_DISCOVERY_TIMEOUT)
         if tools:

@@ -203,6 +203,28 @@ def test_discovery_failure_falls_back_to_cache(monkeypatch, tmp_path):
     assert sorted(ctx.tools) == ["crawl", "extract"]
 
 
+def test_cache_first_never_hits_network_when_cache_exists(monkeypatch, tmp_path):
+    import tools.browser_mcp_transport as transport
+    from plugins.gateway_tools import register
+
+    monkeypatch.setattr(transport, "_is_gateway_backend", lambda: True)
+    monkeypatch.setenv("PLUGIN_DATA", str(tmp_path))
+    tmp_path.joinpath("advertised_tools.json").write_text(json.dumps({"tools": _advertised()}))
+
+    calls = []
+
+    def _must_not_run(timeout=None):
+        calls.append(1)
+        raise AssertionError("tools_list must not run when a cache exists")
+
+    monkeypatch.setattr(transport, "tools_list", _must_not_run)
+
+    ctx = _Ctx()
+    register(ctx)
+    assert not calls
+    assert sorted(ctx.tools) == ["crawl", "extract"]
+
+
 def test_no_gateway_registers_nothing(monkeypatch, tmp_path):
     import tools.browser_mcp_transport as transport
     from plugins.gateway_tools import register

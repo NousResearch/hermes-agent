@@ -55,6 +55,27 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
         return False
 
 
+def _needs_separate_dashscope_cn_probe() -> bool:
+    """Only probe the shared DashScope key twice when China was explicitly configured.
+
+    The primary DashScope probe already retries China after an international 401.
+    Merely registering the China provider does not configure a second regional key.
+    """
+    if os.getenv("DASHSCOPE_CN_BASE_URL"):
+        return True
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import normalize_provider
+        model = load_config().get("model") or {}
+        return (
+            normalize_provider(model.get("provider") or "") == "alibaba-cn"
+            or base_url_host_matches(model.get("base_url") or "", "dashscope.aliyuncs.com")
+        )
+    except Exception:
+        # An unreadable selection must not hide a possibly intended regional check.
+        return True
+
+
 def _build_apikey_providers_list() -> list:
     """Build the API-key provider health-check list once and cache it.
 
@@ -114,6 +135,9 @@ def _build_apikey_providers_list() -> list:
             if not _key_vars:
                 continue
             _base_var = next((v for v in _pp.env_vars if _is_url(v)), None)
+            if (_pp.name == "alibaba-cn" and _key_vars == ("DASHSCOPE_API_KEY",)
+                    and not _needs_separate_dashscope_cn_probe()):
+                continue
             _models_url = (_pp.models_url or (_pp.base_url.rstrip("/") + "/models")) if _pp.base_url else None
             _static.append((_label, _key_vars, _models_url, _base_var, getattr(_pp, "supports_health_check", True)))
     except Exception:

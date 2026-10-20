@@ -317,6 +317,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Subagent task_ids collapse to "default" (``_resolve_container_task_id``) so
     delegate_task children share the parent's container; RL/benchmark task_ids
     with a registered env override keep their isolation.
+
+    The cache is validated by OBJECT IDENTITY: the cached handle is only handed
+    back when it still wraps the env currently registered under the key. Any
+    path that replaces the env without clearing this cache leaves a stale handle
+    behind otherwise. ``_cleanup_inactive_envs`` and ``cleanup_vm`` do clear it
+    (``_evict_environment_for_task`` and the mount-disagreement release paths do
+    not), so identity is what covers the replacement case.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
@@ -331,18 +338,31 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
         with _env_lock:
-            if task_id in _active_environments:
+            live = _active_environments.get(task_id)
+            # Identity, not key membership: a release+recreate under the SAME key leaves the
+            # key present again, so key membership alone handed back a handle wrapping the
+            # torn-down env and every file op died on ``assert self._container_id``
+            # ("Container not started") while ``terminal`` — which resolves the env through
+            # the live cache — kept working.
+            if live is not None and getattr(cached, "env", None) is live:
                 _last_activity[task_id] = time.time()
                 return cached
-            # Env was cleaned up: rescue its cwd into the session record FILL-ONLY
-            # (``cached.cwd`` is the SHARED env's cwd, not this session's own).
-            # Environment was cleaned up -- preserve the old cwd in the session record before invalidating
+            # Env was cleaned up -- preserve the old cwd in the session record before invalidating
             # the stale cache entry (fixes #26211: silent file-creation failures in long-running
             # conversations). Usually a no-op: every completed command already recorded its cwd. Fill-only:
             # ``cached.cwd`` is a snapshot of the SHARED env's cwd at cache-build time, so it is not
             # attributable to this session (same class as the interrupted-command bug, #85658). Rescue a
             # session that has no record, but never overwrite a record the session wrote for itself.
-            old_cwd = getattr(cached, "cwd", None)
+            #
+            # Only when there is no LIVE REPLACEMENT env registered under the key. Before the
+            # identity check above, this block was unreachable in that state: key membership
+            # returned the stale handle and never fell through. It is reachable now, and
+            # ``cached.cwd`` is then the DEAD env's mount — rescuing it would record a
+            # torn-down container's workspace as this session's cwd, and every later path and
+            # command resolves against that record first
+            # (``file_tools_paths._authoritative_workspace_root``, ``resolve_command_cwd``).
+            # With no replacement env this is exactly the rescue it always was.
+            old_cwd = getattr(cached, "cwd", None) if live is None else None
             if old_cwd:
                 try:
                     if get_session_cwd(raw_task_id) is None:

@@ -39,6 +39,18 @@ def _entry(*, origin=True) -> SessionEntry:
         platform=Platform.TELEGRAM,
     )
 
+def _stateless_entry() -> SessionEntry:
+    now = datetime.now()
+    return SessionEntry(
+        session_key="nima-comms-nova/nova/msg-34c507ed10c1",
+        session_id="run_a328b71468e9425fa4d5387520695d15",
+        created_at=now,
+        updated_at=now,
+        origin=None,
+        platform=Platform.API_SERVER,
+    )
+
+
 
 def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
@@ -54,6 +66,34 @@ def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner._background_tasks = set()
     runner._is_user_authorized = MagicMock(return_value=True)
     return runner
+
+@pytest.mark.asyncio
+async def test_stateless_api_session_injection_self_posts(monkeypatch):
+    """A stored stateless api_server session (origin=None — a NIMA comms wake key)
+    must receive the plugin turn via the api_server self-post wake seam, not be
+    dropped as 'not routed' (drained-but-never-delivered fleet replies)."""
+    import gateway.wake as wake_mod
+
+    entry = _stateless_entry()
+    runner = _runner(entry)
+    runner._served_profile_for_home = lambda home: "default"
+    adapter = MagicMock()
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+    delivered = {}
+
+    async def fake_deliver_wake(_adapter, *, text, session_id="", source=None,
+                                notification_category="result", profile=None):
+        delivered.update(text=text, session_id=session_id, profile=profile)
+
+    monkeypatch.setattr(wake_mod, "deliver_wake", fake_deliver_wake)
+    monkeypatch.setattr(wake_mod, "session_owned_by_profile",
+                        lambda config, profile, session_id: True)
+    ok = await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="fleet reply", plugin_id="nima")
+    assert ok is True
+    assert delivered["session_id"] == entry.session_id
+    assert delivered["text"] == "fleet reply"
+
 
 
 class _RoutingAdapter(BasePlatformAdapter):

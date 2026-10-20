@@ -192,8 +192,14 @@ class GatewayPluginInjectionMixin:
         if not self._plugin_injection_accepting():
             return False
         entry = await self.async_session_store.lookup_by_session_key(session_key)
-        if entry is None or entry.origin is None or not self._plugin_injection_accepting():
+        if entry is None or not self._plugin_injection_accepting():
             return False
+        if entry.origin is None:
+            # Stateless api_server sessions (/v1/runs seats, e.g. NIMA comms wake
+            # keys nima-comms-<ns>/<route>/<ref>) have no messaging origin to route
+            # through; refusing here is what drained fleet replies without delivery.
+            return await self._dispatch_plugin_stateless_injection(
+                entry, content=content, plugin_id=plugin_id, plugin_home=plugin_home)
 
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
@@ -243,6 +249,35 @@ class GatewayPluginInjectionMixin:
             return bool(await self._admit_plugin_injection(
                 self._adapter_for_source(live.source), live.source, session_key=entry.session_key,
                 session_id=entry.session_id, content=content, plugin_id=plugin_id))
+    async def _dispatch_plugin_stateless_injection(self, entry, *, content: str, plugin_id: str,
+                                                   plugin_home: Optional[Path]) -> bool:
+        """Deliver a plugin turn to a STORED stateless api_server session (``origin`` is None:
+        ``/v1/runs`` seats such as NIMA comms wake keys) via the api_server self-post wake seam —
+        the same trusted internal delivery the Kanban notifier uses for stateless destinations.
+        The raw ``session_id`` continues the stored session; ownership fails closed when the
+        plugin's served profile does not canonically own the row."""
+        from gateway.wake import deliver_wake, session_owned_by_profile
+        served = self._served_profile_for_home(plugin_home)
+        if served and not session_owned_by_profile(
+            getattr(self, "config", None), served, entry.session_id
+        ):
+            logger.warning(
+                "Plugin message injection refused: plugin=%s session=%s is not owned by profile %s",
+                plugin_id, entry.session_key, served,
+            )
+            return False
+        adapter = self._authorization_adapter(Platform.API_SERVER, served)
+        if adapter is None:
+            return False
+        await deliver_wake(
+            adapter, text=content, session_id=entry.session_id,
+            profile=served, notification_category="result",
+        )
+        logger.info(
+            "Plugin message injection self-posted: plugin=%s session=%s session_id=%s",
+            plugin_id, entry.session_key, entry.session_id,
+        )
+        return True
 
     def _served_profile_for_home(self, home: Optional[Path]) -> Optional[str]:
         """Name of the profile this gateway serves at *home* (a plugin manager's immutable home), or

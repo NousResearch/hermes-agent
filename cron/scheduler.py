@@ -363,7 +363,7 @@ def _upsert_incident_for_failure(
     try:
         from cron.incidents import get_incident, upsert_incident
 
-        incident_id, _is_new = upsert_incident(
+        incident_id, _reopened = upsert_incident(
             job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None

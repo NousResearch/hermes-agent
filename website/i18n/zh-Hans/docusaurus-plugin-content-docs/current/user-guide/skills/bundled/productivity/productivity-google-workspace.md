@@ -125,13 +125,13 @@ $GSETUP --auth-url --services all --format json
 
 本步骤的 Agent 规则：
 - 提取 `auth_url` 字段，将该确切 URL 以单行形式发送给用户。
-- 告知用户，批准后浏览器很可能会在 `http://localhost:1` 上失败，这是预期行为。
+- 告知用户，批准后浏览器很可能会在 `http://localhost:53135` 上失败，这是预期行为。
 - 告知用户从浏览器地址栏复制**完整**的重定向 URL。
 - 若用户收到 `Error 403: access_denied`，直接将其引导至 `https://console.cloud.google.com/auth/audience` 以添加自己为测试用户。
 
 ### 步骤 4：交换授权码
 
-用户将粘贴回形如 `http://localhost:1/?code=4/0A...&scope=...` 的 URL 或仅粘贴授权码字符串，两者均可。`--auth-url` 步骤会在本地存储一个临时待处理的 OAuth 会话，以便 `--auth-code` 稍后完成 PKCE 交换，即使在无头系统上也可正常工作：
+用户将粘贴回形如 `http://localhost:53135/?code=4/0A...&scope=...` 的 URL 或仅粘贴授权码字符串，两者均可。`--auth-url` 步骤会在本地存储一个临时待处理的 OAuth 会话，以便 `--auth-code` 稍后完成 PKCE 交换，即使在无头系统上也可正常工作：
 
 ```bash
 $GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json

@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from tools.ansi_strip import sanitize_display_text
 
 BOT_CHAT_TITLE = "Bot Chat"
 _PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -82,7 +83,7 @@ def _request(
     try:
         parsed = json.loads(payload)
     except ValueError as exc:
-        raise RuntimeError(f"Peer returned non-JSON response: {payload[:200]}") from exc
+        raise RuntimeError(f"Peer returned non-JSON response: {sanitize_display_text(payload[:200])}") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("Peer returned a non-object JSON response")
     return parsed
@@ -161,9 +162,9 @@ def _http_error_detail(exc: urllib.error.HTTPError) -> str:
         body = exc.read().decode("utf-8", "replace")
         parsed = json.loads(body)
         message = parsed.get("error", {}).get("message") if isinstance(parsed, dict) else None
-        return message or body[:200]
+        return sanitize_display_text(str(message or body[:200]))
     except Exception:
-        return str(exc)
+        return sanitize_display_text(str(exc))
 
 
 def _resolve_peer_target(target: str) -> tuple[str, str | None, dict, str]:
@@ -209,7 +210,7 @@ def _peer_failure(peer_name: str, exc: Exception) -> int:
         print(f"Peer '{peer_name}' rejected the request (HTTP {exc.code}): {detail}",
               file=sys.stderr)
     else:
-        print(f"Could not reach peer '{peer_name}': {exc}", file=sys.stderr)
+        print(f"Could not reach peer '{peer_name}': {sanitize_display_text(str(exc))}", file=sys.stderr)
     return 1
 
 
@@ -218,7 +219,7 @@ def _emit(args, payload: dict, text_lines: list[str]) -> int:
         print(json.dumps(payload))
     else:
         for line in text_lines:
-            print(line)
+            print(sanitize_display_text(line))
     return 0
 
 
@@ -290,11 +291,11 @@ def _peer_run_ctl(args, action: str, peer_name: str, profile: str | None, base: 
     if getattr(args, "json", False):
         print(json.dumps({"peer": peer_name, "profile": profile, **result}))
         return 0
-    print(f"{run_id}: {result.get('status', 'unknown')}")
+    print(f"{run_id}: {sanitize_display_text(str(result.get('status', 'unknown')))}")
     if not stop and result.get("output"):
-        print(result["output"])
+        print(sanitize_display_text(str(result["output"])))
     elif not stop and result.get("error"):
-        print(result["error"], file=sys.stderr)
+        print(sanitize_display_text(str(result["error"])), file=sys.stderr)
     return 0
 
 
@@ -350,7 +351,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
             method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
     except RuntimeError as exc:
-        print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
+        print(f"Peer '{peer_name}': {sanitize_display_text(str(exc))}", file=sys.stderr)
         return 1
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         # A timeout while awaiting the response, once the Bot Chat is known, means the peer took
@@ -360,7 +361,8 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
         # connecting or sending, so the request never arrived and "could not reach" is the truth.
         if session_id and isinstance(exc, TimeoutError):
             print(f"Peer '{peer_name}' accepted the message but its turn is still running after "
-                  f"{DM_TIMEOUT_S}s: the message is already in its Bot Chat (session {session_id}) "
+                  f"{DM_TIMEOUT_S}s: the message is already in its Bot Chat (session "
+                  f"{sanitize_display_text(str(session_id))}) "
                   "and will be answered there. The reply cannot come back on this call. Do NOT resend.",
                   file=sys.stderr)
             return 1

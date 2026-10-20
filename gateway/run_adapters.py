@@ -66,6 +66,33 @@ class _UnresolvedProfileHome:
 
 UNRESOLVED_PROFILE_HOME = _UnresolvedProfileHome()
 
+# --- Local listen-port conflict: fast retry window -----------------------------------------
+# On gateway restart the new instance comes up while the previous one is still draining
+# (launchd's `kickstart -k` does not wait for a graceful exit), so platforms that bind their
+# own port (a2a 9900, wecom_callback 8645) fail to bind. That conflict clears itself as soon
+# as the predecessor exits.
+#
+# The generic backoff ladder is 30/60/120s while the predecessor's drain ceiling is 50s: the
+# new instance always misses the release moment and waits out a whole backoff period after the
+# port is already free (measured ~50s of dead air, ~2 min end to end).
+#
+# So retry fast first (covering one full drain window), then fall back to the ladder - a real
+# standing conflict (two profiles fighting over one port) still escalates to the slow tier
+# after about a minute instead of spinning and flooding the log.
+_RECONNECT_BIND_CONFLICT_RETRY_SECS = 3
+_RECONNECT_BIND_CONFLICT_FAST_ATTEMPTS = 20  # 20 x 3s ~ 60s, just over launchd's 60s drain ceiling
+
+
+def is_local_bind_conflict(error_code: object, error_message: object) -> bool:
+    """Whether the failure comes from a local port being taken - a self-clearing condition.
+
+    Prefers the ``bind_failed`` code adapters set themselves (a2a / wecom_callback) and falls
+    back to message matching so an adapter that sets no code is not missed.
+    """
+    if str(error_code or "").strip().lower() == "bind_failed":
+        return True
+    return "already in use" in str(error_message or "").lower()
+
 
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
@@ -772,6 +799,12 @@ class GatewayAdapterLifecycleMixin:
             platform.value, platform_state="retrying", error_code=error_code, error_message=error_message,
         )
         backoff = _reconnect_backoff(attempt)
+        # A local bind conflict clears itself once the predecessor finishes draining: retry fast
+        # first instead of missing the release window with the 30/60/120s ladder; past the fast
+        # window it falls back to the ladder, so standing conflicts still escalate to the slow
+        # tier (see the module-level constants).
+        if attempt <= _RECONNECT_BIND_CONFLICT_FAST_ATTEMPTS and is_local_bind_conflict(error_code, error_message):
+            backoff = _RECONNECT_BIND_CONFLICT_RETRY_SECS
         info["attempts"] = attempt
         info["next_retry"] = time.monotonic() + backoff
         return backoff

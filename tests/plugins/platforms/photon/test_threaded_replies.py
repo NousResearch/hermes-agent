@@ -48,7 +48,7 @@ def _capture_handled(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) ->
 def _capture_sidecar(adapter: PhotonAdapter, message_id: str = "out-1") -> list[tuple[str, dict[str, Any]]]:
     calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def fake_call(path: str, body: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": message_id}
 

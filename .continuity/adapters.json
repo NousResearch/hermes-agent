@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "dispatcher": ".specify/events.py",
+  "timeout_seconds": 30,
+  "surfaces": {
+    "claude": ["session_start", "user_prompt", "pre_tool", "post_tool", "stop", "session_end"],
+    "codex": ["session_start", "user_prompt", "pre_tool", "post_tool", "stop"],
+    "hermes": ["on_session_start", "pre_llm_call", "pre_tool_call", "post_tool_call", "on_session_end"]
+  }
+}

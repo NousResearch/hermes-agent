@@ -55,6 +55,21 @@ def test_diff_session_renders_the_gateway_sessions_checkpoint_diff(gateway_cli, 
     assert "a.py | 450 +" in out and "+edited 0" not in out
 
 
+def test_diff_session_counts_lines_the_gateway_cut_to_fit_its_frame(gateway_cli, capsys):
+    """CLI-26: a body the gateway cut below 400 lines to fit one frame names every line not shown."""
+    body = "\n".join(f"+edited {i}" for i in range(100))
+    cli, _conn = gateway_cli(**{"rollback.session_diff": {
+        "enabled": True, "success": True, "stat": " a.py | 5000 +", "diff": body, "diff_lines": 5000}})
+    cli.process_command("/diff session")
+    out = capsys.readouterr().out
+    assert "+edited 99" in out and "4900 more lines" in out
+    # One line too long for any frame leaves no body; the cut is still named.
+    cli, _conn = gateway_cli(**{"rollback.session_diff": {
+        "enabled": True, "success": True, "stat": " a.py | 1 +", "diff": "", "diff_lines": 3}})
+    cli.process_command("/diff session")
+    assert "3 more lines" in capsys.readouterr().out
+
+
 def test_diff_session_reports_a_session_without_checkpoints(gateway_cli, capsys):
     cli, _conn = gateway_cli(**{"rollback.session_diff": {"enabled": False}})
     assert cli.process_command("/diff session") is True

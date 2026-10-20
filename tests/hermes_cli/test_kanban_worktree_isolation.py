@@ -129,5 +129,16 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def test_resolve_worktree_replaces_a_stored_branch_git_refuses(kanban_home, tmp_path):
+    repo = _make_repo(tmp_path)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stuck", workspace_kind="worktree",
+                             workspace_path=str(repo / ".worktrees" / "stuck"))
+        # A name git refuses, as a title ending in "." used to produce.
+        conn.execute("UPDATE tasks SET branch_name = ? WHERE id = ?", (f"apps/{tid}-logged-in.", tid))
+        conn.commit()
+        task = kb.get_task(conn, tid)
 
-
+    workspace, branch = kbw._resolve_worktree_workspace(task)
+    assert branch == f"wt/{tid}"
+    assert (workspace / "README.md").exists()

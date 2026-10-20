@@ -63,6 +63,8 @@ curator:
 
 To disable entirely, set `curator.enabled: false`. To keep the always-on pruning but opt into LLM consolidation, set `curator.consolidate: true`.
 
+`archive_after_days` must be greater than `stale_after_days` — archival is the second stage of the lifecycle, so it cannot come first. `interval_hours`, `stale_after_days` and `archive_after_days` must each be at least `1`, and a value below that falls back to its default. An incoherent pair is repaired in favour of whichever threshold you actually set: a configured `archive_after_days` keeps its value and staleness moves to one day below it, otherwise archival is deferred to `stale_after_days + 1`, so nothing is archived before it could have been marked stale. Every repair is logged once.
+
 ### Running the review on a cheaper aux model
 
 The curator's LLM review pass is a regular auxiliary task slot — `auxiliary.curator` — alongside Vision, Compression, Session Search, etc. "Auto" means "use my main chat model"; override the slot to pin a specific provider + model for the review pass instead.

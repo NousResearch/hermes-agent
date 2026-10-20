@@ -2,11 +2,7 @@ name: burnclock
 repo: https://github.com/jersilb/burnclock-hermes
 sha: "f873256b540a5ed6fde73a1d4551816d7bd003a2"
 title: Burnclock
-description: 'Status-bar chip with the provider balance and runway tracked by the MIT burnclock
-  CLI — `DeepSeek $3.89 · 1.4d`, with a green/amber/red runway dot. Cache-first: every 60 s it
-  runs one local `burnclock badge --json` read (no network, no credentials); the CLI is installed
-  and configured separately and owns provider access. Desktop-only; no agent tools, hooks,
-  middleware or env vars.'
+description: 'Status-bar chip showing the provider balance and runway tracked by the MIT burnclock CLI, read from its local badge cache. Requires the CLI (pip install burnclock); the plugin makes no network calls and reads no credentials.'
 maintainer: jersilb
 tier: community
 category: desktop

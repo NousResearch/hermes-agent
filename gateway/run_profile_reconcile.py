@@ -68,6 +68,7 @@ class GatewayProfileReconcileMixin:
     _profile_own_gateway_warned: Optional[set[str]] = None
     _profile_probe_timeout_warned: Optional[set[str]] = None
     _hook_consent_signatures: Optional[dict[str, Optional[tuple]]] = None
+    _standalone_preflight_names: Optional[tuple] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -95,7 +96,8 @@ class GatewayProfileReconcileMixin:
     async def _profile_reconcile_watcher(self, interval: float = _PROFILE_RESCAN_INTERVAL_SECS) -> None:
         """Supervised safety net, every ``interval`` seconds: re-sync shell hooks whose consent changed
         (every gateway), then rescan ``profiles/`` when multiplexing (creators signal the control
-        socket for an immediate rescan)."""
+        socket for an immediate rescan), or check whether a single-profile standalone gateway now
+        has a second profile to serve."""
         while self._running:
             await asyncio.sleep(interval)
             if not self._running:
@@ -104,6 +106,8 @@ class GatewayProfileReconcileMixin:
                 await self._sync_hooks_on_consent_change()
                 if self._multiplex_on():
                     await self.reconcile_served_profiles(reason="watcher")
+                else:
+                    await self._restart_to_serve_added_profile()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -157,6 +161,7 @@ class GatewayProfileReconcileMixin:
         from hermes_cli.profiles import profiles_to_serve
         result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
         if not self._multiplex_on():
+            await self._restart_to_serve_added_profile()
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
             # Startup enumerates profiles/ itself; a rescan before it finishes has nothing to diff against.
@@ -313,6 +318,29 @@ class GatewayProfileReconcileMixin:
         ``initialize_gateway_runtime`` parks into the same published ``name -> reason`` map."""
         from gateway.run_runtime import parked_profile_map
         return list(parked_profile_map(self))
+
+    async def _restart_to_serve_added_profile(self) -> bool:
+        """A gateway that booted standalone only because the host had ONE profile cannot serve one
+        created since: multiplexing (and the fail-closed secret scope it arms) is settled once per
+        boot, so every ticket, session and delete for the new profile was refused (#141623). When the
+        host would multiplex now (boot's own preflight, nothing blocking), restart into the
+        multiplexer the way ``/restart`` does, after-turn wait included. Any other standalone verdict
+        stays: a restart would only repeat it. Each profile set is judged once. True when requested."""
+        from hermes_cli.gateway_multiplex_mode import (
+            SINGLE_PROFILE_REASON, implicit_multiplex_blocker, recorded_standalone_reason)
+        from hermes_cli.profiles import profiles_to_serve
+        if recorded_standalone_reason() != SINGLE_PROFILE_REASON:
+            return False
+        names = tuple(sorted(name for name, _home in profiles_to_serve(multiplex=True, include_parked=True)))
+        if len(names) < 2 or names == self._standalone_preflight_names:
+            return False
+        self._standalone_preflight_names = names
+        if await self._run_housekeeping_in_executor(implicit_multiplex_blocker) is not None:
+            return False
+        from gateway.restart import is_container_restart_context, is_gateway_supervisor_process
+        via_service = is_gateway_supervisor_process() or is_container_restart_context()
+        logger.info("[MULTIPLEX] Profiles %s exist now; restarting to serve every profile", ", ".join(names))
+        return self.request_restart(detached=not via_service, via_service=via_service)
 
     async def _serve_profile_runtime(self, name: str, home: Path) -> Optional[str]:
         """Grow the reservation by *home* and build its session authority (boot's per-secondary

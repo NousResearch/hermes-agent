@@ -686,12 +686,30 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _occupied_target_message(target: Path, branch_name: str, linked: bool, actual_branch: Optional[str]) -> str:
+    """Explain why an existing worktree target can't be reused, and how to recover."""
+    if not linked:
+        return (f"worktree target {target} is occupied by a directory that is not a linked worktree of this "
+                f"repository; expected one on branch {branch_name!r}. Move or remove that directory (keeping "
+                f"anything you need), then retry.")
+    found = f"branch {actual_branch!r}" if actual_branch else "detached HEAD (or unreadable branch)"
+    return (f"worktree target {target} is occupied by {found}; expected branch {branch_name!r}. If it is this "
+            "task's checkout: keep any work (branch commits made on a detached HEAD first), switch it back to "
+            f"{branch_name!r} with a plain `git switch`, then retry. If it belongs to another task, leave it alone "
+            "and use an unused worktree path.")
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
-        return
+        actual_branch = _git_current_branch(target)
+        linked = (_is_linked_worktree_checkout(target)
+                  and _path_key(_git_toplevel(target)) == _path_key(target.resolve()))
+        if linked and actual_branch == branch_name:
+            return
+        raise ValueError(_occupied_target_message(target, branch_name, linked, actual_branch))
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
         args = ["worktree", "add", str(target), branch_name]
@@ -766,9 +784,15 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             if _path_key(fallback.resolve(strict=False)) != _path_key(requested_resolved):
                 _ensure_git_worktree(fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name
-        # No repo to anchor a fallback on (or the occupied path IS this task's
-        # own canonical worktree): keep the legacy reuse rather than fail dispatch.
-        return requested_resolved, actual_branch or branch_name
+        # No safe fallback: never dispatch on another task's branch.
+        raise ValueError(
+            f"task {task.id} worktree {requested} is occupied by branch "
+            f"{actual_branch or 'detached HEAD (or unreadable branch)'!r}, expected {branch_name!r}. "
+            "If it is this task's checkout: keep any work (branch commits made on a detached HEAD first), "
+            f"switch it back to {branch_name!r} with a plain `git switch`, and unblock the task if it was "
+            "blocked. If it belongs to another task, leave it alone and point this task at the repository "
+            "root or an unused worktree path."
+        )
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and _path_key(requested_resolved) == _path_key(repo_root):

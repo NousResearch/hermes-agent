@@ -30,13 +30,19 @@ LATE_RESPAWN_S = 33.0
 class _Clock:
     """``_time`` stand-in: only ``sleep`` advances it, so the poll runs as fast as the CPU allows."""
 
+    MAX_SLEEPS = 10_000  # a poll that never ends fails here instead of hanging the suite
+
     def __init__(self) -> None:
         self.t = 0.0
+        self.sleeps = 0
 
     def monotonic(self) -> float:
         return self.t
 
     def sleep(self, seconds: float) -> None:
+        self.sleeps += 1
+        if self.sleeps > self.MAX_SLEEPS:
+            raise AssertionError(f"poll still running at t={self.t:.1f}s")
         self.t += seconds
 
 
@@ -111,3 +117,17 @@ def test_one_late_target_does_not_cost_the_early_one_its_pass(clock):
     assert ready[("profile", "default")] == [1111]
     assert ready[("profile", "other")] == [2222]
     assert clock.t <= LATE_RESPAWN_S + 30.0 + ucw._READY_CONFIRM_S
+
+
+def test_a_flapping_replacement_cannot_renew_its_budget_forever(clock):
+    """A replacement that keeps reappearing (visible ~1 s, gone ~1 s) never survives a confirmation
+    window. Each reappearance must not grant a fresh sighting extension: the poll ends, unready,
+    within the entry deadline plus both windows and one confirmation tick."""
+
+    def probe(_scan):
+        return [4242] if int(clock.t) % 2 == 0 else []
+
+    ready = ucw._poll_until_ready([(("profile", "default"), probe, True)], 30.0, set(), respawn_window=30.0)
+
+    assert ready == {}
+    assert clock.t <= 30.0 + 2 * 30.0 + ucw._READY_CONFIRM_S + ucw._READY_INTERVAL_S + 1e-6

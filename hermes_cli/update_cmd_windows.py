@@ -1466,19 +1466,25 @@ def _poll_until_ready(targets: list, deadline: float, taken: set, respawn_window
     made an update report "relaunch was not verified alive" for a gateway that was up seconds later;
     the verdict is committed and never revisited, so the stale debt surfaced as a manual follow-up on
     the next launch. Both parts are bounded, so a relaunch that truly never happens still fails
-    closed. ``None`` keeps the single shared budget.
+    closed. ``None`` keeps the single shared budget. Each target earns its sighting extension once,
+    and the whole poll stops at the entry deadline plus both windows and one confirmation tick: a
+    replacement that flaps in and out must not renew its budget forever.
     """
     from hermes_cli.gateway import find_gateway_pids
     ready: dict = {}
     since: dict = {}
     failed: set = set()
     graced: set = set()
+    first_seen: set = set()
+    hard_stop = deadline + 2 * (respawn_window or 0.0) + _READY_CONFIRM_S + _READY_INTERVAL_S
     while True:
         now = _time.monotonic()
+        if now >= hard_stop:
+            return ready
         pending = [t for t in targets if t[0] not in ready and t[0] not in failed and (now < deadline or t[0] in since)]
         if not pending:
             starved = [key for key, _probe, _all in targets
-                       if key not in ready and key not in failed and key not in since and key not in graced]
+                       if key not in ready and key not in failed and key not in first_seen and key not in graced]
             if respawn_window is not None and starved:
                 graced.update(starved)
                 deadline = now + respawn_window
@@ -1504,10 +1510,11 @@ def _poll_until_ready(targets: list, deadline: float, taken: set, respawn_window
                 continue
             vouched = pids if claim_all else pids[:1]
             taken.update(vouched)
-            if respawn_window is not None and key not in since:
+            if respawn_window is not None and key not in first_seen:
                 # The replacement did not exist before this tick, so the wait that preceded it belongs
                 # to the process it replaced: this target's budget starts now, not at the shared
                 # deadline's origin.
+                first_seen.add(key)
                 deadline = max(deadline, now + respawn_window)
             if now - since.setdefault(key, now) >= _READY_CONFIRM_S:
                 ready[key] = vouched

@@ -229,3 +229,48 @@ export function detectTrigger(textBefore: string): TriggerState | null {
 
   return null
 }
+
+/**
+ * Recover filesystem paths from the clipboard text of a *file* paste.
+ *
+ * Blink classifies a `text/uri-list` clipboard as Files inside a contenteditable:
+ * the paste event then carries `files` but no text, so the handler asks the main
+ * process (`hermes:readClipboard`) for the same clipboard. Sources disagree on
+ * shape — file managers put a bare path, WeChat and wl-copy a percent-encoded
+ * `file://` URI, multi-file offers newline-separated lists — so decode each line
+ * and drop lines that are not paths (a stray URL must not be attached as one).
+ */
+export function filePathsFromClipboardText(raw: string): string[] {
+  const paths: string[] = []
+
+  for (const line of raw.split(/\r?\n/)) {
+    const text = line.trim()
+
+    if (!text) {
+      continue
+    }
+
+    if (text.startsWith('file://')) {
+      const rest = text.slice('file://'.length)
+
+      try {
+        paths.push(decodeURIComponent(rest))
+      } catch {
+        paths.push(rest)
+      }
+
+      continue
+    }
+
+    // A different scheme (https://, data:, …) is a link, not a path.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
+      continue
+    }
+
+    if (text.includes('/')) {
+      paths.push(text)
+    }
+  }
+
+  return paths
+}

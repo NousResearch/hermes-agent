@@ -323,18 +323,17 @@ async def _start_gateway_start_control_socket(runner):
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
             (the watcher also rescans periodically). Runs on the socket executor: marshal onto the loop
-            and wait briefly so the caller learns whether the profile is served. A standalone gateway
-            answers ``multiplex: False``, restarting into the multiplexer when it was standalone only
-            because the host had a single profile."""
-            multiplex = bool(getattr(runner.config, "multiplex_profiles", False))
+            and wait briefly so the caller learns whether the profile is served. A gateway standalone
+            only because the host had one profile starts multiplexing in place on this rescan."""
             future = asyncio.run_coroutine_threadsafe(
                 runner.reconcile_served_profiles(reason="control-socket"), _main_loop)
             try:
                 # Bounded: a token-less create reconciles in milliseconds; a credential-add whose adapter
                 # connect outlasts this keeps running and the caller sees ``pending`` (not an error).
-                return {"multiplex": multiplex, **future.result(timeout=5.0)}
+                result = future.result(timeout=5.0)
             except concurrent.futures.TimeoutError:
-                return {"multiplex": multiplex, "pending": True, "served_profiles": runner.served_profile_names()}
+                result = {"pending": True, "served_profiles": runner.served_profile_names()}
+            return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,

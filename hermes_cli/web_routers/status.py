@@ -667,7 +667,10 @@ async def set_curator_paused(body: CuratorPause, profile: Optional[str] = None):
     from agent import curator
     # ``_state_file()`` is ``get_hermes_home()/skills/.curator_state`` resolved at call
     # time, so the request's home override is what decides which profile pauses.
-    await config_scoped_to_thread(profile, lambda: curator.set_paused(bool(body.paused)))
+    persisted = await config_scoped_to_thread(profile, lambda: curator.set_paused(bool(body.paused)))
+    if not persisted:
+        raise HTTPException(status_code=500, detail="Failed to persist the curator pause flag "
+                                                    "(state file unwritable); the curator is not paused.")
     return {"ok": True, "paused": bool(body.paused)}
 
 

@@ -405,7 +405,7 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
     idle_after_exit = 0
     wait = make_fd_waiter(fd)
     if wait is None:
-        return  # fd already closed
+        return  # fd cannot be registered (closed or invalid)
     while True:
         if stop is not None and stop.is_set():
             return

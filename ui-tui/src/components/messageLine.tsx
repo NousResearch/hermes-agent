@@ -82,7 +82,7 @@ export const MessageLine = memo(function MessageLine({
 
   // Collapse toggle for long system messages
   const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
-  const [systemOpen, setSystemOpen] = useState(false)
+  const [systemOpen, setSystemOpen] = useState(true)
 
   if (msg.kind === 'trail' && msg.todos?.length) {
     return (

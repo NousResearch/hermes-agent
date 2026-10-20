@@ -302,7 +302,7 @@ def merge_tree(src: Path, dst: Path) -> None:
         retry_held(lambda: item.replace(target))
 
 
-def tree_digest(root: Path) -> str:
+def tree_digest(root: Path, skip_dirs: tuple[str, ...] | frozenset[str] = ()) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
@@ -312,9 +312,13 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+    ``skip_dirs`` names further per-package directories with the same
+    runtime-state character (python's site-packages: pip installs into
+    it after publication, and a bundle's preinstalled deps live there)."""
     import hashlib
 
+    skipped = frozenset(skip_dirs)
     files: list[tuple[str, Path]] = []
     for dirpath, dirnames, filenames in os.walk(root):
         descend = []
@@ -322,7 +326,7 @@ def tree_digest(root: Path) -> str:
             path = Path(dirpath) / name
             if path.is_symlink() or is_junction(path):
                 files.append((path.relative_to(root).as_posix(), path))
-            elif name != "__pycache__":
+            elif name != "__pycache__" and name not in skipped:
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:

@@ -459,11 +459,18 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         recorded = fact.get("digest")
-        if recorded is not None and tree_digest(entry) != recorded:
-            # Doctor is the expensive-path tool: re-hash the realized
-            # bytes. Boot checks stay O(1) json compares.
+        # Doctor is the expensive-path tool: re-hash the realized bytes. Boot
+        # checks stay O(1) json compares. A package with digest_skip_dirs
+        # never treats drift as damage: the mutable layer moved, and the only
+        # "repair" would re-realize the bare upstream archive (#138689).
+        if (recorded is not None and not package.digest_skip_dirs
+                and tree_digest(entry) != recorded):
             print(f"✗ {name}: realized bytes do not match recorded digest")
             bad += 1
+            continue
+        if recorded is not None and package.digest_skip_dirs and tree_digest(
+                entry, package.digest_skip_dirs) != recorded:
+            print(f"? {name}: mutable layer changed since publication (digest drift)")
             continue
         print(f"✓ {name} {fact['version']}")
     return 1 if bad else 0

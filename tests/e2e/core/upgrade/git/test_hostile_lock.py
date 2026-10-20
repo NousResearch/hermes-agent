@@ -108,6 +108,10 @@ elif mode == "kill-mid-completion":
         child = completion_child(envs["home-a"]["HERMES_HOME"])
         time.sleep(0.05)
     result["child_seen"] = child is not None
+    # Freeze the child (it keeps its fds) so it cannot finish its real work and free the lock
+    # before the probe below reaches it: on a fast runner it otherwise exits first.
+    if child is not None:
+        os.kill(child, signal.SIGSTOP)
     os.kill(first.pid, signal.SIGKILL)
     first.wait()
     result["child_alive_before"] = child is not None and alive(child)
@@ -124,6 +128,10 @@ elif mode == "orphan-reader":
         child = completion_child(envs["home-a"]["HERMES_HOME"])
         time.sleep(0.05)
     result["child_seen"] = child is not None
+    # Freeze the child (it keeps its fds) so it cannot finish its real work and free the lock
+    # before the probe below reaches it: on a fast runner it otherwise exits first.
+    if child is not None:
+        os.kill(child, signal.SIGSTOP)
     os.kill(first.pid, signal.SIGKILL)
     first.wait()
     # The killed owner's marker is gone (any reader compare-and-deletes a dead claim).

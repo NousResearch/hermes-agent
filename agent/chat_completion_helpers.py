@@ -731,15 +731,14 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> float | None:
 
 
 def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
-    """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3
-    directly) with the shared recovery: a cachePoint rejection (Nova: toolConfig.tools,
-    #97281) drops the marker and resends once inside the same attempt; a streaming IAM
-    denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection
-    evicts the cached client so the outer retry builds a fresh pool. Streaming returns the
-    event stream; non-streaming an OpenAI-shaped SimpleNamespace."""
+    """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3 directly) with the
+    adapter's shared recovery: a cachePoint rejection (Nova: toolConfig.tools, #97281) or a replayed sealed
+    reasoning rejection resends once without the offending blocks inside the same attempt; a streaming IAM
+    denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection evicts the cached
+    client so the outer retry builds a fresh pool. Streaming returns the event stream; else a SimpleNamespace."""
     from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
         is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
-        recover_from_cache_point_rejection)
+        recover_from_cache_point_rejection, recover_from_redacted_reasoning_rejection)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
     client = _get_bedrock_runtime_client(region)
@@ -748,7 +747,8 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     try:
         raw_response = method(**api_kwargs)
     except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
+        retry_kwargs = (recover_from_cache_point_rejection(exc, api_kwargs)
+                        or recover_from_redacted_reasoning_rejection(exc, api_kwargs))
         if retry_kwargs is not None:
             return finish(method(**retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):

@@ -41,3 +41,18 @@ def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variant
     for variant in ("【静默】", "静默。", "【沉默】", "沉默。", "**[静默]**", "NO_REPLY."):
         assert is_intentional_silence_response(variant)
         assert is_autonomous_silence_response(variant) == is_intentional_silence_response(variant), variant
+
+
+def test_report_heading_or_list_item_that_reads_as_a_marker_is_delivered():
+    """A follow-up report headed "No reply:" (or ending on the list item "- Silent") is content:
+    de-punctuated, those lines equal a bare marker, and the whole report used to be suppressed.
+    The same marker standing alone on its own line still suppresses."""
+    for report in (
+        "No reply:\n- Alice (invoice, sent Monday)\n- Bob (contract)",
+        "静默：\n- 频道 A",
+        "Phones still muted after the meeting:\n- Silent",
+        "Threads by status:\n1. No reply",
+    ):
+        assert not is_autonomous_silence_response(report), report
+    assert is_autonomous_silence_response("No reply\nAlice already answered in the thread")
+    assert is_autonomous_silence_response("Nothing new since the last run.\nSilent.")

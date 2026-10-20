@@ -906,6 +906,17 @@ describe('PreviewPane guest external handoff', () => {
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://www.google.com/search?q=traceback')
   })
 
+  it('keeps a guest anchor inside the pane when the guest is a remote page', async () => {
+    const { openExternal, webview } = await renderWebview()
+    const loadURL = vi.fn(async () => undefined)
+
+    Object.assign(webview, { getURL: () => 'https://www.dianping.com/beijing', loadURL })
+    guestMessage(webview, 'https://www.dianping.com/shop/123')
+
+    expect(loadURL).toHaveBeenCalledExactlyOnceWith('https://www.dianping.com/shop/123')
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
   it('never opens non-web schemes or messages from a channel the preload does not own', async () => {
     const { openExternal, webview } = await renderWebview()
 

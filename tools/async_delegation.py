@@ -549,6 +549,29 @@ def defer_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         (time.time(), delegation_id, claim_id))
 
 
+def pending_completion_past_replay_age(delegation_id: str) -> bool:
+    """True when a still-pending completion row is older than ``_MAX_COMPLETION_REPLAY_AGE_S``.
+
+    The cap ``_replay_pending`` already applies to startup replay; this offers the same verdict to
+    the in-process delivery loop, where an unadmitted completion deferred on every watcher tick
+    would otherwise retry forever (#141893) — its startup twin is dropped, the live row never is.
+    Unknown rows (no row, already settled, remote worker ledger) stay False: keep deferring.
+    """
+    if worker_ledger():
+        return False
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute(
+                "SELECT completed_at, dispatched_at, delivery_state FROM async_delegations WHERE delegation_id=?",
+                (delegation_id,)).fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None or row[2] != "pending":
+        return False
+    age_basis = row[0] or row[1]
+    return bool(age_basis and time.time() - age_basis > _MAX_COMPLETION_REPLAY_AGE_S)
+
+
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Terminally drop a claimed completion whose target is permanently gone (the
     spawning session ended at an explicit user boundary such as /new or reset).

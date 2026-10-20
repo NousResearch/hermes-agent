@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 자기 개선 리뷰: {summary}"
     summary_callback: "💾 자기 개선 리뷰: {summary}"
     aux_failure_label: "백그라운드 리뷰"
+    pending_header: "📥 승인 대기 중인 쓰기 {count}개 (메모리 {memory}개, 스킬 {skills}개) — /memory pending 또는 /skills pending으로 확인"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…외 {count}개"
+    pending_footer: "승인: /memory approve <id> · 거부: /memory reject <id> (스킬: /skills approve|reject <id>)"
+    pending_untitled: "(요약 없음)"
   notice:
     uncompressed_context_overflow: "⚠️ 세션 컨텍스트(약 {tokens} 토큰)가 압축이 비활성화된 상태(compression.enabled: false)에서 모델 컨텍스트 창(약 {context_length} 토큰)을 초과했어요. /compact로 기록을 압축하거나 config.yaml에서 압축을 활성화해 주세요."
 explainer:

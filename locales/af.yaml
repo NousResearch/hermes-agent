@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Selfverbetering-hersiening: {summary}"
     summary_callback: "💾 Selfverbetering-hersiening: {summary}"
     aux_failure_label: "agtergrond-hersiening"
+    pending_header: "📥 {count} skryfgoedkeuring(s) hangende ({memory} geheue, {skills} vaardigheid/vaardighede) — hersien met /memory pending of /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…en {count} meer"
+    pending_footer: "Goedkeur: /memory approve <id> · Verwerp: /memory reject <id> (vaardighede: /skills approve|reject <id>)"
+    pending_untitled: "(geen opsomming)"
   notice:
     uncompressed_context_overflow: "⚠️ Die sessiekonteks (~{tokens} tokens) oorskry die model se konteksvenster (~{context_length} tokens) terwyl kompressie gedeaktiveer is (compression.enabled: false). Gebruik /compact om die geskiedenis te komprimeer of aktiveer kompressie in config.yaml."
 explainer:

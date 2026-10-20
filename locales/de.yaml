@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Selbstverbesserungs-Review: {summary}"
     summary_callback: "💾 Selbstverbesserungs-Review: {summary}"
     aux_failure_label: "Hintergrund-Review"
+    pending_header: "📥 {count} ausstehende Schreibgenehmigung(en) ({memory} Gedächtnis, {skills} Skill(s)) — mit /memory pending oder /skills pending überprüfen"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…und {count} weitere"
+    pending_footer: "Genehmigen: /memory approve <id> · Ablehnen: /memory reject <id> (Skills: /skills approve|reject <id>)"
+    pending_untitled: "(keine Zusammenfassung)"
   notice:
     uncompressed_context_overflow: "⚠️ Der Sitzungskontext (~{tokens} Tokens) überschreitet das Kontextfenster des Modells (~{context_length} Tokens), während die Komprimierung deaktiviert ist (compression.enabled: false). Verwenden Sie /compact, um den Verlauf zu komprimieren, oder aktivieren Sie die Komprimierung in config.yaml."
 explainer:

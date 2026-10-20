@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Kendini geliştirme incelemesi: {summary}"
     summary_callback: "💾 Kendini geliştirme incelemesi: {summary}"
     aux_failure_label: "arka plan incelemesi"
+    pending_header: "📥 {count} yazma onayı beklemede ({memory} bellek, {skills} beceri) — /memory pending veya /skills pending ile inceleyin"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…ve {count} tane daha"
+    pending_footer: "Onayla: /memory approve <id> · Reddet: /memory reject <id> (beceriler: /skills approve|reject <id>)"
+    pending_untitled: "(özet yok)"
   notice:
     uncompressed_context_overflow: "⚠️ Oturum bağlamı (~{tokens} token) sıkıştırma devre dışıyken (compression.enabled: false) modelin bağlam penceresini (~{context_length} token) aşıyor. Geçmişi sıkıştırmak için /compact kullanın veya config.yaml içinde sıkıştırmayı etkinleştirin."
 explainer:

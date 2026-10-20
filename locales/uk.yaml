@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Перевірка самовдосконалення: {summary}"
     summary_callback: "💾 Перевірка самовдосконалення: {summary}"
     aux_failure_label: "фонова перевірка"
+    pending_header: "📥 Очікує схвалення запису: {count} ({memory} пам’ять, {skills} навичок) — перегляд за допомогою /memory pending або /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…і ще {count}"
+    pending_footer: "Схвалити: /memory approve <id> · Відхилити: /memory reject <id> (навички: /skills approve|reject <id>)"
+    pending_untitled: "(без опису)"
   notice:
     uncompressed_context_overflow: "⚠️ Контекст сеансу (~{tokens} токенів) перевищує контекстне вікно моделі (~{context_length} токенів), а стискання вимкнено (compression.enabled: false). Скористайтеся /compact, щоб стиснути історію, або увімкніть стискання в config.yaml."
 explainer:

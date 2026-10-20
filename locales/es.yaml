@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Revisión de automejora: {summary}"
     summary_callback: "💾 Revisión de automejora: {summary}"
     aux_failure_label: "revisión en segundo plano"
+    pending_header: "📥 {count} aprobación(es) de escritura pendiente(s) ({memory} memoria, {skills} habilidad(es)) — revisar con /memory pending o /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…y {count} más"
+    pending_footer: "Aprobar: /memory approve <id> · Rechazar: /memory reject <id> (habilidades: /skills approve|reject <id>)"
+    pending_untitled: "(sin resumen)"
   notice:
     uncompressed_context_overflow: "⚠️ El contexto de la sesión (~{tokens} tokens) supera la ventana de contexto del modelo (~{context_length} tokens) con la compresión desactivada (compression.enabled: false). Usa /compact para comprimir el historial o activa la compresión en config.yaml."
 explainer:

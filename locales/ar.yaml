@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 مراجعة التحسين الذاتي: {summary}"
     summary_callback: "💾 مراجعة التحسين الذاتي: {summary}"
     aux_failure_label: "المراجعة في الخلفية"
+    pending_header: "📥 {count} موافقة كتابة معلقة ({memory} ذاكرة، {skills} مهارة/مهارات) — راجع باستخدام /memory pending أو /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…و {count} أخرى"
+    pending_footer: "موافقة: /memory approve <id> · رفض: /memory reject <id> (مهارات: /skills approve|reject <id>)"
+    pending_untitled: "(بلا ملخص)"
   notice:
     uncompressed_context_overflow: "⚠️ سياق الجلسة (~{tokens} رمزًا) يتجاوز نافذة سياق النموذج (~{context_length} رمزًا) مع تعطيل الضغط (compression.enabled: false). استخدم /compact لضغط السجل أو فعّل الضغط في config.yaml."
 explainer:

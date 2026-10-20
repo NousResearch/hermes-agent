@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Athbhreithniú féinfheabhsúcháin: {summary}"
     summary_callback: "💾 Athbhreithniú féinfheabhsúcháin: {summary}"
     aux_failure_label: "athbhreithniú cúlra"
+    pending_header: "📥 {count} ceadú scríofa ar feitheamh ({memory} cuimhne, {skills} scil(eanna)) — déan athbhreithniú le /memory pending nó /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…agus {count} eile"
+    pending_footer: "Ceadigh: /memory approve <id> · Diúltaigh: /memory reject <id> (scileanna: /skills approve|reject <id>)"
+    pending_untitled: "(gan achoimre)"
   notice:
     uncompressed_context_overflow: "⚠️ Sáraíonn comhthéacs an tseisiúin (~{tokens} comhartha) fuinneog chomhthéacs an mhúnla (~{context_length} comhartha) agus an comhbhrú díchumasaithe (compression.enabled: false). Úsáid /compact chun an stair a chomhbhrú nó cumasaigh an comhbhrú i config.yaml."
 explainer:

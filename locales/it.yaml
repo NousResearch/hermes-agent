@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Revisione di auto-miglioramento: {summary}"
     summary_callback: "💾 Revisione di auto-miglioramento: {summary}"
     aux_failure_label: "revisione in background"
+    pending_header: "📥 {count} approvazione/i di scrittura in attesa ({memory} memoria, {skills} competenza/e) — rivedi con /memory pending o /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…e altri {count}"
+    pending_footer: "Approva: /memory approve <id> · Rifiuta: /memory reject <id> (competenze: /skills approve|reject <id>)"
+    pending_untitled: "(nessun riepilogo)"
   notice:
     uncompressed_context_overflow: "⚠️ Il contesto della sessione (~{tokens} token) supera la finestra di contesto del modello (~{context_length} token) con la compressione disattivata (compression.enabled: false). Usa /compact per comprimere la cronologia o attiva la compressione in config.yaml."
 explainer:

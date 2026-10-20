@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 自己改善レビュー: {summary}"
     summary_callback: "💾 自己改善レビュー: {summary}"
     aux_failure_label: "バックグラウンドレビュー"
+    pending_header: "📥 承認待ちの書き込み {count} 件（メモリ {memory} 件、スキル {skills} 件）— /memory pending または /skills pending で確認"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…他 {count} 件"
+    pending_footer: "承認: /memory approve <id> · 拒否: /memory reject <id> (スキル: /skills approve|reject <id>)"
+    pending_untitled: "(概要なし)"
   notice:
     uncompressed_context_overflow: "⚠️ セッションのコンテキスト（約{tokens}トークン）が、圧縮が無効（compression.enabled: false）の状態でモデルのコンテキストウィンドウ（約{context_length}トークン）を超えています。/compact で履歴を圧縮するか、config.yaml で圧縮を有効にしてください。"
 explainer:

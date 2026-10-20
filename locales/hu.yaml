@@ -3512,6 +3512,11 @@ display:
     summary_cli: "  💾 Önfejlesztési áttekintés: {summary}"
     summary_callback: "💾 Önfejlesztési áttekintés: {summary}"
     aux_failure_label: "háttér-áttekintés"
+    pending_header: "📥 {count} függőben lévő írási jóváhagyás ({memory} memória, {skills} készség) — megtekintés a /memory pending vagy /skills pending paranccsal"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…és még {count}"
+    pending_footer: "Jóváhagyás: /memory approve <id> · Elutasítás: /memory reject <id> (készségek: /skills approve|reject <id>)"
+    pending_untitled: "(nincs összefoglaló)"
   notice:
     uncompressed_context_overflow: "⚠️ A munkamenet kontextusa (~{tokens} token) meghaladja a modell kontextusablakát (~{context_length} token), miközben a tömörítés ki van kapcsolva (compression.enabled: false). Használd a /compact parancsot az előzmények tömörítéséhez, vagy kapcsold be a tömörítést a config.yaml fájlban."
 explainer:

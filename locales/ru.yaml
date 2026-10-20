@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 Ревью самосовершенствования: {summary}"
     summary_callback: "💾 Ревью самосовершенствования: {summary}"
     aux_failure_label: "фоновое ревью"
+    pending_header: "📥 Ожидает утверждения записи: {count} ({memory} память, {skills} навык(ов)) — просмотр с помощью /memory pending или /skills pending"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…и еще {count}"
+    pending_footer: "Утвердить: /memory approve <id> · Отклонить: /memory reject <id> (навыки: /skills approve|reject <id>)"
+    pending_untitled: "(без описания)"
   notice:
     uncompressed_context_overflow: "⚠️ Контекст сеанса (~{tokens} токенов) превышает контекстное окно модели (~{context_length} токенов), а сжатие отключено (compression.enabled: false). Используйте /compact, чтобы сжать историю, или включите сжатие в config.yaml."
 explainer:

@@ -102,7 +102,11 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   `A2A_BEARER_TOKEN` authenticates as `ip:<addr>`. Nothing in the request
   body can assert identity. Comparisons are constant-time.
 - **Trust gate:** `A2A_TRUSTED_PEERS` (or config `a2a.trusted_peers`)
-  optionally restricts which authenticated identities may run tasks.
+  optionally restricts which authenticated identities may run tasks; entries
+  are those identities — peer names (`A2A_PEER_TOKENS`) or `ip:<addr>`
+  (shared `A2A_BEARER_TOKEN`). A non-loopback bind with no allow-list and no
+  `A2A_ALLOW_ALL_USERS` fails closed (every dispatch 403s) and says so at
+  startup.
 - **Injection filters:** ALL inbound text (including `/`-prefixed — remote
   peers can never reach operator slash commands) is defanged (ChatML /
   role-prefix / override patterns → `[filtered]`) and framed with a privacy

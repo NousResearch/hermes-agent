@@ -121,7 +121,7 @@ def read_pool_config(repo_root: Path) -> Optional[PoolConfig]:
     if not config_path.is_file():
         return None
     try:
-        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise TreehouseError(f"cannot read {config_path}: {exc}") from exc
     max_trees = raw.get("max_trees")

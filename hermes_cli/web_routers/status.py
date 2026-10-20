@@ -25,6 +25,7 @@ from gateway.status import (
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
+from hermes_cli.source_revision import get_source_revision
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
@@ -523,6 +524,7 @@ async def get_status(profile: Optional[str] = None):
 
         status = {
             "version": get_version_info().base_version, "release_date": __release_date__,
+            "source_revision": await run_in_threadpool(get_source_revision),
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,

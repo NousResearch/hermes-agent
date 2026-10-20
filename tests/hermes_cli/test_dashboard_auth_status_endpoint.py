@@ -13,6 +13,8 @@ smoke test against staging Portal.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -69,6 +71,17 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
 
 
 
+def test_status_reports_optional_exact_source_revision(loopback_client):
+    """The real HTTP response exposes only a full lowercase SHA or null."""
+    response = loopback_client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "source_revision" in body
+    revision = body["source_revision"]
+    assert revision is None or re.fullmatch(r"[0-9a-f]{40}", revision)
+
+
 # Host-local detail (absolute paths, PID, internal gateway URL) is deployment
 # recon a liveness probe never needs. ``/api/status`` bypasses dashboard auth
 # (it is in ``PUBLIC_API_PATHS``), so on a network-exposed bind it must not
@@ -95,3 +108,12 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
 
 
+
+
+@pytest.mark.parametrize("revision", ["a" * 40, None])
+def test_public_status_exposes_exact_identity_without_sign_in(gated_client, monkeypatch, revision):
+    monkeypatch.setattr("hermes_cli.web_routers.status.get_source_revision", lambda: revision)
+    response = gated_client.get("/api/status")
+    assert response.status_code == 200
+    assert response.json()["source_revision"] == revision
+    assert response.json()["auth_required"] is True

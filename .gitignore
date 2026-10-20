@@ -88,6 +88,10 @@ ignored/
 .worktrees/
 environments/benchmarks/evals/
 
+# Python release build output
+/build/
+/dist/
+
 # Web UI build output
 hermes_cli/web_dist/
 # Cross-process web UI build lock (flock target, always empty)

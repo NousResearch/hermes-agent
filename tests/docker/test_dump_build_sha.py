@@ -96,6 +96,13 @@ def test_dump_reports_stamp_commit_when_present(built_image: str) -> None:
         assert stamped == expected, "image lost or changed its build provenance"
     if stamped is not None:
         assert re.fullmatch(r"[0-9a-f]{40}", stamped), "malformed image stamp commit"
+    probe = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", built_image,
+         "-c", "from hermes_cli.source_revision import get_source_revision; print(get_source_revision())"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == str(stamped)
     stdout = _run_dump(built_image)
 
     match = _VERSION_LINE.search(stdout)

@@ -57,6 +57,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -305,6 +306,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -340,6 +342,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -375,6 +378,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -425,6 +429,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
           fetch-tags: true
       - uses: ./.github/actions/setup-pm
         with:
@@ -615,6 +620,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -685,3 +691,8 @@ jobs:
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+          # The pass commits this release's Store draft (scripts/releases/store.py).
+          MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+          MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+          MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+          MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}

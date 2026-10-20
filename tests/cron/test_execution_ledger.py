@@ -49,6 +49,74 @@ def test_execution_can_be_loaded_by_exact_attempt_id(monkeypatch, tmp_path):
     assert executions.get_execution("missing") is None
 
 
+def test_rejected_fire_claims_leave_only_real_execution_history(monkeypatch, tmp_path):
+    import cron.scheduler as scheduler
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    previous = executions.create_execution("contended", source="builtin")
+    executions.mark_execution_running(previous["id"])
+    previous = executions.finish_execution(previous["id"], success=True)
+    events = []
+    monkeypatch.setattr(executions, "_emit_execution_state", lambda row, **kw: events.append(row))
+    monkeypatch.setattr(scheduler, "claim_job_for_fire", lambda *args, **kw: False)
+    runs = []
+
+    def run_job(job, **kwargs):
+        runs.append(job["execution_id"])
+        return True, "output", "response", None
+
+    monkeypatch.setattr(scheduler, "run_job", run_job)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *args: None)
+    monkeypatch.setattr(scheduler, "_deliver_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *args, **kwargs: None)
+    instant = "2026-09-26T00:00:00+00:00"
+    for _ in range(3):
+        row = executions.create_execution("contended", source="builtin", scheduled_instant=instant)
+        job = {"id": "contended", "execution_id": row["id"], "_scheduled_instant": instant}
+        assert scheduler._process_due_job(job, None, None, False) is True
+        assert executions.list_executions(job_id="contended") == [previous]
+        assert executions.latest_execution("contended") == previous
+    assert runs == []
+    assert not any(event["status"] in executions._TERMINAL_STATES for event in events)
+
+    monkeypatch.setattr(scheduler, "claim_job_for_fire", lambda *args, **kw: {"id": "contended"})
+    row = executions.create_execution("contended", source="builtin", scheduled_instant=instant)
+    job["execution_id"] = row["id"]
+    assert scheduler._process_due_job(job, None, None, False) is True
+    assert runs == [row["id"]]
+    completed = executions.get_execution(row["id"])
+    assert completed["status"] == "completed"
+    assert completed["started_at"]
+    assert executions.list_executions(job_id="contended") == [completed, previous]
+
+
+def test_discard_unstarted_execution_preserves_started_and_foreign_attempts(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    protected = [
+        {"status": "running"},
+        *({"status": status} for status in executions._TERMINAL_STATES),
+        {"started_at": "2026-09-26T00:00:00+00:00"},
+        {"process_id": "foreign-process"},
+        {"pid": os.getpid() + 1},
+        {"handoff_pending": 1},
+    ]
+    for fields in protected:
+        row = executions.create_execution("protected", source="builtin")
+        with executions._transaction() as conn:
+            assignments = ", ".join(f"{key}=?" for key in fields)
+            conn.execute(f"UPDATE executions SET {assignments} WHERE id=?", (*fields.values(), row["id"]))
+        before = executions.get_execution(row["id"])
+        assert executions.discard_unstarted_execution(row["id"]) is False
+        assert executions.get_execution(row["id"]) == before
+
+    row = executions.create_execution("unstarted", source="builtin")
+    assert executions.discard_unstarted_execution(row["id"]) is True
+    assert executions.get_execution(row["id"]) is None
+    assert executions.discard_unstarted_execution(row["id"]) is False
+    assert executions.discard_unstarted_execution("missing") is False
+
+
 def test_fresh_external_handoff_is_not_recovered_before_worker_adopts(
     monkeypatch, tmp_path
 ):

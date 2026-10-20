@@ -882,7 +882,7 @@ def register(ctx):
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
-- `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
+- `ctx.get_config()` / `ctx.set_config()` / `ctx.unset_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
@@ -917,6 +917,18 @@ def register(ctx):
 
     ctx.set_config("endpoint", endpoint)
     ctx.set_config("retry.attempts", retries)
+```
+
+`ctx.set_config()` merges into what is already there, so writing a smaller
+mapping over a larger one keeps the old keys. To delete a key, call
+`ctx.unset_config()`. It takes the same plugin-relative keys and returns `True`
+when it removed something. It returns `False`, and leaves `config.yaml`
+untouched, when the key was already absent. Comments and sibling keys stay in
+place. An emptied parent mapping stays as `{}`:
+
+```python
+def remove_role(ctx, name):
+    return ctx.unset_config(f"roles.{name}")
 ```
 
 Use `ctx.state` for plugin-owned cursors, caches, and deduplication data rather

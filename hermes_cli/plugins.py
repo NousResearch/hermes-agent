@@ -59,8 +59,8 @@ from hermes_cli.plugins_dispatch import (
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
-    PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
-    _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
+    PluginState, _plugin_relative_segments, _plugin_settings_entry, read_plugin_setting,
+    remove_plugin_setting, save_plugin_setting,
 )
 
 
@@ -264,18 +264,16 @@ class PluginContext:
     def get_config(self, key: str, default: Any = None) -> Any:
         """Read plugin-relative ``plugins.entries.<plugin_id>.settings.<key>`` (falls back to the
         legacy ``config`` subtree for migration compatibility)."""
-        segments = self._segments(key)
-        entry = _plugin_settings_entry(load_config_readonly() or {}, self.plugin_id)
-        if entry is None:
-            return default
-        value = _nested_plugin_value(entry.get("settings"), segments, _UNSET)
-        if value is not _UNSET:
-            return value
-        return _nested_plugin_value(entry.get("config"), segments, default)
+        return read_plugin_setting(load_config_readonly() or {}, self.plugin_id, self._segments(key), default)
 
     def set_config(self, key: str, value: Any) -> None:
         """Atomically write one value in this plugin's ``settings`` subtree."""
         save_plugin_setting(self.plugin_id, self._segments(key), value)
+
+    def unset_config(self, key: str) -> bool:
+        """Delete one key from this plugin's ``settings`` subtree (same key rules as ``set_config``).
+        Returns False, without writing, when the key is absent."""
+        return remove_plugin_setting(self.plugin_id, self._segments(key))
 
     @cached_property
     def state(self) -> PluginState:

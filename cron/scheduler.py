@@ -3219,14 +3219,14 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     here rather than at the tick means no read is ever fail-closed without a scope to read — the
     restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, set_multiplex_context, set_secret_scope)
+    from agent.secret_scope import set_multiplex_context, set_secret_scope
     from cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     home = Path(_get_hermes_home())
     hydrate_profile_secret_sources(home)
-    scope_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    scope_token = set_secret_scope(owner_secret_scope(home), profile_home=str(home))
     context_token = set_multiplex_context(True) if routed_profile_fire() else None
     return scope_token, context_token
 

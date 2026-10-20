@@ -27,7 +27,7 @@ import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
-import { handleToolEvent } from './tools'
+import { handleToolEvent, handleToolProgressEvent } from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
 
 export type { GatewayEventDeps } from './types'
@@ -91,6 +91,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleDeferredPickEvent,
   handleControlEvent,
   handleMessageStreamEvent,
+  handleToolProgressEvent,
   handleToolEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,

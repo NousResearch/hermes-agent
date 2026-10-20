@@ -52,6 +52,7 @@ import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $showToolActivity } from '@/store/tool-activity'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
+import { $toolProgressFor, formatToolProgress } from '@/store/tool-progress'
 import {
   $anyToolDisclosureOpen,
   $hideCodeDiffs,
@@ -344,6 +345,22 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   return persistedOpen ?? fallbackOpen
 }
 
+/** A running row's trailing meta: live MCP progress (`42% · message`, when the server sends it) + the timer. */
+function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCallId?: string }) {
+  const progressText = formatToolProgress(useStore($toolProgressFor(toolCallId)))
+
+  return (
+    <>
+      {progressText && (
+        <span className={cn(SCAFFOLD_META_CLASS, 'max-w-64 truncate')} data-slot="tool-progress" title={progressText}>
+          {progressText}
+        </span>
+      )}
+      <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={seconds} />
+    </>
+  )
+}
+
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
@@ -541,7 +558,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const trailing = !embedded ? (
     <span className="flex shrink-0 items-center gap-1.5">
       <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
-      {isPending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
+      {isPending && <ToolRunningMeta seconds={elapsed} toolCallId={toolCallId} />}
     </span>
   ) : undefined
 

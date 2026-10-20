@@ -15,6 +15,7 @@ import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
+import { clearToolProgress, setToolProgress } from '@/store/tool-progress'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
@@ -67,6 +68,31 @@ function appliedLayout(name: string | undefined, result: ToolCallMessagePart['re
   }
 
   return undefined
+}
+
+/** tool.progress (live MCP progress for a running call): a row annotation, never a transcript
+ *  mutation. Also retires it on tool.complete, which then falls through to handleToolEvent. */
+export function handleToolProgressEvent({ deps, event, payload, sessionId }: GatewayEventContext): boolean {
+  const toolId = typeof payload?.tool_id === 'string' ? payload.tool_id : ''
+
+  if (event.type === 'tool.complete') {
+    clearToolProgress(toolId)
+
+    return false
+  }
+
+  if (event.type !== 'tool.progress') {
+    return false
+  }
+
+  if (sessionId && !deps.sessionInterrupted(sessionId)) {
+    setToolProgress(toolId, {
+      message: typeof payload?.message === 'string' && payload.message ? payload.message : null,
+      percent: typeof payload?.percent === 'number' ? payload.percent : null
+    })
+  }
+
+  return true
 }
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */

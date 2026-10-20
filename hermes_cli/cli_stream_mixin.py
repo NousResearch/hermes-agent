@@ -763,6 +763,7 @@ class CLIStreamMixin:
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            self.__dict__.pop("_tool_spinner_base", None)
             self._turn_summary_record(
                 function_name, kwargs.get("result"), kwargs.get("is_error", False))
             # Focus view: count the hidden scrollback line for the post-turn recovery report.
@@ -810,18 +811,26 @@ class CLIStreamMixin:
             self._invalidate()
             return
         if event_type != "tool.started":
-            return
+            return self._show_tool_progress(event_type, preview, kwargs.get("percent"))
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_preview_max_len, tool_row_emoji
             label = preview or function_name
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
+            self._spinner_text = self._tool_spinner_base = f"{tool_row_emoji(function_name, function_args)} {label}"
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {})
+            self._invalidate()
+
+    def _show_tool_progress(self, event_type, message, percent) -> None:
+        """Live MCP progress rides the running tool's spinner line: ``<tool label> · 42% · message``."""
+        base = self.__dict__.get("_tool_spinner_base")
+        if event_type == "tool.progress" and base:
+            parts = [base] + ([f"{percent}%"] if percent is not None else []) + ([message] if message else [])
+            self._spinner_text = " · ".join(parts)
             self._invalidate()
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):

@@ -439,8 +439,15 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         history_ready.set()
     _desktop_automatic_cleanup = (
         end_reason in _AUTOMATIC_SESSION_END_REASONS and _session_source(session).strip().lower() == "desktop")
-    # Automatic Desktop cleanup releases its lease inside the lifecycle guard below; other paths keep force/end semantics.
-    if not _desktop_automatic_cleanup:
+    # Park-policy sessions get Desktop's automatic-reclaim row semantics regardless of source: the
+    # client asked for a session that survives disconnects, so a runtime reclaim (ws_orphan_reap
+    # raced in, idle TTL, LRU cap, gateway shutdown) keeps the durable row open and resumable until
+    # an EXPLICIT close. Grace (the default) keeps today's behavior — reclaim ends the row.
+    _park_reclaim_keep_row = (
+        session.get("detach_policy") == "park" and end_reason in _AUTOMATIC_SESSION_END_REASONS)
+    _runtime_reclaim_keep_row = _desktop_automatic_cleanup or _park_reclaim_keep_row
+    # Automatic Desktop/park cleanup releases its lease inside the lifecycle guard below; other paths keep force/end semantics.
+    if not _runtime_reclaim_keep_row:
         _release_active_session_slot(session)
     if (stop_event := session.get("_notif_stop")) is not None:
         stop_event.set()
@@ -477,11 +484,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.
-    if _desktop_automatic_cleanup and not session_id:
+    if _runtime_reclaim_keep_row and not session_id:
         _release_active_session_slot(session)
     # ``_lease_taken_over``: a new runtime for the same chat owns the row and its delegations now.
     _lifecycle_guard = (_other_runtime_lease_guard(session_id, session)
-                        if _desktop_automatic_cleanup and session_id
+                        if _runtime_reclaim_keep_row and session_id
                         else contextlib.nullcontext(bool(session.get("_lease_taken_over"))))
     with _lifecycle_guard as _other_runtime_owns_lifecycle:
         _tui_owns_lifecycle = not _other_runtime_owns_lifecycle
@@ -495,8 +502,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                     # compression splits back to the reaped child, forever).
                     if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                         _tui_owns_lifecycle = False
-                    elif _tui_owns_lifecycle and not _desktop_automatic_cleanup:
-                        # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
+                    elif _tui_owns_lifecycle and not _runtime_reclaim_keep_row:
+                        # Automatic Desktop/park cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
                         # runtime but must not end the durable row — the conversation stays open
                         # and resumable until the user explicitly closes or archives it.  #105588
                         # A turn the gateway's ledger still holds keeps the row open too (#140642).
@@ -504,7 +511,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                             _tui_owns_lifecycle = False
     # ``_teardown_session`` follows with ``agent.close()``, whose ``_finalize_owned_session_row`` ends the row as
     # ``agent_close`` through the agent's own handle — every spare decision above would be undone one call later.
-    if agent is not None and (_desktop_automatic_cleanup or not _tui_owns_lifecycle):
+    if agent is not None and (_runtime_reclaim_keep_row or not _tui_owns_lifecycle):
         agent._end_session_on_close = False
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
@@ -967,6 +974,11 @@ def _schedule_ws_orphan_reap(
     ``session.resume`` could re-bind a transport — so every sleep/wake cycle 404'd the open chat (#44183)."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+    # A park-policy session must never get an orphan-reap timer — grace=0 is the deployment-wide
+    # form of the same ask; this is its per-session contract. (Only the scheduling sites guard:
+    # a timer armed before a resume flipped the policy is cancelled by that resume.)
+    if _sessions.get(sid, {}).get("detach_policy") == "park":
+        return
     grace_s = _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s)
     # Sample both clocks at arm time: time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC)
     # does not advance while the host is asleep, so the divergence between the two clocks'
@@ -1129,6 +1141,8 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                     should_schedule_reap = True
                     # Register before releasing the detachment claim: an old disconnect
                     # must not arm its first timer over a reconnect's newer detachment.
+                    # (detach_policy="park" sessions: _schedule_ws_orphan_reap no-ops —
+                    # the scheduler guard is the single authority for the park contract.)
                     with contextlib.suppress(Exception):
                         _schedule_ws_orphan_reap(sid)
         if claimed_for_teardown is not None:

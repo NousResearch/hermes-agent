@@ -375,6 +375,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                 # fall through and create a fresh one under the same key.
                 _idempotency_keys.pop(idem_key, None)
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
+    # Coerce the wire policy once: unknown/absent -> grace (or close via the legacy flag).
+    detach_policy = _normalize_detach_policy(params, _flag(params, "close_on_disconnect"))
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
@@ -414,7 +416,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     with _sessions_lock:
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
-            "close_on_disconnect": _flag(params, "close_on_disconnect"),
+            "close_on_disconnect": detach_policy == "close" or _flag(params, "close_on_disconnect"),
+            "detach_policy": detach_policy,
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
@@ -647,6 +650,8 @@ class _Resume:
         record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
+            detach_policy=_normalize_detach_policy(
+                self.params, _flag(self.params, "close_on_disconnect")),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
         if follows_profile:
             record.update(follow_profile_config=True, composer_override_profile=(
@@ -720,6 +725,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
             return refusal
         live["last_active"] = time.time()
+        _apply_reconnect_detach_policy(ctx.params, live)
         if (transport := current_transport()) is not None:
             with live.setdefault("history_lock", threading.Lock()):
                 _rebind_live_transport(live_sid, live, transport)
@@ -873,10 +879,21 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
         return _resume_reuse_live_locked(ctx, sid, session)
 
 
+def _apply_reconnect_detach_policy(params: dict, session: dict) -> None:
+    """Reattach-time ``detach_policy`` override (``session.resume`` / ``session.activate``): the
+    reconnecting client restates how a FUTURE disconnect must treat this session (``park`` to keep
+    it resumable headless). Absent/invalid keeps the policy the session was created with; callers
+    hold ``_session_resume_lock`` so the write cannot race a concurrent detach reading it."""
+    if (policy := str((params or {}).get("detach_policy") or "").strip().lower()) in ("park", "grace", "close"):
+        session["detach_policy"] = policy
+        session["close_on_disconnect"] = policy == "close"
+
+
 def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
+    _apply_reconnect_detach_policy(ctx.params, session)
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
                                     transport=current_transport() or _stdio_transport,
@@ -1032,6 +1049,9 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
                 session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+                # _init_session doesn't carry disconnect-policy fields (the lazy path threads them
+                # through _deferred_session_record) — restate the reattach-time policy here.
+                _apply_reconnect_detach_policy(ctx.params, session)
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
@@ -1163,6 +1183,7 @@ def _(rid, params: dict, session: dict) -> dict:
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
+        _apply_reconnect_detach_policy(params, session)
         with session["history_lock"]:
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
@@ -2225,80 +2246,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "queued" if queued else "rejected", "subagent_id": subagent_id, "text": text})
 
 
-@method("spawn_tree.save")
-def _(rid, params: dict) -> dict:
-    session_id = _str_param(params, "session_id")
-    subagents = params.get("subagents") or []
-    if not isinstance(subagents, list) or not subagents:
-        return _err(rid, 4000, "subagents list required")
-    started_at, label = params.get("started_at"), str(params.get("label") or "")
-    finished_at = float(params.get("finished_at") or time.time())
-    d = _spawn_tree_session_dir(session_id or "default")
-    path = d / f"{datetime.fromtimestamp(finished_at, timezone.utc).strftime('%Y%m%dT%H%M%S')}.json"
-    meta = {"session_id": session_id, "started_at": float(started_at) if started_at else None,
-            "finished_at": finished_at, "label": label}
-    try:
-        path.write_text(json.dumps({**meta, "subagents": subagents}, ensure_ascii=False), encoding="utf-8")
-    except OSError as exc:
-        return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
-    _append_spawn_tree_index(d, {"path": str(path), **meta, "count": len(subagents)})
-    return _ok(rid, {"path": str(path), "session_id": session_id})
-
-
-def _legacy_spawn_tree_entry(p, session_dir_name: str) -> dict | None:
-    """Index-shaped entry for a pre-index snapshot file (None when unreadable)."""
-    try:
-        stat = p.stat()
-    except OSError:
-        return None
-    raw = {}
-    with contextlib.suppress(Exception):
-        raw = json.loads(p.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raw = {}
-    subagents = raw.get("subagents") or []
-    return {"path": str(p), "session_id": raw.get("session_id") or session_dir_name,
-            "finished_at": raw.get("finished_at") or stat.st_mtime, "started_at": raw.get("started_at"),
-            "label": raw.get("label") or "", "count": len(subagents) if isinstance(subagents, list) else 0}
-
-
-@method("spawn_tree.list")
-def _(rid, params: dict) -> dict:
-    session_id = _str_param(params, "session_id")
-    if bool(params.get("cross_session")):
-        roots = [p for p in _spawn_trees_root().iterdir() if p.is_dir()]
-    else:
-        roots = [_spawn_tree_session_dir(session_id or "default")]
-    entries: list[dict] = []
-    for d in roots:
-        if indexed := _read_spawn_tree_index(d):
-            # Skip index entries whose snapshot file was manually deleted.
-            entries.extend(e for e in indexed if (p := e.get("path")) and Path(p).exists())
-        else:  # Legacy (pre-index) sessions: full scan, once per session until the next save.
-            entries.extend(
-                entry for p in d.glob("*.json")
-                if p.name != _SPAWN_TREE_INDEX and (entry := _legacy_spawn_tree_entry(p, d.name)) is not None)
-    entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
-    return _ok(rid, {"entries": entries[:int(params.get("limit") or 50)]})
-
-
-@method("spawn_tree.load")
-def _(rid, params: dict) -> dict:
-    if not (raw_path := _str_param(params, "path")):
-        return _err(rid, 4000, "path required")
-    try:
-        (resolved := Path(raw_path).resolve()).relative_to(_spawn_trees_root().resolve())
-    except (ValueError, OSError) as exc:
-        return _err(rid, 4030, f"path outside spawn-trees root: {exc}")
-    try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return _err(rid, 5000, f"spawn_tree.load failed: {exc}")
-    if not isinstance(payload, dict):
-        return _err(rid, 5000, "spawn_tree.load failed: snapshot is not a JSON object")
-    return _ok(rid, payload)
-
-
 # ── terminal / event replay ──────────────────────────────────────────
 @_session_method("terminal.resize")
 def _(rid, params: dict, session: dict) -> dict:
@@ -2333,7 +2280,8 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
     bind_module(globals(), server, skip=("_",))
-    from . import methods_session_branch
+    from . import methods_session_branch, methods_session_spawn_tree
     methods_session_branch.register(server)
+    methods_session_spawn_tree.register(server)
     from . import methods_session_interrupt
     methods_session_interrupt.register(server)

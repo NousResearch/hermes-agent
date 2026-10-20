@@ -155,6 +155,26 @@ try:
         assert trace["polls_after_poll"] is None
         assert all(r["success"] for r in trace["responses"].values()), trace
         trace["result"] = "PASS"
+
+    # Park policy (task t_7c43b64c): a session created with detach_policy=park
+    # must NEVER get an orphan-reap timer — disconnect parks it on the sentinel
+    # and it stays live (resumable warm) well past the 0.1 s grace.
+    ws = connect(url)
+    reply = rpc(ws, "session.create", {"detach_policy": "park"})
+    park_sid = reply["result"]["session_id"]
+    park_session = s._sessions[park_sid]
+    build(park_sid)
+    ws.close()
+    time.sleep(0.5)  # > 5x the grace window
+    assert park_sid in s._sessions, "park session was reclaimed"
+    assert park_sid not in s._pending_ws_reaps, "park session armed a reap timer"
+    assert park_session["transport"] is s._detached_ws_transport
+    with connect(url) as ws:
+        resumed = rpc(ws, "session.resume", {"session_id": park_session["session_key"]})
+        assert "result" in resumed, resumed
+        assert resumed["result"]["session_id"] == park_sid
+    trace["park_survives_disconnect"] = True
+    trace["result"] = "PASS"
 finally:
     for sid in list(s._sessions):
         s._cancel_ws_orphan_reap(sid)

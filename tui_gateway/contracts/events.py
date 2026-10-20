@@ -58,6 +58,10 @@ class GatewayReadyPayload(Payload):
     # WebSocket transport bound to a session authority: session verbs speak the canonical wire
     # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
     session_authority: bool | None = None
+    # This gateway honours ``session.create/resume {detach_policy: "park" | "grace" | "close"}``:
+    # a client that wants its session to survive disconnects may send the field. Absent on
+    # gateways that predate it (an older gateway would reject the unknown param with 4000).
+    detach_policy: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,

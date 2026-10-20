@@ -580,3 +580,108 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
         row = db.get_session("owned")
         assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
         assert "owned" in authority.sessions
+
+
+# ── per-session detach_policy: park across the REAL WS disconnect funnel ─────────────────
+
+
+def _run_disconnect_live_grace(monkeypatch, seed):
+    """``_run_disconnect`` but with the REAL grace window live: threading.Timer is
+    replaced by a recorder that never fires inside the test, so arming behavior is
+    observable (``server._pending_ws_reaps``) without a background reap risk."""
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    real_timer = threading.Timer
+
+    class _LongTimer(real_timer):
+        armed = []
+
+        def __init__(self, interval, function, *args, **kwargs):
+            _LongTimer.armed.append(interval)
+            super().__init__(600.0, function, *args, **kwargs)
+
+    monkeypatch.setattr(server.threading, "Timer", _LongTimer)
+
+    def _fake_finalize(s, end_reason="tui_close"):
+        w = s.get("slash_worker")
+        if w:
+            w.close()
+
+    monkeypatch.setattr(server, "_finalize_session", _fake_finalize)
+
+    created = []
+    real_transport = ws_mod.WSTransport
+    monkeypatch.setattr(
+        ws_mod, "WSTransport",
+        lambda ws, loop, **kw: created.append(real_transport(ws, loop, **kw)) or created[-1],
+    )
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            pass
+
+        async def receive_text(self):
+            seed(created[0])
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+
+def test_ws_disconnect_parks_park_policy_session_with_no_timer(monkeypatch):
+    """task t_7c43b64c: a detach_policy=park session survives its WS client's
+    disconnect with NO orphan-reap timer — the session record stays in
+    _sessions on the detached sentinel, resumable by the next client."""
+    server._sessions.clear()
+    server._pending_ws_reaps.clear()
+    try:
+        _run_disconnect_live_grace(
+            monkeypatch,
+            lambda t: server._sessions.update(
+                parked={
+                    "transport": t,
+                    "detach_policy": "park",
+                    "close_on_disconnect": False,
+                    "slash_worker": None,
+                    "session_key": "k-park",
+                }
+            ),
+        )
+        # Still live, parked on the sentinel, and NO timer was armed for it.
+        assert "parked" in server._sessions
+        assert server._sessions["parked"]["transport"] is server._detached_ws_transport
+        assert "parked" not in server._pending_ws_reaps
+    finally:
+        server._sessions.clear()
+        server._pending_ws_reaps.clear()
+
+
+def test_ws_disconnect_grace_default_session_still_arms_timer(monkeypatch):
+    """The grace default (no detach_policy field) keeps today's behavior: parked
+    on the sentinel WITH the orphan-reap timer armed (task t_7c43b64c no-regression)."""
+    server._sessions.clear()
+    server._pending_ws_reaps.clear()
+    try:
+        _run_disconnect_live_grace(
+            monkeypatch,
+            lambda t: server._sessions.update(
+                graced={
+                    "transport": t,
+                    "detach_policy": "grace",
+                    "close_on_disconnect": False,
+                    "slash_worker": None,
+                    "session_key": "k-grace",
+                }
+            ),
+        )
+        assert "graced" in server._sessions
+        assert server._sessions["graced"]["transport"] is server._detached_ws_transport
+        assert "graced" in server._pending_ws_reaps
+    finally:
+        server._cancel_ws_orphan_reap("graced")
+        server._sessions.clear()
+        server._pending_ws_reaps.clear()

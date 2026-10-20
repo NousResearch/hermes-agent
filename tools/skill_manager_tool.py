@@ -542,7 +542,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
     if err := _validate_content_size(new_content, label=target_label):
         return _err(err)
-    if target.name == "SKILL.md" and (err := _validate_frontmatter(new_content)):
+    is_manifest = (target == skill_dir / "SKILL.md")
+    if is_manifest and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
     if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
         return guard
@@ -554,7 +555,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         result["note"] = "\n".join(correction_notes)
     # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
-    if target.name == "SKILL.md":
+    if is_manifest:
         _attach_lint_findings(result, target, before=content)
     return result
 
@@ -618,7 +619,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
         return err
-    if target.name == "SKILL.md" and (err := _validate_frontmatter(file_content)):
+    is_manifest = (target == skill_dir / "SKILL.md")
+    if is_manifest and (err := _validate_frontmatter(file_content)):
         return _err(err)
     if guard := _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
@@ -627,7 +629,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
         _attach_lint_findings(result, skill_dir / "SKILL.md")
-    elif target.name == "SKILL.md":
+    elif is_manifest:
         _attach_lint_findings(result, target)
     return result
 
@@ -642,7 +644,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
         return err
-    if target.name == "SKILL.md":
+    if target == skill_dir / "SKILL.md":
         return _err("Cannot remove SKILL.md with remove_file. Use action='delete' to delete the skill.")
     if not target.exists():  # list what IS there so the model can pick the right path
         available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS

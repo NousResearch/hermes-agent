@@ -13,7 +13,8 @@ def read_catalog_rows(path):
     if not path.exists():
         return {}
     with SessionDB(db_path=path, read_only=True) as db:
-        return {str(row["id"]): dict(row) for row in db.list_sessions_rich(source="acp", limit=1000)}
+        rows = db.list_sessions_rich(source="acp", created_source="acp", limit=1000)
+        return {str(row["id"]): dict(row) for row in rows}
 
 
 def _local_owners(db):

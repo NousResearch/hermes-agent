@@ -111,6 +111,7 @@ def _where_sql(clauses: list[str], lead: str = "") -> str:
 
 def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
+    created_source: str | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False,
@@ -134,6 +135,11 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
+    if created_source:
+        source_clause = f"s.source IN ({_session_ids_placeholders(include_sources)})" if include_sources else "0"
+        where.append(f"({source_clause} OR s.created_source = ?)")
+        params.extend([*include_sources, created_source])
+        include_sources = []
     for clause, values in (
         (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
         ("s.session_key = ?", [session_key] if session_key else []),
@@ -1325,7 +1331,7 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
-        include_subagents: bool = False,
+        include_subagents: bool = False, created_source: str | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1334,7 +1340,7 @@ class SessionSessionsMixin:
         archived must still return."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
-            exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
+            exclude_children=not include_children, source=source, sources=sources, created_source=created_source, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
@@ -1417,7 +1423,7 @@ class SessionSessionsMixin:
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
             pinned_clauses, pinned_params = _session_filter_where(
-                exclude_children=not include_children, source=source, sources=sources,
+                exclude_children=not include_children, source=source, sources=sources, created_source=created_source,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents,

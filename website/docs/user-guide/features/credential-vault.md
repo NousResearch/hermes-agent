@@ -94,8 +94,10 @@ the page.
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
-Unlock or save from an interactive session first, or give 1Password a service
-account token (`OP_SERVICE_ACCOUNT_TOKEN`).
+Unlock or save from an interactive session first, or give the manager a credential
+it can unlock itself with: 1Password takes a service account token
+(`OP_SERVICE_ACCOUNT_TOKEN`); Bitwarden takes the master password of a
+**dedicated account** (`BW_MASTER_PASSWORD`).
 
 ```yaml
 vault:
@@ -105,7 +107,19 @@ vault:
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
     enabled: false
+    binary_path: ""         # absolute path to `bw`; empty = PATH
+    master_password_env: BW_MASTER_PASSWORD   # unset in .env = masked prompt per session
 ```
+
+The Bitwarden value is read from the **profile's** `.env` through the secret scope,
+so under a multiplexed gateway each profile unlocks only its own account. It reaches
+`bw` through the vendor's `--passwordenv` contract (never argv), mints a session
+token exactly as the masked prompt would, and is registered with the redactor. A
+wrong or rotated password logs a warning and leaves the manager locked, so the
+interactive prompt still applies. Treat it like an employee's password: give the
+agent its own Bitwarden account whose collections hold only the logins that agent is
+allowed to fill, and audit use with the organization's event log — not a human's
+personal vault.
 
 ## What this does and does not guarantee
 

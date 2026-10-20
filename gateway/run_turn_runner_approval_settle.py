@@ -61,24 +61,12 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
     notice = format_approval_timed_out_notice(timeout_s)
     metadata = _interim_metadata(ctx._status_thread_metadata)
     try:
-        # Plain markdown, not the card's platform markup: ``edit_message`` re-formats it itself.
-        if card_message_id and await _edit_card(
-                adapter, ctx._status_chat_id, card_message_id,
-                t("gateway.exec_approval.timed_out_card_body", notice=notice, command=command)):
-            return
+        # Send the notice as a NEW message, never an in-place edit of the button card.
+        # The card was sent as platform-native markup (Telegram: HTML with <pre>); editing it
+        # with the MarkdownV2 formatter escapes those tags into literal \<pre\> and the fallback
+        # shows raw formatting glyphs (the "no formatting / literal backticks" complaint). A fresh
+        # send goes through the same markdown pipeline as the final reply and renders cleanly.
+        # The plain-text prompt path already passes card_message_id=None and posts a fresh message.
         await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
     except Exception:
         logger.debug("Approval timeout notice failed", exc_info=True)
-
-
-async def _edit_card(adapter, chat_id: str, message_id: str, content: str) -> bool:
-    """Edit the card in place (drops the buttons on platforms whose edit replaces the markup)."""
-    edit: Optional[Callable[..., Any]] = getattr(adapter, "edit_message", None)
-    if edit is None:
-        return False
-    try:
-        result = await edit(chat_id, message_id, content)
-    except Exception:
-        logger.debug("Approval card edit failed; sending the notice as a new message", exc_info=True)
-        return False
-    return bool(getattr(result, "success", False))

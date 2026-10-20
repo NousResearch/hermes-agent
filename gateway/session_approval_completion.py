@@ -7,7 +7,7 @@ from contextlib import contextmanager, nullcontext
 import json
 
 
-def completion_reservation_for_event(event, route, profile):
+def _producer_reservation_for_event(event, route):
     """Read a live producer record, never a consent assertion in its event payload."""
     if event.get('session_key') != route:
         return None
@@ -25,7 +25,20 @@ def completion_reservation_for_event(event, route, profile):
         if found is not None and found[0] == route:
             reservation = found[1]
     return (reservation if reservation is not None and reservation.evidence.session == route
-            and reservation.evidence.profile == profile and reservation.evidence.task_id else None)
+            and reservation.evidence.task_id else None)
+
+
+def completion_reservation_for_event(event, route, profile):
+    reservation = _producer_reservation_for_event(event, route)
+    return reservation if reservation is not None and reservation.evidence.profile == profile else None
+
+
+def completion_batch_origin_for_event(event, route):
+    """Group only live producer siblings; admission checks the profile again."""
+    reservation = _producer_reservation_for_event(event, route)
+    if reservation is None or not reservation.active() or not reservation.lease.live():
+        return None
+    return reservation.lease, reservation.evidence
 
 
 def release_completion_event_reservation(event):

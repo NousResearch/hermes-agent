@@ -1284,7 +1284,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         with self._completion_delivery_lock:
             self._mark_completions_delivered_locked(identities)
 
-    async def _flush_process_completion_batch(self, key: tuple[str, ...]) -> None:
+    async def _flush_process_completion_batch(self, key: tuple) -> None:
         """Deliver one short-window completion batch and resolve its waiters."""
         current_task = asyncio.current_task()
         entries: list[tuple[str, dict, asyncio.Future]] = []
@@ -1385,9 +1385,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return False
         # A route key alone is not ownership: /new can leave old and new pins
         # in the same queue. Never settle one pin on another pin's acceptance.
-        key = self._event_route_key(
+        from gateway.session_approval_completion import completion_batch_origin_for_event
+        key = (*self._event_route_key(
             evt, (*self._COMPLETION_BATCH_KEY_FIELDS, "parent_session_id", "origin_session_id"),
-        )
+        ), completion_batch_origin_for_event(evt, str(evt.get('session_key') or '')))
         future = asyncio.get_running_loop().create_future()
         self._completion_notification_batches.setdefault(key, []).append((synth_text, evt, future))
         if key not in self._completion_notification_batch_tasks:
@@ -1571,10 +1572,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # A same-tick drain often carries several completions for the SAME originating session (a
                 # fan-out of background subagents finishing together). Events for different sessions never
                 # coalesce. See #70300.
-                groups: dict[tuple[str, ...], list[dict]] = {}
+                from gateway.session_approval_completion import completion_batch_origin_for_event
+                groups: dict[tuple, list[dict]] = {}
                 for evt in async_events:
                     self._enrich_async_delegation_routing(evt)
-                    groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
+                    key = (*self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS),
+                           completion_batch_origin_for_event(evt, str(evt.get('session_key') or '')))
+                    groups.setdefault(key, []).append(evt)
                 for group in groups.values():
                     try:
                         delivered = await self._deliver_async_delegation_group(group)

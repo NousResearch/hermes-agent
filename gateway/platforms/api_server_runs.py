@@ -396,17 +396,6 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
     return None
 
 
-def _owner_alive(owner_pid: int, owner_started: int) -> bool:
-    """True when the recorded owner pid still exists and is the same process incarnation."""
-    try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
-        return owner_pid > 0 and bool(_pid_exists(owner_pid)) and (
-            not owner_started
-            or start_time_fingerprints_match(owner_started, get_process_start_time(owner_pid) or 0))
-    except Exception:
-        return False
-
-
 def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:
     """Hydrate a scoped run status and fail stale owners closed."""
     from gateway.platforms.api_server_authority_runs import run_projection
@@ -419,18 +408,21 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
                                            if key in retained}, **canonical}
     status = self._run_statuses.get(run_id)
     if status is not None:
-        if run_id in self._run_idempotency_ids:
+        if run_id not in self._run_idempotency_ids:
+            return status
+        if status["status"] in TERMINAL_STATUSES:
             scope = self._run_idempotency_scope(request)
             self._run_idempotency_store.extend_retention(scope, run_id, _room_retention_until(request))
-        return status
+            return status
+        # A previously observed live owner may have died since the last poll.
     scope = self._run_idempotency_scope(request)
     record = self._run_idempotency_store.status_for_run(
         scope, run_id, retention_until=_room_retention_until(request))
     if record is None:
         return None
     status = dict(record["status"])
-    if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
-        int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
+    if status.get("status") not in TERMINAL_STATUSES and not self._run_idempotency_store.owner_alive(
+        record["owner_token"]):
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())

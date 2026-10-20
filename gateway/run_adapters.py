@@ -1804,10 +1804,13 @@ class GatewayAdapterLifecycleMixin:
     def _standalone_scoped(self, handler):
         """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
         ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
-        credentials after a hosted room flipped the process-wide guard (#112878). Decided per event:
-        activation happens after the adapters were wired."""
+        credentials after a hosted room flipped the process-wide guard (#112878). The credential
+        body is marked at entry (``launch_body``): a turn already running when a second profile
+        switches this gateway to multiplexing keeps resolving its launch credentials."""
+        from tui_gateway.launch_profile_policy import launch_body
+
         async def _handler(*args):
-            with self._standalone_launch_scope():
+            with launch_body(), self._standalone_launch_scope():
                 return await handler(*args)
 
         return _handler

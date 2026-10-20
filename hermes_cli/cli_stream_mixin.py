@@ -253,7 +253,10 @@ class CLIStreamMixin:
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
         if modern:
+            # Close the message with its own bar (as classic does), then a blank line before
+            # whatever the turn prints first.
             from hermes_cli.cli_modern_layout import owe_gap_after_user_message
+            _cprint(separator(True))
             owe_gap_after_user_message()
 
     def _stream_reasoning_delta(self, text: str) -> None:

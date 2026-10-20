@@ -182,9 +182,8 @@ def test_tool_rows_keep_the_classic_tool_emoji():
 
 
 def test_a_blank_line_separates_the_user_message_from_the_first_tool_row(monkeypatch):
-    """Reasoning and answers open under a blank line + bar; the first tool row of a turn gets the
-    same blank line, so the user's message never runs straight into the tool calls. Later rows
-    stay tight."""
+    """The user's message closes with its own bar, and the first tool row opens under a blank line,
+    so the message never runs straight into the tool calls. Later rows stay tight."""
     from cli import HermesCLI
     import cli as climod
     from hermes_cli import cli_modern_layout as layout
@@ -194,6 +193,7 @@ def test_a_blank_line_separates_the_user_message_from_the_first_tool_row(monkeyp
     cli = HermesCLI.__new__(HermesCLI)
     cli._modern_layout, cli.show_timestamps = True, False
     cli._print_user_message_preview("read the hostname")
+    assert emitted[-1] == "─" * 40, emitted  # the message closes with its own bar
     first = layout.completed_tool_line(cli, "read_file", {"path": "/etc/hostname"}, 0.2)
     second = layout.completed_tool_line(cli, "terminal", {"command": "echo hi"}, 0.1)
     assert first.startswith("\n") and _plain(first).lstrip("\n").startswith("📖 "), repr(first)

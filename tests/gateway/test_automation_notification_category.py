@@ -157,7 +157,7 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
 _SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
 
 
-async def _native_owner(tmp_path, monkeypatch, human_message_id):
+async def _native_owner(tmp_path, monkeypatch, human_message_id, chat_topic=None):
     from gateway.session_ingress_context import native_callback, register_transport_home
     from plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
@@ -166,9 +166,10 @@ async def _native_owner(tmp_path, monkeypatch, human_message_id):
     runner._wire_adapter_handlers(adapter)
     register_transport_home(runner, None, tmp_path)
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
-    source = adapter.build_source(**_SOURCE)
+    source = adapter.build_source(**_SOURCE, chat_topic=chat_topic)
     # The committed human turn keeps its platform reply anchor on the source.
-    human = MessageEvent(text='human', source=adapter.build_source(**_SOURCE, message_id=human_message_id),
+    human = MessageEvent(text='human', source=adapter.build_source(**_SOURCE, chat_topic=chat_topic,
+                                                                  message_id=human_message_id),
                          message_id=human_message_id)
     with native_callback(runner, human, tmp_path):
         await authority.admit_native(human)
@@ -202,7 +203,59 @@ async def test_native_completion_wake_admits_when_source_differs_only_by_message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('field', ['user_name', 'user_id', 'thread_id'])
+@pytest.mark.parametrize('committed_topic,wake_topic', [
+    (None, 'Example topic'),  # the live route gained a topic label after the turn committed
+    ('Example topic', None),  # the persisted origin lost the label
+    ('Old title', 'Example topic'),  # the topic was renamed
+    ('Example topic', 'Example topic'),  # fully matching control
+])
+async def test_native_completion_wake_admits_when_only_chat_topic_differs(
+        tmp_path, monkeypatch, committed_topic, wake_topic):
+    """``chat_topic`` is mutable display metadata — a Telegram forum topic or channel topic can be
+    renamed after the turn committed — while routing stays pinned by chat/thread. A completion whose
+    persisted origin differs only by that label must admit on the committed route, keep the committed
+    source/provenance, drop the stale reply anchor, and deduplicate a retry."""
+    from gateway.session_envelope import restore_native
+    from gateway.session_identity import replace_source
+    runner, authority, _adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', chat_topic=committed_topic)
+    try:
+        route = metadata['gateway_session_key']
+        # ``_build_process_event_source`` prefers the persisted routing origin, whose label can be
+        # stale or absent for the same chat while the committed admission keeps the human turn's.
+        runner.session_store._entries[route].origin = replace_source(source, chat_topic=wake_topic)
+        evt = {'type': 'completion', 'session_id': 'proc_topic', 'session_key': route, 'platform': 'discord',
+               'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
+               'parent_session_id': metadata['gateway_session_id']}
+        assert await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True) is True
+        owner = authority.logical_owner(metadata['gateway_session_id'])
+
+        def _rows():
+            return [r for r in list_session_admissions(authority.db, session_id=owner, pending_only=False)
+                    if (r['payload'].get('native_text_v1') or {}).get('automation')]
+
+        automation = _rows()
+        assert len(automation) == 1
+        envelope = automation[0]['payload']['native_text_v1']
+        # The committed native envelope stays authoritative: its label, no stale reply anchor.
+        assert envelope['source']['chat_topic'] == committed_topic
+        assert 'message_id' not in envelope['source']
+        assert envelope['route'] == route
+        assert envelope['automation']['owner'] == owner
+        committed = [r for r in list_session_admissions(authority.db, session_id=owner, pending_only=False)
+                     if 'automation' not in (r['payload'].get('native_text_v1') or {})]
+        assert [r['payload']['native_text_v1']['provenance'] for r in committed] == [envelope['provenance']]
+        restored = restore_native(automation[0]['payload'], runner)
+        assert restored.internal and restored.source.chat_topic == committed_topic
+        # The same immutable completion retried is the same admission, not a second parent turn.
+        assert await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True) is True
+        assert len(_rows()) == 1
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['user_name', 'user_id', 'thread_id', 'chat_id'])
 async def test_native_completion_wake_refuses_other_source_drift(tmp_path, monkeypatch, field):
     _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:

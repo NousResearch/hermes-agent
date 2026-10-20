@@ -234,6 +234,32 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
+def _runtime_member_metadata(document: dict) -> bool:
+    """Keep published requirements, not a plugin checkout's local developer environment.
+
+    uv locks every declared group even when sync excludes it. Developer groups therefore
+    cannot share the host's runtime lock; the original plugin source remains untouched.
+    """
+    changed = "dependency-groups" in document
+    document.pop("dependency-groups", None)
+    settings = document.get("tool", {}).get("uv", {})
+    for key in ("default-groups", "dependency-groups", "dev-dependencies"):
+        if key in settings:
+            settings.pop(key)
+            changed = True
+    if "conflicts" in settings:
+        conflicts = [[spec for spec in conflict if "group" not in spec]
+                     for conflict in settings["conflicts"]]
+        conflicts = [conflict for conflict in conflicts if len(conflict) > 1]
+        if conflicts != settings["conflicts"]:
+            if conflicts:
+                settings["conflicts"] = conflicts
+            else:
+                settings.pop("conflicts")
+            changed = True
+    return changed
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
@@ -255,9 +281,10 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
-        changed = declaration.install_requirements != declaration.requirements
-        if changed:
+        changed = _runtime_member_metadata(document)
+        if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
+            changed = True
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:

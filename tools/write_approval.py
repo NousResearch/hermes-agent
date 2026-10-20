@@ -88,12 +88,28 @@ def _pending_path(subsystem: str, pending_id: str) -> Path:
     return path
 
 
+# A claim lasts one apply (seconds at most); one older than this was left by a crash.
+_STALE_CLAIM_SECONDS = 600
+
+
+def _release_stale_claims(d: Path) -> None:
+    """Put a ``<id>.claimed`` left by a process that died mid-approval back in the queue."""
+    cutoff = time.time() - _STALE_CLAIM_SECONDS
+    for p in d.glob("*.claimed"):
+        with suppress(OSError):
+            back = p.with_suffix(".json")
+            if (_PENDING_ID_RE.fullmatch(p.stem) and not p.is_symlink() and p.stat().st_mtime < cutoff
+                    and not back.exists()):
+                os.replace(p, back)
+
+
 def _pending_files(subsystem: str) -> list:
     try:
         d = _pending_dir(subsystem)
     except ValueError:
         logger.warning("write_approval: ignoring the %s pending store", subsystem, exc_info=True)
         return []
+    _release_stale_claims(d)
     return [p for p in d.glob("*.json")
             if _PENDING_ID_RE.fullmatch(p.stem) and not p.is_symlink()] if d.exists() else []
 
@@ -146,6 +162,40 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
         return {**data, "id": pending_id} if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def claim_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
+    """Take a pending record for applying: an atomic rename to ``<id>.claimed`` that only one caller
+    wins, so two approvals of one id never apply it twice. Returns the claimed record, or None (no
+    such record, or another caller holds it). Finish with :func:`finish_claim`."""
+    try:
+        src = _pending_path(subsystem, pending_id)
+        claimed = src.with_suffix(".claimed")
+        os.utime(src)  # the claim's age, read by _release_stale_claims
+        os.replace(src, claimed)
+    except (OSError, ValueError):
+        return None
+    try:
+        record = json.loads(claimed.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        record = None
+    if not isinstance(record, dict):
+        finish_claim(subsystem, pending_id, applied=False)
+        return None
+    return {**record, "id": pending_id}
+
+
+def finish_claim(subsystem: str, pending_id: str, *, applied: bool) -> None:
+    """Applied: drop the claimed record. Not applied: put it back in the queue."""
+    try:
+        src = _pending_path(subsystem, pending_id)
+        claimed = src.with_suffix(".claimed")
+        if applied:
+            claimed.unlink(missing_ok=True)
+        else:
+            os.replace(claimed, src)
+    except (OSError, ValueError):
+        logger.warning("write_approval: could not finish the claim on %s/%s", subsystem, pending_id, exc_info=True)
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:

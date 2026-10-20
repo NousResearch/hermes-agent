@@ -14,6 +14,7 @@ from hermes_cli.gateway_session_store import GatewaySessionStore
 class _Connection:
     def __init__(self):
         self.final = False
+        self.launch_api_key = None
 
     def close(self):
         self.final = True
@@ -59,6 +60,7 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     snapshot = create_quick_snapshot(hermes_home=home)
     old = _Connection()
+    old.launch_api_key = "launch-only-key"  # --api-key: the rejoin's resumes must re-supply it
     store = GatewaySessionStore(old)
     cli = SimpleNamespace(_session_db=store, _gateway_session_open=True, session_id="kept",
                           agent=object(), conversation_history=[])
@@ -93,3 +95,4 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
         assert store.connection is old  # a remote chat keeps its connection too
     else:
         assert "Reconnecting to the gateway failed: permission_denied" in out
+        assert store.connection is not old and store.connection.launch_api_key == "launch-only-key"

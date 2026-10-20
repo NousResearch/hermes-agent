@@ -121,7 +121,9 @@ def _restore_gateway_snapshot(cli, store, snap_id):
         store.current = None
         # The restore's own result or error decides the reply; a failed rejoin must not replace it.
         try:
-            store.connection = GatewayConnection.shared()
+            drained, store.connection = store.connection, GatewayConnection.shared()
+            # The relaunched owner revoked this CLI's launch-only key: every resume re-supplies it.
+            store.connection.launch_api_key = drained.launch_api_key
             _rejoin_cli(cli, store)
         except Exception as exc:
             logger.warning("Rejoin after snapshot restore failed: %s", exc, exc_info=True)

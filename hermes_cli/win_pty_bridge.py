@@ -45,9 +45,11 @@ class WinPtyBridge:
     ``run_in_executor``; ConPTY has no selectable fd, so reads poll and writes run in a worker
     thread to keep the same non-blocking event-loop contract as the POSIX bridge."""
 
-    def __init__(self, proc: PtyProcess) -> None:  # type: ignore[name-defined]
+    def __init__(self, proc: PtyProcess, *, cols: int = 80, rows: int = 24) -> None:  # type: ignore[name-defined]
         self._proc = proc
         self._closed = False
+        self._cols: int = _clamp(cols, _MAX_COLS)
+        self._rows: int = _clamp(rows, _MAX_ROWS)
 
     @classmethod
     def is_available(cls) -> bool:
@@ -68,7 +70,7 @@ class WinPtyBridge:
             if env is None else dict(env))
         spawn_env["TERM"] = spawn_env.get("TERM") or "xterm-256color"
         # pywinpty mirrors ptyprocess: dimensions=(rows, cols).
-        return cls(PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols)))  # type: ignore[union-attr]
+        return cls(PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols)), cols=cols, rows=rows)  # type: ignore[union-attr]
 
     @property
     def pid(self) -> int:
@@ -173,6 +175,10 @@ class WinPtyBridge:
             return
         cols = _clamp(cols, _MAX_COLS)
         rows = _clamp(rows, _MAX_ROWS)
+        if cols == self._cols and rows == self._rows:
+            return
+        self._cols = cols
+        self._rows = rows
         try:
             self._proc.setwinsize(rows, cols)  # pywinpty: (rows, cols)
         except Exception:

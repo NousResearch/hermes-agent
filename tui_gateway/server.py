@@ -1448,7 +1448,10 @@ def _probe_config_health(cfg: dict) -> str:
     if not isinstance(cfg, dict):
         return ""
     warnings: list[str] = []
-    if null_keys := sorted(k for k, v in cfg.items() if v is None):
+    # Scalar keys that explicitly accept null as documented (e.g. max_concurrent_sessions: null for unlimited)
+    # should not be treated as empty sections that silently dropped nested mappings.
+    allowed_null_keys = {"max_concurrent_sessions"}
+    if null_keys := sorted(k for k, v in cfg.items() if v is None and k not in allowed_null_keys):
         keys = ", ".join(f"`{k}`" for k in null_keys)
         warnings.append(f"config.yaml has empty section(s): {keys}. Remove the line(s) or set them to `{{}}` — "
                         f"empty sections silently drop nested settings.")

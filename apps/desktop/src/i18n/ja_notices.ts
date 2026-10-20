@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { jaDesktopCommands } from './ja_desktop_commands'
 import { jaSessionCommands } from './ja_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ja.ts.
@@ -24,12 +25,26 @@ export const jaNotices = {
       'このチャットは処理中です。MCP の変更は現在のターンが終わって MCP を再読み込みしたとき、またはチャットを開き直したときに反映されます',
     mcpReloadNotInChat: server => `${server} はこのチャットでは有効になっていません`,
     mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,
-    sessionCommands: jaSessionCommands
+    compactedTurnUnavailable: 'このメッセージはチャットの圧縮時に要約されたため、復元や編集はできなくなりました。',
+    staleTurnUnavailable: 'このメッセージはこのチャットの履歴にはもうありません。',
+    sessionCommands: jaSessionCommands,
+    desktopCommands: jaDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Hermes の作業中にコンピューターがスリープしました',
     message:
       'タスクの実行中は、Hermes がコンピューターのスリープを防げます。画面はいつもどおりオフになり、バッテリー駆動中はスリープすることがあります。',
     action: '実行中はスリープしない'
+  },
+  billingBlock: {
+    titleNous: 'Nous クレジットが不足しています',
+    titleProvider: provider => `クレジット不足 — ${provider}`,
+    fallbackMessage: 'アカウントのクレジットが不足しています。続行するにはクレジットを追加してください。',
+    openBilling: '請求を開く',
+    addCredits: 'クレジットを追加',
+    dismiss: '閉じる'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

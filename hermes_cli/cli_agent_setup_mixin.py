@@ -113,6 +113,32 @@ def _compression_descendant(session_db, session_id):
     return resolved_id if resolved_id and resolved_id != session_id else None
 
 
+def _gateway_owned_id(session_db, session_id):
+    """The id the gateway answers for physical row *session_id*: ``session.resume``'s
+    ``stored_session_id``. A canonical local compression segment holds the transcript, but its creation
+    receipt lives on the conversation's logical owner, which every turn and mutation must name (as Ink
+    and ``session.resume`` do). Unchanged off the gateway store or when the resume is refused."""
+    return _gateway_open(session_db, session_id)[0]
+
+
+def _gateway_open(session_db, session_id):
+    """``(owner_id, refusal)`` from one ``session.resume`` of *session_id* on this viewer: the attach
+    subscribes it and names its receipt owner (:func:`_gateway_owned_id`). ``refusal`` is the reason
+    code when the owner answered that this viewer may not open it (``RESUME_GONE``), else ``None``:
+    off the gateway store, a transient refusal, or no answer, the caller proceeds on its local reads."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli.gateway_connection import RESUME_GONE
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    if not isinstance(session_db, GatewaySessionStore):
+        return session_id, None
+    try:
+        return session_db.attach(session_id).get("stored_session_id") or session_id, None
+    except GatewayRPCError as exc:
+        return session_id, (str(exc) if str(exc) in RESUME_GONE else None)
+    except Exception:  # health: allow BLE001 -- no answer: the turn reports the lost connection itself
+        return session_id, None
+
+
 def _user_display_text(content) -> str:
     """Recap text for a user row; multimodal lists become text parts + ``[image]`` markers."""
     if isinstance(content, list):
@@ -529,11 +555,19 @@ class CLIAgentSetupMixin:
     def _follow_compression_chain(self, session_meta, announce):
         """If the resumed id is an empty compression-chain head, announce and switch to
         the descendant holding the messages; returns the (possibly refreshed) meta."""
+        self._resume_read_id = self.session_id
         resolved_id = _compression_descendant(self._session_db, self.session_id)
         if resolved_id:
-            announce(resolved_id)
-            self.session_id = resolved_id
-            session_meta = self._session_db.get_session(self.session_id) or session_meta
+            session_meta = self._session_db.get_session(resolved_id) or session_meta
+            self._resume_read_id = resolved_id
+            owner = _gateway_owned_id(self._session_db, resolved_id)
+            if owner != resolved_id:
+                # The transcript is read from the tip segment; the session stays addressed by the
+                # id the gateway holds its receipt for (a segment id is refused storage_unavailable).
+                self.session_id = owner
+            else:
+                announce(resolved_id)
+                self.session_id = resolved_id
         return session_meta
 
     def _restore_session_state(self, session_meta, *, quiet: bool = False) -> None:
@@ -590,7 +624,7 @@ class CLIAgentSetupMixin:
                 t("cli.resume.cannot_resume", error=resume_limit_error),
                 f"[bold red]{_escape(t('cli.resume.cannot_resume_prefix'))}[/] {_escape(resume_limit_error)}")
             return False
-        restored = self._session_db.get_messages_as_conversation(self.session_id, repair_alternation=True)
+        restored = self._session_db.get_messages_as_conversation(self._resume_read_id, repair_alternation=True)
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
@@ -645,6 +679,10 @@ class CLIAgentSetupMixin:
         try:
             runtime = runtime_override or _current_runtime(self)
             effective_model = model_override or self.model
+            # ``/model --once`` has already staged the pick on the CLI and saved the restore
+            # snapshot. chat retires the previous agent, so the pick has to be on this one.
+            pending_one_turn = getattr(self, "_pending_one_turn_model_restore", None)
+            one_turn = pending_one_turn is not None
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
             single_query_mode = getattr(self, "_single_query_mode", False)
@@ -668,7 +706,8 @@ class CLIAgentSetupMixin:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config, service_tier=self.service_tier,
-                push_reasoning=getattr(self, "_reasoning_user_set", False),
+                # A --once level rides the admission; a session /reasoning is committed by the next rebuild.
+                push_reasoning=getattr(self, "_reasoning_user_set", False) and not one_turn,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,
@@ -677,8 +716,14 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
+                connection_update_callback=None if single_query_mode else self._connection_on_change,
                 # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
                 model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
+                # Another viewer answering the gateway's clarify/sudo/secret request closes this modal.
+                modal_withdraw_callback=None if single_query_mode else self._withdraw_gateway_modal,
+                one_turn=one_turn,
+                one_turn_reasoning=(pending_one_turn or {}).get("one_turn_reasoning") if one_turn else None,
+                one_turn_alias=(pending_one_turn or {}).get("one_turn_alias", "") if one_turn else "",
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
@@ -701,6 +746,7 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
+            self.agent.control_update_callback = self._mark_automation_stale
             # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
             # thread rendered, so the shared prompt path never re-reads config or skill files.
             _auto_result = getattr(self, "_auto_load_skills_result", None)
@@ -722,6 +768,10 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
+            if getattr(self.agent, "reasoning_pushed", False):
+                # The session holds the pick now; later rebuilds (/fast, /personality, a route change)
+                # must not re-commit it (a resume, a prepare+commit, a receipt, an agent eviction each).
+                self._reasoning_user_set = False
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db:
@@ -759,7 +809,8 @@ class CLIAgentSetupMixin:
             safety_check = getattr(self._session_db, "assert_resume_safe", None)
             if not callable(safety_check):
                 return None
-            safety_check(self.session_id, **({"tip_only": True} if tip_only else {}))
+            safety_check(getattr(self, "_resume_read_id", None) or self.session_id,
+                         **({"tip_only": True} if tip_only else {}))
         except SessionResumeTooLargeError as exc:
             return str(exc)
         except Exception as exc:
@@ -788,7 +839,7 @@ class CLIAgentSetupMixin:
         # an ordinary CLI resume would be a live writer the board cannot observe. Refuse AND
         # fall back to a fresh session id, so this process never appends to the worker row.
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
-        if (kanban_refusal := kanban_resume_refusal(self._session_db, self.session_id)):
+        if (kanban_refusal := kanban_resume_refusal(self._session_db, self._resume_read_id)):
             self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
             self._resumed = False
             from hermes_state_ids import new_session_id
@@ -799,7 +850,7 @@ class CLIAgentSetupMixin:
             self._resume_history_error = resume_limit_error
             self._console_print(f"[bold red]{_escape(t('cli.resume.cannot_resume_prefix'))}[/] {resume_limit_error}")
             return False
-        restored, display_history = self._session_db.get_resume_conversations(self.session_id)
+        restored, display_history = self._session_db.get_resume_conversations(self._resume_read_id)
         accent_color = _accent_hex()
         if not restored:
             self._console_print(

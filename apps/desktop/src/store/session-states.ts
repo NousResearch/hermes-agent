@@ -93,7 +93,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -763,9 +763,22 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
 /** Mark a completed turn unread unless the user is already looking at it. */
 function lightUnreadCompletion(storedId: string, runtimeId?: string) {
+  // The marker's profile bucket comes from the loaded row when there is one;
+  // with no row, the socket-proven owner profile keeps a background profile's
+  // finish out of the ACTIVE profile's bucket (#91710). The same owner decides
+  // whether the completion is a messaging conversation's.
+  const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
+
+  const profileHint =
+    typeof owner === 'string'
+      ? owner
+      : typeof owner?.profile === 'string' && owner.profile.trim()
+        ? owner.profile
+        : undefined
+
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
-  if (storedId === $focusedStoredSessionId.get()) {
+  if (storedId === $focusedStoredSessionId.get() || isMessagingCompletion(storedId, profileHint)) {
     return
   }
 
@@ -777,20 +790,7 @@ function lightUnreadCompletion(storedId: string, runtimeId?: string) {
 
   if (Date.now() > lastReadAt) {
     // Flags the transient atom AND persists a marker, so the green dot
-    // survives an app restart (see session-unread.ts). The marker's profile
-    // bucket comes from the loaded row when there is one; with no row, the
-    // socket-proven owner profile keeps a background profile's finish out of
-    // the ACTIVE profile's bucket — the per-profile rail unread (#91710)
-    // would otherwise light the wrong square.
-    const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
-
-    const profileHint =
-      typeof owner === 'string'
-        ? owner
-        : typeof owner?.profile === 'string' && owner.profile.trim()
-          ? owner.profile
-          : undefined
-
+    // survives an app restart (see session-unread.ts).
     markSessionUnreadFinished(storedId, profileHint)
   }
 }

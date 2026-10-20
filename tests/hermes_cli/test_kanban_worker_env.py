@@ -13,5 +13,5 @@ def test_keeps_host_plumbing_and_hermes_location():
 def test_drops_everything_else():
     env = {"PATH": "/bin", "SERVICE_TOKEN": "t", "GITHUB_TOKEN": "g", "HERMES_MODEL": "m",
            "TERMINAL_ENV": "docker", "HERMES_TUI": "1", "HERMES_SESSION_PLATFORM": "telegram",
-           "MY_PASSTHROUGH_VAR": "v"}
+           "MY_PASSTHROUGH_VAR": "v", "XDG_ACTIVATION_TOKEN": "a", "XDG_SERVICE_TOKEN": "x"}
     assert worker_client_env(env) == {"PATH": "/bin"}

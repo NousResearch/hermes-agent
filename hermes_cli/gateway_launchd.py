@@ -350,6 +350,30 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _service_shell_path_entries(path: str) -> list[str]:
+    """The invoking PATH minus package-manager environment dirs, for the plist's PATH.
+
+    Every launcher prepends the selected environment's ``venv/bin`` at boot (pm/environments.py), so
+    the CLI that writes the plist always carries it. Baked in, it dies with the next environment
+    rotation, and the staleness check masks PATH so it is never rewritten (#83699). The gateway
+    re-selects the live environment at boot, so dropping it loses nothing."""
+    entries = [p for p in path.split(":") if p]
+    try:
+        from pm.environments import installs_root
+        root = installs_root().resolve()
+    except ImportError:  # external installs without the package manager
+        return entries
+    kept = []
+    for entry in entries:
+        try:
+            if Path(entry).resolve().is_relative_to(root):
+                continue
+        except (OSError, ValueError):
+            pass
+        kept.append(entry)
+    return kept
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -363,7 +387,7 @@ def generate_launchd_plist() -> str:
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
     priority_dirs = _gw()._build_service_path_dirs()
     _gw()._append_node_dir_for_service(priority_dirs)
-    sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
+    sane_path = ":".join(dict.fromkeys(priority_dirs + _service_shell_path_entries(os.environ.get("PATH", ""))))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).

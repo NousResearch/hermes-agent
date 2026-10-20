@@ -96,6 +96,10 @@ export const zhHantAssistant = {
         ssl_cert_verification: {
           title: '安全連線失敗',
           body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        },
+        cron_session_read_only: {
+          title: '此聊天屬於一個排程工作',
+          body: '它只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。'
         }
       },
       errorLayers: {

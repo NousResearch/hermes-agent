@@ -19,14 +19,12 @@ export const jaCatalog = {
   listView: 'リスト表示',
   cardView: 'カード表示',
   installTitle: (name: string) => `「${name}」をインストールしますか？`,
-  installDescription:
-    'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
+  installDescription: 'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
   installTo: 'インストール先',
   thisComputer: 'このコンピューター',
   installing: 'インストール中…',
   installComplete: (name: string) => `「${name}」をインストールしました`,
-  destinationChanged:
-    'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
+  destinationChanged: 'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
   installed: 'インストール済み',
   searchSkills: 'スキルを検索',
   searchPlugins: 'プラグインを検索',
@@ -64,14 +62,12 @@ export const jaCatalog = {
 
 export const jaSkillDeepLink = {
   installTitle: (name: string) => `「${name}」をインストールしますか？`,
-  installDescription:
-    'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
+  installDescription: 'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
   installTo: 'インストール先',
   thisComputer: 'このコンピューター',
   installing: 'インストール中…',
   installComplete: (name: string) => `「${name}」をインストールしました`,
-  destinationChanged:
-    'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
+  destinationChanged: 'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
   installed: 'インストール済み',
   source: '提供元'
 } satisfies TranslationOverrides['skillDeepLink']

@@ -19,7 +19,6 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
-
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

@@ -26,22 +26,35 @@ function mount(canonical = false, extra: (method: string, params: any) => unknow
   const request = vi.fn((method: string, params: any) => {
     const handled = extra(method, params)
 
-    if (handled !== undefined) { return Promise.resolve(handled) }
+    if (handled !== undefined) {
+      return Promise.resolve(handled)
+    }
 
-    if (method === 'prompt.submit' && canonical) { return Promise.resolve({ status: 'started' }) }
+    if (method === 'prompt.submit' && canonical) {
+      return Promise.resolve({ status: 'started' })
+    }
 
     if (method === 'image.attach' || method === 'clipboard.paste') {
       return new Promise(resolve => {
-        pending.push({ sid: params.session_id, finish(path) {
-          images.set(params.session_id, [...(images.get(params.session_id) ?? []), path])
-          resolve({ attached: true, name: 'image.png', path })
-        } })
+        pending.push({
+          sid: params.session_id,
+          finish(path) {
+            images.set(params.session_id, [...(images.get(params.session_id) ?? []), path])
+            resolve({ attached: true, name: 'image.png', path })
+          }
+        })
       })
     }
 
     if (method === 'image.detach') {
-      images.set(params.session_id, (images.get(params.session_id) ?? []).filter(path => path !== params.path))
-    } else if (!method.startsWith('complete.') && !['command.observe', 'shared_metrics.slash_command'].includes(method)) {
+      images.set(
+        params.session_id,
+        (images.get(params.session_id) ?? []).filter(path => path !== params.path)
+      )
+    } else if (
+      !method.startsWith('complete.') &&
+      !['command.observe', 'shared_metrics.slash_command'].includes(method)
+    ) {
       throw new Error(`Unexpected RPC: ${method}`)
     }
 
@@ -57,25 +70,52 @@ function mount(canonical = false, extra: (method: string, params: any) => unknow
   let submission!: ReturnType<typeof useSubmission>
   const stdout = Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false })
   let output = ''
-  stdout.on('data', chunk => { output += chunk.toString() })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
 
   function Harness() {
     composer = useComposerState({ gw, submitRef, sys })
-    submission = useSubmission({ gw, submitRef, slashRef, sys, composerActions: composer.actions,
-      composerRefs: composer.refs, composerState: composer.state, appendMessage: vi.fn(), setLastUserMsg: vi.fn() })
-    slashRef.current = createSlashHandler({ gateway: { gw }, local: {}, transcript: { sys, send: submission.send },
-      composer: composer.actions, slashFlightRef } as any)
+    submission = useSubmission({
+      gw,
+      submitRef,
+      slashRef,
+      sys,
+      composerActions: composer.actions,
+      composerRefs: composer.refs,
+      composerState: composer.state,
+      appendMessage: vi.fn(),
+      setLastUserMsg: vi.fn()
+    })
+    slashRef.current = createSlashHandler({
+      gateway: { gw },
+      local: {},
+      transcript: { sys, send: submission.send },
+      composer: composer.actions,
+      slashFlightRef
+    } as any)
 
     return <Text>{composer.state.input}</Text>
   }
 
-  const instance = renderSync(<Harness />, { stdin: new PassThrough() as any, stdout: stdout as any,
-    stderr: new PassThrough() as any, patchConsole: false })
+  const instance = renderSync(<Harness />, {
+    stdin: new PassThrough() as any,
+    stdout: stdout as any,
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
 
   return {
-    home, images, pending, request,
-    get composer() { return composer },
-    get output() { return output },
+    home,
+    images,
+    pending,
+    request,
+    get composer() {
+      return composer
+    },
+    get output() {
+      return output
+    },
     async submit(command: string) {
       composer.actions.setInput(command)
       await flush()
@@ -96,7 +136,10 @@ it('canonical slash images submit staged bytes and deleting tokens removes paylo
   const h = mount(true)
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
   const path = join(h.home, 'shot.png')
-  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64')
+  const bytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=',
+    'base64'
+  )
   writeFileSync(path, bytes)
 
   try {
@@ -116,7 +159,9 @@ it('canonical slash images submit staged bytes and deleting tokens removes paylo
     h.composer.actions.syncTokens('')
     expect(h.composer.refs.tokensRef.current).toEqual([])
     expect(h.request.mock.calls.some(([method]) => method === 'image.detach')).toBe(false)
-  } finally { h.close() }
+  } finally {
+    h.close()
+  }
 })
 
 it('slash attachment submission leaves a visible removable image in the cleared composer', async () => {
@@ -140,7 +185,9 @@ it('slash attachment submission leaves a visible removable image in the cleared 
       h.composer.actions.setInput('')
       await flush()
       expect(h.images.get('owner')).toEqual([])
-    } finally { h.close() }
+    } finally {
+      h.close()
+    }
   }
 })
 
@@ -187,7 +234,9 @@ it('stale attachment cleanup uses its captured owner and preserves a concurrent 
               expect(detach).toEqual([['image.detach', { session_id: 'owner', path: '/owned.png' }]])
               expect(h.images.get('owner')).not.toContain('/owned.png')
             }
-          } finally { h.close() }
+          } finally {
+            h.close()
+          }
         }
       }
     }
@@ -195,13 +244,26 @@ it('stale attachment cleanup uses its captured owner and preserves a concurrent 
 })
 
 it('a skill slash command keeps the staged image descriptors through the expanded skill send', async () => {
-  const skill = (method: string, params: any) => method === 'slash.exec'
-    ? { type: 'skill', name: 'review', message: `SKILL BODY\n\nUser request: ${params.command.replace(/^review\s*/, '')}`, display: `/${params.command}` }
-    : undefined
+  const skill = (method: string, params: any) =>
+    method === 'slash.exec'
+      ? {
+          type: 'skill',
+          name: 'review',
+          message: `SKILL BODY\n\nUser request: ${params.command.replace(/^review\s*/, '')}`,
+          display: `/${params.command}`
+        }
+      : undefined
+
   const h = mount(true, skill)
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
   const path = join(h.home, 'shot.png')
-  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
+  writeFileSync(
+    path,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=',
+      'base64'
+    )
+  )
 
   try {
     await h.submit(`/image ${path}`)
@@ -214,14 +276,22 @@ it('a skill slash command keeps the staged image descriptors through the expande
     expect(wire.text).toContain('SKILL BODY')
     expect(wire.text).not.toContain('[[ Image')
     expect(h.composer.refs.tokensRef.current).toEqual([])
-  } finally { h.close() }
+  } finally {
+    h.close()
+  }
 })
 
 it('keeps the caption and its image token in the composer when the pending-input journal cannot be written', async () => {
   const h = mount(true)
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
   const path = join(h.home, 'shot.png')
-  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
+  writeFileSync(
+    path,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=',
+      'base64'
+    )
+  )
   const journal = join(h.home, 'tui-pending-inputs')
   mkdirSync(journal, { recursive: true })
 
@@ -238,7 +308,10 @@ it('keeps the caption and its image token in the composer when the pending-input
     await h.submit('caption [[ Image 1 ]]')
     await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
     expect(h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments).toHaveLength(1)
-  } finally { chmodSync(journal, 0o700); h.close() }
+  } finally {
+    chmodSync(journal, 0o700)
+    h.close()
+  }
 })
 
 it('keeps `/queue` text in the composer until the pending-input journal holds it', async () => {
@@ -256,7 +329,10 @@ it('keeps `/queue` text in the composer until the pending-input journal holds it
     await h.submit('/queue later please')
     expect(h.composer.state.input).toBe('')
     expect(h.composer.refs.queueRef.current.map(item => item.text)).toEqual(['later please'])
-  } finally { chmodSync(journal, 0o700); h.close() }
+  } finally {
+    chmodSync(journal, 0o700)
+    h.close()
+  }
 })
 
 it('a failed attempt write leaves the queue head claimable instead of wedged in flight', async () => {
@@ -273,23 +349,34 @@ it('a failed attempt write leaves the queue head claimable instead of wedged in 
     const claimed = h.composer.actions.dequeue()
     expect(claimed).toMatchObject({ text: 'later please', inFlight: true })
     expect(typeof claimed!.settle).toBe('function')
-  } finally { chmodSync(journal, 0o700); h.close() }
+  } finally {
+    chmodSync(journal, 0o700)
+    h.close()
+  }
 })
 
 it('`/queue` with an image journals its attachment in the first durable write', async () => {
   // A second (attachments) write that fails must never leave a queued row whose durable retry lacks
   // the image while the composer also keeps the input (a duplicate send on the next Enter).
-  const h = mount(true, method => method === 'prompt.submit' ? new Promise(() => {}) : undefined)
+  const h = mount(true, method => (method === 'prompt.submit' ? new Promise(() => {}) : undefined))
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
   const path = join(h.home, 'shot.png')
-  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
+  writeFileSync(
+    path,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=',
+      'base64'
+    )
+  )
   const real = pendingInputs.savePendingInput
   let writes = 0
 
   const save = vi.spyOn(pendingInputs, 'savePendingInput').mockImplementation(item => {
     writes += 1
 
-    if (writes === 2) { throw new Error('disk full') }
+    if (writes === 2) {
+      throw new Error('disk full')
+    }
 
     return real(item)
   })
@@ -303,8 +390,14 @@ it('`/queue` with an image journals its attachment in the first durable write', 
     expect(h.composer.state.input !== '' && queued.length > 0).toBe(false)
     expect(queued).toHaveLength(1)
     const journal = join(h.home, 'tui-pending-inputs')
-    const entries = readdirSync(journal, { recursive: true }).map(String).filter(name => name.endsWith('.json'))
+    const entries = readdirSync(journal, { recursive: true })
+      .map(String)
+      .filter(name => name.endsWith('.json'))
     expect(entries.map(name => JSON.parse(readFileSync(join(journal, name), 'utf8')).attachments)).toEqual([
-      [expect.objectContaining({ mime: 'image/png' })]])
-  } finally { save.mockRestore(); h.close() }
+      [expect.objectContaining({ mime: 'image/png' })]
+    ])
+  } finally {
+    save.mockRestore()
+    h.close()
+  }
 })

@@ -80,6 +80,55 @@ class TestSteerDrain:
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
 
+    def test_withdraw_takes_back_one_unconsumed_ticket_and_keeps_the_rest(self):
+        agent = _bare_agent()
+        agent.steer("first")
+        agent.steer("  two\nlines  ", ticket="t2")
+        agent.steer("two")  # the same text as a line of t2, without a ticket
+        agent.steer("last", ticket="t4")
+        assert agent.withdraw_steer("t2") is True
+        assert agent._pending_steer == "first\ntwo\nlast"
+        assert agent.withdraw_steer("missing") is False
+        assert agent.withdraw_steer("t4") is True
+        assert agent._pending_steer == "first\ntwo"
+
+    def test_withdraw_after_a_drain_took_the_ticket_is_refused_even_if_its_text_is_buffered_again(self):
+        agent = _bare_agent()
+        agent.steer("alpha", ticket="a")
+        assert agent._drain_pending_steer() == "alpha"
+        agent.steer("alpha", ticket="b")
+        assert agent.withdraw_steer("a") is False, "a drain consumed a"
+        assert agent.withdraw_steer("b") is True
+        assert agent._pending_steer is None
+
+    def test_a_drained_steer_put_back_undelivered_keeps_its_ticket(self):
+        from agent.agent_runtime_helpers import _requeue_pending_steer
+        agent = _bare_agent()
+        agent.steer("note")
+        agent.steer("queued prompt", ticket="t")
+        drained = agent._drain_pending_steer() or ""
+        _requeue_pending_steer(agent, drained)  # no tool result took it
+        assert agent._pending_steer == "note\nqueued prompt"
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer == "note"
+
+    def test_the_leftover_drain_hands_back_only_ticketless_steers(self):
+        agent = _bare_agent()
+        agent.steer("typed /steer")
+        agent.steer("queued prompt", ticket="t")
+        assert agent._drain_leftover_steer() == "typed /steer"
+        assert agent._pending_steer == "queued prompt"
+        assert agent._drain_leftover_steer() is None
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer is None
+
+    def test_a_hard_stop_drops_a_ticket_unread(self):
+        agent = _bare_agent()
+        agent.steer("queued prompt", ticket="t")
+        agent.clear_interrupt(hard_cancel=True)
+        assert agent._pending_steer is None
+        assert agent.withdraw_steer("t") is True, "dropped unread: never delivered"
+
 
 
 class TestActiveTurnRedirect:

@@ -134,7 +134,7 @@ def test_retirement_adopts_destination_only_after_success(source, monkeypatch, o
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("channel", ["preview-not-registered", "stable", "canary", "main"])
+@pytest.mark.parametrize("channel", ["preview-not-registered", "stable", "canary"])
 def test_missing_channel_cannot_fall_back_to_main(source, monkeypatch, channel):
     from hermes_cli import source_check
 
@@ -151,23 +151,36 @@ def test_missing_channel_cannot_fall_back_to_main(source, monkeypatch, channel):
     assert git(source.root, "rev-parse", "HEAD") == before
 
 
-def test_unpublished_main_record_keeps_following_the_git_branch(source, monkeypatch):
-    """main IS the source branch: until R2 publishes its record, a checkout
-    still updates via git instead of failing on a missing channel object."""
+@pytest.mark.parametrize("failure", ["not-found", "forbidden", "timeout"])
+def test_main_follows_the_git_branch_without_reading_a_channel_record(source, monkeypatch, failure):
+    """main IS the source branch, so its R2 record is never read: a 403 from a regional
+    WAF or a timeout cannot stop an install following main. Preview channels still read theirs."""
+    import urllib.error
+
     from hermes_cli import source_check
     from hermes_cli.release_channels import ChannelNotFound
 
     set_install_channel("main", source.root)
-    def unpublished(name, repository):
+    reads = []
+
+    def record(name, repository):
+        reads.append(name)
+        if failure == "forbidden":
+            raise urllib.error.HTTPError(f"https://x/releases/channels/{name}.json", 403, "Forbidden", {}, None)
+        if failure == "timeout":
+            raise TimeoutError("timed out")
         raise ChannelNotFound(f"Channel object not found: releases/channels/{name}.json")
-    monkeypatch.setattr(source_releases, "_resolve_channel", unpublished)
+
+    monkeypatch.setattr(source_releases, "_resolve_channel", record)
     target = source_releases.resolve_source_target("main", ["git"], source.root)
     assert target.branch == "main" and target.commit is None
     status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
     assert "error" not in status, status
     assert status["targetSha"] == source.commits[2]
-    with pytest.raises(ChannelNotFound):
+    assert reads == []
+    with pytest.raises((ChannelNotFound, urllib.error.HTTPError, TimeoutError)):
         source_releases.resolve_source_target("canary", ["git"], source.root)
+    assert reads == ["canary"]
 
 
 def test_passive_check_reports_retirement_without_adopting_it(source, monkeypatch):

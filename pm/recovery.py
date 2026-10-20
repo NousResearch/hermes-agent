@@ -45,7 +45,7 @@ def validate_environment(python: Path | list[str], *, env: dict, cwd: Path) -> N
     )
     command = [str(python), "-I"] if isinstance(python, (str, Path)) else [*python]
     result = subprocess.run([*command, "-c", script], cwd=cwd, env=env,
-                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
     if result.returncode:
         raise InstallError("venv", f"startup validation failed: {result.stderr.strip()[-1000:]}")
 

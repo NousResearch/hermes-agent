@@ -776,7 +776,6 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
                 continue
         # Now check for docstring-open in the (possibly after-triple) portion.
         # Scan for the first unescaped '''/""" in the current code_for_scan.
-        stripped = code_for_scan.strip()
         for delim in ('"""', "'''"):
             if delim in code_for_scan:
                 # Count occurrences — even count means single-line docstring,

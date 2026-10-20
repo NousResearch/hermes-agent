@@ -109,7 +109,7 @@ node scripts/build/desktop.mjs --source /work/source \
 
 | Builder | Required CLI arguments | Additional CLI arguments | Product contents |
 |---|---|---|---|
-| `tui.mjs` | `--source`, `--out` | None | `dist/entry.js` and `package.json` with `type: module` |
+| `tui.mjs` | `--source`, `--out` | None | `dist/entry.js`, gateway/clipboard Python helpers in `dist/scripts/`, and `package.json` with `type: module` |
 | `web.mjs` | `--source`, `--out`, `--icons` | None | `index.html`, Vite assets, and public assets |
 | `desktop.mjs` | `--source`, `--out`, `--icons`, `--stamp`, `--native-deps` | `--typecheck`, `--platform` | Renderer assets, `electron-main.mjs`, `electron-preload.js`, and native `node_modules` |
 
@@ -122,7 +122,7 @@ Each compiler publishes `hermes-build.json` inside its output (inside `dist/`
 for TUI). `freshness.mjs` owns this receipt and all source input selection.
 TUI inputs are its source tree, the Ink source alias, shared sources, their
 manifests and TypeScript configuration, dependency locks, and its compiler and
-shared compiler helpers. Tests, workspace documentation, dependency-provider
+shared compiler helpers, plus the shipped Python runtime helpers. Tests, workspace documentation, dependency-provider
 recipes, and other products' compiler recipes do not invalidate the TUI.
 It records product/host identity, content hashes of workspace/shared sources and
 build inputs, and the exact supplied icon directory, desktop install stamp, and

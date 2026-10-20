@@ -29,6 +29,10 @@ on:
         default: ''
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
         required: false
@@ -66,8 +70,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 3
     outputs:
       python: ${{ steps.gate-lanes.outputs.python }}
       python_prod: ${{ steps.gate-lanes.outputs.python_prod }}
@@ -80,6 +84,8 @@ jobs:
       bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
+      remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
+      catalog: ${{ steps.gate-lanes.outputs.catalog }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -87,7 +93,13 @@ jobs:
       e2e_desktop_update: ${{ steps.gate-lanes.outputs.e2e_desktop_update }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+          sparse-checkout: |
+            .github/actions/detect-changes
+            scripts/ci/classify_changes.py
+          sparse-checkout-cone-mode: false
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
@@ -137,6 +149,7 @@ jobs:
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
     uses: ./.github/workflows/tests.yml
     with:
+      commit: ${{ inputs.commit }}
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
       strict_acceptance: ${{ inputs.strict_acceptance || '' }}
@@ -153,6 +166,7 @@ jobs:
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.desktop_updater == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
     uses: ./.github/workflows/tests-os.yml
     with:
+      commit: ${{ inputs.commit }}
       # The Windows lane spawns the real desktop-update hand-off script
       # (tests/test_desktop_update_windows_*.py) only when that surface
       # changed; unit-level platforms("windows") tests always run.
@@ -168,6 +182,7 @@ jobs:
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/lint.yml
     with:
+      commit: ${{ inputs.commit }}
       event_name: ${{ needs.detect.outputs.event_name }}
       python: ${{ needs.detect.outputs.python == 'true' }}
 
@@ -176,6 +191,8 @@ jobs:
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   rust-tests:
     name: Rust tests
@@ -184,6 +201,31 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: needs.detect.outputs.rust == 'true'
     uses: ./.github/workflows/rust-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+  catalog-tests:
+    name: Catalog tests
+    needs: detect
+    # A PR that changes only catalog entry data runs these instead of the
+    # Python suite (the classifier turns `python` off for it); required whenever
+    # detect selects it.
+    if: needs.detect.outputs.catalog == 'true'
+    uses: ./.github/workflows/catalog-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+  remote-backends:
+    name: Remote terminal backends
+    needs: detect
+    # The SSH and Docker terminal backends against a real sshd container and the
+    # runner's Docker daemon. Only PRs that touch the backends / terminal tool /
+    # their real tests start it (and every push to main); it runs in parallel with
+    # the other lanes and is required whenever detect selects it.
+    if: needs.detect.outputs.remote_backends == 'true'
+    uses: ./.github/workflows/remote-backends.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   bootstrap-installer:
     name: Bootstrap installer
@@ -193,6 +235,8 @@ jobs:
     # are platforms("windows") pytest files and run in tests-os.
     if: needs.detect.outputs.bootstrap == 'true'
     uses: ./.github/workflows/bootstrap-installer.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   e2e-desktop:
     name: Desktop E2E
@@ -211,6 +255,8 @@ jobs:
     #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
     if: false
     uses: ./.github/workflows/e2e-desktop.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   e2e-desktop-core:
     name: Desktop core E2E
@@ -219,6 +265,8 @@ jobs:
     # integrity, boot/respawn/orphans, clarify+approval. Required; retries 0.
     if: needs.detect.outputs.e2e_desktop_core == 'true'
     uses: ./.github/workflows/e2e-desktop-core.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   e2e-desktop-update:
     name: Desktop update E2E
@@ -232,24 +280,32 @@ jobs:
     # counts as success — when the PR does not touch that path.
     if: needs.detect.outputs.e2e_desktop_update == 'true'
     uses: ./.github/workflows/e2e-desktop-update.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   docs-site:
     name: Docs Site
     needs: detect
     if: needs.detect.outputs.site == 'true'
     uses: ./.github/workflows/docs-site-checks.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   history-check:
     name: Deny unrelated histories
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   contributor-check:
     name: Check contributors
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.catalog == 'true'
     uses: ./.github/workflows/contributor-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   uv-lockfile:
     name: Check uv.lock
@@ -261,43 +317,76 @@ jobs:
     # `.github/` change still forces it on via the classifier's fail-open.
     if: needs.detect.outputs.uv_lock == 'true'
     uses: ./.github/workflows/uv-lockfile-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   infographic-check:
     name: Check no committed infographics
     needs: detect
     uses: ./.github/workflows/infographic-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   profile-artifact-check:
     name: Profile artifact check
     needs: detect
     uses: ./.github/workflows/profile-artifact-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   icons-freshness-check:
     name: Icon assets freshness
     needs: detect
     uses: ./.github/workflows/icons-freshness-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   case-collision-check:
     name: Check no case-colliding filenames
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+  blob-size-check:
+    name: Check no large binaries
+    needs: detect
+    uses: ./.github/workflows/blob-size-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
     uses: ./.github/workflows/lazy-deps-guard.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
     uses: ./.github/workflows/lockfile-diff.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+  # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
+  # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
+  prompt-surface-diff:
+    name: Prompt surface diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/prompt-surface-diff.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   docker-lint:
     name: Lint Docker scripts
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   supply-chain:
     name: Supply-chain scan
@@ -305,6 +394,7 @@ jobs:
     if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true')
     uses: ./.github/workflows/supply-chain-audit.yml
     with:
+      commit: ${{ inputs.commit }}
       event_name: ${{ needs.detect.outputs.event_name }}
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
@@ -317,7 +407,7 @@ jobs:
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, supply-chain) and
+  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain) and
   #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
@@ -343,6 +433,8 @@ jobs:
       - lint
       - js-tests
       - rust-tests
+      - remote-backends
+      - catalog-tests
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
@@ -353,8 +445,10 @@ jobs:
       - uv-lockfile
       - infographic-check
       - case-collision-check
+      - blob-size-check
       - lazy-deps-guard
       - lockfile-diff
+      - prompt-surface-diff
       - docker-lint
       - profile-artifact-check
       - icons-freshness-check
@@ -368,14 +462,14 @@ jobs:
       # to block a merge. A separate run also stops it from holding this
       # run open. That is what blocked ``gh run rerun``.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
       - name: Evaluate job results
         id: evaluate
         # Shared with the stable orchestrator (scripts/ci/required_results.py
@@ -403,11 +497,13 @@ jobs:
     name: CI timing report
     needs: [all-checks-pass]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'

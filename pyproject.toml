@@ -92,10 +92,13 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2; python_version >= '3.14'",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0; python_version >= '3.14'",  # PYSEC-2026-175/177/178/179
-  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
-  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
-  "urllib3>=2.7.0,<3; python_version >= '3.14'",
+  "PyJWT[crypto]==2.15.1; python_version >= '3.14'",  # PYSEC-2026-175/177/178/179 + GHSA-ffc3-869f-jxw9, GHSA-42vr-xj54-vc7v (fixed in 2.14.0/2.15.0)
+  # urllib3 2.8.0 fixes GHSA-8988-9cw3-xx77 (proxy TLS config ignored),
+  # GHSA-gh4c-6fx4-qh6g (chunked-deflate infinite loop) and
+  # GHSA-vxq7-64xx-v4gw (unbounded chunk buffering). 2.8.0 is the latest
+  # release older than 3 days and still supports Python >= 3.10
+  # (3.11 bridge intact).
+  "urllib3>=2.8.0,<3; python_version >= '3.14'",
   # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
   # that the WeCom and Weixin crypto paths cannot fall below the patched
   # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
@@ -385,7 +388,7 @@ pty = []
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 #
-# mcp 2.0.0 implements MCP revision 2026-07-28 and moved its own HTTP stack
+# mcp 2.x implements MCP revision 2026-07-28 and moved its own HTTP stack
 # from `httpx` to `httpx2`. httpx2 arrives transitively, but tools/mcp_tool.py
 # and tools/mcp_oauth_manager.py import it by name to build the client objects
 # they hand to the SDK, so it is pinned here explicitly rather than left to
@@ -393,8 +396,8 @@ pty = []
 # unaffected — the two distributions install side by side under different
 # module names.
 mcp = [
-  "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "mcp==2.3.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
@@ -408,8 +411,8 @@ teams = [
 # Computer use talks to PM's pinned cua-driver over MCP stdio. This extra
 # provides the MCP client, independently of the native driver package.
 computer-use = [
-  "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "mcp==2.3.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
@@ -430,7 +433,6 @@ otlp = [
   "opentelemetry-sdk==1.39.1",
   "opentelemetry-exporter-otlp-proto-http==1.39.1",
 ]
-langfuse = ["langfuse==4.15.2"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
@@ -531,8 +533,8 @@ dev = [
   "debugpy==1.8.20",
   "pytest==9.1.1",
   "pytest-asyncio==1.3.0",
-  "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "mcp==2.3.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
   "ty==0.0.82",
   "ruff==0.15.10",
@@ -624,160 +626,13 @@ override-dependencies = [
   # Remove this line when misaki drops it or a 3.14-capable release fits.
   "spacy-curated-transformers; sys_platform == 'never'",
 ]
-exclude-newer = "14 days"
-# h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
-# request-smuggling) fix in 4.4.1, published 2026-08-03. Remove after 2026-08-17.
-# aiohttp, cryptography: same shape — the advisory fixes are newer than the
-# 14-day window, so the resolver cannot see them without an exception.
-#
-# defusedxml, python-olm, unpaddedbase64: the OPPOSITE shape (#80387, #79434,
-# #78227 family). These are ancient, effectively frozen releases (2021-2023)
-# whose upload dates are frequently absent from mirror indexes and stale uv
-# HTTP caches. uv treats a missing upload date as "newer than the cutoff" and
-# excludes the package, bricking [youtube]/[wecom]/[matrix] resolution
-# ("there are no versions of defusedxml"). Exempting them carries zero aging
-# risk — their newest releases are years old — and unbricks resolvers that
-# cannot see upload dates.
-#
-# setuptools, wheel, pillow, mcp: build/core pin bricks (#78227, #75992, #76020, #96488). uv
-# applies exclude-newer to build-system.requires and core deps too; when a
-# resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
-# it filters the pinned version and the package cannot even BUILD
-# ("No solution found when resolving: setuptools==83.0.0"). These deps are
-# exact-pinned (==X.Y.Z), so exclude-newer adds zero float protection for
-# them — the version cannot move without a reviewed pin bump — while the
-# cutoff can still brick installs. Exempting exact pins is pure brick-risk
-# removal at no supply-chain cost. Guarded by
-# tests/test_packaging_metadata.py::test_build_system_requires_exempt_from_exclude_newer.
-#
-# firecrawl-anydoc: same exact-pin shape (==0.2.4, hosted-OCR wiring PR).
-# The pin bump WAS the review; exclude-newer adds zero float protection to
-# an exact pin and would only delay the reviewed version 14 days.
-#
-# Every other exact-pinned package below: the release-day brick shape
-# (observed 2026-08-29 updating three long-running installs v0.20.0 ->
-# v0.20.6 — one Termux, two Linux servers). Each release exact-pins at least
-# one dependency to a version published days before the release (v0.20.6
-# pinned snowballstemmer==3.1.1 and psutil==7.2.2 in core, plus fastapi /
-# uvicorn / python-telegram-bot pins across extras). For two weeks after
-# release the cutoff filters those versions out, so any venv that predates
-# the release bricks on `hermes update` ("no version of
-# snowballstemmer==3.1.1") until the window passes. Same zero-float-
-# protection logic as setuptools/pillow/mcp above; enforced for every exact
-# pin by
-# tests/test_packaging_metadata.py::test_exact_pinned_deps_exempt_from_exclude_newer.
-#
-# maturin, setuptools-rust: build-system.requires of the cryptography pin
-# above. cryptography itself is exempted, but on wheel-less platforms
-# (Termux/Android) it must build from sdist, and the isolated build
-# environment resolves under the same cutoff ("Failed to resolve
-# requirements from build-system.requires ... maturin>=1.9,<2").
-#
-# google-cloud-pubsub: same exact-pin shape (==2.39.2, google-chat adapter).
-# The pin bump WAS the review; exclude-newer only filters it because the
-# 14-day window is younger than the reviewed release.
-
-[tool.uv.exclude-newer-package]
-agent-client-protocol = false
-aiohttp = false
-aiohttp-socks = false
-aiosqlite = false
-alibabacloud-dingtalk = false
-anthropic = false
-asyncpg = false
-azure-identity = false
-boto3 = false
-brotlicffi = false
-browser-harness = false
-certifi = false
-concurrent-log-handler = false
-croniter = false
-cryptography = false
-daytona = false
-ddgs = "2026-08-26T21:52:34Z"
-debugpy = false
-defusedxml = false
-dingtalk-stream = false
-discord-py = false
-edge-tts = false
-elevenlabs = false
-exa-py = false
-fal-client = false
-fastapi = false
-faster-whisper = false
-fire = false
-firecrawl-anydoc = false
-firecrawl-py = false
-google-api-python-client = false
-google-auth = false
-google-auth-httplib2 = false
-google-auth-oauthlib = false
-google-cloud-pubsub = false
-h2 = false
-httplib2 = false
-httpx = false
-httpx2 = false
-huggingface_hub = false
-jinja2 = false
-langfuse = "2026-09-09T16:01:26Z"
-lark-oapi = false
-markdown = false
-maturin = false
-mautrix = false
-mcp = false
-microsoft-teams-apps = false
-mistralai = false
-modal = false
-nemo-relay = false
-neutts = "2026-07-22T14:54:23Z"
-numpy = false
-openai = false
-opentelemetry-exporter-otlp-proto-http = false
-opentelemetry-sdk = false
-packaging = false
-parallel-web = false
-pathspec = false
-pillow = false
-piper-tts = "2026-09-04T16:47:32Z"
-prompt-toolkit = false
-psutil = false
-pvporcupine = false
-pyasn1 = false
-pydantic = false
-pyjwt = false
-pytest = false
-pytest-asyncio = false
-python-dotenv = false
-python-multipart = false
-python-olm = false
-python-telegram-bot = false
-pyyaml = false
-qrcode = false
-requests = false
-rich = false
-ruamel-yaml = false
-ruff = false
-sentencepiece = false
-setuptools = false
-setuptools-rust = false
-wheel = false
-sherpa-onnx = "2026-09-10T17:00:04Z"
-# The core is exact-pinned by sherpa-onnx. Admit all wheels of that release.
-sherpa-onnx-core = "2026-09-10T15:58:47Z"
-slack-bolt = false
-slack-sdk = false
-snowballstemmer = false
-sounddevice = false
-soundfile = "2026-06-06T08:58:48Z"
-starlette = false
-tenacity = false
-ty = false
-tzdata = false
-unpaddedbase64 = false
-uvicorn = false
-vercel = false
-websockets = false
-youtube-transcript-api = false
+# Release-age check: Hermes's dependencies must be at least 3 days old when Hermes
+# locks them. It runs where uv.lock is resolved (`hermes pm lock`, and CI's lock
+# check), never on users' machines: PM installs from this vetted lock and drops the
+# cutoff from what it generates (pm/workspace.py::_trust_core_lock), because many
+# package mirrors publish no upload times and uv rejects a file it cannot date
+# (#135589). Exact pins follow the same 3-day rule; there are no exemptions.
+exclude-newer = "3 days"
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the

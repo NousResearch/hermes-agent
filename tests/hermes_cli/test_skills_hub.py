@@ -56,7 +56,7 @@ def three_source_env(monkeypatch, hub_env):
     from tools import skills_tool
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
-    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(_ALL_THREE_SKILLS))
+    monkeypatch.setattr(skills_tool, "find_all_skills", lambda **_kwargs: list(_ALL_THREE_SKILLS))
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
 
     return hub_env
@@ -725,7 +725,7 @@ def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, i
     assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is True
     assert "Restored built-in skill" in sink.getvalue()
     assert name in skills_sync._read_manifest()
-    assert any(skills_sync._read_skill_name(md, "") == name for md in skills_sync._iter_active_skill_mds())
+    assert any(skills_sync.read_skill_name(md, "") == name for md in skills_sync._iter_active_skill_mds())
     assert name not in skill_usage.read_suppressed_names()
     assert skill_usage.load_usage()[name]["state"] == skill_usage.STATE_ACTIVE
     # Already active now: a no-op the user owns, not a failure (exit 0, no reinstall).

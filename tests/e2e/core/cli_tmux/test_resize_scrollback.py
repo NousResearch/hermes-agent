@@ -25,9 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core.cli_tmux._classic import require_tmux
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 WORDS = {1: 60, 2: 260, 3: 130}
@@ -39,12 +38,13 @@ def _reply(turn: int) -> str:
 
 
 def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Path) -> None:
+    require_tmux()
     sock = f"hermes-e2e-{uuid.uuid4().hex[:8]}"
     home = tmp_path / "home"
     (tmp_path / "work").mkdir()
 
     def tmux(*args: str) -> str:
-        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False).stdout
 
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
@@ -100,7 +100,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         write_hermes_home(home / ".hermes", llm.base_url)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "TMUX"))}
         env.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"), PYTHONPATH=str(REPO_ROOT),
-                   TERM="xterm-256color", PYTHONFAULTHANDLER="1")
+                   TERM="xterm-256color", HERMES_STATE_DB_GUARD_BYPASS="1", PYTHONFAULTHANDLER="1")
         argv = [sys.executable, "-m", "hermes_cli.main", "chat", "--cli", "--yolo"]
         subprocess.run(["tmux", "-L", sock, "-f", os.devnull, "new-session", "-d", "-s", "p", "-x", "120",
                         "-y", "24", "-c", str(tmp_path / "work"), *argv], env=env, check=True, timeout=30)

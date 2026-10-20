@@ -1,0 +1,19 @@
+name: proofable-mcp
+title: Proofable
+repo: https://github.com/proofable/mcp
+subdir: plugins/proofable-mcp
+sha: 028e2815dd98756e5d74dd6c43cd2cf06ff39b58
+version: "0.1.7"
+description: "Context and control for any AI. Agent identity, scoped access, and proof across tools. Disclosure — skills-only package: its workflow skills steer the agent to Proofable's hosted MCP server at mcp.proofable.me (which you add yourself with `hermes mcp add … --auth oauth`) to check identity proofs and agent permissions, create wallet-signed proofs, and store, list or revoke secrets in Proofable's hosted vault, so secrets you store and proof/agent data go to Proofable; Hermes does not prompt before those MCP tools run unless you give the server a trust setting; the skills also suggest Proofable's own optional `proofable` CLI, which edits MCP/project config."
+maintainer: proofable
+tier: community
+category: tools
+docs_url: https://docs.proofable.me/mcp/setup
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.20.0"

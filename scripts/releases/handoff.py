@@ -259,7 +259,12 @@ def _fetch_receipts(receipts: list[dict], root: Path,
         raise ValueError("No files selected from release handoff")
     root.mkdir(parents=True, exist_ok=True)
     credentials = r2.credentials() if public_base is None else None
-    for row, key in selected.values():
+    from scripts.releases.progress import log
+
+    total = sum(row["size"] for row, _key in selected.values())
+    log(f"Downloading {len(selected)} receipt-bound files ({total / 1e9:.1f} GB)")
+    for number, (row, key) in enumerate(selected.values(), start=1):
+        log(f"  [{number}/{len(selected)}] {key} ({row['size'] / 1e6:.0f} MB)")
         if credentials is not None:
             creds, base, bucket = credentials
             r2.download_object(creds, base, bucket, key,

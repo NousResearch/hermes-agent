@@ -94,6 +94,17 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     render()
     assert release_body['body'] == 'no marker here' and release_body['edits'] == edits
 
+    # A release that does not serve the channel (--only windows,docker) renders its own page and
+    # table but leaves the shared downloads page alone; the same page is replaced without the flag.
+    release_body['body'] = rbt.MARKER
+    older = rbt.render_page('v1.2.3+canary.20200101T000000Z' if '+canary.' in tag else 'v0.0.1', {}, base).encode()
+    r2_server.store[channel_key] = (older, '"e"')
+    render('--no-channel-page')
+    assert r2_server.store[channel_key][0] == older
+    release_body['body'] = rbt.MARKER
+    render()
+    assert r2_server.store[channel_key][0].decode() == page
+
 
 @pytest.mark.parametrize('asset_present', [False, True])
 @pytest.mark.parametrize('result', ['failure', 'cancelled', 'skipped'])

@@ -157,7 +157,7 @@ def _prompt_model_selection(
     unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
     confirm_api_key: str = "", notes: Optional[dict[str, str]] = None,
 ) -> Optional[str]:
-    """Interactive model picker; current_model listed first. Returns the chosen model ID or None.
+    """Interactive model picker; current model first, then A–Z. Returns the chosen id or None.
 
     With *pricing* (``{model_id: {prompt, completion}}``) a compact price column is shown; models in
     *unavailable_models* render grayed out and unselectable with an upgrade link to *portal_url*.
@@ -184,9 +184,12 @@ def _prompt_model_selection(
             return None
         return _confirmed_selection(custom) if custom else None
 
-    # Reorder: current model first, then the rest (deduplicated)
+    # Current model first, then the rest case-insensitively alphabetical (deduped).
+    # Provider/catalog order is often non-deterministic (Ollama Cloud merges live
+    # + registry lists; OpenRouter's models.dev order isn't stable). See #57578.
     ordered = list(dict.fromkeys(
-        ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
+        ([current_model] if current_model and current_model in model_ids else [])
+        + sorted(model_ids, key=str.casefold)
     ))
 
     # All models for column-width computation (selectable + unavailable)

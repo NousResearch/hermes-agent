@@ -257,6 +257,51 @@ class TestExtractRescue:
         assert out[0]["metadata"]["rescued_from"] == "keenable"
         assert "HTTP 500" in out[0]["metadata"]["backend_error"]
 
+    def test_policy_block_only_skips_rescue(self, monkeypatch):
+        blocked = [
+            {
+                "url": "https://blocked.test",
+                "title": "",
+                "content": "",
+                "error": "Blocked by website policy",
+                "blocked_by_policy": {
+                    "host": "blocked.test",
+                    "rule": "blocked.test",
+                    "source": "config",
+                },
+            }
+        ]
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            out = web_tools._rescue_extract("tavily", ["https://blocked.test"], blocked)
+        assert out == blocked
+        ring.assert_not_called()
+
+    def test_mixed_policy_and_backend_failure_rescues_only_non_blocked(self, monkeypatch):
+        results = [
+            {
+                "url": "https://blocked.test",
+                "title": "",
+                "content": "",
+                "error": "Blocked by website policy",
+                "blocked_by_policy": {
+                    "host": "blocked.test",
+                    "rule": "blocked.test",
+                    "source": "config",
+                },
+            },
+            {
+                "url": "https://ok.test",
+                "title": "",
+                "content": "",
+                "error": "HTTP 500",
+            }
+        ]
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            out = web_tools._rescue_extract("tavily", ["https://blocked.test", "https://ok.test"], results)
+        assert out[0]["error"] == "Blocked by website policy"
+        assert out[1]["error"] == "HTTP 500"
+        ring.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_partial_failure_not_rescued(self, monkeypatch):
         class _Partial(_KeyedBoomProvider):

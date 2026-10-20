@@ -1205,7 +1205,15 @@ export function TextInput({
 
   const emitPaste = (e: PasteEvent) => {
     const startVersion = editVersionRef.current
-    const h = cbPaste.current?.(e)
+    const range = selRange()
+
+    // Stage replacement in the handler's snapshot. Keep the actual draft intact
+    // until paste processing succeeds (clipboard reads and attachments can fail).
+    const target = range
+      ? { ...e, cursor: range.start, value: e.value.slice(0, range.start) + e.value.slice(range.end) }
+      : e
+
+    const h = cbPaste.current?.(target)
 
     if (isPasteResultPromise(h)) {
       const fallbackText = e.text

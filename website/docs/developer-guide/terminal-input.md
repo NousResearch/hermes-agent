@@ -52,6 +52,12 @@ Cursor/input regressions live in `tests/hermes_cli/test_cli_visual_cursor.py` an
 receipts have a colocated `copy-selection.test.ts`. Existing attachment/submission tests
 cover compact-paste expansion into the model payload.
 
+`terminalInteractionEdges.test.tsx` drives the mounted composer through bracketed paste,
+selection replacement, multiline editing, compact-token expansion, Unicode editing,
+preferred-column navigation and narrow/wide layout changes. Paste handlers receive a
+snapshot with the selected range removed; the editable draft changes only when paste
+processing returns a successful result.
+
 Run Python tests through `scripts/run_tests.sh`, TUI tests through Vitest, and the normal
 typecheck/build/repository checks. Validate actual terminal selection, clipboard round-trips,
 resizing, and Unicode input by hand: unit tests cannot establish emulator/font behavior.

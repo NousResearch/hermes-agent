@@ -494,14 +494,6 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  billingBlock: {
-    titleNous: 'Plus de crédits Nous',
-    titleProvider: provider => `Plus de crédits — ${provider}`,
-    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
-    openBilling: 'Ouvrir la facturation',
-    addCredits: 'Ajouter des crédits',
-    dismiss: 'Fermer'
-  },
   sendDiagnostics: {
     title: 'Envoyer les diagnostics à Nous',
     privacyNotice:
@@ -5063,6 +5055,10 @@ export const frOverrides = {
         loop_error: {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
+        },
+        cron_session_read_only: {
+          title: 'Cette conversation appartient à une tâche planifiée',
+          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
         },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',

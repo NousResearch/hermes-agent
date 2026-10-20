@@ -18,6 +18,7 @@ def _buildable_source(plugin):
     (plugin / "build").mkdir(parents=True, exist_ok=True)
     (plugin / "pyproject.toml").write_text(
         '[project]\nname="replay-plugin"\nversion="1.0"\nrequires-python=">=3.11"\nreadme="README.md"\nlicense="MIT"\nlicense-files=["LICENSE"]\n'
+        '[project.optional-dependencies]\nall=[]\n'
         '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["build"]\n',
         encoding="utf-8",
     )

@@ -98,3 +98,48 @@ def test_invalid_requirement_refused_at_declaration_boundary(tmp_path, modern):
     with pytest.raises(ValueError):
         read_python_declaration(tmp_path)
     assert path.read_bytes() == before
+
+
+def test_pyproject_without_python_dependencies_is_not_a_workspace_member(tmp_path):
+    """Tool-only pyprojects must stay out of the uv workspace (#141981).
+
+    Such a plugin still has a pyproject for pytest or catalog layout, but it
+    declares no work for uv. Membership hashed and copied the whole folder on
+    every launch for nothing.
+    """
+    plugin = tmp_path / "tool-config-only"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="tool-config-only"\nversion="1"\ndependencies=[]\n'
+        '[tool.pytest.ini_options]\naddopts="-q"\n',
+        encoding="utf-8",
+    )
+
+    assert read_python_declaration(plugin).is_member is False
+
+
+def test_optional_dependency_group_keeps_a_pyproject_in_the_workspace(tmp_path):
+    """An optional-dependency group is a Python declaration even with no base deps."""
+    plugin = tmp_path / "extras-only"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="extras-only"\nversion="1"\ndependencies=[]\n'
+        '[project.optional-dependencies]\nall=["example>=1"]\n',
+        encoding="utf-8",
+    )
+
+    declaration = read_python_declaration(plugin)
+
+    assert declaration.extras == ("all",)
+    assert declaration.is_member is True
+
+
+def test_legacy_manifest_requirements_still_join_the_workspace(tmp_path):
+    """The pyproject gate must not drop manifest-only plugins with dependencies."""
+    plugin = tmp_path / "legacy"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text(
+        'name: legacy\npython_dependencies: ["example>=1"]\n', encoding="utf-8"
+    )
+
+    assert read_python_declaration(plugin).is_member is True

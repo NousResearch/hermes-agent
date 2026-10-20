@@ -10,7 +10,10 @@ def test_scoped_members_respect_disabled_and_keep_other_profiles(tmp_path, monke
     other = other_home / "plugins" / "same"
     for member in (current, other):
         member.mkdir(parents=True)
-        (member / "pyproject.toml").write_text('[project]\nname="test"\nversion="1"\n')
+        (member / "pyproject.toml").write_text(
+            '[project]\nname="test"\nversion="1"\n'
+            '[project.optional-dependencies]\nall=[]\n'
+        )
     (home / "config.yaml").write_text('plugins:\n  enabled: [group/plugin]\n  disabled: []\n')
     (other_home / "config.yaml").write_text('plugins:\n  enabled: [same]\n')
     assert set(enabled_member_dirs()) == {current, other}

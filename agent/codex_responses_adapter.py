@@ -1135,40 +1135,38 @@ class _OutputScan:
         ))
 
 
-def _dedupe_same_id_tool_calls(tool_calls: List[Any]) -> List[Any]:
-    """Collapse same-id tool_calls to one entry, keeping the one with non-empty arguments.
+def _dedupe_function_call_items(output: List[Any]) -> List[Any]:
+    """Keep the populated twin of a function call without merging distinct identities.
 
-    Some Codex backends emit a single logical function_call as two same-id output items
-    (one with arguments, one ``{}``) in the non-streamed ``response.output``.  Each item
-    becomes a separate tool_call here, so the empty twin reaches the tool executor with
-    no arguments (e.g. read_file on the workdir -> "not a regular file").  Prefer the copy
-    that carries real arguments; drop the empty duplicate.
+    Work on raw Responses items: normalization erases the distinction between a real
+    call_id and a fallback item ID. Share this rule with the streaming assembler.
     """
-    kept: Dict[str, Any] = {}
+    positions: Dict[tuple[str, str, str], int] = {}
     result: List[Any] = []
-    for tc in tool_calls:
-        cid = _resolve_call_id(
-            getattr(tc, "call_id", None), getattr(tc, "id", None),
-            getattr(getattr(tc, "function", None), "name", "") or "",
-            getattr(getattr(tc, "function", None), "arguments", "") or "",
-            len(result), canonicalize_fc=False,
-        )
-        if not cid:
-            result.append(tc)
+    for item in output:
+        # Only scannable, executable calls may claim or replace an identity.
+        if (getattr(item, "type", None) != "function_call"
+                or _lower_or_none(getattr(item, "status", None)) in _INCOMPLETE_STATUSES):
+            result.append(item)
             continue
-        prior = kept.get(cid)
-        if prior is None:
-            kept[cid] = tc
-            result.append(tc)
+        call_id, item_id = _field(item, "call_id"), _field(item, "id")
+        if isinstance(call_id, str) and call_id.strip():
+            identity = ("call_id", call_id)
+        elif isinstance(item_id, str) and item_id.strip():
+            identity = ("item_id", item_id)
+        else:
+            result.append(item)
             continue
-        cur_arguments = getattr(getattr(tc, "function", None), "arguments", "") or ""
-        prior_arguments = getattr(getattr(prior, "function", None), "arguments", "") or ""
-        cur_has_real = bool(cur_arguments.strip() not in ("", "{}"))
-        prior_has_real = bool(prior_arguments.strip() not in ("", "{}"))
-        if cur_has_real and not prior_has_real:
-            result[result.index(prior)] = tc
-            kept[cid] = tc
-        # else keep the existing entry; the duplicate is dropped.
+        key = (identity[0], identity[1], str(_field(item, "name", "") or ""))
+        position = positions.get(key)
+        if position is None:
+            positions[key] = len(result)
+            result.append(item)
+            continue
+        arguments = str(_field(item, "arguments", "") or "").strip()
+        prior_arguments = str(_field(result[position], "arguments", "") or "").strip()
+        if arguments not in ("", "{}") and prior_arguments in ("", "{}"):
+            result[position] = item
     return result
 
 
@@ -1200,9 +1198,8 @@ def _normalize_codex_response(
     if response_status in {"failed", "cancelled"}:
         raise RuntimeError(_format_responses_error(getattr(response, "error", None), response_status))
     scan = _OutputScan(response_status)
-    scan.scan(output, issuer_kind, issuer_model)
-    tool_calls = _dedupe_same_id_tool_calls(scan.tool_calls)
-    reasoning_parts = scan.reasoning_parts
+    scan.scan(_dedupe_function_call_items(output), issuer_kind, issuer_model)
+    tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
     final_text = "\n".join(scan.content_parts).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")

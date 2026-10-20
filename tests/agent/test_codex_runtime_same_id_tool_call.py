@@ -17,6 +17,8 @@ that carries non-empty arguments.
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.codex_responses_adapter import _normalize_codex_response
 from agent.codex_runtime import _CodexResponseAssembler
 
@@ -150,3 +152,83 @@ def test_normalize_distinct_calls_preserved():
                           status="completed", arguments='{"k":2}')
     msg, _ = _normalize_codex_response(_resp([fc1, fc2]))
     assert len(msg.tool_calls) == 2
+
+
+def _normalized_calls(items, streamed):
+    if streamed:
+        assembler = _assembler()
+        for index, item in enumerate(items):
+            assembler.feed(_ev("response.output_item.done", item=item, output_index=index))
+        items = _finish(assembler)
+    message, finish_reason = _normalize_codex_response(_resp(items))
+    assert finish_reason == "tool_calls"
+    return [(call.id, call.function.name, call.function.arguments) for call in message.tool_calls]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("second_arguments", ['{"path":"second"}', "{}"])
+def test_distinct_call_ids_survive_reused_item_id(streamed, second_arguments):
+    items = [
+        SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
+                        name="read_file", arguments='{"path":"first"}'),
+        SimpleNamespace(type="function_call", id="fc_shared", call_id="call_b",
+                        name="read_file", arguments=second_arguments),
+    ]
+    assert _normalized_calls(items, streamed) == [
+        ("call_a", "read_file", '{"path":"first"}'),
+        ("call_b", "read_file", second_arguments),
+    ]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["full-first", "empty-first"])
+@pytest.mark.parametrize("second_fields,collapse", [
+    pytest.param({"id": "fc_rotated"}, True, id="stable-call-id"),
+    pytest.param({"name": "skills_list"}, False, id="different-tool-name"),
+    pytest.param({"call_id": "call_b"}, False, id="different-call-id"),
+    pytest.param({"call_id": None, "id": "call_a"}, False, id="separate-id-namespaces"),
+])
+def test_only_matching_tool_identity_loses_empty_twin(streamed, reverse, second_fields, collapse):
+    full = SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
+                           name="read_file", arguments='{"path":"first"}')
+    empty = SimpleNamespace(**{
+        "type": "function_call", "id": "fc_shared", "call_id": "call_a",
+        "name": "read_file", "arguments": "{}", **second_fields,
+    })
+    items = [empty, full] if reverse else [full, empty]
+    expected = [("call_a", "read_file", full.arguments)]
+    if not collapse:
+        empty_message, _ = _normalize_codex_response(_resp([empty]))
+        empty_call = empty_message.tool_calls[0]
+        empty_result = (empty_call.id, empty_call.function.name, "{}")
+        expected = [empty_result, *expected] if reverse else [*expected, empty_result]
+    assert _normalized_calls(items, streamed) == expected
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["incomplete-first", "completed-first"])
+@pytest.mark.parametrize("status", ["queued", "in_progress", "incomplete", " IN_PROGRESS "])
+@pytest.mark.parametrize("arguments", ['{"path":"unfinished"}', "{}"])
+def test_incomplete_twin_cannot_suppress_completed_call(streamed, reverse, status, arguments):
+    incomplete = SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
+                                 name="read_file", status=status, arguments=arguments)
+    completed = SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
+                                name="read_file", status="completed", arguments="{}")
+    items = [completed, incomplete] if reverse else [incomplete, completed]
+    assert _normalized_calls(items, streamed) == [("call_a", "read_file", "{}")]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["dict-first", "object-first"])
+@pytest.mark.parametrize("dict_arguments,object_arguments", [
+    ('{"path":"dict"}', "{}"),
+    ("{}", "{}"),
+    ("{}", '{"path":"object"}'),
+])
+def test_dict_twin_cannot_suppress_object_call(streamed, reverse, dict_arguments, object_arguments):
+    dictionary = dict(type="function_call", id="fc_shared", call_id="call_a",
+                      name="read_file", status="completed", arguments=dict_arguments)
+    item = SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
+                           name="read_file", status="completed", arguments=object_arguments)
+    items = [item, dictionary] if reverse else [dictionary, item]
+    assert _normalized_calls(items, streamed) == [("call_a", "read_file", object_arguments)]

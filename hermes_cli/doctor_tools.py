@@ -180,6 +180,16 @@ def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]
     return api_key_unavailable if enabled_toolsets is None else [i for i in api_key_unavailable if str(i.get("name") or "") in enabled_toolsets]
 
 
+def _toolset_disabled_hint(name: str) -> str:
+    """Detail shown when an unavailable toolset is not enabled for this platform.
+
+    An explicitly disabled (or platform-default-off) toolset is a configuration choice,
+    not a missing capability: naming a provider or key to add sends the operator to fix
+    something that is working as configured, and contradicts ``hermes tools list`` (#137529).
+    """
+    return "(not enabled for this platform — 'hermes tools enable' to turn it on)"
+
+
 @doctor_check()
 def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
     git, git_detail = _doctor_tool("git")
@@ -519,10 +529,21 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
+    # A toolset the operator turned off for this platform still fails its check_fn, but it
+    # is not a fault: say so instead of prescribing a provider or key, and keep the two
+    # surfaces honest about enablement (#137529).
+    cli_enabled = _enabled_cli_toolsets_for_doctor()
     for item in unavailable:
+        name = str(item.get("name") or "")
+        # Scope this to setup-gated toolsets: those are the ones whose hint names a provider
+        # or key to configure. A toolset with a plain dependency (e.g. homeassistant) keeps
+        # its existing wording either way, so the reported reason stays accurate.
+        if _setup_gated(item) and cli_enabled is not None and name not in cli_enabled:
+            check_warn(name, _toolset_disabled_hint(name))
+            continue
         env_vars = item.get("missing_vars") or item.get("env_vars") or []
-        detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
-        check_warn(item["name"], detail)
+        detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(name, "(system dependency not met)")
+        check_warn(name, detail)
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)

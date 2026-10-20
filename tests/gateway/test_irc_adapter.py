@@ -134,7 +134,6 @@ class TestIRCAdapterMessageParsing:
 
         # Mock handle_message to capture the event
         dispatched = []
-        original_dispatch = adapter._dispatch_message
 
         async def capture_dispatch(**kwargs):
             dispatched.append(kwargs)

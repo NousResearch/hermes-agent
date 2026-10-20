@@ -1,4 +1,5 @@
 export const ruModelMenu = {
+  pickDeferred: (model: string) => `${model} применится со следующего сообщения`,
   search: 'Поиск моделей',
   noModels: 'Модели не найдены',
   editModels: 'Изменить модели…',

@@ -221,7 +221,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
             check_package_for_malware("uvx", ["mcp-server-persist"])
 
         cache_file = tmp_path / "cache" / "osv_check.json"

@@ -184,7 +184,6 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
     error = None
     final_response = ""
     messages_out: list[dict[str, Any]] = []
-    pm = None
     _orig_norm = None
     try:
         from run_agent import AIAgent

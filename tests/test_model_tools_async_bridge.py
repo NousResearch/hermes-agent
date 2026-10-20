@@ -228,7 +228,7 @@ class TestRunAsyncWithRunningLoop:
         # Worker thread must cancel the task (not leak).
         deadline = _time.time() + 5
         while not cancel_observed.is_set() and _time.time() < deadline:
-            _time.sleep(0.05)
+            await asyncio.sleep(0.05)
         assert cancel_observed.is_set(), (
             "Coroutine never received CancelledError — worker thread leaked "
             "(ThreadPoolExecutor.cancel() is a no-op on a running future; "

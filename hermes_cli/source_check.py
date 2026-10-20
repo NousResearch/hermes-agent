@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     try:
         return subprocess.run(
             [git, *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
-            **(_GIT_TEXT_KW if text else {}), **kwargs)
+            **(_GIT_TEXT_KW if text else {}), **kwargs, check=False)
     except Exception:
         return None
 
@@ -123,9 +124,14 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
         return _request_with(url, accept, token)
     except urllib.error.HTTPError as exc:
         if token is None or exc.code != 401:
+            exc.hermes_authenticated = token is not None  # which quota a 403/429 spent
             raise
         logger.debug("GitHub rejected the configured token; retrying anonymously")
+    try:
         return _request_with(url, accept, None)
+    except urllib.error.HTTPError as exc:
+        exc.hermes_authenticated = False
+        raise
 
 
 def _request_with(url: str, accept: str, token: str | None) -> str:
@@ -222,6 +228,21 @@ def _unsupported_reason(stamp: dict, root: Path, *, explicit_root: bool, embedde
     return None
 
 
+def _installed_git(git: str) -> str:
+    """``git`` as given, unless it is a bare ``git`` PATH lacks: then the git ``hermes update`` runs.
+
+    A Windows source install's only git is often the copy install.ps1 staged in PM's store, which
+    is on PATH only inside ``hermes update`` (``expose_pm_git``). Desktop and the dashboard pass a
+    bare ``git`` there, it dies with WinError 2, and the check reports ``head-unavailable``, which
+    Desktop shows as "couldn't reach the update server" while ``hermes update`` works.
+    """
+    if git != "git" or shutil.which(git):
+        return git
+    from hermes_cli.update_pause_record import _git_executable
+
+    return _git_executable()
+
+
 def _read_checkout(root: Path, git: str, embedded: Optional[str]) -> _Checkout:
     # An embedded revision has no checkout to ask: it always tracks the official repository.
     head = embedded or _git_stdout(["rev-parse", "HEAD"], cwd=root, git=git)
@@ -285,6 +306,13 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         result.update(channel=channel, targetSha=target, updateAvailable=co.head != target,
                       behind=0 if co.head == target else UPDATE_AVAILABLE_NO_COUNT,
                       sourceVersion=source_target.version, buildId=source_target.build_id)
+        # Forward-only pins the target to this checkout's own HEAD, newer than the release.
+        # Always present: Desktop names the release only on an explicit False.
+        result["aheadOfRelease"] = bool(getattr(source_target, "ahead", False))
+        # A release HEAD already contains moves the checkout back: Desktop names it a rollback,
+        # not a new update. Local ancestry only; an unknown relation stays an update.
+        result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
+            ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target
@@ -399,7 +427,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         return {**result, "reason": "disabled"}
     channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
     forward_only = rides_default_channel(channel_record(config, root), channel, root)
-    co = _read_checkout(root, git, embedded)
+    co = _read_checkout(root, _installed_git(git), embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
     selected_branch = branch or configured_branch or _checked_out_branch(co.current_branch, "main")
@@ -448,9 +476,22 @@ def main() -> None:
     parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--branch-config-path", type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--set-channel", type=validate_name,
+                        help="Persist this install's channel (the Desktop selector), then report as usual.")
     args = parser.parse_args()
     with contextlib.redirect_stdout(sys.stderr):
-        result = check_for_updates(**vars(args))
+        if args.set_channel:
+            from hermes_constants import set_hermes_home_override
+            from hermes_cli.update_channel import set_install_channel
+
+            # The record belongs in the --home profile's config.yaml, as the check reads it.
+            set_hermes_home_override(args.home)
+            set_install_channel(args.set_channel, args.install_root)
+            args.force = True
+        result = check_for_updates(**{k: v for k, v in vars(args).items() if k != "set_channel"})
+    if isinstance(result, dict):
+        # Older runtimes reject --set-channel; Desktop offers its selector only on this flag.
+        result["channelSelectable"] = True
     print(json.dumps(result))
 
 

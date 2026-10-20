@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """Telegram platform adapter (python-telegram-bot): inbound messages/media/commands, outbound replies."""
 
 import asyncio
@@ -180,7 +181,8 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
+from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -248,7 +250,7 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
         if shutil.which("ffprobe"):
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
             if proc.returncode == 0:
                 return _coerce_duration_seconds(proc.stdout.strip())
     except Exception:
@@ -272,7 +274,7 @@ def _probe_video_geometry(path: str) -> dict[str, int]:
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-show_entries", "format=duration",
              "-of", "json", path],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
         if proc.returncode != 0:
             return {}
         blob = json.loads(proc.stdout or "{}")
@@ -308,7 +310,7 @@ def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
         proc = subprocess.run(
             ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
              "-vf", "scale=320:-2", "-q:v", "6", out],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
         if proc.returncode != 0 or not os.path.getsize(out):
             with contextlib.suppress(OSError):
                 os.remove(out)
@@ -625,6 +627,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._pending_photo_batch_tasks: dict[str, asyncio.Task] = {}
         self._media_group_events: dict[str, MessageEvent] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
+        # Flushes past their pop, by (family, key): a newer chunk must not cancel them (teardown still does).
+        self._committed_flush_tasks: dict[tuple[str, str], asyncio.Task] = {}
         # Aggregate client-side splits of long messages into one MessageEvent; bounds are conservative
         # for Telegram's ~1 edit/s flood envelope.
         self._text_batch_delay_seconds = self._env_float_clamped(
@@ -1005,8 +1009,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     @classmethod
     def _metadata_reply_to_message_id(cls, metadata: Optional[dict[str, Any]]) -> Optional[int]:
-        reply_to = (metadata or {}).get("telegram_reply_to_message_id")
-        return int(reply_to) if reply_to is not None else None
+        return parse_telegram_message_id((metadata or {}).get("telegram_reply_to_message_id"))
 
     @staticmethod
     def _dm_topic_fallback(metadata: Optional[dict[str, Any]]) -> bool:
@@ -1028,8 +1031,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     @classmethod
     def _reply_to_message_id_for_send(
         cls, reply_to: Optional[str], metadata: Optional[dict[str, Any]] = None, reply_to_mode: Optional[str] = None) -> Optional[int]:
-        if reply_to:
-            return int(reply_to)
+        if (anchor := parse_telegram_message_id(reply_to)) is not None:
+            return anchor
         if cls._dm_topic_fallback(metadata) and reply_to_mode != "off":
             return cls._metadata_reply_to_message_id(metadata)
         return None
@@ -1427,7 +1430,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         metadata_reply_to = self._metadata_reply_to_message_id(metadata)
         private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
         dm_topic_reply_to_off = private_dm_topic_send and self._reply_to_mode == "off" and self._dm_topic_fallback(metadata)
-        reply_to_source = reply_to or (str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None)
+        reply_to_source = next((str(i) for i in (parse_telegram_message_id(reply_to), metadata_reply_to if private_dm_topic_send else None) if i is not None), None)
         if private_dm_topic_send:
             should_thread = reply_to_source is not None and self._reply_to_mode != "off"
         else:
@@ -2879,7 +2882,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def handle_message(self, event: MessageEvent) -> None:
         self._accept_update()
+        await apply_root_dm_topic_transfer(self, event)  # opt-in dm_topic_auto_transfer (#139136)
         await super().handle_message(event)
+
+    def set_topic_transfer_fn(self, fn: Optional[TopicTransferFn]) -> None:
+        """Install the runner's root-DM topic-transfer hook (``dm_topic_auto_transfer``); None clears."""
+        self._topic_transfer_fn = fn
 
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
@@ -3289,6 +3297,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         pending_tasks = self._collect_live_tasks(
             [
                 *self._media_group_tasks.values(), *self._pending_photo_batch_tasks.values(), *self._pending_text_batch_tasks.values(),
+                *getattr(self, "_committed_flush_tasks", {}).values(),
                 getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
                 # Hold-queue redispatch must be cancellable+awaitable on teardown too.
                 getattr(self, "_held_inbound_redispatch_task", None),
@@ -4847,8 +4856,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         resolved_text: Optional[str] = None
         try:
-            from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-            entry = _clarify_entries.get(clarify_id)
+            from tools.clarify_gateway import get_pending
+            entry = get_pending(clarify_id)
             if entry and entry.choices and 0 <= idx < len(entry.choices):
                 resolved_text = entry.choices[idx]
         except Exception:
@@ -5193,7 +5202,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         self.name, os.path.basename(audio_path))
             # Telegram drops duration for long clips (~5 min+, shows 0:00).
             _duration_secs = await asyncio.to_thread(_probe_voice_duration_seconds, audio_path)
-            with open(audio_path, "rb") as audio_file:
+            with open(audio_path, "rb") as audio_file:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 ext = os.path.splitext(audio_path)[1].lower()
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
                     msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
@@ -5260,7 +5269,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         if compressed:
                             temp_paths.append(compressed)
                             local_path = compressed
-                        source = open(local_path, "rb")
+                        source = open(local_path, "rb")  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                         opened_files.append(source)
                     media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
                 if not media:
@@ -5341,7 +5350,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:
+            with open(path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
@@ -5418,9 +5427,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
-                from gateway.platforms.base import _ssrf_redirect_guard
+                from gateway.platforms.base import ssrf_redirect_guard
                 from tools.url_safety import create_ssrf_safe_async_client
-                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [_ssrf_redirect_guard]}) as client:
+                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client:
                     resp = await client.get(image_url)
                     resp.raise_for_status()
                     image_data = resp.content
@@ -6548,6 +6557,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
         the pop but before durable dispatch re-holds the event (never lose it)."""
         current_task = asyncio.current_task()
+        committed = self.__dict__.setdefault("_committed_flush_tasks", {})
         event = None
         try:
             await asyncio.sleep(delay)
@@ -6559,6 +6569,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             event = pending.pop(key, None)
             if not event:
                 return
+            # Committed: leave the per-key slot so a newer chunk re-arms without cancelling this
+            # dispatch mid-flight (e.g. during a root-DM createForumTopic, whose ID would be lost).
+            tasks.pop(key, None)
+            prior = committed.get((where, key))
+            committed[(where, key)] = current_task
+            if prior is not None and not prior.done():
+                await asyncio.wait({prior})  # dispatch in order, after the earlier batch settles
             if self._should_drop_delayed_delivery():
                 self._hold_inbound_event(event, where=f"{where}-flush")
                 event = None
@@ -6572,6 +6589,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
             raise
         finally:
+            if committed.get((where, key)) is current_task:
+                committed.pop((where, key), None)
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
 
@@ -7162,8 +7181,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
 # -- Plugin registration glue: register(ctx) plus the hook implementations (adapter factory, YAML→env/extra
 # config, setup wizard, standalone sender).
-
-
 # ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
 # #3823) Added when the Telegram adapter (+ its telegram_network satellite) moved from gateway/platforms/
 # into this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a register(ctx) entry point
@@ -7259,8 +7276,9 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
             extras.setdefault(key, value)
         _set_env(env, value)
 
-    if "disable_topic_auto_rename" in telegram_cfg:
-        extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
+    for _topic_key in ("disable_topic_auto_rename", "dm_topic_auto_transfer"):
+        if _topic_key in telegram_cfg:
+            extras.setdefault(_topic_key, telegram_cfg[_topic_key])
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
     if _effective_rm is not None:
         _set_env("TELEGRAM_REQUIRE_MENTION", str(_effective_rm).lower())
@@ -7288,8 +7306,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     if _telegram_rtm is not None:
         _set_env("TELEGRAM_REPLY_TO_MODE", "off" if _telegram_rtm is False else str(_telegram_rtm).lower())
     _bridge_gate("allow_from", "TELEGRAM_ALLOWED_USERS", telegram_cfg.get("allow_from"))
-    _bridge_gate(
-        "group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS", telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from"))
+    _bridge_gate("group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS", telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from"))
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
@@ -7310,9 +7327,20 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         name="telegram", label="Telegram", adapter_factory=_build_adapter, check_fn=telegram_deps_present,
+        **DASHBOARD_CARD,
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
-        install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="TELEGRAM_ALLOWED_USERS", allow_all_env="TELEGRAM_ALLOW_ALL_USERS", cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True)
+        install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="high",
+        # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
+        display_overrides={"tool_progress": "off", "busy_ack_detail": False},
+        target_ref_syntax_fn=parse_send_target,
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

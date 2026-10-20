@@ -192,7 +192,7 @@ def _user_image_display_text(content: Any) -> str | None:
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None
     if len(content) > 1 + len(paths):
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
         memory = content[-1]
         if not isinstance(memory, dict) or memory.get("type") != "text" or not isinstance(memory.get("text"), str) or sanitize_context(memory["text"]).strip():
             return None
@@ -305,9 +305,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            # A setup handoff's first message carries the first-task skill after what the user sees.
-            from agent.first_task_prompt import visible_text
-            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
+            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")

@@ -10,6 +10,8 @@
  * steal focus from the composer effect.
  */
 
+import { atom } from 'nanostores'
+
 import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { subscribePreviewAnnotateHandoff } from '@/lib/preview-annotate/handoff'
@@ -92,6 +94,7 @@ interface SubmitDetail {
 }
 
 let activeTarget: ComposerTarget = 'main'
+export const $activeComposerRevision = atom(0)
 
 /**
  * The chat surface currently on screen (`data-composer-target` hung off each
@@ -231,7 +234,12 @@ const subscribe = <T>(name: string, handler: (detail: T) => void) => {
 }
 
 export const markActiveComposer = (target: ComposerTarget) => {
+  if (activeTarget === target) {
+    return
+  }
+
   activeTarget = target
+  $activeComposerRevision.set($activeComposerRevision.get() + 1)
 }
 
 /** Hand the routing key back when a composer unmounts, so `'active'` can never

@@ -28,7 +28,7 @@ export interface HarnessHandle {
   editMessage: (edited: Parameters<ReturnType<typeof usePromptActions>['editMessage']>[0]) => Promise<void>
   reloadFromMessage: (parentId: null | string) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
-  redirectPrompt: (text: string) => Promise<boolean>
+  redirectPrompt: (text: string, mode?: 'interrupt' | 'steer') => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
   steerPrompt: (text: string) => Promise<boolean>
   submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>

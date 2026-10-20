@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+
+logger = logging.getLogger(__name__)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -625,6 +628,10 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
+            # Exceptions may contain prompt text or credentials. Persist only a fixed
+            # reason, not the free-form messages retained in the in-memory status.
+            reason = 'request_too_large' if getattr(exc, 'reason', None) == 'request_too_large' else 'attempt_failed'
+            logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
             if submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)

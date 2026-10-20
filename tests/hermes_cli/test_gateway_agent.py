@@ -144,6 +144,20 @@ def test_approval_request_calls_cli_approval_callback_then_responds(make_agent):
     assert respond == {"session_id": SID, "execution_generation": 7, "prompt_id": "p1", "choice": "once"}
 
 
+def test_connection_card_events_reach_the_cli_card(make_agent):
+    """The gateway runs manage_connections; its card events must reach the CLI's card callbacks."""
+    opened, updates = [], []
+    request = {"op_id": "op1", "seq": 1, "deadline_at": 0, "timeout_seconds": 300,
+               "targets": [{"name": "linear", "kind": "mcp", "action": "install", "state": "pending"}]}
+    update = {**request, "seq": 2, "settled": False}
+    agent, _ = make_agent(
+        [frame("connection.request", request), frame("connection.update", update),
+         frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        connection_callback=opened.append, connection_update_callback=updates.append)
+    agent.run_conversation("connect linear")
+    assert opened == [request] and updates == [update]
+
+
 def test_interrupt_sends_session_interrupt_and_settles_interrupted(make_agent):
     agent, client = make_agent(
         [frame("message.delta", {"text": "w001 "})] + ["wait"] * 20,

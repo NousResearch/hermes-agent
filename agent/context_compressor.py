@@ -33,7 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_prune import ProactivePruneMixin
-from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_summary import SummaryDispatchMixin, _response_finish_reason
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -139,20 +139,6 @@ def _is_hygiene_preagent_only_cooldown(error: object) -> bool:
     """
     text = str(error or "").strip().casefold()
     return any(marker in text for marker in _HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS)
-
-
-def _response_finish_reason(response: Any) -> str:
-    """Lowercased ``choices[0].finish_reason`` of a dict- or object-shaped response; ``""`` when unreadable."""
-    try:
-        if isinstance(response, dict):
-            first = (response.get("choices") or [{}])[0]
-            reason = first.get("finish_reason") if isinstance(first, dict) else getattr(first, "finish_reason", None)
-        else:
-            choices = getattr(response, "choices", None) or []
-            reason = getattr(choices[0], "finish_reason", None) if choices else None
-        return str(reason).strip().lower() if reason else ""
-    except Exception:
-        return ""
 
 
 # Marker for a length-stopped (PARTIAL) summary; the except-branch classifier keys
@@ -3858,6 +3844,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # failure so it routes through the same main-model fallback + cooldown machinery as a transport
         # error, rather than replacing real context with an empty summary.
         if not content.strip():
+            _empty_message = getattr((getattr(response, "choices", None) or [None])[0], "message", None)
+            logger.warning(
+                "Compression summary response carried no text %s: finish_reason=%s completion_tokens=%s "
+                "reasoning_field=%s",
+                where, _response_finish_reason(response) or "unknown",
+                getattr(getattr(response, "usage", None), "completion_tokens", None),
+                "absent" if getattr(_empty_message, "reasoning", None) is None else "present",
+            )
             raise RuntimeError(f"Context compression LLM returned empty content {where}")
         if _is_refusal_response(response, content):
             # Treat a refusal as unusable content. This deliberately reuses the

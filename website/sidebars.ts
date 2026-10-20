@@ -810,6 +810,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/state-db-recovery',
             'developer-guide/provider-runtime',
             'developer-guide/programmatic-integration',
+            'developer-guide/mobile-companion-clients',
           ],
         },
         {

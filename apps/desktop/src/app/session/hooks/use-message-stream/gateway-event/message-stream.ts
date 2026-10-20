@@ -17,6 +17,9 @@ import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionStates } from '@/store/session-states'
+import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -115,6 +118,12 @@ function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {
 
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
+/** The stamped completion of a messaging turn Desktop sent decides its unread dot. */
+function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefined, profile?: string) {
+  const storedId = $sessionStates.get()[runtimeId]?.storedSessionId ?? runtimeId
+  lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
+}
+
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -373,6 +382,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Keyed by session so only one window beeps when several are open.
     playCompletionSound(sessionId)
+    lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 

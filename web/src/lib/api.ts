@@ -9,6 +9,7 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
+import type { AgentPluginUpdateResponse } from "./api-plugins";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
@@ -1075,13 +1076,16 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
 
@@ -2517,6 +2521,7 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2776,19 +2781,6 @@ export interface CatalogResponse {
   entries: CatalogEntry[];
   removed: CatalogRemovedEntry[];
   generated_at: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-  /** The new catalog pin widens the plugin; nothing changed until the client
-   *  retries with `accept_capabilities`. */
-  consent_required?: boolean;
-  sha?: string;
-  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

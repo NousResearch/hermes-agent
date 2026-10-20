@@ -4,11 +4,14 @@ import { renderSync } from '@hermes/ink'
 import type { GoalSnapshot } from '@hermes/shared/gateway-events'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
-import { expect, it } from 'vitest'
+import { afterEach, expect, it } from 'vitest'
 
 import { goalLine } from '../app/goalStatus.js'
 import { GoalBarView } from '../components/goalBar.js'
+import { resetLocale } from '../i18n/runtime.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+import { activateZh } from './localeFixture.js'
 
 const goal = (patch: Partial<GoalSnapshot> = {}): GoalSnapshot => ({
   contract: {},
@@ -46,10 +49,35 @@ it('shows a standing goal (active, parked, paused) and hides it once done or cle
     detail: 'budget · 3/20 turns',
     label: 'goal paused'
   })
+  expect(
+    goalLine(
+      goal({
+        gates: [{ attempts: 0, command: 'pytest', max_retries: 2, timeout_seconds: 60 }],
+        subgoals: ['tests pass', 'docs updated']
+      })
+    )
+  ).toMatchObject({ detail: '3/20 turns · 2 subgoals · 1 gate' })
   expect(goalLine(goal({ status: 'done' }))).toBeNull()
   expect(goalLine(null)).toBeNull()
 
   const painted = paint(<GoalBarView cols={58} line={goalLine(goal())} t={DEFAULT_THEME} />)
   expect(painted).toContain('⊙ goal · 3/20 turns · ship the goal bar')
   expect(paint(<GoalBarView cols={58} line={null} t={DEFAULT_THEME} />).trim()).toBe('')
+})
+
+afterEach(() => resetLocale())
+
+it('localizes live subgoal and gate counts while keeping the goal title intact', () => {
+  activateZh()
+
+  const snapshot = goal({
+    title: 'ship $& safely',
+    gates: [{ attempts: 0, command: 'npm test', max_retries: 2, timeout_seconds: 60 }],
+    subgoals: ['tests pass', 'docs updated']
+  })
+
+  expect(goalLine(snapshot)).toMatchObject({ detail: '3/20 轮 · 2 个子目标 · 1 个检查点', title: 'ship $& safely' })
+  snapshot.subgoals = []
+  snapshot.gates = []
+  expect(goalLine(snapshot)?.detail).toBe('3/20 轮')
 })

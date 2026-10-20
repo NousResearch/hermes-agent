@@ -1,6 +1,8 @@
 // Chinese labels for config schema keys used by AutoField.
 
 export const SCHEMA_ZH_LABEL: Record<string, string> = {
+  'display.cli_layout': '显示 → 经典命令行布局',
+  'telegram.extra.dm_topic_auto_transfer': 'Telegram → 扩展 → 私聊自动转入新话题',
   'terminal.process_wait_auto_notify': '终端 → 等待时自动通知',
   'terminal.client_env_passthrough': '终端 → 客户端环境变量透传',
   'worktrees.archive_dirty': '工作树 → 归档未提交工作',

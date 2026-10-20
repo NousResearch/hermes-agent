@@ -404,11 +404,36 @@ describe('syncMcpReload (revision-aware ack)', () => {
     expect(state.inFlight).toBe(false)
     expect(onReloaded).not.toHaveBeenCalled()
 
-    // Next poll tick: the server recovered — the SAME revision goes through.
+    // A later poll tick past the backoff: the server recovered — the SAME revision goes through.
     gw.request = vi.fn(() => Promise.resolve({ status: 'reloaded', loaded_rev: 'rev-b' }))
-    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded, () => Date.now() + 60_000)
     expect(state.accepted).toBe('rev-b')
     expect(onReloaded).toHaveBeenCalledTimes(1)
+  })
+
+  // #141769: a refused revision (one parked MCP server) was re-sent every 5 s poll forever.
+  it('backs off a refused revision instead of retrying it every poll tick', async () => {
+    const gw = {
+      request: vi.fn(() => Promise.reject(new Error('mcp_servers_unavailable'))),
+      on: vi.fn(),
+      off: vi.fn()
+    } as any
+    const state = freshState()
+    let clock = 0
+    const now = () => clock
+
+    // 30 minutes of 5 s poll ticks.
+    for (; clock < 30 * 60_000; clock += 5000) {
+      await syncMcpReload(gw, 's1', 'rev-b', state, undefined, now)
+    }
+
+    // Doubling to a 5-minute cap: a handful of retries, not 360.
+    expect(gw.request.mock.calls.length).toBeLessThan(12)
+    expect(state.accepted).toBe('rev-a')
+
+    // A NEW revision is not held behind the old one's backoff.
+    await syncMcpReload(gw, 's1', 'rev-c', state, undefined, now)
+    expect(gw.request.mock.calls.at(-1)).toEqual(['reload.mcp', { confirm: true, rev: 'rev-c', session_id: 's1' }])
   })
 
   it('does not advance on confirm_required (reload did not happen)', async () => {
@@ -674,4 +699,26 @@ it('a new config revision refreshes a same-language overlay without reloading to
   expect(await syncConfigRevision(gw, 1, vi.fn(), undefined, { mtime: 2 }, undefined, scope)).toBe(2)
   expect(t('status.ready')).toBe('第二版')
   expect(gw.request.mock.calls.every(([method]: [string]) => method !== 'reload.mcp')).toBe(true)
+})
+
+describe('hydrateVoiceMode (T9)', () => {
+  it("seeds the voice bit from the session's gateway /voice mode on the shared owner", async () => {
+    const request = vi.fn(async () => ({ value: 'voice_only' }))
+    const setVoiceEnabled = vi.fn()
+    const { hydrateVoiceMode } = await import('../app/useConfigSync.js')
+
+    await hydrateVoiceMode({ isCanonical: true, request } as never, setVoiceEnabled, {
+      isCurrent: () => true,
+      sid: 's1'
+    })
+    expect(request).toHaveBeenCalledWith('config.get', { key: 'voice', session_id: 's1' })
+    expect(setVoiceEnabled).toHaveBeenCalledWith(true)
+
+    request.mockClear()
+    await hydrateVoiceMode({ isCanonical: false, request } as never, setVoiceEnabled, {
+      isCurrent: () => true,
+      sid: 's1'
+    })
+    expect(request).not.toHaveBeenCalled()
+  })
 })

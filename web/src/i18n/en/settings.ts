@@ -23,6 +23,9 @@ export const settingsEn: Pick<
   | 'theme'
 > = {
   pluginsPage: {
+    updateScanBody:
+      'The security scan flagged {count} findings in the new code of {name}. Update anyway only if you trust the source:',
+    updateScanBlocked: 'The security scan rated the new code of {name} dangerous. The update was not applied.',
     updateConsentBody:
       'The new catalog pin of {name} ({sha}) adds surfaces the installed version does not have. Apply it only if you trust them:',
     contextEngineLabel: 'Context engine',
@@ -431,8 +434,8 @@ export const settingsEn: Pick<
     createSkill: 'Create skill'
   },
   files: {
-    brokenSymbolicLink: "Broken symbolic link",
-    brokenLink: "Broken link",
+    brokenSymbolicLink: 'Broken symbolic link',
+    brokenLink: 'Broken link',
     root: 'Files',
     refresh: 'Refresh files',
     path: 'Path',

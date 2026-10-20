@@ -1,6 +1,8 @@
 export interface SettingsTranslations {
   // ── Plugins page ──
   pluginsPage: {
+    updateScanBody: string
+    updateScanBlocked: string
     updateConsentBody: string
     contextEngineLabel: string
     dashboardSlots: string

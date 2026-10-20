@@ -256,8 +256,12 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     local = _effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
-    # session cwd (Desktop sends it) or the session's terminal cwd as-is.
-    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is (".": the backend's own cwd). The TUI
+    # echoes session.info's cwd back; for a sandbox session nobody gave a workspace that is the host launch dir.
+    client_cwd = params.get("cwd")
+    if session and client_cwd == session.get("cwd") and _is_remote_launch_cwd(session):
+        client_cwd = None
+    root = _completion_cwd(params) if local else (client_cwd or _terminal_task_cwd(session) or ".")
     session_key = session.get("session_key") if session else None
     return _ok(rid, {"items": _path_completion_items(word, root, session_key, local)})
 

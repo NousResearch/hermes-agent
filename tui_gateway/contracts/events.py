@@ -412,6 +412,21 @@ class ToolOutputRiskPayload(Payload):
 event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified as risky (prompt-injection / secret findings).")
 
 
+class ToolProgressPayload(Payload):
+    """``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's
+    ``notifications/progress`` for a running call, throttled to one per 500 ms per call."""
+
+    tool_id: str
+    name: str
+    progress: float
+    total: float | None = None
+    percent: int | None = None
+    message: str | None = None
+
+
+event("tool.progress", ToolProgressPayload, doc="Live progress of a running tool call (MCP notifications/progress).")
+
+
 class TodoUpdatedPayload(Payload):
     """``tool_progress._normalize_todo_state`` — full task snapshot."""
 
@@ -851,7 +866,8 @@ __all__ = [
     "SetupReadyPayload", "SideAgentCompletePayload", "SkinPayload", "StatusUpdatePayload",
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
-    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
+    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolProgressPayload",
+    "ToolStartPayload",
     "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

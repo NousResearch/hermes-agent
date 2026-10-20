@@ -9,7 +9,6 @@ turn that was still running. Rows keep ``server._session_live_item``'s shape; ``
 """
 from __future__ import annotations
 
-from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -26,28 +25,20 @@ async def active_list(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     if 'session:read' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_local_close import closed_and_unviewed
+    from gateway.session_live_listing import live_entries
     from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-    authority = connection.authority
     current = str(params.get('current_session_id') or '')
     rows = []
-    for sid, live in tuple(authority.sessions.items()):
-        candidate = SessionRef(connection.actor.profile_id, sid)
-        try:
-            handle = await authority.resolve(connection.actor, candidate)
-        except RuntimeStoreError as exc:
-            if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
-                raise
-            continue
-        row = authority.db.get_session(sid) or {}
+    for entry in await live_entries(connection.authority, connection.actor):
+        row = entry.row
         # The same population as the live ``session.list`` feed, hidden chats included: a hidden
         # chat open in a pane still needs its turn's liveness.
-        if row.get('source') in INTERNAL_LISTING_SOURCES or closed_and_unviewed(authority, sid, handle):
+        if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed:
             continue
-        started = float(row.get('started_at') or 0)
+        sid, started = entry.session_id, float(row.get('started_at') or 0)
         rows.append({'current': sid == current, 'id': sid, 'session_key': sid,
                      'last_active': float(row.get('ended_at') or started), 'started_at': started,
                      'message_count': int(row.get('message_count') or 0),
                      'model': str(row.get('model') or ''), 'preview': '', 'title': row.get('title') or '',
-                     'status': _status(live, handle, authority._pending_rows(candidate))})
+                     'source': row.get('source'), 'status': _status(entry.live, entry.handle, entry.pending)})
     return {'sessions': rows}

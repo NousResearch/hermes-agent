@@ -26,6 +26,8 @@ export const settingsZh: TranslationOverride<
   >
 > = {
   pluginsPage: {
+    updateScanBody: '安全扫描在 {name} 的新代码中发现了 {count} 项风险。请仅在信任来源时继续更新：',
+    updateScanBlocked: '安全扫描判定 {name} 的新代码存在危险，未应用更新。',
     updateConsentBody: '{name} 的新目录版本（{sha}）增加了当前版本没有的能力。请仅在信任这些能力时更新：',
     contextEngineLabel: '上下文引擎',
     dashboardSlots: '面板插槽',
@@ -423,8 +425,8 @@ export const settingsZh: TranslationOverride<
     createSkill: '创建技能'
   },
   files: {
-    brokenSymbolicLink: "符号链接已失效",
-    brokenLink: "失效链接",
+    brokenSymbolicLink: '符号链接已失效',
+    brokenLink: '失效链接',
     root: '文件',
     refresh: '刷新文件列表',
     path: '路径',

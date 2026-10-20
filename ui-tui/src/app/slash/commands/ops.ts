@@ -102,16 +102,36 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
-      // A canonical session's MCP servers are frozen with its launch policy; the shared owner's
-      // pool is every chat's, so there is no per-session reload verb yet.
+      const a = (arg || '').trim().toLowerCase()
+
+      // The shared owner serves a session-scoped reload.mcp: it reconciles only this profile's
+      // servers and moves this session to a new policy generation when idle (session_ancillary.py).
+      // It has no persistent opt-out (`always`), so `always` confirms this once like `now`.
       if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload-mcp'))
+        const confirm = ['always', 'approve', 'now', 'once', 'yes'].includes(a)
+
+        return void ctx.gateway
+          .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid, ...(confirm ? { confirm: true } : {}) })
+          .then(
+            ctx.guarded<ReloadMcpResponse>(r => {
+              ctx.transcript.sys(
+                t(
+                  r.status === 'confirm_required'
+                    ? 'slashCmd.ops.reloadMcp.profileConfirm'
+                    : 'slashCmd.ops.reloadMcp.reloaded'
+                )
+              )
+
+              if (r.message) {
+                ctx.transcript.sys(r.message)
+              }
+            })
+          )
+          .catch(ctx.guardedErr)
       }
 
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
-      const a = (arg || '').trim().toLowerCase()
-
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
@@ -337,7 +357,8 @@ export const opsCommands: SlashCommand[] = [
 
             // What a safe whole-tree restore left alone, as main's CLI lists it: the first five paths.
             const summarize = (paths: string[]) =>
-              paths.slice(0, 5).join(', ') + (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
+              paths.slice(0, 5).join(', ') +
+              (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
 
             for (const [key, paths] of [
               ['keptUserEdits', r.skipped_user_edits],

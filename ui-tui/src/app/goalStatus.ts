@@ -33,14 +33,21 @@ const clock = (epochSeconds: number, locale: string) =>
     minute: '2-digit'
   })
 
-/** `⊙ goal · 3/20 turns · <title>` for an active goal, `⏳ goal parked` / `⏸ goal paused` with the
+/** `⊙ goal · 3/20 turns · 2 subgoals · <title>` for an active goal, `⏳ goal parked` / `⏸ goal paused` with the
  * reason while held, `null` once it is done or cleared (the transcript carries the verdict). */
 export function goalLine(goal: GoalSnapshot | null, locale: string = getLocale()): GoalLine | null {
   if (!goal || (goal.status !== 'active' && goal.status !== 'paused')) {
     return null
   }
 
-  const turns = tr('goal.turns', goal.turns_used, goal.max_turns)
+  const turns = [
+    tr('goal.turns', goal.turns_used, goal.max_turns),
+    goal.subgoals.length ? tr(goal.subgoals.length === 1 ? 'goal.subgoal' : 'goal.subgoals', goal.subgoals.length) : '',
+    goal.gates.length ? tr(goal.gates.length === 1 ? 'goal.gate' : 'goal.gates', goal.gates.length) : ''
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
   const barrier = goal.status === 'active' ? goal.wait_barrier : null
 
   if (barrier) {

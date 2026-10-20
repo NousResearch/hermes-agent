@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
     share_hint: "Condividi questi link con il team Hermes per ricevere supporto."
     report_label: "Report"
+    local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug` per caricare il report riepilogativo."
   deny:
     stale: "❌ Comando negato (l'approvazione era obsoleta)."
     no_pending: "Nessun comando in attesa da negare."
@@ -445,6 +446,9 @@ gateway:
     state_no: "No"
     queued: "**Follow-up in coda:** {count}"
     platforms: "**Piattaforme connesse:** {platforms}"
+  discard:
+    nothing: "Niente da scartare: questa chat non ha turni persi in un riavvio."
+    done: "🗑️ Scartati {count} turni persi; non sono stati rieseguiti. I tuoi messaggi salvati riceveranno ora risposta."
   stop:
     stopped_pending: "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."
     stopped: "⚡ Fermato. Puoi continuare questa sessione."
@@ -687,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Qualcosa è andato storto e non sono riuscito a completare questa risposta.{hint}\nUsa /retry per riprovare, oppure /new per iniziare una nuova conversazione. I dettagli tecnici sono nel log del gateway (`hermes logs`)."
     history_unavailable: "⚠️ La cronologia di questa sessione è temporaneamente non disponibile, quindi questo messaggio non è stato elaborato. Chiedi all'operatore di controllare state.db, poi invialo di nuovo quando è di nuovo integro. Usa /reset solo se vuoi davvero iniziare una nuova conversazione."
     no_credentials: "⚠️ Non sono riuscito a connettermi al servizio del modello AI, quindi questo messaggio non è stato elaborato. Usa /login per accedere di nuovo, oppure /model per scegliere un altro modello. Se continua a fallire, esegui `hermes doctor` sull'host."
+    cron_session_read_only: "⚠️ Questa chat appartiene a un'attività pianificata ed esegue solo quella, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo."
   skills:
     disabled: "La skill **{name}** è installata ma disattivata.\nAttivala con: `hermes skills config`"
     not_installed: "La skill **{name}** è disponibile ma non installata.\nInstallala con: `hermes skills install {install_name}`"
@@ -1530,6 +1535,8 @@ slash:
     description: "Importa un archivio di profilo condiviso come nuovo profilo"
   stop:
     description: "Termina tutti i processi in background in esecuzione"
+  discard:
+    description: "Scarta un turno perso al riavvio di Hermes così la coda di questa chat riprende"
   pause:
     description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); '/pause off' riprende"
   deny:
@@ -1683,6 +1690,21 @@ slash:
   quit:
     description: "Esci dalla CLI (usa --delete per eliminare anche la cronologia della sessione)"
 cli:
+  modern:
+    thought_for: "Ha pensato per {seconds}s"
+    thought: "Ha pensato"
+    working: "Al lavoro…"
+    preparing: "Preparazione di {what}…"
+    hint_steer: "guida"
+    hint_queue: "accoda"
+    hint_interrupt: "interrompi"
+    hint_stop: "ferma"
+    hint_commands: "comandi"
+    hint_files: "file"
+    hint_shell: "shell"
+    placeholder_busy_steer: "scrivi per guidare questo turno · Tab lo accoda per dopo"
+    placeholder_busy_interrupt: "scrivi per reindirizzare questo turno · Tab lo accoda per dopo"
+    placeholder_busy_queue: "scrivi per accodare un messaggio dopo questo turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Impossibile caricare la fatturazione"
@@ -2226,6 +2248,7 @@ cli:
     queue_heading: "Coda · {count} in coda · /queue list{controls}"
     more_queued: "+{count} altri"
     transcript_unavailable: "Trascrizione in tempo reale non ancora disponibile."
+    control_pending: "Invio in corso…"
     steer_prompt: "Indirizza: "
     roster_empty: "Nessun subagente attivo né processo in background. I risultati arrivano nella conversazione."
     entry_gone: "Questa voce non è più attiva."
@@ -2364,6 +2387,14 @@ cli:
     move_out_of_range: "Spostamento fuori dai limiti della coda. Dimensione attuale: {size}"
     moved: "Elemento {source} della coda spostato in posizione {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "Il gateway non l'ha accodato: {error}. Nulla è stato accodato; invialo di nuovo a fine turno."
+    submit_unknown: "Il gateway non ha risposto ({error}), quindi il prompt potrebbe essere già in coda. Controlla /queue list prima di inviarlo di nuovo."
+    move_gateway_fifo: "Il gateway esegue i prompt in coda nell'ordine di invio; modificane o rimuovine uno invece."
+    remove_refused: "Impossibile rimuovere l'elemento {index} della coda: {error}"
+    edit_refused: "Impossibile modificare l'elemento {index} della coda: {error}"
+    already_started: "L'elemento {index} della coda è già partito; viene eseguito così come è stato inviato."
+    started_stopped: "L'elemento {index} della coda era già partito; il gateway lo ha fermato."
+    change_unknown: "Il gateway non ha risposto sull'elemento {index} della coda ({error}); controlla /queue list prima di riprovare."
   reload:
     env_reloaded: "Ricaricato .env (variabili aggiornate: {count})"
   steer:
@@ -3004,6 +3035,10 @@ cli:
       usage_disconnect: "disconnect   Torna al backend browser predefinito"
       usage_status: "status       Mostra la modalità browser attuale"
       usage_use: "use [off]    Passa alla modalità Browser Use (CLI 3.0) / torna agli strumenti integrati"
+      remote_gateway: "/browser connect e /browser disconnect gestiscono un browser Chromium sull'host del gateway — disponibile solo con un gateway locale."
+      checking: "Verifica del debug remoto del browser Chromium su {url}..."
+      new_sessions_only: "Si applica alle nuove sessioni — questa mantiene gli strumenti attuali (/new per avviarne una)."
+      status_gateway_default: "🌐 Browser: backend browser predefinito del gateway (nessuna connessione CDP attiva)"
     heartbeat:
       label: "Heartbeat"
       paused: "⏸ Heartbeat in pausa: {prompt}"

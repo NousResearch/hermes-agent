@@ -573,7 +573,11 @@ export class JsonRpcGatewayClient {
     }
 
     try {
-      const sessionEpochBefore = this.replayEpochBySession.get(sid) ?? this.replayEpoch
+      // Only a canonical session's own epoch qualifies the watermark on the wire. The legacy
+      // process epoch (gateway.ready) is compared with the answer's `epoch` in applyReplayEpochs.
+      // An older legacy `session.events.since` refuses any other key, so sending the process
+      // epoch here makes the reconnect replay fail and drops pending approval and clarify requests.
+      const sessionEpochBefore = this.replayEpochBySession.get(sid)
 
       // `open_requests` on the answer are re-delivered by the channel itself.
       const result = await this.request<{

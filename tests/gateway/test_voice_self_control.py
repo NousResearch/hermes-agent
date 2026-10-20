@@ -287,7 +287,7 @@ def test_timeout_cancels_the_pending_action(runner, monkeypatch):
     async def _hang(source, guild_id):
         started.set()
         try:
-            await asyncio.sleep(30)
+            await asyncio.Event().wait()  # never set: hangs until the tool cancels it
         except asyncio.CancelledError:
             cancelled.set()
             raise

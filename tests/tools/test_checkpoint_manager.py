@@ -19,6 +19,9 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _index_path,
+    _reclaim_stale_index_lock,
+    _lock_has_live_holder,
 )
 from tools.checkpoint_maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
@@ -1386,3 +1389,125 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Stale index-lock reclaim
+# =========================================================================
+
+class TestStaleIndexLockReclaim:
+    """Regression tests for orphaned zero-byte index lock reclaim.
+
+    A crashed git process can leave ``<index_file>.lock`` behind.  Before the
+    reclaim path every later checkpoint failed with ``Unable to create
+    '.../<hash>.lock': File exists`` and never recovered.  The reclaim removes
+    a zero-byte, unheld, old lock and retries the git command once.
+    """
+
+    def _plant_lock(self, index: Path, *, size: int = 0, age_seconds: float = 3600.0) -> Path:
+        lock = Path(str(index) + ".lock")
+        if size == 0:
+            lock.write_bytes(b"")
+        else:
+            lock.write_bytes(b"x" * size)
+        old = time.time() - age_seconds
+        os.utime(lock, (old, old))
+        return lock
+
+    def test_orphaned_zero_byte_lock_is_reclaimed(
+        self, work_dir, checkpoint_base, monkeypatch, caplog,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        _init_store(store, str(work_dir))
+        index = _index_path(store, _project_hash(str(work_dir)))
+        index.parent.mkdir(parents=True, exist_ok=True)
+        lock = self._plant_lock(index, size=0, age_seconds=3600.0)
+
+        with caplog.at_level("INFO", logger="tools.checkpoint_manager"):
+            ok, _out, _err = _run_git(
+                ["add", "-A"], store, str(work_dir), index_file=index,
+            )
+
+        assert ok is True
+        assert not lock.exists()
+        assert any("Reclaimed stale git index lock" in rec.message for rec in caplog.records)
+
+    def test_fresh_lock_is_kept(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        _init_store(store, str(work_dir))
+        index = _index_path(store, _project_hash(str(work_dir)))
+        index.parent.mkdir(parents=True, exist_ok=True)
+        lock = self._plant_lock(index, size=0, age_seconds=0.0)
+
+        ok, _out, _err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index,
+        )
+
+        # Fresh lock is not reclaimed → git still fails with rc=128.
+        assert ok is False
+        assert lock.exists()
+
+    def test_non_zero_size_lock_is_kept(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        _init_store(store, str(work_dir))
+        index = _index_path(store, _project_hash(str(work_dir)))
+        index.parent.mkdir(parents=True, exist_ok=True)
+        lock = self._plant_lock(index, size=1, age_seconds=3600.0)
+
+        ok, _out, _err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index,
+        )
+
+        assert ok is False
+        assert lock.exists()
+
+    def test_one_retry_only(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """A lock collision triggers exactly one reclaim + one retry, never more."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        _init_store(store, str(work_dir))
+        index = _index_path(store, _project_hash(str(work_dir)))
+
+        # Force reclaim to always succeed so we exercise the retry path.
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._reclaim_stale_index_lock",
+            lambda *a, **kw: True,
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if len(calls) == 1:
+                # First call: simulate the lock collision.
+                if kwargs.get("text"):
+                    stderr = f"fatal: Unable to create '{index}.lock': File exists\n"
+                    return subprocess.CompletedProcess(
+                        args=cmd, returncode=128, stdout="", stderr=stderr,
+                    )
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=128, stdout=b"",
+                    stderr=f"fatal: Unable to create '{index}.lock': File exists\n".encode(),
+                )
+            # Second call: succeed.
+            if kwargs.get("text"):
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="", stderr="",
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=b"", stderr=b"",
+            )
+
+        monkeypatch.setattr("tools.checkpoint_manager.subprocess.run", fake_run)
+
+        ok, _out, _err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index,
+        )
+
+        assert ok is True
+        assert len(calls) == 2

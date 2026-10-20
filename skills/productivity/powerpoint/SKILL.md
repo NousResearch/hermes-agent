@@ -173,6 +173,28 @@ say so rather than approximating.
 
 ## Pitfalls
 
+- **Body-placeholder overfill is silent**: the outline and
+  `pptx_read.py` output still show every bullet when content exceeds the
+  nominal capacity of the content placeholder. PowerPoint normally
+  auto-shrinks that text to fit; other renderers or templates may clip it.
+  Either result can make a dense slide unreadable. The default template
+  inherits large nominal body sizes from its master (32pt at level 0,
+  shrinking per level), so a placeholder holds far less than it seems.
+  `pptx_create.py` estimates unscaled rendered height per slide and reports
+  `overflow_warnings` in its JSON output (`slide_index` is zero-based;
+  empty list when each estimate fits its nominal frame). A warning means
+  the content LIKELY needs shrinking or clipping: render-verify the flagged
+  slide first
+  (Verification step 3),
+  and only then split across slides, shorten bullets, or set smaller
+  per-bullet `"size"` values. The estimator is heuristic — it may warn
+  on borderline slides that render fine, but warnings on fixed-frame
+  placeholders should never be ignored without checking a render.
+  Note: the estimate applies only to `title_content` slides (the one
+  layout whose level sizing matches the master); other layouts override
+  level styles in their own XML, and bullets that land in an
+  auto-fitting textbox grow instead of clipping — no warning is
+  emitted in either case.
 - **Run splitting**: PowerPoint fragments paragraph text into runs at
   spell-check and edit boundaries. `--replace-text` first merges adjacent
   runs whose formatting is identical, so matches split across such runs
@@ -211,6 +233,9 @@ say so rather than approximating.
 
 1. After any create/edit, run `pptx_read.py OUT.pptx --outline` and check
    slide count, texts, tables, notes, and chart values match intent.
+   If `pptx_create.py` reported `overflow_warnings`, render-verify each
+   flagged slide (step 3) before shipping — a clean outline does not
+   mean the text renders at a readable size or without clipping.
 2. `--images DIR` then file-size check confirms pictures embedded.
 3. Render every slide with `pptx_render.py deck.pptx --outdir ./render`
    and review each PNG with `vision_analyze` — this catches overlapping

@@ -1,0 +1,34 @@
+manifest_version: 1
+
+name: liquilens
+description: Research Indian banks with source dates, coverage limits, and cited disclosures.
+source: https://liquilens.in/developers/institutions/
+
+# Public, read-only hosted endpoint; no local process or credentials.
+transport:
+  type: http
+  url: https://api.liquilens.in/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - banking_specialisation_coverage
+    - bank_asset_quality_review
+    - institution_review_packet
+    - universe_search
+
+suggest:
+  keywords:
+    - liquilens
+  hosts:
+    - liquilens.in
+
+post_install: |
+  No account or API key is needed for the public research endpoint.
+  Start a new session to load the selected tools. First check bank coverage,
+  then use an exact covered institution name or slug for the review.
+  Keep source dates and coverage limits with every finding; unavailable or
+  historical evidence is not a current risk assessment. Public fair-use
+  limits apply. These tools do not place orders or move funds.

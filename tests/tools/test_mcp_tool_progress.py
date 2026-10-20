@@ -9,14 +9,12 @@ import textwrap
 import pytest
 
 SERVER = textwrap.dedent('''\
-    import asyncio
     from mcp.server.mcpserver import MCPServer, Context
     app = MCPServer("prog")
 
     @app.tool()
     async def slow(ctx: Context) -> str:
-        for i in range(1, 21):
-            await asyncio.sleep(0.1)
+        for i in range(1, 21):  # back to back: the throttle must drop intermediates, never the last
             await ctx.report_progress(i * 5, 100, f"stage {i}")
         return "done"
 
@@ -54,8 +52,8 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
 
     assert events and all(a[0] == "tool.progress" and a[1] == "mcp__prog__slow" for a, _ in events)
     assert {kw["tool_call_id"] for _, kw in events} == {"call-7"}
-    # The throttle drops intermediates (20 sent), never the final 100%; exact pacing is pinned below
-    # on a controlled clock, since sleep() only bounds the delay from below on a loaded runner.
+    # 20 updates sent back to back: the throttle drops intermediates, never the final 100%. Exact
+    # pacing is pinned below on a controlled clock.
     assert len(events) < 20
     assert events[-1][1]["percent"] == 100 and events[-1][0][2] == "stage 20"
 

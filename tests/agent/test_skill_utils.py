@@ -182,6 +182,38 @@ class TestMultiprofileRawConfigCache:
         assert self._load_under(first) == ["first-disabled"]
         assert self._load_under(second) == ["second-disabled"]
 
+    def test_concurrent_loads_across_evicting_homes_never_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """Tool threads share the cache: two threads evicting the same oldest key must not
+        raise KeyError, nor an insert during ``next(iter(...))`` a RuntimeError. A 1 µs
+        switch interval makes the unlocked interleaving reliable instead of rare."""
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        from agent import skill_utils
+
+        homes = [tmp_path / f"scope-{i:02d}" for i in range(24)]
+        for i, home in enumerate(homes):
+            _write_disabled_config(home, f"skill-{i:02d}")
+        monkeypatch.setattr(skill_utils, "_RAW_CONFIG_CACHE_MAX", 2)
+        skill_utils._raw_config_cache_clear()
+
+        def hammer(offset: int) -> None:
+            for n in range(150):
+                i = (offset + n) % len(homes)
+                assert self._load_under(homes[i]) == [f"skill-{i:02d}"]
+
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                futures = [pool.submit(hammer, t) for t in range(16)]
+                errors = [f.exception(timeout=60) for f in futures]
+        finally:
+            sys.setswitchinterval(old_interval)
+        assert errors == [None] * 16
+
 
 class TestParseConfigStringList:
     """#86661: `hermes config set` and JSON-mode editor saves store lists as

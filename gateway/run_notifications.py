@@ -937,8 +937,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # refused, and one pinned to a gone session is dropped instead of requeued.
             if not raise_not_accepted and await self._watch_pin_gone(evt, str(exc)):
                 return None
-            logger.warning("Watch notification not admitted for %s chat=%s: %s",
-                           platform_name, source.chat_id, exc)
+            logger.warning("Watch notification not admitted for %s chat=%s (type=%s session_id=%s): %s",
+                           platform_name, source.chat_id,
+                           evt.get("type") or "?", evt.get("session_id", "unknown"), exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
             if raise_not_accepted:
                 raise

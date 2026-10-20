@@ -501,6 +501,12 @@ export interface ToolsConfigureResponse {
 
 // ── MCP ──────────────────────────────────────────────────────────────
 
+export interface SessionExportResponse {
+  content: string
+  filename?: string
+  format: string
+}
+
 export interface ReloadMcpResponse {
   status?: string
   message?: string
@@ -544,10 +550,13 @@ export interface RollbackDiffResponse {
 
 export interface RollbackRestoreResponse {
   error?: string
+  failed_deletes?: string[]
   history_removed?: number
   message?: string
   reason?: string
   restored_to?: string
+  skipped_oversize?: string[]
+  skipped_user_edits?: string[]
   success?: boolean
 }
 

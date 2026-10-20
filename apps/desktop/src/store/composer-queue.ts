@@ -38,6 +38,9 @@ export interface RemoveQueuedPromptOptions {
 export interface QueuedPromptEntry {
   id: string
   serverStatus?: string
+  /** The queued-row verbs the owner serves for a server row (`steer`, `replace`); none from an
+   *  owner that predates them. Projected from the pending snapshot, never set locally. */
+  serverControls?: string[]
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole

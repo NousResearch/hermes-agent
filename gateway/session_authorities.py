@@ -184,12 +184,38 @@ def active_authority(runner):
     return registry.active()
 
 
+def require_active_authority(runner, store=None):
+    """The active scope's authority, or a refusal: retryable (``runtime_draining``) while its
+    profile is parked, else ``profile_mismatch``. With *store* (a callable returning the caller's
+    SessionDB, called only once an authority exists), that store must be the authority's: an API
+    adapter bound to another profile's SessionDB never admits here."""
+    authority = active_authority(runner)
+    if authority is None:
+        from gateway.run_runtime import refuse_parked_scope
+        refuse_parked_scope(runner)  # retryable while its profile is parked
+    if authority is None or (store is not None and store() is not authority.db):
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('profile_mismatch')
+    return authority
+
+
 def all_authorities(runner):
     registry = getattr(runner, 'session_authorities', None)
     if registry is not None:
         return list(registry)
     authority = getattr(runner, 'session_authority', None)
     return [authority] if authority is not None else []
+
+
+def serving_authorities(runner):
+    """The authorities that accept work (``SessionAuthorities.serving``: no reserved-but-unbuilt slot,
+    none retiring): what startup recovery, service creation and cross-ledger reads cover. Shutdown
+    keeps ``all_authorities``, so a retained authority's live writer is still settled."""
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return registry.serving()
+    authority = getattr(runner, 'session_authority', None)
+    return [authority] if authority is not None and not getattr(authority, 'retiring', False) else []
 
 
 def require_serving(authority):
@@ -209,6 +235,23 @@ def admission_owner(authority, session_id):
         return sid
     with authority.db._read_ctx() as conn:
         return local_lineage_owner(conn, sid)
+
+
+def holds_admission(authority, session_id) -> bool:
+    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
+    retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
+    closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    try:
+        return bool(authority.db._read_one(
+            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
+            (session_id, admission_owner(authority, session_id))))
+    except Exception as exc:
+        if not getattr(authority, 'retiring', False):
+            raise
+        import logging
+        logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
+                                                 session_id, getattr(authority, 'profile_id', '?'), exc)
+        return True
 
 
 def owner_scope(authority, *, hydrate_secrets=False):

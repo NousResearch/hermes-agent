@@ -95,7 +95,9 @@ class CLIInitMixin:
         from cli import CLI_CONFIG, _configure_output_history, _int_or
         self.console = Console()
         self.config = CLI_CONFIG
-        display = CLI_CONFIG["display"]
+        # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
+        from gateway.display_config import local_display_config
+        display = local_display_config(CLI_CONFIG["display"])
         self.compact = compact if compact is not None else display.get("compact", False)
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")
@@ -119,8 +121,11 @@ class CLIInitMixin:
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
+        from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config, set_active
+        self._modern_layout = layout_from_config(display)  # display.cli_layout: modern | classic
+        set_active(self._modern_layout)
         # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
-        _bim = str(display.get("busy_input_mode", "interrupt")).strip().lower()
+        _bim = busy_input_mode_from_config(display)
         self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"
 
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
@@ -218,6 +223,7 @@ class CLIInitMixin:
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
         self._explicit_api_key = api_key or _startup_api_key_override or None
+        self._typed_api_key = api_key or None  # a startup resume it cannot bind is refused; an alias's falls back
         self._explicit_base_url = base_url or _startup_base_url_override or None
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
@@ -484,6 +490,7 @@ class CLIInitMixin:
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
+        self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete

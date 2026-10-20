@@ -10,6 +10,7 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
 
@@ -29,6 +30,8 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
     for key in ('revision', 'execution_generation'):
         if isinstance(getattr(exc, key, None), int):
             data[key] = getattr(exc, key)
+    if getattr(exc, 'admitted', None) is False:
+        data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
     return data
 
 
@@ -55,10 +58,30 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
     args = (method, _profile_label(profile), exc.reason,
             f' field={exc.field}' if getattr(exc, 'field', None) else '',
             f' detail={exc.detail}' if getattr(exc, 'detail', None) else '')
-    if getattr(exc, 'field', None) or getattr(exc, 'detail', None):
+    if exc.reason != 'session_busy' and (getattr(exc, 'field', None) or getattr(exc, 'detail', None)):
         logger.warning(line, *args)
     else:
         logger.debug(line, *args)
+
+
+# (method, error class) pairs whose traceback this process already logged.
+_STORAGE_TRACEBACKS = set()
+
+
+def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> None:
+    """Keep SQLite's diagnostic at the gateway while its wire error stays retryable.
+
+    Clients retry on ``storage_unavailable``, so, like ``_log_refusal``, a retrying client must not
+    flood the log: every failure keeps one line with its cause, the traceback comes once per method
+    and error class, and the client-supplied ``session_id`` is capped."""
+    key = (method, type(exc).__name__)
+    first = key not in _STORAGE_TRACEBACKS
+    _STORAGE_TRACEBACKS.add(key)
+    shown = repr(session_id)
+    if len(shown) > 64:
+        shown = f'{shown[:48]}… ({len(shown)} chars)'
+    logger.warning('%s storage failure for profile=%s session_id=%s: %s',
+                   method, _profile_label(profile), shown, exc, exc_info=first)
 
 
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
@@ -66,6 +89,7 @@ _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
+                               'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
 
@@ -77,6 +101,13 @@ def display_projection(history, profile_home):
     from tui_gateway import server
     rows = [{**row, '_row_id': row['row_id']} if 'row_id' in row else row for row in history]
     return server._history_to_messages(rows, profile_home=profile_home)
+
+
+def model_only(row):
+    """A live row the model reads but nobody typed as one message (a micro-compaction merge): never rendered."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    metadata = row.get('display_metadata')
+    return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
 
 class AuthorityConnection:
@@ -145,6 +176,7 @@ class AuthorityConnection:
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
+                    'bot_relay.settle': self.bot_settle,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
@@ -161,6 +193,8 @@ class AuthorityConnection:
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
         from gateway.session_busy_controls import handlers as busy_handlers
         handlers.update(busy_handlers(self))
+        from gateway.session_queued_controls import handlers as queued_handlers
+        handlers.update(queued_handlers(self))
         from gateway.session_config import handlers as config_handlers
         handlers.update(config_handlers(self))
         from gateway.session_tui_config import handlers as tui_config_handlers
@@ -173,6 +207,8 @@ class AuthorityConnection:
         handlers.update(tui_ops_handlers(self))
         from gateway.session_tui_side import handlers as side_handlers
         handlers.update(side_handlers(self))
+        from gateway.session_llm_oneshot import handlers as oneshot_handlers
+        handlers.update(oneshot_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
@@ -188,12 +224,16 @@ class AuthorityConnection:
         handlers['session.automation'] = partial(automation, self)
         from gateway.session_reactions import react
         handlers['message.react'] = partial(react, self)
+        from gateway.session_clarify_lock import clarify_lock
+        handlers['clarify.lock'] = partial(clarify_lock, self)
+        from gateway.session_connections import handlers as connection_handlers
+        handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
         return handlers
 
     async def dispatch(self, request):
-        from gateway.session_sudo_prompt import is_response_frame
+        from gateway.session_server_requests import is_response_frame
         if is_response_frame(request):
             # A viewer answering one of the owner's server→client requests (the sudo prompt): a
             # response gets no reply (JSON-RPC), and only a viewer entitled to respond on that
@@ -241,6 +281,14 @@ class AuthorityConnection:
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
         original_params = dict(params)
         contract = contract or METHODS.get(method)
+        authority = self.authority
+        if (isinstance(ref.session_id, str) and ref.session_id and not getattr(authority, 'retiring', False)
+                and ref.profile_id == getattr(authority, 'profile_id', None)
+                and ref.session_id not in getattr(authority, 'sessions', {ref.session_id: None})):
+            # A first read of a session recovery never restored: its compression catch-up (#140060)
+            # commits in a worker here, so the handler's synchronous restore only reads.
+            from gateway.session_local_adoption import adopt_before_restore
+            await adopt_before_restore(authority, ref.session_id)
         handlers = self.handlers()
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
@@ -249,25 +297,34 @@ class AuthorityConnection:
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
             from gateway.session_authorities import owner_scope
+            from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
             with owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
-                elif method not in handlers:
+                elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
+                    # An account-owned connector call (the Connectors page) keeps its legacy handler.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
                         'code': -32601, 'message': f'unknown method: {method}',
                         'data': {'reason': 'unknown_method'}}}
                 else:
                     result = await handlers[method](ref, params)
+                    if isinstance(result, DeferredReply):  # answered off the serial dispatch
+                        check_params_accepted(contract, original_params)
+                        return result.start(self, rid, partial(check_result, contract))
             check_params_accepted(contract, original_params)
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
+            # A connector refusal keeps the legacy handlers' code and message (gateway/session_connections.py).
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
-        except sqlite3.Error:
+                'code': getattr(exc, 'wire_code', 4001), 'message': getattr(exc, 'wire_message', exc.reason),
+                'data': _refusal_data(exc)}}
+        except sqlite3.Error as exc:
+            _log_storage_failure(getattr(self.actor, 'profile_id', None), method,
+                                 params.get('session_id'), exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
 
@@ -310,6 +367,10 @@ class AuthorityConnection:
     async def bot_deliver(self, ref, params):
         from gateway.session_bot import deliver
         return await deliver(self, params)
+
+    async def bot_settle(self, ref, params):
+        from gateway.session_bot import settle
+        return await settle(self, params)
 
     async def worker_register(self, ref, params):
         from gateway.session_worker import worker_request
@@ -369,9 +430,10 @@ class AuthorityConnection:
             return await self._create(params, title)
 
     async def _create(self, params, title):
-        from gateway.session_local import stage_local_session
+        from gateway.session_local import stage_local_session, staged_creation_follows
         from gateway.session_local_recovery import restore_local_session
         from gateway.session_local_title import resolve_titled_session, title_new_session
+        from gateway.session_policy import BYPASS_FIELDS
         from gateway.session_runtime_workers import tracked_write
         from hermes_state_local import commit_local_session
         # Bot Mode's forever-chat mint: born hidden from the sidebar. `follow_profile_config` stays in
@@ -380,6 +442,13 @@ class AuthorityConnection:
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
+        if (not ref and title == 'Bot Chat'
+                and not any(params.get(name) is True for name in BYPASS_FIELDS)
+                and staged_creation_follows(self.authority, self.actor, params.get('request_id'))):
+            # ``chat -c "Bot Chat" --create-if-missing`` and any other titled create. A safe-mode
+            # or ignore-user-config launch never reads the profile, so it stays frozen. An exact
+            # retry of a creation staged without the flag keeps that frozen request.
+            params.setdefault('follow_profile_config', True)
         if not ref:
             skills_prompt = None
             if 'skills' in params:
@@ -508,6 +577,14 @@ class AuthorityConnection:
             from gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         else:
+            # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
+            # characters. Resolve only that family before authorization so a unique hint reaches
+            # the same durable local route as its full ID; ambiguous and missing prefixes retain
+            # the normal not_found result.
+            if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
+                resolved_id = self.authority.db.resolve_session_id(ref.session_id)
+                if resolved_id is not None:
+                    ref = SessionRef(ref.profile_id, resolved_id)
             from gateway.session_local_migration import resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
@@ -538,11 +615,12 @@ class AuthorityConnection:
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        if 'session:control' in self.actor.capabilities and ref.session_id not in self.subscriptions:
+        if 'session:control' in self.actor.capabilities:
             # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
-            # (CFG-2); a snapshot poll on this attachment does not.
+            # (CFG-2); a snapshot poll on this attachment does not. Any open still adopts a frozen Bot Chat
+            # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
-            await refresh_resumed_policy(self.authority, ref)
+            await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self._spawn_notice(ref)
@@ -554,9 +632,12 @@ class AuthorityConnection:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
+        from gateway.session_connections import pending_connection
         display = {}
         if params.get('display_projection'):
-            display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
+            # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
+            display['display_messages'] = display_projection(
+                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
@@ -565,7 +646,8 @@ class AuthorityConnection:
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': info}
+                'prompts': list(snapshot.prompts), 'info': info,
+                'pending_connection': pending_connection(self.authority, ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
@@ -608,6 +690,67 @@ class AuthorityConnection:
         return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
 
     async def submit(self, ref, params):
+        if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
+            self._record_voice_stop(ref, params)
+            return {'voice_stopped': True}
+        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
+        receipt = await self.authority.submit(self.actor, self.submission(ref, params),
+                                              queue_while_restarting=self._operator is True)
+        return asdict(receipt)
+
+    def _voice_stop_key(self, ref, params):
+        request_id = params.get('submission_id') or params.get('input_id')
+        if not isinstance(request_id, str) or not request_id:
+            return None
+        return (self.actor.subject, ref.profile_id, ref.session_id, request_id)
+
+    def _voice_stop_replay(self, ref, params):
+        """A retry of a stop this owner already consumed (its reply was lost; Ink offers Alt+K on the
+        same submission id). Voice is off by then, so the phrase check alone would admit ``stop`` as a
+        turn: the request identity answers it again, as an admission's replay would."""
+        key = self._voice_stop_key(ref, params)
+        if key is None or key not in getattr(self.authority, '_consumed_voice_stops', {}):
+            return False
+        if ref.session_id not in self.subscriptions:
+            return False  # submission() refuses it as permission_denied
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        return True
+
+    def _record_voice_stop(self, ref, params):
+        from collections import OrderedDict
+        key = self._voice_stop_key(ref, params)
+        if key is None:
+            return
+        consumed = self.authority.__dict__.setdefault('_consumed_voice_stops', OrderedDict())
+        consumed[key] = True
+        consumed.move_to_end(key)
+        while len(consumed) > 256:
+            consumed.popitem(last=False)
+
+    async def _typed_voice_stop(self, ref, params):
+        """TUI-26: a bare stop phrase typed while the session's voice chat is on ends the chat
+        (the sidecar's ``methods_prompt._consume_typed_stop_phrase``, its typed twin of the spoken
+        stop) and is never admitted. Only a submitter attached to the session may end it, and only
+        on a LOCAL session: a messaging lane's own ``/voice`` mode belongs to that chat, so a
+        viewer's typed text there is admitted untouched."""
+        text = params.get('text')
+        if not isinstance(text, str):
+            return False
+        if ref.session_id not in self.subscriptions:
+            return False  # submission() refuses it as permission_denied
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        live = self.authority.sessions.get(ref.session_id)
+        source = getattr(live, 'source', None)
+        if source is None or source.platform != Platform.LOCAL:
+            return False
+        from gateway.session_config import local_voice_enabled
+        if not local_voice_enabled(ref.session_id):
+            return False
+        from tui_gateway import server
+        return await asyncio.to_thread(server._consume_typed_stop_phrase, text, ref.session_id, emit=False)
+
+    def submission(self, ref, params):
+        """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
@@ -626,20 +769,17 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'),
-                                              queue_while_restarting=self._operator is True)
-        return asdict(receipt)
+        return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
-            raise RuntimeStoreError('session_busy') from exc
+            raise busy_refusal(exc) from exc
         except RuntimeStoreError as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.
@@ -692,14 +832,11 @@ class AuthorityConnection:
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
-        from gateway.session_sudo_prompt import resolve
+        from gateway.session_server_requests import may_settle, resolve
 
-        def entitled(session_id):
-            try:
-                self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
-            except RuntimeStoreError:
-                return False
-            return True
+        def entitled(session_id, events):
+            # The same rule ``clarify.lock`` applies to the same request id (attached + respond).
+            return may_settle(self.authority, self.actor, session_id, events)
         if not resolve(frame, session_ok=entitled):
             import logging
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
@@ -720,6 +857,8 @@ class AuthorityConnection:
         for sibling in self._siblings.values():
             await sibling.close()
         self._siblings.clear()
+        from gateway.session_llm_oneshot import forget
+        forget(self)  # nobody is left to read its one-shot replies
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
         for session_id, subscription in list(self.subscriptions.items()):

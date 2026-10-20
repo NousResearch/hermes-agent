@@ -1543,6 +1543,26 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     if not config_renderer_a11y and "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in os.environ:
         env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] = "0"
 
+    # Composer spellcheck language (#48375). Bridged to the Electron session
+    # dictionary: on Windows/Linux Chromium only returns right-click
+    # suggestions when the session dictionary for that language is seeded —
+    # the renderer `lang` attribute alone is not enough. Empty config =
+    # system locale (the app's own fallback), so bridge only an explicit tag.
+    spell_lang = ""
+    try:
+        from hermes_cli.config import load_config
+        editor_cfg = (load_config() or {}).get("desktop", {}).get("editor") or {}
+        raw_lang = editor_cfg.get("language", "")
+        if isinstance(raw_lang, str):
+            candidate = raw_lang.strip()
+            # Loose BCP-47 shape; a malformed value must never reach the session.
+            if candidate and re.fullmatch(r"[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*", candidate):
+                spell_lang = candidate
+    except Exception:
+        spell_lang = ""
+    if spell_lang and "HERMES_DESKTOP_SPELLCHECK_LANGUAGE" not in os.environ:
+        env["HERMES_DESKTOP_SPELLCHECK_LANGUAGE"] = spell_lang
+
     # Without --password-store safeStorage.isEncryptionAvailable() is often
     # false and the desktop app refuses to persist remote gateway tokens.
     if sys.platform == "linux" and "HERMES_DESKTOP_PASSWORD_STORE" not in os.environ:

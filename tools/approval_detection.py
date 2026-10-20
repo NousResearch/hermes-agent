@@ -310,7 +310,10 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
-    (rf'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)', "pipe remote content to shell"),
+    # The terminator class includes the command separators `;`/`&`/`|` and the group closers `)` /
+    # backtick: inside `$(curl ... | sh)` or a case arm's `... | sh;;` the shell name sits directly
+    # against one of them, and the substitution executes its body — the pipe ran unflagged (#135275).
+    (rf'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c|[;&|)`])', "pipe remote content to shell"),
     (rf'\b(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
@@ -1077,13 +1080,124 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
 
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
     """Return the offset after a balanced ``$(...)`` command substitution."""
+    case_closers = _case_pattern_closer_indices(command)
     depth = 1
     for kind, i, _, quote in _scan_shell(command, start + 2):
         if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
+            # A `case WORD in PATTERN)` closer ends a pattern list, not the substitution: bash runs
+            # the arm's commands until `;;`/`esac`, so counting it as the close truncated the body
+            # before those commands (#135275).
+            if command.startswith("$(", i):
+                depth += 1
+            elif command[i] == ")" and i not in case_closers:
+                depth -= 1
             if depth == 0:
                 return i + 1
     return None
+
+
+@functools.lru_cache(maxsize=64)
+def _case_pattern_closer_indices(command: str) -> frozenset:
+    """Indices of every ``)`` that ends a ``case WORD in PATTERN`` list, quote-aware.
+
+    A pattern ``)`` must not close the ``$(...)`` or ``(`` group it sits in — bash runs the arm's
+    commands until ``;;`` / ``esac`` — so the balanced-paren scanners consult this set to skip it
+    (#135275) and ``_iter_shell_command_starts`` marks the arm's first command right after it.
+    Approximate single-pass lexer: ``case`` / ``in`` / ``esac`` match only as unquoted words,
+    nesting runs through a depth counter, and ``$(...)`` / backtick bodies (bare or inside double
+    quotes, which execute them) are scanned with a fresh quote state exactly as the shell would.
+    Misreads degrade to the pre-case-aware behavior — no closer means the balanced-paren scanners
+    see the same text they always did."""
+    if "case" not in command:
+        return frozenset()
+    closers: list[int] = []
+    word: list[str] = []
+    word_quoted = False
+    # pending: None | "subject" | "in" — saw `case`, consumed its subject word, awaiting `in`.
+    pending: str | None = None
+    case_depth = 0
+    in_pattern = False  # innermost case sits between `in` and its `)`, or after `;;` (new pattern)
+    paren_depth = 0  # pattern-side opener `(` / `$(...)` guard, so `(x)` balances its own paren
+    quote: str | None = None
+    groups: list[tuple[str | None, str]] = []  # (quote to restore, 'pn'|'bt') per open group
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+        elif quote == '"':
+            # Inside double quotes only $(...) and backticks execute; their bodies scan fresh,
+            # including the word state (the opening quote must not taint the body's first word).
+            if command.startswith("$(", i):
+                groups.append((quote, "pn"))
+                quote = None
+                word_quoted = False
+                i += 2
+            elif ch == "`":
+                groups.append((quote, "bt"))
+                quote = None
+                word_quoted = False
+                i += 1
+            else:
+                i += 1
+        elif ch in "'\"":
+            quote = ch
+            word_quoted = True
+            i += 1
+        elif ch == "\\" and i + 1 < len(command):
+            word_quoted = True
+            i += 2
+        elif not ch.isspace() and ch not in ";&|()<>'\"`\\":
+            word.append(ch)
+            i += 1
+        else:
+            # Boundary char: run the keyword grammar on the flushed word, then the char's rule.
+            bare = "".join(word) if word and not word_quoted else None
+            word, word_quoted = [], False
+            if bare == "case" and not in_pattern:
+                pending = "subject"
+            elif pending == "subject":
+                pending = "in"
+            elif pending == "in" and bare == "in":
+                pending = None
+                case_depth += 1
+                in_pattern = True
+                paren_depth = 0
+            elif bare == "esac" and case_depth:
+                case_depth -= 1
+                in_pattern = False
+            elif pending == "in" and bare is not None:
+                pending = None  # `case` subject never followed by `in`: not case grammar
+            if command.startswith("$(", i) or ch == "(":
+                if in_pattern:
+                    paren_depth += 1
+                else:
+                    groups.append((None, "pn"))
+                i += 2 if command.startswith("$(", i) else 1
+            elif ch == ")":
+                if in_pattern and paren_depth:
+                    paren_depth -= 1
+                elif in_pattern:
+                    closers.append(i)
+                    in_pattern = False
+                elif groups and groups[-1][1] == "pn":
+                    quote = groups.pop()[0]
+                # else: closes a group this pass does not track; balanced scanners own it
+                i += 1
+            elif ch == "`":
+                if groups and groups[-1][1] == "bt":
+                    quote = groups.pop()[0]
+                else:
+                    groups.append((None, "bt"))
+                i += 1
+            elif ch == ";" and case_depth and not in_pattern:
+                in_pattern = True  # `;;`/`;` ends an arm; the next words are a new pattern list
+                i += 1
+            else:
+                i += 1
+    return frozenset(closers)
 
 
 def _scan_backtick_end(command: str, start: int) -> int | None:
@@ -1168,6 +1282,7 @@ def _is_shell_comment_start(command: str, index: int) -> bool:
 
 def _iter_shell_command_starts(command: str):
     starts = [0]
+    case_closers = _case_pattern_closer_indices(command)
 
     def scan(start: int, end: int) -> None:
         skip = -1
@@ -1182,8 +1297,11 @@ def _iter_shell_command_starts(command: str):
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
                 # marked inside either splits the word the flat patterns need to see intact.
-                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
-                                                                   or command[i - 1] in "(;&|)")):
+                # A `case ... in PATTERN)` closer is the same kind of position: the arm's commands
+                # begin right after it (#135275).
+                if command[i] in "(;\n" or i in case_closers or (
+                        command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                                               or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
                 elif command[i] in "&|":
                     repeated = i + 1 < end and command[i + 1] == command[i]

@@ -1138,3 +1138,64 @@ class TestProviderSwitchClearsBaseUrl:
         assert "Cleared" not in out
         # Unknown host: kept, but the user is told the old route still applies (from #113725).
         assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])
+
+
+class TestAuxiliaryProviderSwitchClearsStaleRoute:
+    """``config set auxiliary.<task>.provider X`` must drop the previous provider's route exactly
+    like the ``model.provider`` switch does (#141832): a leftover ``base_url`` overrides the new
+    provider (config_defaults: "base_url overrides provider"), so the aux call would post X's
+    credential to the old provider's endpoint — the hazard #113719/#40862 guarded for ``model``."""
+
+    def _seed(self, tmp_path, aux):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+            {"model": {"provider": "openai"}, "auxiliary": aux}))
+
+    @pytest.mark.parametrize("target", ["anthropic", "openai-codex"])
+    def test_switch_drops_stale_aux_route(self, _isolated_hermes_home, capsys, target):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions"}})
+        set_config_value("auxiliary.vision.provider", target)
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": target}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "openai-api" in out
+        assert "auxiliary.vision.base_url (https://api.openai.com/v1)" in out
+
+    def test_route_owned_by_target_is_kept(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses"}})
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "openai-codex",
+                          "base_url": "https://chatgpt.com/backend-api/codex",
+                          "api_mode": "codex_responses"}
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+
+    def test_unverified_route_is_kept_with_warning(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "http://proxy.internal:8080/v1"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic", "base_url": "http://proxy.internal:8080/v1"}
+        out = capsys.readouterr().out
+        assert "still applies" in out and "auxiliary.vision.base_url" in out
+
+    def test_same_provider_switch_is_noop(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1"}})
+        set_config_value("auxiliary.vision.provider", "openai-api")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "openai-api", "base_url": "https://api.openai.com/v1"}
+        assert "Cleared" not in capsys.readouterr().out
+
+    def test_non_provider_aux_key_leaves_route_alone(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1"}})
+        set_config_value("auxiliary.vision.model", "gpt-5.3")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "openai-api", "base_url": "https://api.openai.com/v1",
+                          "model": "gpt-5.3"}
+        assert "Cleared" not in capsys.readouterr().out

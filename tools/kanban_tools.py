@@ -1113,6 +1113,9 @@ def _handle_create(args: dict, **kw) -> str:
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
+    from hermes_cli.kanban_assignee import create_assignee_warning, create_replay_guard, record_create_assignee_warning
+
+    assignee_warning, valid_profiles = create_assignee_warning(str(assignee))
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
@@ -1130,27 +1133,34 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
-        new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
-            parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
-            priority=_opt_int(args.get("priority"), 0),
-            workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
-            # Board-project inheritance must read the board this call opened, not the
-            # session's current board.
-            board=args.get("board"),
-            project_source_task_id=project_source_task_id, triage=triage,
-            creator_task_id=self_tid,
-            idempotency_key=args.get("idempotency_key"),
-            max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
-            model_override=model_override, provider_override=provider_override,
-            goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
-            completion_contract=args.get("completion_contract"),
-            initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+        with create_replay_guard(conn, args.get("idempotency_key")) as replay:
+            new_tid = kb.create_task(
+                conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+                parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+                priority=_opt_int(args.get("priority"), 0),
+                workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
+                # Board-project inheritance must read the board this call opened, not the
+                # session's current board.
+                board=args.get("board"),
+                project_source_task_id=project_source_task_id, triage=triage or bool(assignee_warning),
+                creator_task_id=self_tid,
+                idempotency_key=args.get("idempotency_key"),
+                max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
+                model_override=model_override, provider_override=provider_override,
+                goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
+                completion_contract=args.get("completion_contract"),
+                initial_status="running" if assignee_warning else str(args.get("initial_status") or "running"),
+                created_by=_persisted_identity(), session_id=session_id)
+            if assignee_warning and not replay and kb.get_task(conn, new_tid).status == "triage":
+                record_create_assignee_warning(conn, new_tid, assignee_warning)
+        if replay:
+            assignee_warning = None
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
+        warning_fields = ({"warning": assignee_warning, "valid_profiles": valid_profiles}
+                          if assignee_warning else {})
+        return _ok(task_id=new_tid, **landed, **gate, **warning_fields,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 

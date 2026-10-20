@@ -1849,7 +1849,8 @@ listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
   `broadcast_plugin_event`. A plugin whose id is not `[a-z0-9_-]{1,64}` (a category plugin such as
   `image_gen/x`) cannot register one: the call raises `ValueError`.
 - **The handler** is called as `handler(params, session_id=...)` off the gateway loop, in the owning
-  profile's scope. Accept `**kwargs`: later releases may pass more context. Its return value must be
+  profile's scope. It may be `async def`: it then runs on its own event loop in that worker thread, never
+  on the gateway loop, the same as a plugin slash command. Accept `**kwargs`: later releases may pass more context. Its return value must be
   JSON-encodable and is the call's `result`. An exception, or a value JSON cannot encode, answers the call
   with error `4001`, reason `plugin_rpc_failed`, and the exception text in `error.data.detail`. The call
   holds that client's request lane until it returns, so keep it short: start long work in a thread and

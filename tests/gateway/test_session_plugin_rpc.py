@@ -1,4 +1,5 @@
 """A plugin's frontend reaches its own Python half through the session authority, and back."""
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +8,16 @@ import hermes_yaml as yaml
 from tests.gateway.test_surface_admission import _authority
 
 _PLUGIN = '''
+import threading
+
+
+async def _thread(params, *, session_id, **kw):
+    return threading.get_ident()
+
+
 def register(ctx):
     ctx.register_rpc("pane.state", lambda params, *, session_id, **kw: {"n": params["n"], "session_id": session_id})
+    ctx.register_rpc("pane.thread", _thread)
 '''
 
 
@@ -49,6 +58,9 @@ async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_pl
         assert (await call(reader, session_id='s', n=3))['data']['reason'] == 'permission_denied'
         assert (await call(owner, session_id='local-x', n=3))['data']['reason'] == 'permission_denied'
         assert (await call(owner, session_id='s'))['data']['reason'] == 'plugin_rpc_failed'
+        # An async handler's body runs in the worker too, so blocking work in it never stalls the loop.
+        reply = await owner.dispatch({'id': 2, 'method': 'plugin.pane-demo.pane.thread', 'params': {}})
+        assert reply['result'] != threading.get_ident()
         manager.unload('pane-demo')
         assert (await call(owner, session_id='s', n=3))['code'] == -32601
     finally:

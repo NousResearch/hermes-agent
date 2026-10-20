@@ -711,7 +711,6 @@ def convert_tools_to_converse(tools: list[dict]) -> list[dict]:
             continue
         params = fn.get("parameters", {"type": "object", "properties": {}})
         repaired = _converse_input_schema(params)
-        tool_fn = {**fn, "parameters": repaired} if repaired is not params else fn
         out.append({"toolSpec": {
             "name": fn.get("name", ""), "description": fn.get("description", ""),
             "inputSchema": {"json": repaired},

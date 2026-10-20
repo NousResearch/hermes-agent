@@ -1,8 +1,8 @@
 name: tidal
 repo: https://github.com/lEWFkRAD/hermes-plugin-tidal
-sha: "b3ae998c04788fb1287f91605062797bd44ed495"
+sha: "85c864a5ff45d69cdea6d54d24c010080cc17a40"
 version: "0.1.0"
-image: "https://raw.githubusercontent.com/lEWFkRAD/hermes-plugin-tidal/b3ae998c04788fb1287f91605062797bd44ed495/docs/banner.jpg"
+image: "https://raw.githubusercontent.com/lEWFkRAD/hermes-plugin-tidal/85c864a5ff45d69cdea6d54d24c010080cc17a40/docs/banner.jpg"
 description: >-
   TIDAL for Hermes Agent: five tools (playback through local mpv, search,
   playlists, library, mixes) over the unofficial TIDAL API via tidalapi.

@@ -14,6 +14,7 @@ from pm.environments import install_state_dir, site_packages
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOT_FILES = (
+    "agent/ssl_verify.py",
     "hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
     "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_cli/runtime_state.py",
     "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
@@ -29,6 +30,7 @@ def fixture_tree(tmp_path, monkeypatch):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
+    (repo / "agent" / "__init__.py").write_text("", encoding="utf-8")
     (repo / "acp_adapter").mkdir()
     (repo / "acp_adapter" / "__init__.py").write_text("", encoding="utf-8")
     entry = (
@@ -221,6 +223,39 @@ def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, 
     before = launcher.stat().st_mtime_ns
     assert _launchers.ensure_install_launchers(repo, out)
     assert launcher.stat().st_mtime_ns == before
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_run_module_installs_platform_trust_before_target(tmp_path, monkeypatch):
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    agent = repo / "agent"
+    (agent / "ssl_verify.py").write_text(
+        "import os\n"
+        "def install_truststore():\n"
+        "    os.environ['HERMES_TEST_PLATFORM_TRUST'] = 'installed'\n",
+        encoding="utf-8",
+    )
+    (repo / "trust_probe.py").write_text(
+        "import os\nprint(os.environ.get('HERMES_TEST_PLATFORM_TRUST', 'missing'))\n",
+        encoding="utf-8",
+    )
+    select_generation(repo, "selected", "ready")
+    launcher = Path(_launchers.ensure_install_launchers(repo, tmp_path / "commands")[0])
+    env = dict(os.environ)
+    env.pop("HERMES_TEST_PLATFORM_TRUST", None)
+
+    result = subprocess.run(
+        [str(launcher), "--run-module", "trust_probe"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "installed"
 
 
 def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, monkeypatch):

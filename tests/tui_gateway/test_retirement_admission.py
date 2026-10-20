@@ -68,7 +68,7 @@ def test_prompt_claim_and_automatic_continuations_cannot_cross_prepare(runtime, 
     dispatched = []
     monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: dispatched.append(a))
     token = fence.prepare()["token"]
-    err, _ = server._lock_in_submit_turn("r", "s", session, "hello", {}, False, None, None, None)
+    err, _, _ = server._lock_in_submit_turn("r", "s", session, "hello", {}, False, None, None, None)
     assert err and err["error"]["code"] == 5035
     assert session["running"] is False
     session["queued_prompt"] = {"text": "next", "transport": None}

@@ -512,6 +512,13 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(_PATCH_NEEDS_OLD_STRING)
     if new_string is None:
         return _err(_PATCH_NEEDS_NEW_STRING)
+    # An explicit empty file_path is NOT the omitted default: fail closed like write_file /
+    # remove_file do, instead of silently coercing the patch onto SKILL.md (#132818).
+    if file_path is not None and not str(file_path):
+        return _err(
+            "file_path must be a non-empty supporting-file path for 'patch'. "
+            "Omit it entirely (null) to patch SKILL.md."
+        )
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
     skill_dir, guard = _locate_for_write(name, "patch")

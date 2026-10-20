@@ -4361,7 +4361,7 @@ export interface PluginToolsetRow {
   label: string
   description: string
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4378,7 +4378,7 @@ export interface PluginsManageParams {
   names?: string[] | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4402,6 +4402,9 @@ export interface PluginsManageResult {
   consent_required?: boolean | null
   delta?: Record<string, string[]> | null
   delta_lines?: string[] | null
+  scan_blocked?: boolean | null
+  scan_verdict?: string | null
+  scan_findings?: PluginScanFinding[] | null
   error?: string | null
   written?: string[] | null
   onboarding?: OnboardingCatalogPlugin[] | null
@@ -4425,6 +4428,7 @@ export interface AgentPluginRow {
   catalog_sha?: string | null
   catalog_version?: string | null
   update_available?: boolean | null
+  update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
 }
@@ -4471,6 +4475,15 @@ export interface PluginLiveServer {
 export interface PluginLiveSkill {
   name: string
   description?: string
+}
+/** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
+export interface PluginScanFinding {
+  pattern_id: string
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
 }
 /** A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs. ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what is missing (empty when present or unknown). */
 export interface OnboardingCatalogPlugin {

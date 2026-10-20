@@ -269,14 +269,6 @@ export const zhOverrides = {
 
   ...zhNotices,
 
-  billingBlock: {
-    titleNous: 'Nous 额度已用尽',
-    titleProvider: provider => `额度已用尽 — ${provider}`,
-    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
-    openBilling: '打开账单',
-    addCredits: '添加额度',
-    dismiss: '忽略'
-  },
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
     privacyNotice:

@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_pause
 from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
@@ -350,7 +351,11 @@ def get_board(
         assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time()),
+            # Board pause travels with the board payload so every client (desktop,
+            # web dashboard, terminal) reads one source of truth on its normal poll.
+            "pause": kanban_pause.get_state(board),
+        }
 
 
 _read_board = coalesced_read(get_board)
@@ -1266,6 +1271,45 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
         "size_bytes": size, "content": content or "", "truncated": bool(tail and size > tail)}
 
 
+@router.get("/pause")
+def get_pause(board: Optional[str] = Query(None)):
+    """Pause state of one board (``None`` when running) plus the resolved slug.
+
+    The board payload already carries ``pause``; this endpoint exists for the
+    sidebar badge and for clients that poll state without pulling the board.
+    """
+    with _board_conn(board) as (board, _conn):
+        return {"board": board or kanban_db.get_current_board(), "pause": kanban_pause.get_state(board)}
+
+
+class PauseBody(BaseModel):
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+@router.post("/pause")
+def pause_board(payload: Optional[PauseBody] = None, board: Optional[str] = Query(None)):
+    """Pause the board: the dispatcher spawns nothing new until ``/resume``.
+
+    In-flight workers are never killed — pausing drains the board, it does not
+    crash it. That is what lets an operator change a provider/model and reload
+    without sacrificing the queued tickets (#141451).
+    """
+    with _board_conn(board) as (board, _conn):
+        try:
+            state = kanban_pause.pause(board, reason=(payload.reason if payload else None))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"board": board or kanban_db.get_current_board(), "pause": state}
+
+
+@router.post("/resume")
+def resume_board(board: Optional[str] = Query(None)):
+    """Lift the board pause; the next dispatcher tick resumes spawning."""
+    with _board_conn(board) as (board, _conn):
+        kanban_pause.resume(board)
+        return {"board": board or kanban_db.get_current_board(), "pause": None}
+
+
 @router.post("/dispatch")
 def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
     """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
@@ -1408,6 +1452,22 @@ def list_kanban_projects():
         for p in projects]}
 
 
+@router.get("/paused")
+def list_paused_boards():
+    """Every board currently held, for badges that must not imply "this one".
+
+    Pause is per board, so a nav chip reading the board being viewed would lie
+    as soon as another board is held (#141451).
+    """
+    paused = []
+    for meta in kanban_db.list_boards(include_archived=False):
+        state = kanban_pause.get_state(meta["slug"])
+
+        if state:
+            paused.append({**state, "name": meta.get("name") or meta["slug"]})
+    return {"paused": paused, "count": len(paused)}
+
+
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
     """Every board on disk with task counts and the active slug."""
@@ -1421,6 +1481,9 @@ def list_boards(include_archived: bool = Query(False)):
         # so counting them in the switcher badge would visibly disagree.
         b["total"] = sum(n for status, n in b["counts"].items() if status != "archived")
         b["default_workspace_kind"] = _default_workspace_kind(b)
+        # Pause is per board, so the switcher can mark held boards and the nav
+        # badge can say how many are held (#141451) without N extra requests.
+        b["pause"] = kanban_pause.get_state(b["slug"])
         pid = b["project_id"] = b.get("project_id") or None
         proj = proj_map.get(pid) if pid else None
         b["project_name"] = proj.name if proj else None

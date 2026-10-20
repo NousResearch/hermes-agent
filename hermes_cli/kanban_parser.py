@@ -360,6 +360,13 @@ _SPECS = [
              help="Permanently delete already-archived task ids from the board"),
     ], help="Archive one or more tasks"),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
+    _cmd("pause", [
+        _arg("--reason", "-r", help="Why the board is paused (shown in the UI banner and logs)"),
+        _json_flag(),
+    ], help="Pause the board: no new dispatch (auto-decompose, spawns, reviews); running workers finish"),
+    _cmd("resume", [
+        _json_flag(),
+    ], help="Lift a board pause: the next dispatcher tick resumes spawning"),
     _cmd("dispatch", [
         _arg("--dry-run", action="store_true", help="Don't actually spawn processes; just print what would happen"),
         _arg("--max", type=int, help="Cap number of spawns this pass"),

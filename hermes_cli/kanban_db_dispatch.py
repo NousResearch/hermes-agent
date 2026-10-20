@@ -145,6 +145,10 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    paused: bool = False
+    """True when the board is paused (``hermes kanban pause``): the tick did
+    nothing at all — no reclaim, no promotion, no spawn. In-flight workers are
+    untouched; without this flag a paused board would look like a stuck one."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -172,6 +176,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.paused:
+            counts["paused"] = counts.get("paused", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
@@ -1999,7 +2005,20 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    A paused board (``hermes kanban pause``) returns ``DispatchResult(paused=True)``
+    before touching the lock: pausing is a hard stop for NEW work on that
+    board, and in-flight workers keep running.
     """
+    try:
+        from hermes_cli import kanban_pause as _pause
+
+        if _pause.is_paused(board):
+            return DispatchResult(paused=True)
+    except Exception:
+        # A broken pause module must never wedge dispatch; fail open.
+        pass
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,

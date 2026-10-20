@@ -1630,8 +1630,10 @@ export {
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_NAV_TRAILING_AREA,
   SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   type SidebarNavContribution,
+  type SidebarNavTrailingContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
 /** Appearance settings' plugin seam: register a render contribution at

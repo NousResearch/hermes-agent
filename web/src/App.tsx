@@ -63,6 +63,7 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { PluginNavBadge } from "@/components/PluginNavBadge";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
@@ -102,7 +103,7 @@ import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
-import type { PluginManifest } from "@/plugins";
+import type { PluginManifest, PluginTabBadge } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
@@ -269,6 +270,7 @@ function buildNavItems(
       path: manifest.tab.path,
       label: manifest.label,
       icon: resolveIcon(manifest.icon),
+      badge: manifest.tab.badge,
     };
 
     const pos = manifest.tab.position ?? "end";
@@ -849,6 +851,18 @@ function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   return <div key={profile || "__own__"} className="contents">{children}</div>;
 }
 
+/** Resolve a `tab.badge.labelKey` ("kanban.pausedBadge") against the catalog. */
+function resolveBadgeLabel(t: Translations, key?: string): string {
+  const fallback = t.kanban.pausedBadge ?? "Paused";
+  if (!key) return fallback;
+  let node: unknown = t;
+  for (const part of key.split(".")) {
+    if (!node || typeof node !== "object") return fallback;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return typeof node === "string" ? node : fallback;
+}
+
 function SidebarNavLink({
   closeMobile,
   collapsed,
@@ -856,7 +870,7 @@ function SidebarNavLink({
   tooltipWarmRef,
   t,
 }: SidebarNavLinkProps) {
-  const { path, label, labelKey, icon: Icon } = item;
+  const { path, label, labelKey, icon: Icon, badge } = item;
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
@@ -912,6 +926,15 @@ function SidebarNavLink({
             >
               {navLabel}
             </span>
+
+            {badge && (
+              <PluginNavBadge
+                badge={badge}
+                collapsed={collapsed}
+                label={resolveBadgeLabel(t, badge.labelKey)}
+                labelCount={badge.labelCountKey ? resolveBadgeLabel(t, badge.labelCountKey) : undefined}
+              />
+            )}
 
             <span
               aria-hidden
@@ -1357,6 +1380,8 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+  /** Plugin rows only: live badge spec from the manifest's `tab.badge`. */
+  badge?: PluginTabBadge;
 }
 
 interface SidebarIconWithTooltipProps {

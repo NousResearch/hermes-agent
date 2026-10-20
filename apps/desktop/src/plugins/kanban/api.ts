@@ -35,6 +35,7 @@ import type {
   BoardMeta,
   BoardsResponse,
   KanbanBoard,
+  KanbanPause,
   KanbanProfile,
   KanbanProject,
   KanbanTask,
@@ -504,6 +505,18 @@ export const importBoard = (archive: string) =>
   call<BoardImportResult>('/boards/import', { method: 'POST', body: { archive } })
 
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
+
+// ── board pause (#141451) ─────────────────────────────────────────────────────
+// A paused board spawns nothing new (auto-decompose, workers, reviews) while
+// running workers finish. State rides the board payload (`board.pause`), so a
+// pause engaged from the CLI shows up on the next poll / event, no extra query.
+export const pauseBoard = (reason?: string) =>
+  call<{ board: string; pause: KanbanPause | null }>(withBoard('/pause'), {
+    method: 'POST',
+    body: reason ? { reason } : {}
+  })
+
+export const resumeBoard = () => call<{ board: string; pause: null }>(withBoard('/resume'), { method: 'POST', body: {} })
 
 export const saveOrchestration = (patch: Record<string, unknown>) =>
   call<OrchestrationSettings>('/orchestration', { method: 'PUT', body: patch })

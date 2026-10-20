@@ -22,6 +22,7 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -145,7 +146,9 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
-  type SidebarNavContribution
+  SIDEBAR_NAV_TRAILING_AREA,
+  type SidebarNavContribution,
+  type SidebarNavTrailingContribution
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
@@ -192,6 +195,28 @@ import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
 import { useServerSessionSearch } from './use-server-session-search'
+
+/**
+ * Does this `sidebar.nav.trailing` decoration belong on this row?
+ *
+ * Contribution ids are namespaced by the registry (`kanban:nav`), so a plugin
+ * that declares `{ navId: 'nav' }` would never match its own row: match the
+ * route it asked for, or the id exactly / by its unqualified suffix.
+ */
+export function rowOwnsTrailing(
+  item: SidebarNavItem,
+  data: Partial<SidebarNavTrailingContribution> | undefined
+): boolean {
+  if (!data) {
+    return false
+  }
+
+  if (data.navPath) {
+    return data.navPath === item.route
+  }
+
+  return Boolean(data.navId) && (item.id === data.navId || item.id.endsWith(`:${data.navId}`))
+}
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -414,6 +439,10 @@ export function ChatSidebar({
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
+  // Trailing decorations for those rows (e.g. the Kanban pause badge): a live
+  // render slot, so a plugin's badge can follow state without re-registering
+  // the row (which would tear the nav list down mid-session).
+  const navTrailing = useContributions(SIDEBAR_NAV_TRAILING_AREA)
 
   const contributedNav = useMemo<SidebarNavItem[]>(
     () =>
@@ -1675,6 +1704,16 @@ export function ChatSidebar({
                         size="sm"
                       />
                     )}
+                    {/* Contributed trailing chips for THIS row (sidebar.nav.trailing).
+                        Rendered after the label so `ml-auto` pushes them to the
+                        edge; a throwing decorator is isolated by the boundary. */}
+                    {navTrailing
+                      .filter(c => rowOwnsTrailing(item, c.data as Partial<SidebarNavTrailingContribution> | undefined))
+                      .map(c => (
+                        <ContribBoundary id={c.id} key={c.id} variant="chip">
+                          <ContribRender render={c.render!} />
+                        </ContribBoundary>
+                      ))}
                   </SidebarMenuButton>
                 )
 

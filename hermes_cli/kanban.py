@@ -211,7 +211,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
-    "gc",
+    "gc", "pause", "resume",
 })
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
@@ -1317,6 +1317,41 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_pause(args: argparse.Namespace) -> int:
+    """Pause the current board (``--board`` already scoped by the router)."""
+    from hermes_cli import kanban_pause
+
+    slug = kb.get_current_board()
+    try:
+        state = kanban_pause.pause(slug, reason=getattr(args, "reason", None))
+    except ValueError as exc:
+        return _err(f"kanban: {exc}")
+    if _json_out(args, state):
+        return 0
+    reason = f" — {state['reason']}" if state.get("reason") else ""
+    print(f"Board '{slug}' paused{reason}.")
+    print("New dispatch is on hold (auto-decompose, spawns, reviews); running workers finish.")
+    suffix = "" if slug == kb.DEFAULT_BOARD else f" --board {slug}"
+    print(f"Resume with: hermes kanban resume{suffix}")
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    """Lift a board pause."""
+    from hermes_cli import kanban_pause
+
+    slug = kb.get_current_board()
+    was_paused = kanban_pause.is_paused(slug)
+    kanban_pause.resume(slug)
+    if _json_out(args, {"board": slug, "resumed": was_paused}):
+        return 0
+    if was_paused:
+        print(f"Board '{slug}' resumed. The next dispatcher tick resumes spawning.")
+    else:
+        print(f"Board '{slug}' was not paused.")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1331,6 +1366,7 @@ _HANDLERS = {
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "pause": _cmd_pause, "resume": _cmd_resume,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,

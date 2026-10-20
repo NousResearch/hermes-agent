@@ -94,7 +94,8 @@ def _pending_files(subsystem: str) -> list:
     except ValueError:
         logger.warning("write_approval: ignoring the %s pending store", subsystem, exc_info=True)
         return []
-    return [p for p in d.glob("*.json") if not p.is_symlink()] if d.exists() else []
+    return [p for p in d.glob("*.json")
+            if _PENDING_ID_RE.fullmatch(p.stem) and not p.is_symlink()] if d.exists() else []
 
 
 def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
@@ -117,14 +118,15 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
 
 
 def list_pending(subsystem: str) -> list[dict[str, Any]]:
-    """Return all pending records for ``subsystem``, oldest first."""
+    """Return all pending records for ``subsystem``, oldest first. A record's ``id`` is its file
+    name, never the id written inside it (approve and discard act on that id)."""
     records: list[dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
             record = json.loads(p.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
                 raise ValueError(f"expected a JSON object, got {type(record).__name__}")
-            records.append(record)
+            records.append({**record, "id": p.stem})
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
     records.sort(key=lambda r: r.get("created_at", 0))
@@ -141,7 +143,7 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-        return data if isinstance(data, dict) else None
+        return {**data, "id": pending_id} if isinstance(data, dict) else None
     except Exception:
         return None
 

@@ -168,10 +168,16 @@ function settleControlReply(
     return true
   }
 
-  const control = r as PromptSubmitResponse & { execution_generation?: number }
+  const control = r as PromptSubmitResponse & { delivered?: false; execution_generation?: number }
 
-  // 'rejected' is the owner's "not corrected, queue it as the next prompt" (no live agent took it).
-  if (control?.status === 'rejected' && control.execution_generation === item.executionGeneration) {
+  // Only a 'rejected' the owner marks undelivered (no live agent took it) becomes the next prompt. A
+  // plain 'rejected' can follow delivery (a Codex steer whose ACK timed out): re-sending it would
+  // run the correction twice, so it settles as refused with the input retained.
+  if (
+    control?.status === 'rejected' &&
+    control.delivered === false &&
+    control.execution_generation === item.executionGeneration
+  ) {
     return false
   }
 

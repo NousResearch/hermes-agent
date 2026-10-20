@@ -53,7 +53,7 @@ const refusals: Array<[string, () => Promise<unknown>]> = [
   ['execution_not_ready', async () => {
     throw new JsonRpcGatewayError('execution_not_ready', { code: 4001, data: { reason: 'execution_not_ready' } })
   }],
-  ['rejected', async () => ({ status: 'rejected', text: 'next thought', execution_generation: 4 })]
+  ['rejected undelivered', async () => ({ status: 'rejected', delivered: false, text: 'next thought', execution_generation: 4 })]
 ]
 
 it.each(refusals)('re-admits a correction refused undelivered (%s) as a prompt with the same submission_id', async (_name, refuse) => {
@@ -96,5 +96,28 @@ it('keeps an ambiguous transport failure as a retained control, never replayed a
   })
 
   await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(false))
+  expect(calls).toEqual(['session.redirect'])
+})
+
+it('settles a plain rejected correction as refused without re-sending it as a prompt', async () => {
+  // A live agent's refusal can follow delivery (Codex turn/steer whose ACK timed out): re-sending
+  // the words would run the correction twice.
+  const calls: string[] = []
+  const settle = vi.fn()
+
+  const request = vi.fn(async (method: string) => {
+    calls.push(method)
+
+    return { status: 'rejected', text: 'next thought', execution_generation: 4 }
+  })
+
+  submitPrompt('next thought', deps({ isCanonical: true, request } as unknown as GatewayClient), true, undefined, {
+    behindTurn: true,
+    queueItem: correction(settle),
+    skipDetectDrop: true
+  })
+
+  await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(false))
+  await new Promise(resolve => setTimeout(resolve, 20))
   expect(calls).toEqual(['session.redirect'])
 })

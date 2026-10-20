@@ -203,10 +203,11 @@ async def correct(connection, ref, params, *, verb):
         # running), and a redirect in the build window has no agent to queue behind. Nothing live can
         # take the text, so answer 'rejected' — the wire contract's "not corrected, queue it as the
         # next prompt" (desktop SessionRedirectResponse, tui_gateway's idle-steer reply). Raising here
-        # made clients discard the message (#141644).
+        # made clients discard the message (#141644). ``delivered: False`` is the confirmation a
+        # client may re-admit on: the live-agent 'rejected' below can follow delivery.
         if agent is None:
             return {'status': 'rejected', 'text': params['text'], 'execution_generation': generation,
-                    'authority_epoch': authority.epoch}
+                    'authority_epoch': authority.epoch, 'delivered': False}
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')

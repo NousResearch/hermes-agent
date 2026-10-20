@@ -1819,6 +1819,61 @@ def register(ctx):
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
 
+### Talk to your own frontend: plugin RPC methods and session events
+
+A frontend that is a JSON-RPC client of the gateway (a terminal frontend attached to the shared gateway, a
+custom web client on `/api/ws`) can call its own Python half, and the Python half can push an event to the
+clients viewing one session:
+
+```python
+def register(ctx):
+    def pane_state(params, *, session_id, **kwargs):
+        # session_id is the session the call named (None for a sessionless call), already authorized.
+        state = load_state(session_id)
+        ctx.emit_to_session(session_id, "pane.changed", {"rows": len(state)})
+        return {"rows": state}
+
+    ctx.register_rpc("pane.state", pane_state)
+```
+
+The client calls `plugin.<plugin_id>.pane.state` with any JSON params (`session_id` names the session) and
+listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
+
+```json
+{"jsonrpc": "2.0", "id": 7, "method": "plugin.my-plugin.pane.state", "params": {"session_id": "local-…", "page": 2}}
+```
+
+- **Names are forced into your namespace** (`<plugin_id>` is `ctx.plugin_id`). `ctx.register_rpc(name, handler)`
+  serves `plugin.<plugin_id>.<name>`, and `ctx.emit_to_session(session_id, event, payload=None)` sends
+  `plugin.<plugin_id>.<event>`. `name` and `event` are bare dotted names (segments of `[A-Za-z0-9_-]`), as for
+  `broadcast_plugin_event`. A plugin whose id is not `[a-z0-9_-]{1,64}` (a category plugin such as
+  `image_gen/x`) cannot register one: the call raises `ValueError`.
+- **The handler** is called as `handler(params, session_id=...)` off the gateway loop, in the owning
+  profile's scope. Accept `**kwargs`: later releases may pass more context. Its return value must be
+  JSON-encodable and is the call's `result`. An exception, or a value JSON cannot encode, answers the call
+  with error `4001`, reason `plugin_rpc_failed`, and the exception text in `error.data.detail`. The call
+  holds that client's request lane until it returns, so keep it short: start long work in a thread and
+  report through `emit_to_session`.
+- **Unload removes the methods.** Once the plugin is disabled or removed, its methods answer `-32601`
+  like any unknown method.
+- **Session events go to that session's viewers only**, on its event stream: clients attached now, and a
+  client that reconnects replays them. `session_id` may be the conversation's id or its agent's current
+  id (compression gives the agent a new one), so a tool or hook can pass the `session_id` it received.
+  `payload` is a JSON dict. The call returns `True` when a live viewer took the frame, `False` when no
+  client is viewing or this process holds no such session. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
+  is the same call for code without `ctx`.
+- **Where it works:** on a gateway that owns sessions (its session authority, as on the shared
+  `hermes gateway run` gateway that attached frontends use). A backend without one answers the method
+  with `-32601`. In a process without one (`hermes chat`, cron, a
+  `dashboard.turn_isolation` compute child) `emit_to_session` returns `False`.
+
+**Security.** A plugin method gets the same gate as a plugin slash command on that gateway: the connection
+needs the `session:control` capability, and a call that names a `session_id` must pass that session's
+authorization (the right profile, the owner of a local session, a superseded conversation is read-only).
+Beyond that, any client the gateway authenticated can call any plugin method with any params. Hermes does
+not check callers per method (`SECURITY.md` §2.6, rule 4): treat a plugin method like a plugin tool, validate
+its params, and never expose through it more than the plugin's own data and actions.
+
 ### Send raw CDP commands to the agent's browser
 
 A plugin that must drive the agent's browser below the browser tools can get a

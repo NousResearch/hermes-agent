@@ -298,9 +298,13 @@ class AuthorityConnection:
             # the scope is that profile's own home, so behaviour is unchanged.
             from gateway.session_authorities import owner_scope
             from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
+            from gateway.session_plugin_rpc import call_plugin_rpc
+            from hermes_cli.plugin_rpc import plugin_rpc_handler
             with owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
+                elif method not in handlers and (plugin := plugin_rpc_handler(method)) is not None:
+                    return {'jsonrpc': '2.0', 'id': rid, 'result': await call_plugin_rpc(self, ref, method, plugin, params)}
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.

@@ -9,6 +9,7 @@ import { cleanup, render, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as Hermes from '@/hermes'
 import { I18nProvider } from '@/i18n'
 import type * as GatewayStore from '@/store/gateway'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
@@ -23,8 +24,13 @@ const mocks = vi.hoisted(() => {
     })
   }
 
-  return { ambient, requestGatewayForAgent: vi.fn() }
+  return { ambient, getGlobalModelOptions: vi.fn(), requestGatewayForAgent: vi.fn() }
 })
+
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<typeof Hermes>()),
+  getGlobalModelOptions: mocks.getGlobalModelOptions
+}))
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<typeof GatewayStore>()),
@@ -56,6 +62,7 @@ beforeEach(() => {
           ? { title: 'Renamed on owner' }
           : {}
   )
+  mocks.getGlobalModelOptions.mockResolvedValue({ providers: [] })
   $sessionStates.set({ [RUNTIME]: { storedSessionId: STORED } as never })
   setSessionOwnerHint(STORED, OWNER)
 })
@@ -160,5 +167,28 @@ describe('session_id RPCs go to the session owner, not the ambient socket', () =
 
     expect(params).toMatchObject({ explicit_only: true, session_id: RUNTIME })
     expect(params.profile ?? 'research').toBe('research')
+  })
+
+  it('Edit Models recovers a failed owner RPC through REST pinned to that same owner', async () => {
+    const catalog: ModelOptionsResult = { providers: [{ models: ['m-research'], name: 'R', slug: 'r' }] }
+    mocks.requestGatewayForAgent.mockRejectedValue(new Error('owner socket unavailable'))
+    mocks.getGlobalModelOptions.mockResolvedValue(catalog)
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider>
+          <ModelVisibilityDialog
+            gw={mocks.ambient as never}
+            onOpenChange={() => {}}
+            onOpenProviders={() => {}}
+            open
+            profile="default"
+            sessionId={RUNTIME}
+          />
+        </I18nProvider>
+      </QueryClientProvider>
+    )
+
+    await waitFor(() => expect(mocks.getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true }, OWNER))
   })
 })

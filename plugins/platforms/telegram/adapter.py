@@ -2900,6 +2900,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
+        app.add_handler(TelegramMessageHandler(filters.CONTACT, self._handle_contact_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
@@ -6455,12 +6456,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             level, "[Telegram] Blocked %s %s in chat %s", what, getattr(getattr(msg, "from_user", None), "id", None),
             getattr(getattr(msg, "chat", None), "id", None))
 
-    def _gate_or_observe(self, msg, update, msg_type: MessageType) -> bool:
-        """Group trigger gate; observes unmentioned chatter when configured. True = proceed."""
+    def _gate_or_observe(self, msg, update, msg_type: MessageType, event: Optional[MessageEvent] = None) -> bool:
+        """Group trigger gate; observes unmentioned chatter when configured. True = proceed. ``event``: a
+        prebuilt event whose text is not the message's text/caption (a contact card), so observation keeps it."""
         if self._should_process_message(msg):
             return True
         if self._should_observe_unmentioned_group_message(msg):
-            self._observe_unmentioned_group_message(msg, msg_type, update_id=update.update_id)
+            self._observe_unmentioned_group_message(msg, msg_type, update_id=update.update_id, event=event)
         return False
 
     async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
@@ -6536,6 +6538,35 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
+        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+
+    @staticmethod
+    def _contact_text(contact: Any) -> Optional[str]:
+        """Shared contact card -> model-facing text, or None when the card carries nothing."""
+        name = " ".join(filter(None, (getattr(contact, "first_name", None), getattr(contact, "last_name", None))))
+        fields = [("Name", name), ("Phone", getattr(contact, "phone_number", None)),
+                  ("Telegram user ID", getattr(contact, "user_id", None))]
+        lines = [f"{label}: {value}" for label, value in fields if value]
+        vcard = (getattr(contact, "vcard", None) or "").strip()
+        if vcard:
+            lines.append("vCard:\n" + vcard[:4000])
+        return "\n".join(["[Shared contact card]", *lines]) if lines else None
+
+    async def _handle_contact_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """A shared contact card has no text or media, so without its own handler it never reached the agent."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            self._log_blocked_user(msg)
+            return
+        text = self._contact_text(getattr(msg, "contact", None))
+        if not text:
+            return
+        event = self._build_message_event(msg, MessageType.CONTACT, update_id=update.update_id)
+        event.text = text
+        if not self._gate_or_observe(msg, update, MessageType.CONTACT, event=event):
+            return
         await self.handle_message(self._apply_telegram_group_observe_attribution(event))
 
     # -- Text message aggregation (handles Telegram client-side splits) --
@@ -7069,6 +7100,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
         if not reply_to_text:
             reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
+        if not reply_to_text and getattr(message.reply_to_message, "contact", None):
+            reply_to_text = self._contact_text(message.reply_to_message.contact)
         if not reply_to_text:
             try:
                 from gateway import rich_sent_store

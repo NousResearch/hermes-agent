@@ -25,6 +25,7 @@ class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
     LOCATION = "location"
+    CONTACT = "contact"
     PHOTO = "photo"
     VIDEO = "video"
     AUDIO = "audio"

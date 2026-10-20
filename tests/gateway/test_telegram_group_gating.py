@@ -740,6 +740,63 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
     asyncio.run(_run())
 
 
+def _contact_message(*, reply_to_message=None, contact=None):
+    msg = _group_location_message()
+    msg.location = None
+    msg.contact = contact
+    msg.reply_to_message = reply_to_message
+    return msg
+
+
+def test_shared_contact_card_reaches_the_agent_with_its_details():
+    """A contact card has no text or media: without its own handler Telegram's update was dropped."""
+    async def _run():
+        adapter = _make_adapter(require_mention=False, group_allowed_chats=["-100"])
+        adapter.handle_message = AsyncMock()
+        card = SimpleNamespace(first_name="Ada", last_name="Lovelace", phone_number="+15550001234",
+                               user_id=4242, vcard=None)
+        update = SimpleNamespace(update_id=2003, message=_contact_message(contact=card), effective_message=None)
+
+        await adapter._handle_contact_message(update, SimpleNamespace())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type is MessageType.CONTACT
+        assert "Ada Lovelace" in event.text and "+15550001234" in event.text
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_contact_card_is_observed_with_its_details():
+    async def _run():
+        adapter = _make_adapter(require_mention=True, group_allowed_chats=["-100"],
+                                observe_unmentioned_group_messages=True)
+        adapter.handle_message = AsyncMock()
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        card = SimpleNamespace(first_name="Ada", last_name=None, phone_number="+15550001234", user_id=None, vcard=None)
+        update = SimpleNamespace(update_id=2004, message=_contact_message(contact=card), effective_message=None)
+
+        await adapter._handle_contact_message(update, SimpleNamespace())
+
+        adapter.handle_message.assert_not_awaited()
+        (_sid, message, _skip), = store.messages
+        assert message["observed"] is True and "+15550001234" in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_reply_to_a_contact_card_keeps_its_details_as_context():
+    adapter = _make_adapter()
+    card = SimpleNamespace(first_name="Ada", last_name=None, phone_number="+15550001234", user_id=None, vcard=None)
+    replied = SimpleNamespace(message_id=49, text=None, caption=None, contact=card, api_kwargs={})
+    msg = _contact_message(reply_to_message=replied)
+    msg.quote = None
+
+    _reply_id, reply_text = adapter._reply_context(msg)
+
+    assert reply_text and "Ada" in reply_text and "+15550001234" in reply_text
+
+
 # ---------------------------------------------------------------------------
 # Observe + attribution parity: media messages (voice as representative)
 # ---------------------------------------------------------------------------

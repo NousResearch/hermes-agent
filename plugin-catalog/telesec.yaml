@@ -1,7 +1,7 @@
 name: telesec
 title: Telesec
 repo: https://github.com/neoromantic/telesec
-sha: 3cebd94418493ceb13bbe90fc24e981a82acadc9
+sha: 61b4ddcb989bc216db94c33fef12d1d603be1cd6
 description: >-
   Telegram Business secretary: transcribes voice notes, round videos, and speech
   attachments right in the chat, with Settings and per-chat controls in Telegram's Manage Bot
@@ -20,12 +20,12 @@ tier: community
 category: voice
 requires_hermes: ">=0.21.6"
 docs_url: https://telesec.sergeybaus.com
-version: "0.15.0"
-image: https://raw.githubusercontent.com/neoromantic/telesec/3cebd94418493ceb13bbe90fc24e981a82acadc9/docs/images/banner.png
+version: "0.15.1"
+image: https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/neoromantic/telesec/3cebd94418493ceb13bbe90fc24e981a82acadc9/docs/images/voice-transcript.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/3cebd94418493ceb13bbe90fc24e981a82acadc9/docs/images/owner-panel.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/3cebd94418493ceb13bbe90fc24e981a82acadc9/docs/images/stats-panel-en@2x.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/voice-transcript.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/owner-panel.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/stats-panel-en@2x.png
 readme: true
 known_issues:
   - Needs in-process plugin mode for native Telegram handlers.

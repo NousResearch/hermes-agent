@@ -69,6 +69,33 @@ def test_reload_without_session_id_still_refreshes_live_agents(reload_env):
     assert sorted(reload_env.refreshed) == ["agent-A", "agent-B"]
 
 
+@pytest.mark.parametrize("ack", [
+    {"type": "reload_mcp.ack", "response": {"error": {"code": 5019, "message": "host discovery failed"}}},
+    {"type": "control.error", "message": "host refused reload"},
+    {"type": "reload_mcp.ack", "response": {"result": {"status": "confirm_required"}}},
+])
+def test_compute_host_reload_never_reports_success_for_host_failure(reload_env, monkeypatch, ack):
+    monkeypatch.setattr(srv, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(srv, "_get_compute_host_supervisor", lambda: SimpleNamespace(reload_mcp=lambda *_a, **_kw: ack))
+
+    resp = srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+
+    assert "error" in resp
+    assert not reload_env.refreshed
+
+
+def test_compute_host_reload_accepts_only_confirmed_nested_success(reload_env, monkeypatch):
+    ack = {"type": "reload_mcp.ack", "response": {"result": {"status": "reloaded"}}}
+    monkeypatch.setattr(srv, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(srv, "_get_compute_host_supervisor", lambda: SimpleNamespace(reload_mcp=lambda *_a, **_kw: ack))
+
+    resp = srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+
+    assert resp["result"]["status"] == "reloaded"
+    assert resp["result"]["host_ack"] == ack
+    assert not reload_env.refreshed
+
+
 def test_reload_rediscovers_under_each_live_profile_scope(reload_env):
     """The unscoped shutdown tears down every profile's servers; discovery under the ambient home
     alone would leave a secondary-profile session refreshing against a registry that never

@@ -958,6 +958,8 @@ slashCmd.ops.reloadEnv.reloadedOne: "أُعيد تحميل .env (تم تحديث
 slashCmd.ops.reloadEnv.reloadedOther: "أُعيد تحميل .env (تم تحديث {0} من المتغيّرات)"
 slashCmd.ops.reloadMcp.complete: "اكتملت إعادة التحميل"
 slashCmd.ops.reloadMcp.confirmRequired: "يتطلب /reload-mcp تأكيدًا"
+slashCmd.ops.reloadMcp.deferred: "تم تحديث خوادم MCP لهذا الملف الشخصي؛ ستطبق هذه المحادثة التغيير بعد انتهاء دورها الجاري وإعادة التحميل مرة أخرى، أو عند إعادة فتحها"
+slashCmd.ops.reloadMcp.notConnected: "تعذّر الاتصال: {0}"
 slashCmd.ops.reloadMcp.reloaded: "أُعيد تحميل خوادم MCP"
 slashCmd.ops.reloadMcp.reloadedAlways: "أُعيد تحميل خوادم MCP · سيعمل /reload-mcp مستقبلًا دون تأكيد"
 slashCmd.ops.reloadSkills.pageTitle: "إعادة تحميل المهارات"

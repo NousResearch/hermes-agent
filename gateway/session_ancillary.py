@@ -106,16 +106,34 @@ async def show_tools(connection, ref, params):
 async def reload_skills(connection, ref, params):
     """``/reload-skills`` (and the CLI's ``/skills install``): rescan the skill dirs in the owner,
     whose skill-command map serves this session's skill and bundle invocations. The CLI renders
-    main's lines from ``result`` and queues main's next-turn note itself."""
-    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+    main's lines from ``result``; the next turn's note comes from the skills-index delta, so a
+    changed catalog reaches the model without rebuilding the prompt.
+
+    A session binds the scan to its workspace (project skills); a sessionless call scopes the scan to
+    the owning profile — Desktop's Skills refresh has no chat when none is open, or when the open
+    chat belongs to another profile."""
+    from pathlib import Path
+    if (set(params) - {'session_id', 'profile'}
+            or any(not isinstance(value, str) for value in params.values())):
         raise RuntimeStoreError('invalid_params')
     authority = connection.authority
-    if ref.session_id not in authority.sessions:
-        raise RuntimeStoreError('not_found')
-    authorize(connection, ref, params, 'session:control')
     from gateway.session_authorities import owner_scope
     from gateway.session_policy import policy_for_source, policy_scope
-    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    if ref.session_id:
+        if ref.session_id not in authority.sessions:
+            raise RuntimeStoreError('not_found')
+        authorize(connection, ref, params, 'session:control')
+        policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    else:
+        if connection.actor.profile_id != authority.profile_id:
+            raise RuntimeStoreError('profile_mismatch')
+        if 'session:control' not in connection.actor.capabilities:
+            raise RuntimeStoreError('permission_denied')
+        if params.get('profile'):
+            from hermes_cli.profiles import profile_matches_home
+            if not profile_matches_home(params['profile'], Path(authority.profile_id)):
+                raise RuntimeStoreError('profile_mismatch')
+        policy = None
 
     def rescan():
         from agent.skill_commands import reload_skills as rescan_skills
@@ -258,12 +276,22 @@ async def reload_mcp(connection, ref, params):
     unchanged or busy); other sessions take theirs when next attached. A configured server that did not
     connect is named: a refusal when nothing took effect (no server registered or removed, no session
     generation), else ``unavailable`` beside the success."""
-    if set(params) - {'session_id', 'confirm', 'rev', 'profile'}:
+    if set(params) - {'session_id', 'confirm', 'rev', 'profile', 'always'}:
         raise RuntimeStoreError('invalid_params')
     if 'session:control' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    if params.get('confirm') is not True:
-        return {'status': 'confirm_required', 'message': 'Reloading MCP refreshes every chat of this profile.'}
+    always = params.get('always') is True
+    if (params.get('confirm') is not True and not always
+            and await asyncio.to_thread(_mcp_reload_confirm_required, connection)):
+        return {'status': 'confirm_required', 'message': (
+            "Reloading reconciles this profile's MCP servers and applies this chat's new tools as its next "
+            'policy generation. If that changes this chat\'s prompt prefix, the next message re-sends the full '
+            'prompt, which costs prompt-cache tokens. Reply `/reload-mcp now` to proceed once, or '
+            '`/reload-mcp always` to proceed and stop asking in this profile.')}
+    if always:
+        # Before reconcile: a failed preference write must not follow a claimed reload. Consent and grant
+        # checks above already passed, and the write raises storage_unavailable like every settings write.
+        await asyncio.to_thread(_persist_mcp_reload_confirm_off, connection)
     from tools.mcp_oauth import suppress_interactive_oauth
     from tools import mcp_tool_discovery as discovery
 
@@ -291,6 +319,43 @@ async def reload_mcp(connection, ref, params):
                                                            ready)} if session else {}
     return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed}){note}{unavailable}',
             **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
+
+
+def _mcp_reload_confirm_required(connection):
+    """The invoking profile's effective ``approvals.mcp_reload_confirm``. Fail closed: an unreadable
+    profile config still asks instead of turning a consent gate into silent approval."""
+    from pathlib import Path
+
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+    from hermes_cli.config_read_errors import FailedConfigRead
+
+    try:
+        with _profile_runtime_scope(Path(connection.authority.profile_id), hydrate_secrets=False):
+            config = load_config()
+        # A failed read serves last-known-good values behind this marker: a stale `false` is not
+        # consent from the current config.
+        if isinstance(config, FailedConfigRead):
+            return True
+        approvals = config.get('approvals') if isinstance(config, dict) else None
+        return bool(approvals.get('mcp_reload_confirm', True)) if isinstance(approvals, dict) else True
+    except Exception:  # health: allow BLE001 -- an unreadable config must keep the consent gate closed
+        return True
+
+
+def _persist_mcp_reload_confirm_off(connection):
+    """``/reload-mcp always``: the invoking profile stops asking (main's approval opt-out, written to
+    that profile's config.yaml by the same raw round-trip as the other owner-side preference writes).
+    A failed write raises ``storage_unavailable``; the caller must not report a saved opt-out."""
+    from gateway.session_tui_config import _write_profile_config
+
+    def edit(config):
+        approvals = config.get('approvals')
+        if not isinstance(approvals, dict):
+            approvals = config['approvals'] = {}
+        approvals['mcp_reload_confirm'] = False
+
+    _write_profile_config(connection, edit)
 
 
 def _session_servers(authority, sid, ready):

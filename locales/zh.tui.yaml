@@ -958,6 +958,8 @@ slashCmd.ops.reloadEnv.reloadedOne: "已重新加载 .env（更新了 {0} 个变
 slashCmd.ops.reloadEnv.reloadedOther: "已重新加载 .env（更新了 {0} 个变量）"
 slashCmd.ops.reloadMcp.complete: "重新加载完成"
 slashCmd.ops.reloadMcp.confirmRequired: "/reload-mcp 需要确认"
+slashCmd.ops.reloadMcp.deferred: "此配置文件的 MCP 服务器已更新；此聊天会在运行中的回合结束后再次重新加载，或重新打开聊天时应用更改"
+slashCmd.ops.reloadMcp.notConnected: "未连接：{0}"
 slashCmd.ops.reloadMcp.reloaded: "MCP 服务器已重新加载"
 slashCmd.ops.reloadMcp.reloadedAlways: "MCP 服务器已重新加载 · 之后的 /reload-mcp 将无需确认直接运行"
 slashCmd.ops.reloadSkills.pageTitle: "重新加载技能"

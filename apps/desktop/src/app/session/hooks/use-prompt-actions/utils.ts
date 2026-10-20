@@ -6,6 +6,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import type { ErrorSurface } from '@/lib/error-surface'
+import { parseMcpReloadReply } from '@/lib/mcp-reload'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -718,6 +719,43 @@ export function renderRpcResult(response: unknown, name: string): string {
   // Generic fallback — keeps us honest if the gateway adds new fields we
   // haven't shaped yet.
   return `/${name}: ${JSON.stringify(r)}`
+}
+
+function renderMcpReloadResult(result: Record<string, unknown>, arg: string): string {
+  const { message, session, status, unavailable } = parseMcpReloadReply(result)
+
+  if (status === 'confirm_required') {
+    return message || translateNow('connectorsPage.reload.confirmRequired')
+  }
+
+  const always = arg.trim().toLowerCase() === 'always'
+
+  const lines = [
+    session === 'busy'
+      ? translateNow('promptNotices.mcpReloadDeferred')
+      : translateNow(always ? 'connectorsPage.reload.reloadedAlways' : 'connectorsPage.reload.success')
+  ]
+
+  if (unavailable.length) {
+    lines.push(translateNow('connectorsPage.reload.notConnected', unavailable.join(', ')))
+  }
+
+  return lines.join('\n')
+}
+
+/** Slash commands whose rpc result has a shape of its own; the rest go through `renderRpcResult`. */
+const COMMAND_RESULT_RENDERERS: Partial<Record<string, (result: Record<string, unknown>, arg: string) => string>> = {
+  'reload-mcp': renderMcpReloadResult,
+  'reload-skills': result => (typeof result.output === 'string' ? result.output : '')
+}
+
+/** Render the result of an rpc-surface slash command. `arg` is what was typed after the command. */
+export function renderSlashRpcResult(response: unknown, name: string, arg = ''): string {
+  const render = COMMAND_RESULT_RENDERERS[name.replace(/_/g, '-')]
+
+  return render && response && typeof response === 'object'
+    ? render(response as Record<string, unknown>, arg)
+    : renderRpcResult(response, name)
 }
 
 export function appendText(message: AppendMessage): string {

@@ -517,3 +517,63 @@ async def test_reload_reports_the_servers_the_calling_chat_selects(tmp_path, mon
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_always_consents_and_persists_the_profile_opt_out(tmp_path, monkeypatch):
+    """`/reload-mcp always` is the same consent as `now` plus the profile's opt-out: the shared
+    contract advertises it, and the canonical handler must accept it instead of refusing the key."""
+    import hermes_yaml as yaml
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    _reloadable(authority, monkeypatch)
+    owner = _connect(authority)
+    try:
+        result = await _call(owner, 'reload.mcp', always=True)
+        assert result['status'] == 'reloaded', result
+        config = yaml.safe_load((home / 'config.yaml').read_text())
+        assert config['approvals']['mcp_reload_confirm'] is False
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_reload_skills_rescans_without_a_session(tmp_path, monkeypatch):
+    """Desktop's Skills refresh has no chat to bind when none is open (or when the open chat belongs
+    to another profile): the owner rescans the profile instead of refusing `invalid_params`."""
+    from hermes_constants import get_hermes_home
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    owner = _connect(authority)
+    seen = []
+
+    def rescan():
+        seen.append(get_hermes_home())
+        return {'added': [{'name': 'demo'}], 'removed': [], 'unchanged': [], 'total': 3, 'commands': 3}
+    monkeypatch.setattr('agent.skill_commands.reload_skills', rescan)
+    try:
+        result = await _call(owner, 'skills.reload')
+        assert seen == [home]
+        assert 'Added skills:' in result['output'] and 'demo' in result['output'], result
+        assert '3 skill(s) available' in result['output']
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_reload_skills_sessionless_still_checks_the_session_and_control_grant(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    owner = _connect(authority)
+    reader = AuthorityConnection(authority, object(), {'user_id': 'human', 'capabilities': ['session:read']})
+    try:
+        reply = await owner.dispatch({'id': 1, 'method': 'skills.reload', 'params': {'session_id': 'gone'}})
+        assert reply['error']['message'] == 'not_found', reply
+        reply = await reader.dispatch({'id': 1, 'method': 'skills.reload', 'params': {}})
+        assert reply['error']['message'] == 'permission_denied', reply
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

@@ -102,31 +102,10 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
+      // `now` / `always` skip the confirmation gate.
+      // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
 
-      // The shared owner serves a session-scoped reload.mcp: it reconciles only this profile's
-      // servers and moves this session to a new policy generation when idle (session_ancillary.py).
-      // It has no persistent opt-out (`always`), so `always` confirms this once like `now`.
-      if (ctx.gateway.gw?.isCanonical) {
-        const confirm = ['always', 'approve', 'now', 'once', 'yes'].includes(a)
-
-        return void ctx.gateway
-          .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid, ...(confirm ? { confirm: true } : {}) })
-          .then(
-            ctx.guarded<ReloadMcpResponse>(r =>
-              ctx.transcript.sys(
-                r.message ||
-                  (r.status === 'confirm_required'
-                    ? t('slashCmd.ops.reloadMcp.confirmRequired')
-                    : t('slashCmd.ops.reloadMcp.reloaded'))
-              )
-            )
-          )
-          .catch(ctx.guardedErr)
-      }
-
-      // Parse arg: `now` / `always` skip the confirmation gate.
-      // `always` additionally persists approvals.mcp_reload_confirm=false.
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
@@ -150,8 +129,19 @@ export const opsCommands: SlashCommand[] = [
 
             if (r.status === 'reloaded') {
               ctx.transcript.sys(
-                params.always ? t('slashCmd.ops.reloadMcp.reloadedAlways') : t('slashCmd.ops.reloadMcp.reloaded')
+                r.session === 'busy'
+                  ? t('slashCmd.ops.reloadMcp.deferred')
+                  : params.always
+                    ? t('slashCmd.ops.reloadMcp.reloadedAlways')
+                    : t('slashCmd.ops.reloadMcp.reloaded')
               )
+
+              // `unavailable` is the unified gateway's field; `failed` is what an older one answered.
+              const unavailable = r.unavailable ?? r.failed
+
+              if (unavailable?.length) {
+                ctx.transcript.sys(t('slashCmd.ops.reloadMcp.notConnected', unavailable.join(', ')))
+              }
 
               return
             }

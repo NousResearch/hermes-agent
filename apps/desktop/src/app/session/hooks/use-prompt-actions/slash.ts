@@ -80,6 +80,7 @@ import {
   isSessionIdCandidate,
   renderCommandsCatalog,
   renderRpcResult,
+  renderSlashRpcResult,
   slashStatusText,
   type SubmitTextOptions,
   withSessionNotFoundResume
@@ -611,7 +612,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // requestGateway layer keeps (30s) is too tight for RPCs that do
           // real work.
           const result = await requestGateway<unknown>(surface.rpc, params, surface.timeoutMs)
-          const body = renderRpcResult(result, ctx.name)
+          const body = renderSlashRpcResult(result, ctx.name, ctx.arg)
 
           renderSlashOutput(body || `/${ctx.name}: no output`)
         } catch (err) {

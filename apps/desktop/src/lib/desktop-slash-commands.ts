@@ -1,4 +1,5 @@
 import { translateNow } from '@/i18n/runtime'
+import { MCP_RELOAD_TIMEOUT_MS, mcpReloadSlashParams } from '@/lib/mcp-reload'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -387,6 +388,22 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: exec(),
     argumentMode: 'options',
     desktopSubcommands: ['pending', 'approve', 'reject', 'diff', 'approval']
+  },
+  {
+    // `now`/`always` (and the TUI's approve/once/yes) skip the consent gate;
+    // `always` additionally persists the profile's confirmation opt-out. A
+    // bare /reload-mcp leaves the decision to the backend.
+    name: '/reload-mcp',
+    description: 'Reload MCP servers from config',
+    aliases: ['/reload_mcp'],
+    surface: rpc('reload.mcp', ctx => mcpReloadSlashParams(ctx.arg, ctx.sessionId), MCP_RELOAD_TIMEOUT_MS),
+    argumentMode: 'options'
+  },
+  {
+    name: '/reload-skills',
+    description: 'Re-scan the skills directory for newly installed or removed skills',
+    aliases: ['/reload_skills'],
+    surface: rpc('skills.reload', ctx => (ctx.sessionId ? { session_id: ctx.sessionId } : {}))
   }
 ]
 
@@ -907,6 +924,93 @@ export function desktopSkinSlashCompletions(
   }
 
   return commands.filter(item => item.text.slice('/skin '.length).toLowerCase().startsWith(prefix))
+}
+
+/**
+ * `/reload-mcp` argument options the desktop owns: `now` skips the consent
+ * gate once, `always` skips it and persists the opt-out for the profile. The
+ * backend registry declares no subcommands for the command, so its arg
+ * completions have to come from here — like `/skin`'s theme list.
+ */
+export function desktopReloadMcpSlashCompletions(argPrefix: string): DesktopSlashCompletion[] {
+  const options: DesktopSlashCompletion[] = [
+    {
+      display: '/reload-mcp now',
+      meta: translateNow('connectorsPage.reload.completionNow'),
+      text: '/reload-mcp now'
+    },
+    {
+      display: '/reload-mcp always',
+      meta: translateNow('connectorsPage.reload.completionAlways'),
+      text: '/reload-mcp always'
+    }
+  ]
+
+  const prefix = argPrefix.trim().toLowerCase()
+
+  if (!prefix) {
+    return options
+  }
+
+  return options.filter(item => item.text.slice('/reload-mcp '.length).toLowerCase().startsWith(prefix))
+}
+
+export interface DesktopArgCompletionContext {
+  activeSkin?: string
+  skinThemes?: DesktopThemeCommandOption[]
+}
+
+export interface DesktopArgCompletions {
+  group: string
+  items: DesktopSlashCompletion[]
+}
+
+interface DesktopArgCompleter {
+  /** The command's arg stage; group 1 captures what was typed after the space. */
+  pattern: RegExp
+  group: string
+  /** Null when the caller cannot answer (e.g. no themes supplied). */
+  complete: (arg: string, ctx: DesktopArgCompletionContext) => DesktopSlashCompletion[] | null
+}
+
+/**
+ * Commands whose argument list is owned client-side rather than by the
+ * backend's `complete.slash` — the composer answers these without a round
+ * trip. First matching pattern wins.
+ */
+const DESKTOP_ARG_COMPLETERS: readonly DesktopArgCompleter[] = [
+  {
+    pattern: /^\/skin\s+(.*)$/is,
+    group: 'Themes',
+    complete: (arg, ctx) =>
+      ctx.skinThemes ? desktopSkinSlashCompletions(ctx.skinThemes, ctx.activeSkin ?? '', arg) : null
+  },
+  {
+    pattern: /^\/reload[-_]mcp\s+(.*)$/is,
+    group: 'Options',
+    complete: arg => desktopReloadMcpSlashCompletions(arg)
+  }
+]
+
+/** The desktop-owned arg completions for `text`, or null when no client-side
+ *  completer matches — or the matching one needs input the caller withheld. */
+export function desktopOwnedArgCompletions(
+  text: string,
+  ctx: DesktopArgCompletionContext
+): DesktopArgCompletions | null {
+  for (const completer of DESKTOP_ARG_COMPLETERS) {
+    const match = completer.pattern.exec(text)
+
+    if (!match) {
+      continue
+    }
+
+    const items = completer.complete(match[1] ?? '', ctx)
+
+    return items ? { group: completer.group, items } : null
+  }
+
+  return null
 }
 
 /**

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { capabilityScoped } from '@/api/client'
 import {
   getMcpCatalog,
   type HermesGateway,
@@ -20,7 +21,7 @@ import { getServers, type McpServerEntry, type McpServers } from '@/lib/mcp-serv
 import { setDisabledTools, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $activeSessionId } from '@/store/session'
+import { $activeSessionId, sessionOfProfile } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../../hooks/use-config-record'
@@ -152,7 +153,8 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     }
 
     try {
-      announceMcpReload(await reloadMcp(gateway, activeSessionId))
+      const profileName = capabilityScoped(profile).profile
+      announceMcpReload(await reloadMcp(gateway, sessionOfProfile(activeSessionId, profileName), profileName))
     } catch (err) {
       notifyError(err, m.reloadFailed)
     }

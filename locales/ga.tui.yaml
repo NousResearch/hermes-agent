@@ -958,6 +958,8 @@ slashCmd.ops.reloadEnv.reloadedOne: ".env athlódáilte ({0} athróg nuashonrait
 slashCmd.ops.reloadEnv.reloadedOther: ".env athlódáilte ({0} athróg nuashonraithe)"
 slashCmd.ops.reloadMcp.complete: "athlódáil críochnaithe"
 slashCmd.ops.reloadMcp.confirmRequired: "teastaíonn dearbhú le /reload-mcp"
+slashCmd.ops.reloadMcp.deferred: "Nuashonraíodh freastalaithe MCP don phróifíl seo; cuirfidh an comhrá seo i bhfeidhm iad nuair a chríochnóidh a thuras reatha agus a athlódáiltear arís, nó nuair a athosclaítear é"
+slashCmd.ops.reloadMcp.notConnected: "níor ceanglaíodh: {0}"
 slashCmd.ops.reloadMcp.reloaded: "freastalaithe MCP athlódáilte"
 slashCmd.ops.reloadMcp.reloadedAlways: "freastalaithe MCP athlódáilte · rithfidh /reload-mcp gan dearbhú as seo amach"
 slashCmd.ops.reloadSkills.pageTitle: "Athlódáil Scileanna"

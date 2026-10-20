@@ -61,7 +61,7 @@ describe('connect reads what reload.mcp did for the chat', () => {
 
     await connect()
 
-    expect(mocks.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: 's1' })
+    expect(mocks.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: 's1' }, expect.any(Number))
     expect(mocks.notify).not.toHaveBeenCalled()
     expect(mocks.notifyError).not.toHaveBeenCalled()
   })

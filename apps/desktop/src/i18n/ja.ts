@@ -7,6 +7,7 @@ import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
+import { jaMcpReload } from './ja_mcp_reload'
 import { jaModelMenu } from './ja_model_menu'
 import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
@@ -19,6 +20,7 @@ import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
   connectors: jaConnectors.connectors,
+  connectorsPage: { reload: jaMcpReload },
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -704,9 +706,7 @@ export const jaOverrides = {
         maxLines: 'ファイルページ上限',
         maxLineLength: '行長上限'
       },
-      codeExecution: {
-        mode: 'コード実行モード'
-      },
+      codeExecution: { mode: 'コード実行モード' },
       approvals: {
         mode: '承認モード',
         timeout: '承認タイムアウト',

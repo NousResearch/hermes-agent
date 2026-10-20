@@ -16,6 +16,7 @@ import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { FirstRunCopy } from './types_first_run'
+import type { McpReloadCopy } from './types_mcp_reload'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
@@ -253,6 +254,7 @@ export interface Translations extends NoticeTranslations {
       advancedHint: string
     }
     accounts: ConnectorAccountsTranslations
+    reload: McpReloadCopy
     tools: {
       title: string
       notInstalledBody: string
@@ -1516,9 +1518,7 @@ export interface Translations extends NoticeTranslations {
         paymentAndCredits: string
         usage: string
       }
-      usage: {
-        title: string
-      }
+      usage: { title: string }
       buyCredits: {
         customAmount: string
         title: string

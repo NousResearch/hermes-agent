@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
+  desktopReloadMcpSlashCompletions,
   desktopSkinSlashCompletions,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
@@ -240,7 +241,35 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestionWithOptions('/fork', { exactAlias: '/reset' })).toBe(false)
     // Aliases whose canonical has no desktop surface stay hidden even on an
     // exact match (isDesktopSlashCommand gate).
-    expect(isDesktopSlashSuggestionWithOptions('/reload_mcp', { exactAlias: '/reload_mcp' })).toBe(false)
+    expect(isDesktopSlashSuggestionWithOptions('/sb', { exactAlias: '/sb' })).toBe(false)
+  })
+
+  it('routes /reload-mcp and /reload-skills through their gateway RPCs', () => {
+    const mcp = resolveDesktopCommand('/reload-mcp')?.surface
+    const skills = resolveDesktopCommand('/reload-skills')?.surface
+
+    expect(mcp?.kind).toBe('rpc')
+    expect(skills?.kind).toBe('rpc')
+
+    if (mcp?.kind !== 'rpc' || skills?.kind !== 'rpc') {
+      return
+    }
+
+    const build = (arg: string) => ({ arg, command: '/reload-mcp', name: 'reload-mcp', sessionId: 's-1' })
+
+    expect(mcp.rpc).toBe('reload.mcp')
+    expect(mcp.buildParams(build('always'))).toEqual({ always: true, confirm: true, session_id: 's-1' })
+    expect(desktopSlashCommandArgumentMode('/reload-mcp')).toBe('options')
+
+    expect(skills.rpc).toBe('skills.reload')
+    expect(skills.buildParams({ arg: '', command: '/reload-skills', name: 'reload-skills', sessionId: 's-1' })).toEqual(
+      { session_id: 's-1' }
+    )
+
+    // Aliases execute but stay out of the browse popover.
+    expect(isDesktopSlashCommand('/reload_mcp')).toBe(true)
+    expect(isDesktopSlashSuggestion('/reload_mcp')).toBe(false)
+    expect(isDesktopSlashSuggestionWithOptions('/reload_mcp', { exactAlias: '/reload_mcp' })).toBe(true)
   })
 
   it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {
@@ -318,6 +347,15 @@ describe('desktop slash command curation', () => {
         meta: 'Midnight - Deep blue'
       }
     ])
+  })
+
+  it('offers the /reload-mcp argument words the desktop owns', () => {
+    expect(desktopReloadMcpSlashCompletions('').map(entry => entry.text)).toEqual([
+      '/reload-mcp now',
+      '/reload-mcp always'
+    ])
+    expect(desktopReloadMcpSlashCompletions('al').map(entry => entry.text)).toEqual(['/reload-mcp always'])
+    expect(desktopReloadMcpSlashCompletions('zz')).toEqual([])
   })
 
   it('flags /model as a picker-owned command so the desktop opens the overlay', () => {

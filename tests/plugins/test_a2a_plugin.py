@@ -953,6 +953,11 @@ def test_ipv6_loopback_bind_serves_and_advertises_a_bracketed_url(monkeypatch, s
     peer can parse (IPv6 literal in exactly one pair of brackets)."""
     monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
     monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        pytest.skip("host cannot bind IPv6 '::1'")
     monkeypatch.setenv("A2A_HOST", spelling)
     adapter, _ = _make_live_adapter(monkeypatch)
     base = f"http://[::1]:{adapter.port}"

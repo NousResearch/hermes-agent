@@ -1295,7 +1295,6 @@ def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
     return None
 
 
-
 def interruptible_api_call(agent, api_kwargs: dict):
     """Run the API call on a worker thread so the caller can detect interrupts
     without waiting for the full HTTP round-trip. Each worker gets its own
@@ -1472,7 +1471,6 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
 
 
-
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
@@ -1570,12 +1568,14 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
 # The relay's authenticate() (zen.go) checks: User-Agent format (opencode/<channel>/<version>/cli),
 # x-opencode-session in ses_<12hex><14base62> format (idgen.go), body.stream=true, and body.tools
 # containing "bash" and "read". Absent any of these -> FreeTierError 403.
-# These tool stubs match the OpenCode client's tool names/signatures closely enough
-# to pass the relay's presence check (see Issue #55653: "looks at which tools are listed").
+#
+# The relay accepts OpenAI function-calling format for tools (verified: curl with
+# proper description + parameters returns HTTP 200). Earlier 400 errors were caused
+# by empty parameters {} — the upstream LLM rejects tools with no parameters.
 _OPCODE_FREE_TOOLS = [
     {"type": "function", "function": {
         "name": "bash",
-        "description": "Executes a given bash command in a persistent shell session with optional timeout.",
+        "description": "Executes a bash command in a persistent shell session.",
         "parameters": {"type": "object", "properties": {
             "command": {"description": "The bash command to execute", "type": "string"},
             "timeout": {"description": "Optional timeout in seconds", "type": "number"}}}}},

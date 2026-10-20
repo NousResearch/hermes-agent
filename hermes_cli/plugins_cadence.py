@@ -200,8 +200,9 @@ def _run_check_locked(
 ) -> list:
     check_ok = True
     warning = ""
-    checked_installs = snapshot_installs(plugins_dir)
+    checked_installs: dict = {}
     try:
+        checked_installs = snapshot_installs(plugins_dir)
         results = run_checks_fn(plugins_dir)
     except Exception:
         warning = "plugin update check failed"

@@ -1,15 +1,39 @@
-import type { UsageModelData } from '@hermes/shared/billing'
+/** Typed results and events of the gateway's JSON-RPC methods, as a client reads them. */
+import type { UsageModelData } from './billing-types.js'
 import type {
   ConnectionRequestPayload,
   GatewayEvent,
   GatewayEventMap,
   InflightTurn,
+  SessionLiveInfo,
   TranscriptMessage,
   Usage
-} from '@hermes/shared/gateway-events'
-import type { HermesSkin } from '@hermes/shared/skin'
+} from './gateway-events.js'
+import type { HermesSkin } from './skin.js'
 
-import type { SessionInfo, SlashCategory } from './types.js'
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`,
+ *  plus the canonical-authority fields the legacy contract does not carry yet
+ *  (`gateway/session_events.py` owner stamps and the durable admission FIFO). */
+export interface SessionInfo extends SessionLiveInfo {
+  execution_epoch?: string
+  execution_generation?: number
+  execution_state?: string
+  install_warning?: string
+  pending_submissions?: Array<{
+    admission_id: string
+    input_id?: string
+    target_session_id: string
+    target_profile_home: string
+    status: string
+    user: string
+    outcome?: string | null
+  }>
+}
+
+export interface SlashCategory {
+  name: string
+  pairs: [string, string][]
+}
 
 /** The cross-surface skin contract (canonical shape in `@hermes/shared`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
@@ -109,7 +133,7 @@ export type {
   SubscriptionUpgradeResponse,
   UsageBarData,
   UsageModelData
-} from '@hermes/shared/billing'
+} from './billing-types.js'
 
 // ── Config ───────────────────────────────────────────────────────────
 

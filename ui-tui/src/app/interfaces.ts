@@ -570,6 +570,8 @@ export interface SlashHandlerContext {
     attachImagePath: (path: string) => void
     enqueue: (text: string, display?: string) => void
     hasSelection: boolean
+    /** Park an accepted /steer in the queue strip. Optional for callers that only enqueue. */
+    setSteer?: (text: string) => void
     openEditor: () => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>
     selection: SelectionApi

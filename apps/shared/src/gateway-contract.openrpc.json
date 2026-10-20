@@ -8554,6 +8554,22 @@
           "authority_epoch": {
             "title": "Authority Epoch",
             "type": "integer"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "enum": [
+                  "steer",
+                  "redirect"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pending"
           }
         },
         "required": [
@@ -37833,6 +37849,18 @@
             },
             "title": "Queue",
             "type": "array"
+          },
+          "redirect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Redirect"
           }
         },
         "title": "SessionPendingResult",

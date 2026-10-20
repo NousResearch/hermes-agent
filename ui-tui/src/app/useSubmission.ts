@@ -5,7 +5,7 @@ import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens, imageAttachments } from '../domain/attachments.js'
 import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
+import type { SessionSteerClearResponse, SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -13,6 +13,7 @@ import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js
 import type { Msg } from '../types.js'
 
 import { reportSlashCommand } from './createSlashHandler.js'
+import { acceptedCorrectionView } from './pendingCorrection.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { findSlashCommand } from './slash/registry.js'
 import { submitPrompt } from './submissionCore.js'
@@ -300,23 +301,33 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
-      // A steer accepted by the gateway becomes a first-class pending row in the
-      // queue strip (tagged, editable, deletable). Both steer transports report
-      // acceptance through the staged item's settle: canonical control replies via
-      // settleControlReply, legacy prompt.submit replies via submitLegacy. The
-      // original callback always runs first (settle is single-shot per claim).
-      const parkSteerOnSettle = (staged: QueueItem) => {
-        if (mode !== 'steer') {
-          return staged
-        }
-
+      // An accepted correction stays visible. A steer (including a tool-time
+      // interrupt, which the agent stores as a steer) is the queue strip's first
+      // row. A canonical model redirect is a user row in the live turn —
+      // standalone already paints that bubble on the owned-turn path. The
+      // authority's `pending` field picks the surface; an older canonical
+      // gateway that omits it still shows an interrupt in the strip. The
+      // original settle always runs first (single-shot per claim).
+      const showAcceptedCorrection = (staged: QueueItem) => {
         const prior = staged.settle
 
         staged.settle = accepted => {
           prior?.(accepted)
 
-          if (accepted) {
-            composerActions.setSteer(staged.text)
+          if (!accepted) {
+            return
+          }
+
+          const view = acceptedCorrectionView(mode, gw.isCanonical, staged.correctionPending)
+
+          if (view === 'user-row') {
+            appendMessage({ role: 'user', text: staged.text })
+
+            return
+          }
+
+          if (view === 'steer-row') {
+            composerActions.setSteer?.(staged.text)
           }
         }
 
@@ -327,7 +338,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
 
         if (!staged) { return }
-        parkSteerOnSettle(staged)
+        showAcceptedCorrection(staged)
         staged.controlMethod ??= mode === 'steer' ? 'session.steer' : 'session.redirect'
         staged.executionGeneration ??= executionGeneration
         staged.attachments ??= item.attachments
@@ -351,7 +362,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
 
       if (!staged) { return }
-      parkSteerOnSettle(staged)
+      showAcceptedCorrection(staged)
       staged.queued = false
 
       // The gateway owns the atomic redirect decision because it knows whether
@@ -361,7 +372,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       send(item.text, true, item.display, value => value, {
         destination, queueItem: staged, attachments: item.attachments })
     },
-    [composerActions, gw, send]
+    [appendMessage, composerActions, gw, send]
   )
 
   const dispatchSubmission = useCallback(
@@ -467,7 +478,19 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return
         }
 
-        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
+        // Replace, don't concatenate: the agent slot appends on session.steer.
+        // Clear it first, then steer the edited text. Canonical steer also
+        // needs the live execution generation or the authority rejects it.
+        const generation = live.info?.execution_generation
+        const steerParams = {
+          session_id: live.sid,
+          text: full,
+          ...(gw.isCanonical && generation !== undefined ? { execution_generation: generation } : {})
+        }
+
+        void gw
+          .request<SessionSteerClearResponse>('session.steer_clear', { session_id: live.sid })
+          .then(() => gw.request<SessionSteerResponse>('session.steer', steerParams))
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 

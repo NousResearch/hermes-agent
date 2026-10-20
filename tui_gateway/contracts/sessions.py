@@ -666,6 +666,8 @@ class SessionPendingParams(SessionParams):
 class SessionPendingResult(Result):
     steer: str | None = None
     queue: list[str] = Field(default_factory=list)
+    # Set only while a model redirect is waiting to rebuild the live request.
+    redirect: str | None = None
 
 
 method("session.pending", params=SessionPendingParams, result=SessionPendingResult,

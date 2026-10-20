@@ -45,7 +45,7 @@ it('submits interpolated queued input only to its captured owner and removes it 
     submission = useSubmission({
       appendMessage: appended,
       composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ } as any,
-      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
+      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, steerEditRef: { current: null }, tokensRef: { current: [] } } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
       gw: { request } as any,
       setLastUserMsg: vi.fn(),
@@ -118,7 +118,7 @@ it('refuses the whole submit when a {!cmd} cannot run instead of sending a place
     submission = useSubmission({
       appendMessage: vi.fn(),
       composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ } as any,
-      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
+      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, steerEditRef: { current: null }, tokensRef: { current: [] } } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
       gw: { request } as any,
       setLastUserMsg: vi.fn(),

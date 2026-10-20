@@ -147,6 +147,23 @@ def test_session_pending_snapshots_steer_and_queue():
         server._sessions.pop("sid", None)
 
 
+def test_session_pending_includes_a_waiting_model_redirect():
+    """A redirect that has not rebuilt the request yet is part of the snapshot,
+    separate from the steer slot a tool-time redirect uses."""
+    agent = types.SimpleNamespace(_pending_steer=None, _pending_redirect="answer with Monday only")
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.pending", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["steer"] is None
+    assert resp["result"]["redirect"] == "answer with Monday only"
+    assert resp["result"]["queue"] == []
+
+
 def test_session_pending_empty_when_nothing_pending():
     server._sessions["sid"] = _session(agent=types.SimpleNamespace())
     try:

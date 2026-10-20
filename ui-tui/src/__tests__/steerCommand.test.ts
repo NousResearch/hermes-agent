@@ -13,10 +13,11 @@ const guarded =
 const runSteer = async (arg: string, steerResult: unknown, busy = true) => {
   const sys = vi.fn()
   const enqueue = vi.fn()
+  const setSteer = vi.fn()
   const rpc = vi.fn((_method: string, _params: unknown) => Promise.resolve(steerResult))
 
   const ctx = {
-    composer: { enqueue },
+    composer: { enqueue, setSteer },
     gateway: { gw: { isCanonical: false }, rpc },
     guarded,
     guardedErr: vi.fn(),
@@ -29,15 +30,16 @@ const runSteer = async (arg: string, steerResult: unknown, busy = true) => {
   await rpc.mock.results[0]?.value
   await Promise.resolve()
 
-  return { enqueue, printed: sys.mock.calls.map(c => String(c[0])).join('\n'), rpc }
+  return { enqueue, printed: sys.mock.calls.map(c => String(c[0])).join('\n'), rpc, setSteer }
 }
 
 describe('/steer', () => {
   it('steers the live turn when the gateway accepts', async () => {
-    const { enqueue, printed, rpc } = await runSteer('check the logs', { status: 'queued', text: 'check the logs' })
+    const { enqueue, printed, rpc, setSteer } = await runSteer('check the logs', { status: 'queued', text: 'check the logs' })
 
     expect(rpc).toHaveBeenCalledWith('session.steer', { session_id: 'sid-1', text: 'check the logs' })
     expect(enqueue).not.toHaveBeenCalled()
+    expect(setSteer).toHaveBeenCalledWith('check the logs')
     expect(printed).toContain('steer queued')
   })
 

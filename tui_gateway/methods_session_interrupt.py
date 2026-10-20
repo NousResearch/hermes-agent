@@ -214,6 +214,41 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "cleared" if had else "noop", "cleared": bool(had)})
 
 
+@method("session.pending")
+def _(rid, params: dict) -> dict:
+    """Snapshot of what will run next: the pending steer (if any), a model
+    redirect still waiting to rebuild the request, and every queued prompt.
+
+    The TUI renders the steer as the pending strip, and a reconnect rebuilds
+    it from here. Shared-gateway mode reads the same shape from the canonical
+    authority (``gateway.session_busy_controls.pending_view``)."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    steer: str | None = None
+    redirect: str | None = None
+    if agent is not None:
+        pending = getattr(agent, "_pending_steer", None)
+        if isinstance(pending, str) and pending:
+            steer = pending
+        waiting = getattr(agent, "_pending_redirect", None)
+        if isinstance(waiting, str) and waiting:
+            redirect = waiting
+    queue: list[str] = []
+    queued = session.get("queued_prompt")
+    if queued and isinstance(queued.get("text"), str):
+        queue.append(queued["text"])
+    for extra in session.get("queued_prompts", []) or []:
+        text = extra.get("text") if isinstance(extra, dict) else None
+        if isinstance(text, str):
+            queue.append(text)
+    result: dict = {"steer": steer, "queue": queue}
+    if redirect:
+        result["redirect"] = redirect
+    return _ok(rid, result)
+
+
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
     bind_module(globals(), server, skip=("_",))

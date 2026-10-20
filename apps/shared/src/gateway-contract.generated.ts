@@ -3580,6 +3580,7 @@ export interface SessionPendingParams {
 export interface SessionPendingResult {
   steer?: string | null
   queue?: string[]
+  redirect?: string | null
 }
 export interface SpawnTreeSaveParams {
   profile?: string | null
@@ -5108,6 +5109,7 @@ export interface CanonicalCorrectionAck {
   text: string
   execution_generation: number
   authority_epoch: number
+  pending?: 'steer' | 'redirect' | null
 }
 /** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
 export interface CanonicalVoiceStopped {

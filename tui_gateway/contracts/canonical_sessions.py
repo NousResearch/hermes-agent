@@ -268,6 +268,9 @@ class CanonicalCorrectionAck(Result):
     text: str
     execution_generation: int
     authority_epoch: int
+    # Where an accepted correction is waiting. ``steer`` includes a tool-time
+    # redirect (stored as a pending steer). Absent when rejected.
+    pending: Literal['steer', 'redirect'] | None = None
 
 
 class CanonicalCorrectionResult(RootModel):

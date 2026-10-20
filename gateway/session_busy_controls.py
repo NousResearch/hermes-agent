@@ -1,5 +1,6 @@
 """Session-scoped busy preferences and controls of the existing execution only."""
 import asyncio
+import contextlib
 from functools import partial
 from pathlib import Path
 
@@ -12,6 +13,10 @@ def handlers(connection):
         'config.set': partial(busy_config, connection, write=True),
         'session.steer': partial(correct, connection, verb='steer'),
         'session.redirect': partial(correct, connection, verb='redirect'),
+        # The queue strip's source of truth in shared-gateway mode. Standalone
+        # tui_gateway serves the same names against its own session dict.
+        'session.pending': partial(pending_view, connection),
+        'session.steer_clear': partial(clear_steer, connection),
     }
 
 
@@ -198,11 +203,117 @@ async def correct(connection, ref, params, *, verb):
         agent, latched = authority.steer_agent(ref, generation, params['text'] if verb == 'steer' else None)
         if latched:
             return {'status': 'queued', 'text': params['text'], 'execution_generation': generation,
-                    'authority_epoch': authority.epoch}
+                    'authority_epoch': authority.epoch, 'pending': 'steer'}
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')
         accepted = method(params['text'])
-        return {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
-                'text': params['text'], 'execution_generation': generation,
-                'authority_epoch': authority.epoch}
+        status = {'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'
+        result = {'status': status, 'text': params['text'], 'execution_generation': generation,
+                  'authority_epoch': authority.epoch}
+        # ``pending`` says where this text is waiting. A tool-time redirect is a
+        # steer (the agent will not kill the tool); only a model redirect waits
+        # in the redirect slot. The TUI uses it to pick the strip vs a user row.
+        if accepted:
+            result['pending'] = _accepted_surface(agent, verb, params['text'], latched)
+        return result
+
+
+def _text_slot(agent, name):
+    value = getattr(agent, name, None) if agent is not None else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _live_agent(authority, ref):
+    """The agent this generation adopted, else the route's resident agent.
+
+    A test or pre-turn authority may not have a cache lookup yet; that is no
+    agent, not an error. ``SessionAuthority.agent`` is the production read once
+    the lookup exists."""
+    _generation, adopted = authority.adopted.get(ref.session_id, (None, None))
+    if adopted is not None:
+        return adopted
+    runner = authority.runner
+    lookup = getattr(runner, '_resident_agent_for', None) or getattr(runner, '_cached_agent_for', None)
+    if lookup is None:
+        return None
+    return authority.agent(ref)
+
+
+def _stream_lock(authority, ref):
+    live = authority.sessions.get(ref.session_id)
+    return live.event_stream.lock if live is not None else contextlib.nullcontext()
+
+
+def _accepted_surface(agent, verb, text, latched):
+    """``steer`` when the text is waiting to inject; ``redirect`` when it will
+    rebuild the live model request as a user message."""
+    if latched or verb == 'steer':
+        return 'steer'
+    redirect = _text_slot(agent, '_pending_redirect')
+    if redirect and text.strip() in redirect:
+        return 'redirect'
+    return 'steer'
+
+
+def correction_snapshot(authority, ref):
+    """Pending steer (agent slot, else the pre-adopt latch), pending model
+    redirect, and queued-admission texts. The running prompt is not part of the
+    queue — it is already the live turn."""
+    with _stream_lock(authority, ref):
+        agent = _live_agent(authority, ref)
+        _generation, texts = authority.pending_steers.get(ref.session_id, (None, []))
+    latched = "\n".join(text.strip() for text in texts if isinstance(text, str) and text.strip())
+    steer = _text_slot(agent, '_pending_steer') or latched or None
+    redirect = _text_slot(agent, '_pending_redirect')
+    queue = []
+    for row in authority._pending_rows(ref):
+        if row.get('status') != 'queued':
+            continue
+        payload = row.get('payload') or {}
+        text = payload.get('text') if isinstance(payload, dict) else None
+        if isinstance(text, str) and text:
+            queue.append(text)
+    return steer, redirect, queue
+
+
+async def pending_view(connection, ref, params):
+    if set(params) - {'session_id', 'profile'} or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:read')
+    steer, redirect, queue = correction_snapshot(connection.authority, ref)
+    result = {'steer': steer, 'queue': queue}
+    if redirect:
+        result['redirect'] = redirect
+    return result
+
+
+def _clear_agent_steer(agent):
+    if agent is None:
+        return False
+    clearer = getattr(agent, 'clear_pending_steer', None)
+    if callable(clearer):
+        return bool(clearer())
+    lock = getattr(agent, '_pending_steer_lock', None)
+    if lock is not None:
+        with lock:
+            had = getattr(agent, '_pending_steer', None) is not None
+            agent._pending_steer = None
+            return had
+    had = getattr(agent, '_pending_steer', None) is not None
+    agent._pending_steer = None
+    return had
+
+
+async def clear_steer(connection, ref, params):
+    """Drop a pending steer that has not been injected: the pre-adopt latch and
+    the agent slot. A model redirect is not a steer and stays put."""
+    if set(params) - {'session_id', 'profile'} or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:control')
+    authority = connection.authority
+    with _stream_lock(authority, ref):
+        _generation, texts = authority.pending_steers.pop(ref.session_id, (None, ()))
+        agent = _live_agent(authority, ref)
+    cleared = bool(texts) or _clear_agent_steer(agent)
+    return {'status': 'cleared' if cleared else 'noop', 'cleared': cleared}

@@ -80,7 +80,7 @@ function mount(receiptHome: string, receiptSession = 'stored-owner', busyInputMo
       appendMessage: noop,
       composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ, removeQueue: queue.removeQ,
         pushHistory: noop, clearIn: noop } as any,
-      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
+      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, steerEditRef: { current: null }, tokensRef: { current: [] } } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
       gw, setLastUserMsg: noop, slashRef: { current: () => true },
       submitRef: { current: noop }, sys: noop

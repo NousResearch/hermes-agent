@@ -361,8 +361,11 @@ export interface SessionInterruptResponse {
 }
 
 export interface SessionSteerResponse {
-  status?: 'steered' | 'queued' | 'rejected'
+  status?: 'steered' | 'queued' | 'rejected' | 'redirected'
   text?: string
+  /** Where an accepted correction is waiting. Tool-time redirect is `steer`. */
+  pending?: 'redirect' | 'steer' | null
+  execution_generation?: number
 }
 
 export interface SessionSteerClearResponse {
@@ -373,6 +376,7 @@ export interface SessionSteerClearResponse {
 export interface SessionPendingResponse {
   steer?: string | null
   queue?: string[]
+  redirect?: string | null
 }
 
 // ── Prompt / submission ──────────────────────────────────────────────

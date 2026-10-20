@@ -21,7 +21,7 @@ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import type { SubagentListResponse } from '../gatewayTypes.js'
+import type { SessionPendingResponse, SubagentListResponse } from '../gatewayTypes.js'
 import type {
   AnyGatewayEvent,
   ClarifyLockResponse,
@@ -57,6 +57,7 @@ import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRo
 import { requestLiveSessions } from './liveSessions.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
+import { steerToHydrate } from './pendingCorrection.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -568,6 +569,53 @@ export function useMainApp(gw: GatewayClient) {
     (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
     [setHistoryItems]
   )
+
+  // Shared-gateway resume: the canonical authority owns the pending steer.
+  // Apply it only when this client has not already parked one, so a steer
+  // accepted during the round-trip is not wiped by an empty snapshot.
+  const steerHydratedSid = useRef<null | string>(null)
+  const setSteerRef = useRef(composerActions.setSteer)
+  setSteerRef.current = composerActions.setSteer
+
+  useEffect(() => {
+    if (!gw.isCanonical || !ui.sid) {
+      return
+    }
+
+    const sid = ui.sid
+
+    if (steerHydratedSid.current === sid) {
+      return
+    }
+
+    steerHydratedSid.current = sid
+    const seen = composerRefs.steerRef.current
+    let cancelled = false
+
+    void gw
+      .request<SessionPendingResponse>('session.pending', { session_id: sid })
+      .then(snap => {
+        if (cancelled || composerRefs.steerRef.current !== seen) {
+          return
+        }
+
+        const steer = steerToHydrate(seen, snap)
+
+        if (steer) {
+          setSteerRef.current(steer)
+        }
+      })
+      .catch(() => {
+        // A failed read must not stick, or a later attach of this session never retries.
+        if (!cancelled && steerHydratedSid.current === sid) {
+          steerHydratedSid.current = null
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [composerRefs, gw, ui.sid])
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
 
@@ -1184,6 +1232,7 @@ export function useMainApp(gw: GatewayClient) {
           attachImagePath: composerActions.attachImagePath,
           enqueue: composerActions.enqueue,
           hasSelection,
+          setSteer: composerActions.setSteer,
           openEditor: composerActions.openEditor,
           queueRef: composerRefs.queueRef,
           selection,

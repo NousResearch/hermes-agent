@@ -28,6 +28,8 @@ export interface QueueItem {
   failed?: boolean
   attachments?: Array<{ path: string; mime: string }>
   controlMethod?: 'session.steer' | 'session.redirect'
+  /** Where the authority parked an accepted busy correction. */
+  correctionPending?: 'redirect' | 'steer' | null
   executionGeneration?: number
   preparedText?: string
   legacyAttempted?: boolean

@@ -25,6 +25,8 @@ const row = (admission_id: string, input_id: string, text: string, status = 'que
 })
 
 function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' })) {
+  const steers: string[] = []
+  const messages: string[] = []
   // macOS: tmpdir() is /var/..., a symlink to /private/var; captureDestination() realpaths
   // HERMES_HOME, so receipts must carry the canonical home or target_profile_home never matches.
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-busy-admit-')))
@@ -62,7 +64,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
     gateway: { gw, rpc: async () => null },
     session: { STARTUP_RESUME_ID: '', colsRef: { current: 80 }, newSession: noop, resetSession: noop, resumeById: noop, setCatalog: noop },
     submission: { submitRef: { current: noop } }, system: { bellOnComplete: false, sys: noop },
-    transcript: { appendMessage: noop, panel: noop, setHistoryItems: noop },
+    transcript: { appendMessage: (msg: { role?: string; text?: string }) => { if (msg.role === 'user' && msg.text) messages.push(msg.text) }, panel: noop, setHistoryItems: noop },
     voice: { setProcessing: noop, setRecording: noop, setVoiceEnabled: noop }
   } as any)
 
@@ -75,10 +77,10 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
     const ui = useStore($uiState)
     queue = useQueue(gw)
     submission = useSubmission({
-      appendMessage: noop,
+      appendMessage: (msg: { role?: string; text?: string }) => { if (msg.role === 'user' && msg.text) messages.push(msg.text) },
       composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ, removeQueue: queue.removeQ,
-        pushHistory: noop, clearIn: noop } as any,
-      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
+        pushHistory: noop, clearIn: noop, setSteer: (text: string) => { steers.push(text) } } as any,
+      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, steerEditRef: { current: null }, tokensRef: { current: [] } } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
       gw, setLastUserMsg: noop, slashRef: { current: () => true },
       submitRef: { current: noop }, sys: noop
@@ -94,7 +96,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   })
 
   return {
-    calls, request, fanout,
+    calls, request, fanout, steers, messages,
     get queue() { return queue }, get submission() { return submission },
     cleanup() { instance.unmount(); turnController.fullReset(); resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
   }
@@ -200,6 +202,37 @@ it('never replays an ambiguous non-idempotent busy correction or falls back to q
     expect(h.calls).toEqual([{ method: 'session.steer', params: first }])
     expect(first).not.toHaveProperty('submission_id')
     expect(loadPendingInputs(captureDestination())[0]).toMatchObject({ controlMethod: 'session.steer', executionGeneration: 1 })
+  } finally { h.cleanup() }
+})
+
+it('shows an accepted tool-time interrupt in the queue strip', async () => {
+  const h = mount('interrupt')
+
+  try {
+    h.request.mockImplementation(async (method, params) => {
+      h.calls.push({ method, params })
+
+      return { status: 'redirected', pending: 'steer', execution_generation: params.execution_generation }
+    })
+    h.submission.dispatchSubmission('add the marker word')
+    await expect.poll(() => h.steers).toEqual(['add the marker word'])
+    expect(h.messages).toEqual([])
+    expect(h.calls[0].method).toBe('session.redirect')
+  } finally { h.cleanup() }
+})
+
+it('shows an accepted model redirect as a user row', async () => {
+  const h = mount('interrupt')
+
+  try {
+    h.request.mockImplementation(async (method, params) => {
+      h.calls.push({ method, params })
+
+      return { status: 'redirected', pending: 'redirect', execution_generation: params.execution_generation }
+    })
+    h.submission.dispatchSubmission('answer with Monday only')
+    await expect.poll(() => h.messages).toEqual(['answer with Monday only'])
+    expect(h.steers).toEqual([])
   } finally { h.cleanup() }
 })
 

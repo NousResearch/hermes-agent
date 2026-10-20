@@ -8,6 +8,7 @@ it from the SAME process: no restart, no drain, and unscoped secret reads fail c
 import asyncio
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,11 +81,18 @@ async def test_profile_created_after_a_single_profile_boot_is_served_without_a_r
         assert is_multiplex_active()
         from agent.secret_scope import UnscopedSecretError, get_secret
         from gateway.run import _profile_runtime_scope
-        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
         with _profile_runtime_scope(bot.resolve()):
             assert get_secret("OPENAI_API_KEY") == "bot-own-key"
-        with launch_profile_scope_if_multiplexed():
-            assert get_secret("OPENAI_API_KEY") == "launch-key"
+        # The default profile's next message goes through the production handler the switch re-wired.
+        seen = []
+
+        async def fake_handle(event):
+            seen.append(get_secret("OPENAI_API_KEY"))
+
+        runner._handle_message = fake_handle
+        source = SimpleNamespace(platform=None, profile=None, chat_id="1", user_id="u")
+        await runner._primary_message_handler()(SimpleNamespace(source=source))
+        assert seen == ["launch-key"]
         with pytest.raises(UnscopedSecretError):
             get_secret("OPENAI_API_KEY")
 

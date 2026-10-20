@@ -1788,13 +1788,13 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
     """Hydrate and load one profile's secrets under its home override."""
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     # Caller already hydrated external sources off-loop (#99519).
-    from agent.secret_scope import build_profile_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     home_token = set_hermes_home_override(str(profile_home))
     try:
         hydrate_profile_secret_sources(Path(profile_home))
-        return build_profile_secret_scope(Path(profile_home))
+        return owner_secret_scope(Path(profile_home))
     finally:
         reset_hermes_home_override(home_token)
 
@@ -1818,8 +1818,8 @@ def _profile_runtime_scope(
         elif hydrate_secrets:
             secrets = _load_profile_secret_scope(Path(profile_home))
         else:
-            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-            secrets = build_profile_secret_scope(Path(profile_home))
+            from tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
+            secrets = owner_secret_scope(Path(profile_home))
         secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
         # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
         # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have

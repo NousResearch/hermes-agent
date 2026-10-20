@@ -15,7 +15,7 @@ from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL as GATEWAY_WS_PR
 GATEWAY_WS_TICKET_PREFIX = "hermes-gateway-ticket."
 # Per-request answer budget. Owner verbs are admissions/reads that answer promptly; the one that
 # legitimately runs long passes its own budget (``rpc(..., _timeout=...)``).
-DEFAULT_RPC_TIMEOUT = 30
+DEFAULT_RPC_TIMEOUT = 90
 # A typed ``--api-key`` on a resume that the owner does not bind (``rebind_launch_key``): every CLI says this.
 RESUME_KEY_MISMATCH = ("--api-key on resume must be the key this session was launched with "
                        "(a session launched without --api-key keeps its profile credentials).")

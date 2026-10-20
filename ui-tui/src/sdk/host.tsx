@@ -178,6 +178,9 @@ const useRenderCtx = (): RenderCtx => {
   return { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24, t: t as never }
 }
 
+const WidgetBody = ({ app, active, ctx }: { app: WidgetApp<never>; active: ActiveWidget; ctx: RenderCtx }) =>
+  app.render({ ...ctx, state: active.state as never })
+
 const renderApp = (active: ActiveWidget, ctx: RenderCtx) => {
   const app = getWidgetApp(active.appId)
 
@@ -191,7 +194,7 @@ const renderApp = (active: ActiveWidget, ctx: RenderCtx) => {
       errorColor={(ctx.t as { color: { error: string } }).color.error}
       key={active.appId}
     >
-      {app.render({ ...ctx, state: active.state as never })}
+      <WidgetBody app={app} active={active} ctx={ctx} />
     </WidgetBoundary>
   )
 }

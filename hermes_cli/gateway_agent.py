@@ -952,6 +952,12 @@ class GatewayAgent:
         if self.tool_gen_callback is not None:
             self.tool_gen_callback(payload.get("name"))
 
+    def _on_tool_progress(self, payload, stream_callback, starts):
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.progress", payload.get("name"), payload.get("message"), None,
+                                        tool_call_id=payload.get("tool_id"), progress=payload.get("progress"),
+                                        total=payload.get("total"), percent=payload.get("percent"))
+
     def _on_tool_start(self, payload, stream_callback, starts):
         self._close_segment(starts)
         name = payload.get("name") or payload.get("tool_name") or "tool"
@@ -1386,6 +1392,7 @@ _HANDLERS = {
     "message.delta": GatewayAgent._on_delta,
     "message.interim": GatewayAgent._on_interim,
     "tool.generating": GatewayAgent._on_tool_generating,
+    "tool.progress": GatewayAgent._on_tool_progress,
     "tool.start": GatewayAgent._on_tool_start,
     "tool.complete": GatewayAgent._on_tool_complete,
     "todo.updated": GatewayAgent._on_todo,

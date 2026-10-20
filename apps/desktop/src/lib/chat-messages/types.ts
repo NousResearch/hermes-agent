@@ -87,6 +87,8 @@ export type GatewayEventPayload = {
   name?: string
   tool_id?: string
   tool_call_id?: string
+  /** tool.progress: 0-100 when the MCP server sent a total. */
+  percent?: number | null
   args?: unknown
   arguments?: unknown
   context?: string

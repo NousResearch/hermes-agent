@@ -378,9 +378,12 @@ def _authserv_id_trusted(candidate: str, authserv_id: str) -> bool:
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
-    ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
-    FIRST instance is authoritative, and it must match an entry of the required, already-normalised
-    *authserv_id* pin (exact, or ``*.suffix`` for multi-MX providers — ``_authserv_id_trusted``). A matching id is a
+    ``Authentication-Results`` headers stamped by the *receiving* server. It prepends, so only the
+    contiguous LEADING run whose authserv-id matches an entry of the required, already-normalised
+    *authserv_id* pin (exact, or ``*.suffix`` for multi-MX providers — ``_authserv_id_trusted``) is
+    authoritative: a receiver may stamp several headers in one run (Fastmail writes x-ptr, bimi, arc
+    and dkim/dmarc separately), and the first foreign id ends it — everything below may be
+    sender-written. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
@@ -389,14 +392,21 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, _NO_AUTH_RESULTS_REASON
-    trusted = " ".join(str(headers[0]).split())
-    # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
-    # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
-    if (clauses := _ar_clauses(trusted)) is None:
-        return False, "unbalanced quote or comment in Authentication-Results"
     if not authserv_id:  # without a pin the topmost header may be one the sender wrote
         return False, _MISSING_AUTHSERV_REASON
-    if not _authserv_id_trusted(clauses[0].strip().lower(), authserv_id):
+    # Collect the clauses of the leading run of headers bearing the pinned id; the first foreign id
+    # ends the trusted block. _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside
+    # them, so supported receiver variants remain valid without allowing a lower field or a related
+    # domain to satisfy the pin.
+    trusted, clauses = "", []
+    for header in headers:
+        flat = " ".join(str(header).split())
+        if (parts := _ar_clauses(flat)) is None:
+            return False, "unbalanced quote or comment in Authentication-Results"
+        if not _authserv_id_trusted(parts[0].strip().lower(), authserv_id):
+            break
+        trusted, clauses = f"{trusted} {flat}".strip(), clauses + parts
+    if not clauses:
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).

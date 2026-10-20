@@ -7,6 +7,7 @@ import re
 from typing import Any, Union
 
 from gateway.platforms.event import MessageOrigin
+from gateway.platforms.send_targets import parse_nonempty, regex_groups_parser
 
 # Usernames are 5-32 chars (letters, digits, underscores) with a leading "@"; 4-char legacy handles are tolerated.
 _TELEGRAM_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")
@@ -31,6 +32,32 @@ def parse_telegram_username_target(target_ref: Any) -> str | None:
     """Return the value when it is an ``@username`` target, else ``None``."""
     value = str(target_ref).strip()
     return value if looks_like_telegram_username(value) else None
+
+
+_SEND_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+
+
+def parse_send_target(ref):
+    """``target_ref_syntax_fn`` for the Telegram ``PlatformEntry``."""
+    # "<chat_id>[:<topic_id>]" or an @username (usernames must not be force-int'd).
+    parsed = regex_groups_parser(_SEND_TARGET_RE)(ref)
+    if parsed:
+        return parsed
+    return parse_nonempty(parse_telegram_username_target(ref) or "")
+
+
+def parse_telegram_message_id(value: Any) -> int | None:
+    """A reply anchor as a Telegram message id (a positive int), or ``None`` when it is not one.
+
+    Anchors are opaque event ids upstream: a route wake (kanban-wake, loop-tick) carries a synthetic
+    JSON identity, and raw ``int()`` on it failed every reply into the session (#139611); an
+    unanchored reply is strictly better than a failed send."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    text = str(value).strip() if value is not None else ""
+    return int(text) if text.isascii() and text.isdigit() and int(text) > 0 else None
 
 
 def message_origin_fields(message: Any, update_id: int | None) -> dict[str, Any]:

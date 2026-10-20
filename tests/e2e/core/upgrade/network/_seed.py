@@ -195,8 +195,10 @@ def seed_install(root: Path) -> Installed:
     sb.env.pop("SSL_CERT_FILE", None)
     script = sb.root / "install.sh"
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    cp = sb.run(["bash", str(script), "--non-interactive", "--skip-browser"], timeout=1800, input="")
+    cp = sb.run(["bash", str(script), "--non-interactive", "--skip-browser"], timeout=1800, input="",
+                env=I.fresh_install_env(sb))
     assert cp.returncode == 0, "seed install failed:\n" + I.describe(cp)
+    I.pin_main_channel(sb)  # cells publish commits, not releases (test_release_channel_records opts back into stable)
     # From here on the checkout talks to the official URL, which only the proxy can serve.
     (sb.home / ".gitconfig").write_text("", encoding="utf-8")
     gitroot = root / "gitroot"

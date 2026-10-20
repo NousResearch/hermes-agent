@@ -1,8 +1,8 @@
 """Anthropic Messages API adapter: client construction + the Messages call for Hermes's
-OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth setup-tokens
-(``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header. Endpoint predicates,
-payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
-credentials}.py``; import them from there."""
+OpenAI-style internals. Auth: Console API keys (``sk-ant-api*``/``-usr*``/``-svc*``/``-admin*``) ->
+x-api-key; OAuth setup-tokens (``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header.
+Endpoint predicates, payload conversion and credentials live in ``agent/anthropic_{endpoints,
+message_convert,credentials}.py``; import them from there."""
 
 from pm import install_hint
 import logging
@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
 
-from agent.anthropic_credentials import _is_oauth_token
+from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
@@ -197,6 +197,16 @@ def _accepts_thinking_disable(model: str) -> bool:
     )
 
 
+def _is_pre_thinking_haiku(model: str) -> bool:
+    """Haiku generations that never get a thinking request (through 4.5). Haiku 5.5+ uses adaptive thinking."""
+    from agent.anthropic_thinking_policy import claude_family_version
+
+    if "haiku" not in model.lower():
+        return False
+    parsed = claude_family_version(model)
+    return parsed is None or parsed[0] != "haiku" or parsed[1] < (5, 5)
+
+
 def _forbids_sampling_params(model: str) -> bool:
     """True for models that 400 on any non-default temperature/top_p/top_k (Opus 4.7 and later;
     unknown Claude defaults to forbidding). The 4.6 family and the legacy manual-thinking families
@@ -288,6 +298,7 @@ def _detect_claude_code_version() -> str:
             result = subprocess.run(
                 [cmd, "--version"],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
@@ -398,10 +409,16 @@ def _build_anthropic_client_with_bearer_hook(
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
-    kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
+    # A key_cmd on the native host can print a Console API key, which (as in the static path's
+    # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer. The
+    # auth header follows each mint, the OAuth identity below the first one: a key_cmd switching
+    # between OAuth and a Console key mid-session needs a client rebuild.
+    kwargs["http_client"] = build_bearer_http_client(
+        token_provider, timeout=kwargs["timeout"],
+        sends_as_api_key=(lambda token: not _is_oauth_token(token)) if is_native_anthropic_host(base_url) else None,
+    )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
-    from agent.anthropic_credentials import anthropic_route_is_oauth
     if anthropic_route_is_oauth(base_url, token_provider):
         # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
@@ -599,7 +616,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
 def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
-    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
+    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku through 4.5 gets none. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
     if reasoning_config.get("enabled") is False:
@@ -609,7 +626,7 @@ def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max
         if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
             return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
-    if "haiku" in model.lower():
+    if _is_pre_thinking_haiku(model):
         return {}
     effort = str(reasoning_config.get("effort", "medium")).lower()
     if _supports_adaptive_thinking(model):
@@ -671,8 +688,8 @@ def build_anthropic_kwargs(
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
-    # endpoints support thinking (manual mode only, not adaptive). Haiku does NOT support extended thinking
-    # — skip entirely. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
+    # endpoints support thinking (manual mode only, not adaptive). Haiku through 4.5 gets no thinking
+    # request; Haiku 5.5+ is adaptive. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
     # endpoints (api.moonshot.cn/anthropic, api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
     # ``output_config.effort``, and the replay-validation 400s that originally motivated dropping the
     # parameter (#13848) no longer occur. (Kimi on chat_completions enables thinking via extra_body in the

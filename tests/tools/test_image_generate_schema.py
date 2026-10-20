@@ -144,6 +144,21 @@ class TestDynamicParamGating(unittest.TestCase):
         self.assertIn("edit", fal["parameters"]["properties"]["reference_image_urls"]["description"])
         self.assertIn("edit", fal["parameters"]["properties"]["prompt"]["description"])
 
+    def test_krea_3_advertises_edit_wording_and_its_own_controls(self):
+        """Krea 3 edits the pictures it is given, so the edit wording applies with the plugin's
+        reference cap, and the schema offers Krea 3's controls and none of Krea 2's."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        with patch.dict(os.environ, {"KREA_IMAGE_MODEL": "krea-3"}), \
+             patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
+             patch.object(ig, "_read_configured_image_model", return_value="krea-3"):
+            props = _build_dynamic_image_schema()["parameters"]["properties"]
+            cap = KreaImageGenProvider().capabilities()["max_reference_images"]
+        self.assertIs(props["image_url"], ig._IMAGE_URL_PARAM)
+        self.assertEqual(props["reference_image_urls"]["maxItems"], cap)
+        self.assertLessEqual({"thinking", "resolution"}, set(props))
+        self.assertNotIn("creativity", props)
+
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic
         overrides own the capability args (do-not-re-add guard)."""

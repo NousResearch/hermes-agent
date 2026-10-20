@@ -1678,6 +1678,29 @@ provider_routing:
 
 **Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting. Per-model details: [Provider Routing](../user-guide/features/provider-routing.md#per-model-overrides-models).
 
+## OpenRouter in-region endpoints
+
+OpenRouter routes by **base URL**, not a request flag. EU and US require a Business or Enterprise plan ([in-region routing](https://openrouter.ai/docs/guides/features/in-region-routing)).
+
+`hermes model` (OpenRouter) asks which endpoint to use and writes both `model.base_url` and `openrouter.endpoint`:
+
+| Endpoint | Base URL | Note |
+| --- | --- | --- |
+| `global` (default) | `https://openrouter.ai/api/v1` | Route inference to the Global endpoint. |
+| `eu` | `https://eu.openrouter.ai/api/v1` | Providers in the European Union. Requires Business+ plan. |
+| `us` | `https://us.openrouter.ai/api/v1` | Providers in the United States. Requires Business+ plan. |
+
+```yaml
+model:
+  provider: openrouter
+  base_url: https://us.openrouter.ai/api/v1
+
+openrouter:
+  endpoint: us    # global | eu | us. Overrides model.base_url when that URL is an official OpenRouter host.
+```
+
+A custom `model.base_url` that is not one of those three hosts (a proxy or mirror) is left alone. If no in-region provider can serve the model, OpenRouter returns 404 (`No endpoints found supporting your data region.`) rather than leaving the region.
+
 ## OpenRouter Pareto Code Router
 
 OpenRouter ships an experimental coding-model router at `openrouter/pareto-code` that auto-routes requests to the cheapest model meeting a coding-quality bar (ranked by [Artificial Analysis](https://artificialanalysis.ai/)). Pick this model and tune the `min_coding_score` knob in `~/.hermes/config.yaml`:

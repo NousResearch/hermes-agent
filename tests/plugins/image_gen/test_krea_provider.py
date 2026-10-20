@@ -773,18 +773,18 @@ class TestKrea3:
         assert (result["resolution"], result["thinking_mode"]) == ("1K", "fast")
         assert "creativity" not in result
 
-    def test_controls_and_references_reach_the_payload_and_krea_2_fields_do_not(self, monkeypatch, tmp_path):
+    def test_an_edit_keeps_the_pictures_framing_and_sends_only_krea_3_fields(self, monkeypatch, tmp_path):
         image = tmp_path / "mug.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\nmug")
         _, call = self._generate(
-            monkeypatch, image_url=str(image), reference_image_urls=["https://example.com/red.png"],
-            thinking="high", resolution="2K", creativity="raw", intensity=50)
+            monkeypatch, image_url=str(image), reference_image_urls=[str(image), "https://example.com/red.png"],
+            thinking="high", resolution="2k", creativity="raw", intensity=50)
         payload = call.kwargs["json"]
-        assert payload["image_urls"] == [
+        assert payload["image_urls"] == [  # the repeated source is sent, and billed, once
             "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode("ascii"),
             "https://example.com/red.png"]
         assert (payload["resolution"], payload["thinking_mode"]) == ("2K", "high")
-        assert not {"creativity", "intensity", "image_style_references"} & set(payload)
+        assert not {"aspect_ratio", "creativity", "intensity", "image_style_references"} & set(payload)
 
     def test_caps_reference_images_at_the_gateway_limit(self, monkeypatch):
         _, call = self._generate(monkeypatch, reference_image_urls=[f"https://example.com/{i}.png" for i in range(6)])
@@ -801,3 +801,15 @@ class TestKrea3:
         krea2 = KreaImageGenProvider().capabilities()
         assert krea2["source_image_role"] == "style"
         assert "creativity" in krea2["creative_controls"]
+
+    def test_managed_capabilities_describe_the_stored_model_the_dispatcher_sends(self, monkeypatch):
+        """On the managed path generate() receives ``image_gen.model`` explicitly, so the schema must
+        describe that model even when KREA_IMAGE_MODEL names another one."""
+        import plugins.image_gen.krea as krea_mod
+
+        monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
+        monkeypatch.setattr(krea_mod, "_load_krea_config", lambda: {"provider": "nous", "model": "krea-3"})
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+        assert krea_mod.KreaImageGenProvider().capabilities()["creative_controls"] == ["thinking", "resolution"]
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: None)
+        assert "creativity" in krea_mod.KreaImageGenProvider().capabilities()["creative_controls"]

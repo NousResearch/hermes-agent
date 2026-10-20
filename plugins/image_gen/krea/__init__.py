@@ -75,7 +75,8 @@ _MAX_LOCAL_REFERENCE_BYTES = 3 * 1024 * 1024
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
 # Krea 2 generative sliders: integers from -100 to 100, 0 means the slider is off.
 _K2_SLIDERS = ("intensity", "complexity", "movement")
-# Krea 3 controls; the managed gateway caps its reference images at 4.
+# Krea 3 controls. Krea itself takes 8 reference images; the managed gateway caps them at 4 and
+# one cap keeps direct and managed behaviour the same.
 _KREA3_CONTROLS = ("thinking", "resolution")
 _KREA3_RESOLUTIONS = ("1K", "2K")
 _MAX_KREA3_REFERENCE_IMAGES = 4
@@ -496,21 +497,24 @@ def _krea3_payload(
     prompt: str, krea_ar: str, image_url: Optional[str], reference_image_urls: Optional[list[str]],
     kwargs: dict[str, Any], fail: ErrorFn,
 ) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
-    """Krea 3 request body: the pictures given are edited; resolution and thinking mode are priced."""
-    image_urls, err = _inline_local_images(
-        collect_source_images(image_url, reference_image_urls, _MAX_KREA3_REFERENCE_IMAGES), fail)
+    """Krea 3 request body: the pictures given are edited; resolution and thinking mode are priced.
+    An edit sends no aspect ratio, so Krea keeps the picture's own framing."""
+    sources = list(dict.fromkeys(collect_source_images(image_url, reference_image_urls)))
+    image_urls, err = _inline_local_images(sources[:_MAX_KREA3_REFERENCE_IMAGES], fail)
     if err is not None:
         return {}, err
-    resolution = kwargs.get("resolution")
+    resolution = str(kwargs.get("resolution") or "").upper()
     payload: dict[str, Any] = {
-        "prompt": prompt, "aspect_ratio": krea_ar,
+        "prompt": prompt,
         "resolution": resolution if resolution in _KREA3_RESOLUTIONS else DEFAULT_RESOLUTION,
         "thinking_mode": "high" if kwargs.get("thinking") == "high" else "fast",
     }
-    if isinstance(kwargs.get("seed"), int):
-        payload["seed"] = kwargs["seed"]
     if image_urls:
         payload["image_urls"] = image_urls
+    else:
+        payload["aspect_ratio"] = krea_ar
+    if isinstance(kwargs.get("seed"), int):
+        payload["seed"] = kwargs["seed"]
     return payload, None
 
 
@@ -531,7 +535,10 @@ class KreaImageGenProvider(StaticImageGenProvider):
         return bool(get_secret("KREA_API_KEY")) or _managed_krea_gateway_ready()
 
     def capabilities(self) -> dict[str, Any]:
-        _, meta = _resolve_model()
+        # The managed dispatcher names the stored ``image_gen.model`` explicitly; resolve the same way
+        # so the schema describes the model that will run, whatever KREA_IMAGE_MODEL says.
+        stored = _load_krea_config().get("model") if _resolve_managed_krea_gateway() is not None else None
+        _, meta = _resolve_model(stored if isinstance(stored, str) else None)
         if meta.get("edit"):
             return {
                 "modalities": ["text", "image"], "max_reference_images": _MAX_KREA3_REFERENCE_IMAGES,
@@ -627,12 +634,10 @@ class KreaImageGenProvider(StaticImageGenProvider):
                 "Krea image URL %s could not be cached (%s); falling back to bare URL.", result_image_url, exc,
             )
             image_ref = result_image_url
-        extra: dict[str, Any] = {
-            "krea_aspect_ratio": krea_ar, "resolution": payload["resolution"], "job_id": job_id, "upscaled": upscaled,
-        }
-        for key in ("creativity", "thinking_mode"):
+        extra: dict[str, Any] = {"resolution": payload["resolution"], "job_id": job_id, "upscaled": upscaled}
+        for key, name in (("aspect_ratio", "krea_aspect_ratio"), ("creativity", "creativity"), ("thinking_mode", "thinking_mode")):
             if key in payload:
-                extra[key] = payload[key]
+                extra[name] = payload[key]
         if upscaled:
             extra["upscale_factor"] = _ENHANCE_SCALE_FACTOR
         if isinstance(job.get("completed_at"), str):

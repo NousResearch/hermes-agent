@@ -9,6 +9,7 @@ default fails closed to text-only/no-upscale.
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -149,11 +150,12 @@ class TestDynamicParamGating(unittest.TestCase):
         reference cap, and the schema offers Krea 3's controls and none of Krea 2's."""
         from plugins.image_gen.krea import KreaImageGenProvider
 
-        with patch.dict(os.environ, {"KREA_IMAGE_MODEL": "krea-3"}), \
-             patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
-             patch.object(ig, "_read_configured_image_model", return_value="krea-3"):
-            props = _build_dynamic_image_schema()["parameters"]["properties"]
-            cap = KreaImageGenProvider().capabilities()["max_reference_images"]
+        # The tool and the plugin read the same stored selection, no env override needed.
+        home = Path(os.environ["HERMES_HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("image_gen:\n  provider: nous\n  model: krea-3\n")
+        props = _build_dynamic_image_schema()["parameters"]["properties"]
+        cap = KreaImageGenProvider().capabilities()["max_reference_images"]
         self.assertIs(props["image_url"], ig._IMAGE_URL_PARAM)
         self.assertEqual(props["reference_image_urls"]["maxItems"], cap)
         self.assertLessEqual({"thinking", "resolution"}, set(props))

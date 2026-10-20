@@ -246,14 +246,15 @@ async def forward_secondary_plugin_request(request, name: str) -> Optional[Respo
                        if k not in _GATEWAY_QUERY_KEYS])
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _GATEWAY_CREDENTIAL_HEADERS]
     body = await request.body()
-    from hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
-    authenticated = admitted_for_sensitive_route(request)
+    from hermes_cli.plugin_host_http_auth import hosted_admission
+    authenticated, principal = hosted_admission(request)
 
     def call(timeout: float) -> dict[str, Any]:
         from hermes_cli.plugins import get_plugin_manager
         host = get_plugin_manager()._plugin_host()  # the active (secondary) profile's own host
         return host.asgi_request(name, str(plugin["_dir"]), str(plugin["_api_file"]), request.method, path,
-                                 query, headers, body, timeout=timeout, authenticated=authenticated)
+                                 query, headers, body, timeout=timeout, authenticated=authenticated,
+                                 principal=principal)
 
     try:
         return await run_hosted_request(home, name, call)

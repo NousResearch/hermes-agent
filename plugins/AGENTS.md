@@ -125,6 +125,10 @@ Invariants:
 - **The isolated party cannot opt out when an operator pins it:** `isolation_mode()` / `host_launcher()`
   read through the managed overlay (`load_config_readonly`), so `/etc/hermes/config.yaml` beats the
   profile's own config. Never switch them to a raw user-config read.
+- **Dashboard API requests cross with decisions, never credentials** (`plugin_host_http_auth.py`):
+  `hosted_http_authenticated` (the guard's answer) and, only for an admitted account `Session`,
+  `verified_session_principal` (exactly provider/issuer/org_id/user_id). Both forwards use
+  `hosted_admission`; both sides validate; a client can never set either.
 - Plugins stay tenant-unaware: no new API, same `ctx`. Per-profile env comes from
   `served_profile_child_env`, so a host sees only its own profile's secrets.
 

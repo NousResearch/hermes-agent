@@ -320,7 +320,8 @@ class HostRuntime:
         async def request() -> dict[str, Any]:
             import httpx
             from hermes_cli.plugin_host_http_auth import with_hosted_admission
-            transport = httpx.ASGITransport(app=with_hosted_admission(app, params.get("authenticated")))
+            transport = httpx.ASGITransport(app=with_hosted_admission(
+                app, params.get("authenticated"), params.get("principal")))
             async with httpx.AsyncClient(transport=transport, base_url="http://plugin-host") as client:
                 response = await client.request(
                     str(params["method"]), str(params["path"]), params=str(params.get("query") or ""),

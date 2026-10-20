@@ -760,6 +760,17 @@ also runs in a worker thread). `plugins.isolation: host` runs the handlers in a 
 ([plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation)): a slow handler there
 delays only that profile's hosted plugin requests, and one with no answer after 60 s gets HTTP 504.
 
+#### Who is calling (account identity)
+
+In-process handlers can read the verified dashboard account from `request.state.session` when the
+dashboard runs with OAuth login. A handler served by the plugin host never receives the gateway's
+`Session` object. When the gateway admitted the
+request as a verified account session, the host sets `request.state.verified_session_principal` to
+exactly `{"provider", "issuer", "org_id", "user_id"}` (all strings; `issuer` and `org_id` may be
+empty). It is absent for every other caller (Desktop's native ticket, the loopback session token,
+service tokens, unauthenticated requests) and cannot be set by request headers, query or body. A
+handler that stores per-account data should key it on all four fields and refuse when they are absent.
+
 #### Accessing Hermes internals
 
 Backend routes run inside the dashboard process, so they can import from the hermes-agent codebase directly:

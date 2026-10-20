@@ -292,13 +292,16 @@ class PluginHost:
 
     def asgi_request(self, plugin_name: str, dashboard_dir: str, api_file: str, method: str, path: str,
                      query: str, headers: list, body: bytes, *, timeout: Optional[float] = None,
-                     authenticated: bool = False) -> dict[str, Any]:
+                     authenticated: bool = False, principal: Optional[dict] = None) -> dict[str, Any]:
         """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host;
-        ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
+        ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running).
+        ``principal`` (the admitted request's account identity) crosses only with ``authenticated``."""
+        from hermes_cli.plugin_host_http_auth import session_principal
         self.ensure_started()
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
                                    "authenticated": authenticated is True,
+                                   "principal": session_principal(principal) if authenticated is True else None,
                                    "headers": [list(h) for h in headers], "body": encode(body)},
                           timeout=timeout)
 

@@ -71,3 +71,33 @@ async def test_a_reload_naming_the_revision_the_session_holds_is_not_refused(tmp
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_the_held_policy_is_read_on_the_loop(tmp_path, monkeypatch):
+    """``policy_for_source`` walks ``authority.sessions`` and the local adapter's maps, which only the loop
+    mutates; reading it from a worker thread raced them. Only the config read and hash leave the loop."""
+    import threading
+    from gateway import session_policy
+    home = _home(monkeypatch)
+    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    store, authority = await _owner_authority(home)
+    _reloaded_profile(authority, monkeypatch)
+    owner = _connect(authority)
+    loop_thread, threads = threading.get_ident(), []
+    real = session_policy.policy_for_source
+
+    def recording(runner, source):
+        threads.append(threading.get_ident())
+        return real(runner, source)
+
+    try:
+        sid = (await _call(owner, 'session.create', request_id='a', source='cli', cwd=str(tmp_path)))['session_id']
+        rev = (await _call(owner, 'config.get', key='mtime', session_id=sid))['mcp_rev']
+        monkeypatch.setattr(session_policy, 'policy_for_source', recording)
+        result = await _call(owner, 'reload.mcp', session_id=sid, confirm=True, rev=rev)
+        assert result['loaded_rev'] == rev, result
+        assert threads and set(threads) == {loop_thread}, threads
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

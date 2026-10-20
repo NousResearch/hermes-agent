@@ -6,6 +6,7 @@ reconciles only the requesting profile's MCP servers; ``file.attach`` stages for
 """
 import asyncio
 from functools import partial
+from pathlib import Path
 import sys
 
 from gateway.session_busy_controls import authorize
@@ -280,7 +281,7 @@ async def reload_mcp(connection, ref, params):
     multiplex = bool(getattr(runner.config, 'multiplex_profiles', False))
     runner._mcp_reload_refresh_cached_agents(multiplex, served_profile_name(connection.authority.profile_id))
     session = await _commit_session_mcp(connection, ref, params)
-    held_rev = await asyncio.to_thread(_held_mcp_rev, connection, ref) if params.get('rev') else ''
+    held_rev = await _held_mcp_rev(connection, ref) if params.get('rev') else ''
     # Refuse only a reload whose own work did not take effect: a call that names the revision the session
     # already holds has nothing left to load, and refusing it leaves a client that acknowledges on
     # ``reloaded`` retrying a parked server at poll rate with no way to close the handshake (#141769).
@@ -300,20 +301,26 @@ async def reload_mcp(connection, ref, params):
             **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
 
 
-def _held_mcp_rev(connection, ref):
+async def _held_mcp_rev(connection, ref):
     """The ``mcp_rev`` this session's committed policy already holds — the value ``config.get mtime`` shipped
-    the client — or ``''`` when the call names no live local session."""
+    the client — or ``''`` when the call names no live local session. The policy is read on the loop (it
+    walks ``authority.sessions`` and the adapter's maps, which only the loop mutates); only the config read
+    and hash go to a worker thread."""
     sid = getattr(ref, 'session_id', None)
     live = connection.authority.sessions.get(sid) if sid else None
     if live is None or live.source is None:
         return ''
-    from pathlib import Path
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(connection.authority.runner, live.source)
+    return await asyncio.to_thread(_mcp_revision_in_scope, Path(connection.authority.profile_id), policy)
+
+
+def _mcp_revision_in_scope(home, policy):
     from gateway.run import _profile_runtime_scope
     from gateway.session_config import mcp_revision
-    from gateway.session_policy import policy_for_source
     from hermes_cli.config import load_config
-    with _profile_runtime_scope(Path(connection.authority.profile_id)):
-        return mcp_revision(policy_for_source(connection.authority.runner, live.source), load_config())
+    with _profile_runtime_scope(home):
+        return mcp_revision(policy, load_config())
 
 
 def _session_servers(authority, sid, ready):

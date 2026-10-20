@@ -104,7 +104,10 @@ class GatewayProfileReconcileMixin:
                 return
             try:
                 await self._sync_hooks_on_consent_change()
-                await self.reconcile_served_profiles(reason="watcher")
+                # A standalone gateway never runs a profile reconcile from the watcher, unless it is the
+                # single-profile boot that starts multiplexing in place for a newly created profile.
+                if self._multiplex_on() or await self._multiplex_for_added_profile():
+                    await self.reconcile_served_profiles(reason="watcher")
             except asyncio.CancelledError:
                 raise
             except Exception:

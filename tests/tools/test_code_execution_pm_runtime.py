@@ -25,6 +25,10 @@ def runtime_dependency(tmp_path, monkeypatch):
     packages = site_packages(generation)
     packages.mkdir(parents=True)
     (packages / "pm_fixture_dependency.py").write_text("VALUE = 'runtime-dependency'\n", encoding="utf-8")
+    editable_source = tmp_path / "editable-source"
+    editable_source.mkdir()
+    (editable_source / "pm_fixture_editable.py").write_text("VALUE = 'editable'\n", encoding="utf-8")
+    (packages / "__editable__.pm_fixture_editable.pth").write_text(f"{editable_source}\n", encoding="utf-8")
     facts = runtime_facts_path(root)
     facts.write_text(json.dumps({"packages": {"venv": {"environment": str(generation)}}}), encoding="utf-8")
     user_lib = tmp_path / "user-lib"
@@ -67,3 +71,14 @@ def test_project_interpreter_keeps_runtime_dependencies_out(runtime_dependency, 
     ))
     assert result["status"] == "success", result
     assert "True user-dependency" in result["output"]
+
+
+def test_editable_runtime_package_imports_in_kernel(runtime_dependency, monkeypatch):
+    """uv installs plugins with a pyproject.toml as editable packages, activated by .pth files."""
+    monkeypatch.setattr(code_execution_tool, "_load_config", lambda: {"mode": "strict", "timeout": 15})
+    result = json.loads(code_execution_tool.execute_code(
+        "import pm_fixture_editable\nprint('EDITABLE=' + pm_fixture_editable.VALUE)",
+        task_id="pm-runtime-editable",
+    ))
+    assert result["status"] == "success", result
+    assert "EDITABLE=editable" in result["output"]

@@ -33,7 +33,9 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
 
 
 @pytest.mark.parametrize("flatten_probe", [False, True])
-def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe):
+@pytest.mark.parametrize("recall_name", ["session_search", "chat_history_lookup"])
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe, recall_name, provider):
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
     from hermes_state import SessionDB
@@ -64,12 +66,13 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         threading.Timer(0.02, respond).start()
 
     agent = SimpleNamespace(
+        provider=provider,
         enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],
         session_id="current-session", _todo_store=TodoStore(), _memory_manager=None,
         _get_session_db_for_recall=lambda: db, connection_callback=connection,
     )
     calls = [
-        {"name": "session_search", "arguments": {"session_id": "past-session"}},
+        {"name": recall_name, "arguments": {"session_id": "past-session"}},
         {"name": "todo_list", "arguments": {"todos": [{"id": "a", "content": "live-store-proof", "status": "pending"}]}},
         {"name": "manage_connections", "arguments": {
             "action": "install", "connectors": [{"name": "linear", "mcp": True}]}},
@@ -83,7 +86,8 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
             else:
                 name, args, error = _unwrap_tool_search_call(
                     agent, "tool_call", {"calls": [entry]}, flatten_probe=flatten_probe)
-            assert name == entry["name"] and error is None
+            expected_name = "session_search" if entry["name"] == "chat_history_lookup" else entry["name"]
+            assert name == expected_name and error is None
             results.append(json.loads(invoke_tool(
                 agent, name, args, "task", tool_call_id="call", pre_tool_block_checked=True)))
         assert "live-db-proof" in json.dumps(results[0])
@@ -94,6 +98,25 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     finally:
         db.close()
         reset_session_vars()
+
+
+@pytest.mark.parametrize("recall_name", ["session_search", "chat_history_lookup"])
+def test_recall_bridge_cannot_escape_restricted_scope(monkeypatch, recall_name):
+    import model_tools
+    from agent.tool_executor import _unwrap_tool_search_call
+
+    calls = {"calls": [{"name": recall_name, "arguments": {"query": "private history"}}]}
+    invoked = []
+    monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
+    result = json.loads(model_tools.handle_function_call(
+        "tool_call", calls, enabled_toolsets=["todo"],
+        skip_pre_tool_call_hook=True, skip_tool_request_middleware=True))
+    assert "not available in this session" in result["error"]
+    agent = SimpleNamespace(enabled_toolsets=["todo"], disabled_toolsets=[])
+    name, args, error = _unwrap_tool_search_call(agent, "tool_call", calls)
+    assert name == "tool_call" and args == calls
+    assert "not available in this session" in error
+    assert invoked == []
 
 
 def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):

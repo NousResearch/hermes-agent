@@ -1107,6 +1107,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         (a micro-compaction merge also stands for the rows it absorbed)."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
+        uid_key: dict[Any, tuple[Any, ...]] = {}  # message_uid -> the display key of its first copy
         removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
         identities: dict[tuple[Any, ...], list[Any]] = {}
         removed_ts: set[Any] = set()
@@ -1134,6 +1135,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if self._is_model_only_row(row):
                 continue
             key = key or self._display_dedupe_key(row)
+            # A compaction carrier keeps its message's uid but not its content (the prior tail wrapped
+            # around the summary): it is a copy of that message, shown once. Only the carrier: other
+            # rewritten copies (a pruned tool stub) must keep their archived original visible.
+            uid = row["message_uid"]
+            if uid and row["_compressed_summary"]:
+                key = uid_key.get(uid, key)
+            elif uid:
+                uid_key.setdefault(uid, key)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row

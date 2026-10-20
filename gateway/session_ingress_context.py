@@ -24,6 +24,18 @@ def relay_callback(transport, event):
         _relay_callback.reset(token)
 
 
+@contextmanager
+def relay_passthrough_event(transport, forward, event):
+    # A passthrough frame is decoded after the reader bound its proof to the raw forward; move
+    # that proof onto the decoded event. Without the reader's binding nothing is minted.
+    bound = _relay_callback.get()
+    if bound is None or bound[0] is not transport or bound[1] is not forward:
+        yield
+        return
+    with relay_callback(transport, event):
+        yield
+
+
 def _relay_connector(adapter, source):
     from gateway.relay.ws_transport import WebSocketRelayTransport
     transport = getattr(adapter, '_transport', None)
@@ -69,12 +81,16 @@ def native_callback(runner, event, transport_home, profile=None):
 
 
 def carry_callback(event, rewritten):
-    """A gateway-side rewrite of a callback's event (``pre_gateway_dispatch``) keeps the callback's
-    provenance: it changes the text only, never the source the callback authenticated (#139045)."""
+    """Gateway code that rebuilds a callback's event (a ``pre_gateway_dispatch`` rewrite, the
+    ``/retry`` re-send) keeps the callback's provenance, but only on the source object the callback
+    authenticated: a new event with a swapped source carries nothing (#139045, #139040)."""
     for bound_var in (_callback, _relay_callback):
         bound = bound_var.get()
         if bound is not None and bound[1] is event and rewritten.source is event.source:
             bound_var.set((bound[0], rewritten, *bound[2:]))
+
+
+_PREFIX_PRODUCERS = ('webhook', 'api_server', 'msgraph_webhook')
 
 
 def _binding(runner, source, profile):
@@ -115,22 +131,24 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
-        # Same matcher as ingress stamping: a route applies only to its ``bot_profile``'s bot
-        # (#104933), so the receiving adapter's owner is part of the match.
+        # Same matcher as ingress stamping, ``user_id`` included: a ``user_id`` route stamps the
+        # source upstream, so it must resolve here too. A route applies only to its bot_profile's
+        # bot (#104933), so the receiving adapter's owner is part of the match.
         matches = [route for route in runner.config.profile_routes if route.matches(
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
             thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile,
             user_id=getattr(source, 'user_id', None))]
-        if matches:
+        if source.profile and source.platform.value in _PREFIX_PRODUCERS:
+            # ``/p/<profile>/`` producers address a profile explicitly on the HOST's listener; that
+            # URL prefix names the profile and wins over ``profile_routes`` (webhook.py /
+            # api_server.py stamp it; a bare producer source carries the routed name itself).
+            runtime_profile = source.profile
+        elif matches:
             rank = max(route.specificity for route in matches)
             best = [route for route in matches if route.specificity == rank]
             if len(best) != 1:
                 raise RuntimeStoreError('admission_conflict')
             runtime_profile = best[0].profile
-        elif source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
-            # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
-            # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
-            runtime_profile = source.profile
         else:
             runtime_profile = owner_name
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:

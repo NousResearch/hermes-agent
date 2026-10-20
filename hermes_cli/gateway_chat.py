@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
@@ -45,6 +45,24 @@ _ENV_LAUNCH_FLAGS = (("yolo", "HERMES_YOLO_MODE"), ("ignore_rules", "HERMES_IGNO
 def env_launch_flags() -> dict:
     from utils import is_truthy_value
     return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(os.environ.get(name))}
+
+
+def shell_client_env() -> dict:
+    """This shell's allowlisted environment (``agent.session_client_env``) with the extra names of the
+    profile's effective config (managed layer included), as the gateway reads them. A bypass launch's
+    owner freezes code defaults, so it reads no profile."""
+    from agent.session_client_env import collect_client_env
+    if {'safe_mode', 'ignore_user_config'} & set(env_launch_flags()):
+        return collect_client_env()
+    from hermes_cli.config import get_config_path
+    from hermes_cli.config_effective import load_user_config_effective
+    return collect_client_env(config=load_user_config_effective(get_config_path()))
+
+
+def client_env_policy(parameters) -> dict:
+    """``client_env`` for a new session (main's process read these from its shell; the shared gateway
+    applies them to this session only), or nothing for a gateway that predates the field."""
+    return {"client_env": shell_client_env()} if "client_env" in parameters else {}
 
 
 def bypass_launch(args) -> bool:
@@ -115,8 +133,7 @@ async def _resume(client, args, **params):
         return await client.rpc("session.resume", **params, **({"api_key": key} if key else {}))
     except GatewayClientError as exc:
         if key and str(exc) == "admission_conflict":
-            raise GatewayClientError("--api-key on resume must be the key this session was launched with "
-                                     "(a session launched without --api-key keeps its profile credentials).") from None
+            raise GatewayClientError(RESUME_KEY_MISMATCH) from None
         raise
 
 
@@ -190,6 +207,7 @@ async def run_gateway_chat(args, emitter=None):
             if create_if_missing:
                 policy["title"] = title
             policy.update(env_launch_flags())
+            policy.update(client_env_policy(parameters))
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd
@@ -201,6 +219,8 @@ async def run_gateway_chat(args, emitter=None):
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
+            if (warning := (snapshot.get("info") or {}).get("config_warning")) and not isinstance(oneshot_prompt, str):
+                print(f"Warning: {warning}", file=sys.stderr)
         if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
             print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
         if not oneshot:
@@ -214,8 +234,12 @@ async def run_gateway_chat(args, emitter=None):
         view.unattended = isinstance(oneshot_prompt, str)
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:
+            from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
             for row in snapshot.get("messages", []):
-                if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str):
+                # A micro-compaction merge (model_only) is not printed: its original prompts are.
+                metadata = row.get("display_metadata")
+                merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
+                if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
         return await view.run(query, oneshot=oneshot)
 
@@ -242,7 +266,7 @@ def resume_policy_error(keys):
 
 def exit_on_resume_refusal(exc):
     """A refused resume is a usage error on every classic path (interactive startup's copy): ``Error:``, exit 2."""
-    if isinstance(exc, GatewayClientError) and str(exc).startswith(_RESUME_POLICY_MISMATCH):
+    if isinstance(exc, GatewayClientError) and str(exc).startswith((_RESUME_POLICY_MISMATCH, RESUME_KEY_MISMATCH)):
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 

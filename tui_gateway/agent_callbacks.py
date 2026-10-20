@@ -448,15 +448,13 @@ def _side_agent_session_db(parent_db):
         release_or_close(db)
 
 
-def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_chars: int = 1200) -> list[dict]:
+def _preview_restart_history(messages: list[dict] | None, max_messages: int = 24,
+                             max_tool_chars: int = 1200) -> list[dict]:
     """Distill recent parent history for the ephemeral preview-restart agent (else it guesses
     app/cwd/port from the bare URL): last ``max_messages`` back to the last user turn, tool
-    results truncated to ``max_tool_chars``."""
-    try:
-        with session["history_lock"]:
-            history = list(session.get("history") or [])
-    except Exception:
-        history = list(session.get("history") or [])
+    results truncated to ``max_tool_chars``. ``messages`` is a snapshot the caller owns (the
+    legacy session's history taken under its ``history_lock``, or the owner's stored transcript)."""
+    history = list(messages or [])
     if not history:
         return []
     last_user = next((i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)

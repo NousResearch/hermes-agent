@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import re
+import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
@@ -33,6 +34,7 @@ _READS = frozenset({
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
     "session_count", "sanitize_title", "session_yolo_enabled",
+    "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({
@@ -60,11 +62,14 @@ class GatewaySessionStore:
     """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
     a gateway hang-up stays truthy, and the next call redials."""
 
+    current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
+
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
+        self._create_parameters = None
 
     def __bool__(self):
         return not self.connection.final
@@ -116,20 +121,26 @@ class GatewaySessionStore:
         self.connection.state(sid).adopt_snapshot(snapshot)
         return sid
 
-    def attach(self, session_id):
-        """``session.resume`` once per session id this viewer uses (idempotent)."""
+    def attach(self, session_id, *, typed=False):
+        """``session.resume`` once per session id this viewer uses (idempotent), carrying this CLI's launch
+        key as the thin client does (``GatewayConnection.resume``, the reconnect's too). A session that does
+        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is. ``typed``
+        (only :meth:`open_session`'s startup resume, where the user typed ``--api-key`` for that session)
+        refuses it instead, as the thin client does."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        snapshot = self.call("session.resume", session_id=session_id)
+        snapshot = self.connection.resume(self.call, session_id, typed=typed)
         self._adopt(snapshot)
         return snapshot
 
     def open_session(self, cli, launch=None):
         """Create (or resume) the gateway session for this CLI and adopt its id. A resume target the
         gateway does not know is left as is: main's own "Session not found" path reports it."""
+        key = self.connection.launch_api_key = (launch or {}).get("api_key") or None
+        self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
         if getattr(cli, "_resumed", False):
             try:
-                snapshot = self.attach(cli.session_id)
+                snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
             except GatewayClientError as exc:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None
@@ -156,8 +167,21 @@ class GatewaySessionStore:
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
+        params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        warning = (snapshot.get("info") or {}).get("config_warning")
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
         return self._adopt(snapshot)
+
+    def client_env(self):
+        """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
+        from hermes_cli.gateway_chat import client_env_policy
+        if self._create_parameters is None:
+            described = self.call("runtime.describe")
+            contract = described.get("session_create") if isinstance(described, dict) else None
+            self._create_parameters = list((contract or {}).get("parameters") or [])
+        return client_env_policy(self._create_parameters)
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it
@@ -174,8 +198,8 @@ class GatewaySessionStore:
         self._adopt(self.attach(child))
         return child
 
-    def _mutate(self, session_id, operation, payload):
-        snapshot = self.call("session.resume", session_id=session_id)
+    def _mutate(self, session_id, operation, payload, snapshot=None):
+        snapshot = snapshot or self.call("session.resume", session_id=session_id)
         fence = {}
         if operation in _GENERATION_FENCED:
             fence["expected_generation"] = snapshot["execution_generation"]
@@ -206,7 +230,7 @@ class GatewaySessionStore:
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = list(snapshot.get("messages") or [])
+        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -259,7 +283,23 @@ class GatewaySessionStore:
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
-        self._mutate(session_id, "delete", {})
+        snapshot = self.call("session.resume", session_id=session_id)
+        # The owner answers and subscribes under the id it resolved the read to (a compression
+        # segment maps to its logical owner), and reuses a subscription this viewer already holds.
+        resolved = snapshot.get("session_id") or session_id
+        state = self.connection.states.get(resolved)
+        held = state is not None and state.subscription_id is not None
+        try:
+            self._mutate(session_id, "delete", {}, snapshot)
+        except GatewayClientError:
+            # Hand back only the attachment the read made, with a plain detach: an end_reason would
+            # run the owner's viewer close (fencing the session's delegations, ending it at idle).
+            if not held and snapshot.get("subscription_id"):
+                try:
+                    self.call("session.detach", session_id=resolved, subscription_id=snapshot["subscription_id"])
+                except GatewayClientError as exc:
+                    logger.debug("session.detach after a refused delete failed: %s", exc)
+            raise
         self._leave(session_id)
         return True
 
@@ -273,6 +313,8 @@ class GatewaySessionStore:
             try:
                 # Hung up: redial first, so the detach names the subscription the reconnect resumed.
                 self.connection.start()
+                if state.gaps != state.attached_gaps:  # a replay gap retired it: re-attach, so the detach lands
+                    self.connection.reattach(session_id)
             except GatewayClientError as exc:
                 logger.debug("redial for session.detach failed: %s", exc)
                 reachable = False
@@ -348,34 +390,48 @@ _LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
 class SurfaceLabelReader:
     """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
     also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
-    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made."""
+    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made. The
+    surface predicate runs in SQL, before LIMIT/OFFSET.
+    """
 
     def __init__(self, db):
         self._wrapped = db
+        self._has_column = False
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
-    def _labelled(self, method, requested, limit, offset, call):
+    def _has_created_source_column(self) -> bool:
+        """Read-only opens don't migrate, so ``created_source`` may be missing. Only "present" is
+        cached: a lock or I/O error is not proof of absence, and another connection may add it."""
+        if not self._has_column:
+            rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
+            self._has_column = any(row[1] == "created_source" for row in rows)
+        return self._has_column
+
+    def _labelled(self, requested, limit, offset, call):
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         surfaces = wanted & _LOCAL_LABELLED
-        if not surfaces:
-            return call(requested, limit, offset)
-        # Over-fetch, then keep only the local rows those surfaces created (ordering is the reader's own).
-        rows = call(sorted(wanted | {"local"}), (limit + offset) * 3 + 50, 0)
-        kept = [row for row in rows if row.get("source") != "local" or row.get("created_source") in surfaces]
-        return kept[offset:offset + limit]
+        # No column (and so no gateway ``local`` rows yet): naming it would raise, and the caller
+        # swallows that into an empty page.
+        if not surfaces or not self._has_created_source_column():
+            return call(requested, limit, offset, None)
+        return call(sorted(wanted | {"local"}), limit, offset, sorted(surfaces))
 
     def search_sessions(self, source=None, limit=20, offset=0, **kw):
-        return self._labelled("search_sessions", source, limit, offset,
-                              lambda src, lim, off: self._wrapped.search_sessions(source=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            source, limit, offset,
+            lambda src, lim, off, surfaces: self._wrapped.search_sessions(
+                source=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
 
     def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
         requested = sources if sources else ([source] if source else None)
         if not requested:
             return self._wrapped.list_sessions_rich(limit=limit, offset=offset, **kw)
-        return self._labelled("list_sessions_rich", requested, limit, offset,
-                              lambda src, lim, off: self._wrapped.list_sessions_rich(sources=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            requested, limit, offset,
+            lambda src, lim, off, surfaces: self._wrapped.list_sessions_rich(
+                sources=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")
@@ -445,7 +501,9 @@ def create_titled_session(title):
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:
-        snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        store = session_store()
+        params.update(store.client_env())
+        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

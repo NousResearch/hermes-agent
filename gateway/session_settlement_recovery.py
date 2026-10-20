@@ -3,12 +3,14 @@ import asyncio
 import logging
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch
+from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_steer_transfers
 
 logger = logging.getLogger(__name__)
 
 
 def _mark_unknown(authority, row):
+    transfers = _transfers(authority, authority.sessions.get(row['target_session_id']), row)
+
     def write(conn):
         _epoch(conn, authority.epoch)
         current = _admission(conn, row['admission_id'])
@@ -19,9 +21,21 @@ def _mark_unknown(authority, row):
         if current['status'] != 'started':
             raise RuntimeStoreError('stale_generation')
         conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],))
+        # A steer it carried is never replayed: interrupted if delivered, else queued again.
+        settle_steer_transfers(conn, epoch=authority.epoch, generation=row['generation'],
+                               transfers=transfers, outcome='unknown')
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return 'unknown'
     return authority.db._execute_write(write)
+
+
+def _transfers(authority, live, row):
+    """The steers handed to this claim (``prompt.steer_queued``), read once its execution returned."""
+    if live is None:
+        return None
+    from gateway.session_queued_controls import steer_transfers
+    with live.event_stream.lock:
+        return steer_transfers(authority, row['target_session_id'], row['generation'])
 
 
 async def recover_failed_settlement(authority, row):
@@ -49,6 +63,19 @@ def completion_payload(row, settled, response, captured):
     captured_result = (captured or {}).get('result') or {}
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
+    if captured_result.get('local_viewer'):
+        if captured_result.get('response_previewed'):
+            complete['response_previewed'] = True
+        if captured_result.get('response_transformed'):
+            complete['response_transformed'] = True
+        if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
+            complete['warning'] = captured_result['warning']
+        if isinstance(captured_result.get('billing_block'), dict):
+            complete['billing'] = captured_result['billing_block']
+        if isinstance(captured_result.get('failure_reason'), str) and captured_result['failure_reason']:
+            complete['failure_reason'] = captured_result['failure_reason']
+        if isinstance(captured_result.get('last_reasoning'), str) and captured_result['last_reasoning'].strip():
+            complete['reasoning'] = captured_result['last_reasoning'].strip()
     # The committed row addresses of the turn: a viewer binds the streamed reply to
     # its stored row, so a transcript read racing this frame never paints it twice.
     # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
@@ -71,7 +98,40 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
-    live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
+    complete = completion_payload(row, settled, response, captured)
+    notice = owner_stop_notice(captured, settled['outcome'], row)
+    if notice and not complete.get('warning'):
+        # ``warning`` is the slot every surface already renders on message.complete (Ink activity
+        # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
+        complete['warning'] = notice
+    live.event_stream.publish(ref.session_id, complete)
+
+
+RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+                            'Send your message again once Hermes reconnects.')
+SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
+                             'Send your message again once Hermes is back.')
+
+
+def owner_stop_notice(captured, outcome, row=None):
+    """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
+    ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
+    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it.
+    An unattended ``row`` (cron, automation, webhook) has nobody to resend it, so it gets the
+    neutral automation copy instead of resend advice (#134889 GW-20, GW-10's rule)."""
+    # The cause is the one the turn recorded when it was interrupted (stop() interrupts with these
+    # reasons), never the runner's flags at publication: a user Stop whose settlement was delayed
+    # until after shutdown began is still the user's Stop.
+    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+    cause = ((captured or {}).get('result') or {}).get('interrupt_message') if outcome == 'interrupted' else None
+    notice = {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
+              _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
+    if notice is not None and row is not None:
+        from gateway.session_unattended_unknown import is_unattended
+        if is_unattended(row):
+            from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+            return AUTOMATION_INTERRUPTED_NOTICE
+    return notice
 
 
 def _release_media(authority, row):
@@ -102,10 +162,11 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     # already have dropped it from ``authority.sessions``.
     with live.event_stream.lock:
         live.settling[admission_id] = row
+    transfers = _transfers(authority, live, row)
     try:
         settlement['settled'], settlement['response'] = finish_result(
             authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
-            result=captured, prepared=prepared)
+            result=captured, prepared=prepared, transfers=transfers)
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
             _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)

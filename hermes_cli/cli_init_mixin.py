@@ -24,6 +24,19 @@ logger = logging.getLogger("cli")
 _ROUTE_FLAGS = ("model", "provider", "api_key", "base_url")
 
 
+def _adopt_gateway_toolsets(cli, store):
+    """The profile default the gateway resolved for the opened session, when this process has no list to
+    show (display only), and main's "Unknown toolsets" warning as the gateway judged it against its own
+    plugins."""
+    info = (store.current or {}).get("info") or {}
+    if getattr(cli, "enabled_toolsets", None) is None and isinstance(info.get("enabled_toolsets"), list):
+        cli.enabled_toolsets = list(info["enabled_toolsets"])
+    if info.get("unknown_toolsets"):
+        from agent.i18n import t as _t
+        names = ", ".join(info["unknown_toolsets"])
+        cli._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=names)}[/]")
+
+
 def _gateway_launch(cli):
     """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
     explicit_model = getattr(cli, "_explicit_model_override", False)
@@ -56,6 +69,24 @@ def _explicit_launch_skills(cli):
     return [name for name in requested if name not in auto] or None
 
 
+def _record_shell_hook_consent():
+    """Main's first-use shell-hook prompt, on this terminal. The gateway that registers the hooks
+    has no TTY; it reads the allowlist this writes when the session opens (create or resume).
+    ``--accept-hooks`` / ``HERMES_ACCEPT_HOOKS`` / ``hooks_auto_accept`` approve without asking.
+    A remote gateway has its own home and allowlist, and a bypass launch reads no profile hooks,
+    so nothing is asked for either."""
+    from hermes_cli.gateway_chat import env_launch_flags
+    flags = env_launch_flags()
+    if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip() or flags.get("safe_mode") or flags.get("ignore_user_config"):
+        return
+    try:
+        from agent.shell_hooks import record_consent_from_config
+        from hermes_cli.config import load_config
+        record_consent_from_config(load_config())
+    except Exception:  # health: allow BLE001 -- consent is best effort; the gateway skips unapproved hooks
+        logger.warning("shell-hook consent check failed", exc_info=True)
+
+
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
 
@@ -64,7 +95,9 @@ class CLIInitMixin:
         from cli import CLI_CONFIG, _configure_output_history, _int_or
         self.console = Console()
         self.config = CLI_CONFIG
-        display = CLI_CONFIG["display"]
+        # A local /reasoning show|hide or /footer saves the per-platform ``cli`` key: read it (T7).
+        from gateway.display_config import local_display_config
+        display = local_display_config(CLI_CONFIG["display"])
         self.compact = compact if compact is not None else display.get("compact", False)
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")
@@ -88,8 +121,11 @@ class CLIInitMixin:
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
+        from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config, set_active
+        self._modern_layout = layout_from_config(display)  # display.cli_layout: modern | classic
+        set_active(self._modern_layout)
         # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
-        _bim = str(display.get("busy_input_mode", "interrupt")).strip().lower()
+        _bim = busy_input_mode_from_config(display)
         self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"
 
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
@@ -187,6 +223,7 @@ class CLIInitMixin:
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
         self._explicit_api_key = api_key or _startup_api_key_override or None
+        self._typed_api_key = api_key or None  # a startup resume it cannot bind is refused; an alias's falls back
         self._explicit_base_url = base_url or _startup_base_url_override or None
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
@@ -251,7 +288,7 @@ class CLIInitMixin:
         self._explicit_max_turns = max_turns
 
     def _init_toolsets(self, toolsets):
-        from cli import CLI_CONFIG, validate_toolset
+        from cli import CLI_CONFIG
         self.enabled_toolsets = toolsets
         # Only a picked list rides session.create; _build_cli_from_args clears this unless -t was typed (the
         # gateway resolves the profile default and coding posture itself; a stale explicit name is refused, #138670).
@@ -259,23 +296,9 @@ class CLIInitMixin:
         from agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
-
-        if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # MCP server names only resolve after discover_mcp_tools runs; skip them here.
-            mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            # Plugin toolsets register during plugin discovery, which startup runs on a background thread
-            # that has not necessarily landed yet; names it declared (or the previous launch persisted, which
-            # get_plugin_toolset_keys_nowait serves) are not typos (#71650).
-            try:
-                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
-                plugin_ts_names = get_plugin_toolset_keys_nowait()
-            except Exception:
-                plugin_ts_names = set()
-            invalid = [t for t in toolsets
-                       if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
-            if invalid:
-                from agent.i18n import t as _t
-                self._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=', '.join(invalid))}[/]")
+        # No local "Unknown toolsets" check: plugin toolsets are only known where plugins load. The gateway
+        # refuses an unknown picked name at session.create and reports a stale profile one with the session
+        # (``_adopt_gateway_toolsets``), so this process never discovers plugins to tell them apart (PLG-7).
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
         from cli import CLI_CONFIG
@@ -416,10 +439,14 @@ class CLIInitMixin:
         # including this process's own, claimed before the first turn. Hand the slot over around the
         # attach, then re-claim it for the id the gateway returned (main's exclusivity is kept).
         held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
+        _record_shell_hook_consent()
         if held:
             self._release_active_session()
         sid = store.open_session(self, launch)
         self._gateway_session_open = True
+        from hermes_cli import gateway_plugin_commands, tools_config
+        tools_config._gateway_plugin_toolsets = lambda: gateway_plugin_commands.toolsets(self)
+        _adopt_gateway_toolsets(self, store)
         from hermes_cli.gateway_tools import bind_session
         bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
         if sid and sid != self.session_id:
@@ -463,6 +490,7 @@ class CLIInitMixin:
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
+        self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete

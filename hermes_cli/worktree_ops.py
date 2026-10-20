@@ -421,8 +421,10 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
 
     *sync_base* branches from the fetched remote tip (``_resolve_worktree_base``), else local
     HEAD. *name* replaces the random ``hermes-<id>``; named trees lack the ``hermes-`` prefix so
-    the pruner ages them on its slower schedule. *retain_db* (``--tui -w``) names the profile
-    store in the lock: the tree outlives its launcher while a session there can resume in it.
+    the pruner ages them on its slower schedule. *retain_db* (``-w``, ``--tui -w``) records the tree
+    for resume and names the profile store in the lock. A ``--tui -w`` tree outlives its launcher
+    while a session there can resume in it; a classic ``-w`` row's cwd is the repo root, so its
+    reaped clean tree is recreated on resume instead.
 
     Set ``worktree_sync: false`` in config to branch from local ``HEAD`` (the pre-#10760-followup behavior).
     """
@@ -468,6 +470,9 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
 
     from hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(repo_root)
+    if retain_db is not None:  # a -w tree: a resume may recreate it once quit removed it (N8)
+        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        record_tui_worktree({"path": str(wt_path), "branch": branch_name, "repo_root": repo_root})
     _cprint(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
     print(f"  Branch: {branch_name}")
     print(f"  Base:   {base_label}")
@@ -795,7 +800,7 @@ def _worktree_branch_pushed_exact(
         return False
 
 
-# ``hermes pid=<pid>`` (classic launch), ``hermes pid=<pid> db=<state.db>`` (``--tui -w`` launch)
+# ``hermes pid=<pid>`` (``/worktree new``), ``hermes pid=<pid> db=<state.db>`` (``-w`` / ``--tui -w`` launch)
 # and ``hermes session=<id> db=<state.db>`` (re-lock when the TUI exits). Read raw from the admin
 # dir: plain ``list --porcelain`` C-quotes a reason holding a backslash, a quote, a control or a
 # non-ASCII byte (every Windows path), and the ``db=`` path would never parse.
@@ -819,31 +824,105 @@ def _retain_worktree_for_session(repo_root: str, worktree_path: str, session_id:
     return result.returncode == 0
 
 
-def _retained_tree_is_live(db_path: str, worktree_path: str) -> bool:
-    """Whether a session that can still be resumed has its frozen cwd inside the retained tree:
-    a row with history or pending gateway work. A missing store means the profile is gone;
-    unreadable fails SAFE (live)."""
-    import sqlite3
-    from urllib.parse import quote
-
-    path = Path(db_path)
-    if not path.is_file():
-        return False
-    def key(value) -> str:  # native path identity: Windows is case-insensitive, either separator
+def _inside_tree(worktree_path: str):
+    """``inside(path) -> 0/1``: *path* is the tree or under it (native path identity: Windows is
+    case-insensitive, either separator; the tree's own spelling and its resolved one)."""
+    def key(value) -> str:
         return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
 
     roots = {key(Path(worktree_path)), key(Path(worktree_path).resolve())}
 
     def inside(cwd) -> int:
         return int(bool(cwd) and any(key(cwd) == r or key(cwd).startswith(r + "/") for r in roots))
+    return inside
+
+
+# The gateway's own records that it will still act in a session after its last viewer quits:
+# an active /loop, /heartbeat or /goal (its continuation) row (``hermes_cli.loops`` / ``heartbeat`` /
+# ``goals``, keyed by the stored session id, status ``active`` when the field is absent), and a row
+# no viewer close ended: Ink's exit detaches with ``tui_shutdown`` and the owner ends the idle row
+# only once no other viewer holds it (``gateway/session_viewer_close.py``).
+_SERVED_TREE_SQL = (
+    "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND (s.ended_at IS NULL OR EXISTS ("
+    "SELECT 1 FROM state_meta m WHERE m.key IN ('loop:'||s.id, 'heartbeat:'||s.id, 'goal:'||s.id) "
+    "AND (json_valid(m.value)=0 OR COALESCE(json_extract(m.value,'$.status'),'active')='active'))) LIMIT 1")
+
+
+def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
+    """Why the gateway still needs a ``--tui -w`` tree the launcher is about to remove, or None.
+
+    Beyond pending admissions (``_retained_tree_is_live(pending_only=True)``): scheduled work for a
+    session inside it (an active loop, heartbeat or goal continuation), another viewer still holding
+    such a session (its row was not ended by the quit), or an enabled cron job that runs in the tree
+    (``workdir``) or is bound to such a session's local chat. Reads only; unreadable fails SAFE."""
+    import sqlite3
+    from urllib.parse import quote
+
+    path = Path(db_path)
+    chats: set = set()
+    if path.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
+            try:
+                conn.create_function("hermes_inside_tree", 1, _inside_tree(worktree_path), deterministic=True)
+                if conn.execute(_SERVED_TREE_SQL).fetchone():
+                    return "session"
+                chats = {row[0] for row in conn.execute(
+                    "SELECT chat_id FROM sessions WHERE hermes_inside_tree(cwd) AND chat_id IS NOT NULL")}
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            logger.debug("retained worktree serve check failed (%s); keeping tree", exc)
+            return "unreadable"
+    return "cron" if _cron_bound_to_tree(worktree_path, chats) else None
+
+
+def _cron_bound_to_tree(worktree_path: str, chats: set) -> bool:
+    """An enabled, non-terminal cron job whose ``workdir`` is inside the tree, or whose origin is
+    the local chat of a session there. Reads ``jobs.json`` directly (``load_jobs`` may repair-write);
+    an unreadable store fails SAFE."""
+    try:
+        from cron.jobs import _current_cron_store, _parse_jobs_file, is_job_runnable, is_terminal_job
+        jobs_file = _current_cron_store().jobs_file
+        if not jobs_file.exists():
+            return False
+        data, _ = _parse_jobs_file(jobs_file)
+    except Exception as exc:  # health: allow BLE001 -- an unreadable cron store keeps the tree (fail safe)
+        logger.debug("cron store unreadable (%s); keeping tree", exc)
+        return True
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    inside = _inside_tree(worktree_path)
+    for job in jobs if isinstance(jobs, list) else ():
+        if not isinstance(job, dict) or not is_job_runnable(job) or is_terminal_job(job):
+            continue
+        origin = job.get("origin") if isinstance(job.get("origin"), dict) else {}
+        if inside(job.get("workdir")) or (
+                str(origin.get("platform") or "").lower() == "local" and str(origin.get("chat_id") or "") in chats):
+            return True
+    return False
+
+
+def _retained_tree_is_live(db_path: str, worktree_path: str, *, pending_only: bool = False) -> bool:
+    """Whether a session that can still be resumed has its frozen cwd inside the retained tree:
+    a row with history or pending gateway work (*pending_only*: pending work alone, the exiting
+    ``--tui -w`` launcher's "is the gateway still using it" check). A missing store means the
+    profile is gone; unreadable fails SAFE (live)."""
+    import sqlite3
+    from urllib.parse import quote
+
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    inside = _inside_tree(worktree_path)
     try:
         conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
         try:
             conn.create_function("hermes_inside_tree", 1, inside, deterministic=True)
             row = conn.execute(
-                "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND (s.message_count>0 OR EXISTS ("
-                "SELECT 1 FROM session_admissions a WHERE a.target_session_id=s.id AND a.status!='terminal')) "
-                "LIMIT 1").fetchone()
+                "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND ("
+                + ("" if pending_only else "s.message_count>0 OR ")
+                + "EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id=s.id "
+                "AND a.status!='terminal')) LIMIT 1").fetchone()
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -879,11 +958,13 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     """Lock state: ``"live"`` (owning pid runs / a resumable session works in the tree),
     ``"dead"`` (pid and sessions gone / non-hermes reason), None (unlocked).
 
-    ``hermes -w`` locks with reason ``hermes pid=<pid>``; ``worktree remove --force`` refuses
-    locked trees, so a crashed session's lock would keep its tree forever. A ``--tui -w`` tree
-    also names its profile's ``state.db`` from creation, so a launcher killed with its terminal
-    (SIGHUP skips the exit re-lock) still keeps the tree. Fails SAFE toward "live", including
-    a ``hermes`` reason this version cannot parse.
+    A Hermes tree locks with reason ``hermes pid=<pid>``; ``worktree remove --force`` refuses
+    locked trees, so a crashed session's lock would keep its tree forever. A ``-w`` tree
+    also names its profile's ``state.db`` from creation, so a ``--tui -w`` launcher killed with
+    its terminal (SIGHUP skips the exit re-lock) still keeps the tree while a resumable session's
+    row cwd is inside it. A classic ``-w`` row's cwd is the repo root: its tree is only recorded,
+    and a reaped clean one is recreated on resume. Fails SAFE toward "live", including a
+    ``hermes`` reason this version cannot parse.
     """
     try:
         found, reason = _worktree_lock_reason(repo_root, worktree_path, timeout)

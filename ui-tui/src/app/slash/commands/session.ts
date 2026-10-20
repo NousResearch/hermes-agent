@@ -400,6 +400,41 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('canonical.controls.notAvailable', 'voice tts'))
       }
 
+      // T9: the shared owner holds a session's voice mode (its /voice handler, per session). The
+      // sidecar's voice.toggle flipped the owner's process-global HERMES_VOICE for every chat; run
+      // the owner's handler instead and mirror the mode it reports back.
+      if (ctx.gateway.gw?.isCanonical && ctx.sid) {
+        const sid = ctx.sid
+        const command = normalized === 'on' || normalized === 'off' ? `voice ${normalized}` : 'voice status'
+
+        return void ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command, session_id: sid })
+          .then(r => {
+            if (ctx.stale()) {
+              return
+            }
+
+            const text = r?.output?.trim()
+
+            if (text) {
+              ctx.transcript.sys(text)
+            }
+
+            return ctx.gateway.rpc<ConfigGetValueResponse>('config.get', { key: 'voice', session_id: sid })
+          })
+          .then(r => {
+            if (!r || ctx.stale()) {
+              return
+            }
+
+            // Local sessions refuse `/voice tts` (the owner never speaks a TUI reply), so speech
+            // output stays off; the mic mode follows the gateway's per-session state.
+            ctx.voice.setVoiceEnabled(r.value === 'voice_only' || r.value === 'all')
+            ctx.voice.setVoiceTts(false)
+          })
+          .catch(ctx.guardedErr)
+      }
+
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)

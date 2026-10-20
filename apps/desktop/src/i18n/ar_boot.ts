@@ -1,3 +1,4 @@
+import { arDesktopCommands } from './ar_desktop_commands'
 import { arSessionCommands } from './ar_session_commands'
 import type { TranslationOverrides } from './define-locale'
 
@@ -83,7 +84,8 @@ export const arBoot = {
     mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
     compactedTurnUnavailable: 'تم تلخيص هذه الرسالة عند ضغط المحادثة، لذا لم يعد بالإمكان استعادتها أو تحريرها.',
     staleTurnUnavailable: 'لم تعد هذه الرسالة موجودة في سجل هذه المحادثة.',
-    sessionCommands: arSessionCommands
+    sessionCommands: arSessionCommands,
+    desktopCommands: arDesktopCommands
   },
   updates: {
     discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',
@@ -351,5 +353,12 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'updates' | 'install' | 'onboarding'
+  | 'boot'
+  | 'remoteDisplayBanner'
+  | 'butterbar'
+  | 'promptNotices'
+  | 'keepAwakeOffer'
+  | 'updates'
+  | 'install'
+  | 'onboarding'
 >

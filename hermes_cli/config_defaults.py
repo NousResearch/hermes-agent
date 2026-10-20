@@ -452,10 +452,10 @@ DEFAULT_CONFIG = {
         # Windows browser holding its cookies) gives a fresh, signed-out browser plus a note saying why.
         # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
-        # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
-        # copied (the session runs on a fresh browser). When on, the agent ASKS first; on approval it
-        # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # so a new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
+        # Windows only: a running Chrome/Edge/Brave locks its cookie DB (the last snapshot is reused;
+        # with none yet, a fresh browser runs). When on, the agent ASKS first; on approval it runs
+        # `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost) so a
+        # new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
         # browser only locks the password/autofill DBs, which are skipped (cookies still copy).
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
@@ -850,9 +850,9 @@ DEFAULT_CONFIG = {
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.
         "cli_multiline_shortcuts": True,
-        # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
-        # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
-        "interface": "cli",
+        # `hermes`/`hermes chat` launches "cli" (prompt_toolkit REPL) | "tui" (Ink); --cli, --tui, HERMES_TUI=1 win.
+        # cli_layout = the REPL's look: "modern" (glyph rows, status under the composer) | "classic" (boxed panels).
+        "interface": "cli", "cli_layout": "modern",
         # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
         # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
         "tui_native": False,
@@ -1647,12 +1647,12 @@ DEFAULT_CONFIG = {
             # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
             # since rich messages are hard to copy as plain text.
             "rich_messages": False,
-            # Experimental rich draft previews while streaming DMs; off because Telegram
-            # Desktop/macOS can overlay draft frames until the chat redraws.
+            # Experimental rich DM stream previews; off: Telegram Desktop/macOS overlays draft frames.
             "rich_drafts": False,
             # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
+            "dm_topic_auto_transfer": False,  # /topic mode: root-DM message opens a fresh topic
         },
     },
 
@@ -2932,7 +2932,7 @@ OPTIONAL_ENV_VARS = {
         tools=["browser_navigate", "browser_click"], advanced=True),
     "FAL_KEY": _tool("FAL API key for image and video generation", "FAL API key", "https://fal.ai/",
         tools=["image_generate", "video_generate"]),
-    "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",
+    "KREA_API_KEY": _tool("Krea API key for Krea 3 and Krea 2 image generation",
         "Krea API key", "https://www.krea.ai/settings/api-tokens", tools=["image_generate"]),
     "VOICE_TOOLS_OPENAI_KEY": _tool(
         "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",

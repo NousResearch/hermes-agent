@@ -198,9 +198,15 @@ def pause_notice(authority, ref, reason):
         # Transient: queued behind work already running on this conversation (a worker execution).
         return '⏳ Your message is saved and will be answered when the work running in this conversation finishes.'
     if reason == 'unknown_execution':
-        cause = 'a previous turn did not finish when Hermes restarted, so nothing queued after it will run'
-    else:
-        cause = f'a queued message could not be re-authorized ({reason})'
+        # GW-10: the way out is in this chat. /discard acknowledges the lost turn (never replayed)
+        # through the same fenced resolve_unknown as Desktop/TUI, and the saved messages then run.
+        # Slack registers no native /discard (its slash cap): the umbrella `/hermes discard` reaches it.
+        slack = getattr(getattr(live.source, 'platform', None), 'value', None) == 'slack'
+        discard = '/hermes discard' if slack else '/discard'
+        return ('⏸️ This conversation is paused: a previous turn did not finish when Hermes restarted, '
+                f'and only you know whether to send it again. Your message is saved. Send {discard} to drop '
+                'the lost turn and continue (it is not re-run), or /reset to start a fresh conversation.')
+    cause = f'a queued message could not be re-authorized ({reason})'
     return (f'⏸️ This conversation is paused: {cause}. Your message is saved but will not be answered here. '
             'Send /reset to start a fresh conversation, or ask the operator to resume this one.')
 
@@ -329,6 +335,19 @@ async def execute_admission(authority, ref, row):
         viewer_turn.reset(viewer_token)
 
 
+def _launch_body_if_launch_owner(authority):
+    """A standalone owner's turn binds nothing, but the launch profile's is marked at entry: a second
+    profile switching this gateway to multiplexing mid-turn must not fail its later credential reads
+    closed. Any other owner (a hosted named profile) stays unmarked, never reading the launch env."""
+    from pathlib import Path
+    from agent.secret_scope import _is_process_home
+    owner = Path(str(authority.profile_id))
+    if not owner.is_absolute() or not _is_process_home(owner):
+        return nullcontext()
+    from tui_gateway.launch_profile_policy import launch_body
+    return launch_body()
+
+
 async def _execution_scope(authority, home):
     """Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
     config, secrets, state.db), never the launch profile's ambient scope; native provenance
@@ -336,7 +355,7 @@ async def _execution_scope(authority, home):
     Secret sources (external CLIs) hydrate off the loop, as main's per-message scope does (#99519)."""
     multiplex = getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False)
     if home is None and not multiplex:
-        return nullcontext()
+        return _launch_body_if_launch_owner(authority)
     from gateway.run import _load_profile_secret_scope, _profile_runtime_scope
 
     def load():

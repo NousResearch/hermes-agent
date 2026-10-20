@@ -29,7 +29,9 @@ it.each([
   ['main', 'unconfirmed'],
   ['tile', 'unconfirmed'],
   ['main', 'refused'],
-  ['tile', 'refused']
+  ['tile', 'refused'],
+  ['main', 'voice-stopped'],
+  ['tile', 'voice-stopped']
 ])('%s keeps fresh Retry permission safe after %s', async (surface, outcome) => {
   const messages: ChatMessage[] = [
     { id: 'user', role: 'user', parts: [textPart('continue')] },
@@ -43,6 +45,7 @@ it.each([
     }
   ]
   const requestGateway = vi.fn(async () => {
+    if (outcome === 'voice-stopped') return { voice_stopped: true } as never
     if (outcome === 'timeout') throw new Error('response timed out')
     throw new JsonRpcGatewayError('Retry was not confirmed', {
       code: outcome === 'refused' ? 5035 : 4090,
@@ -91,6 +94,12 @@ it.each([
   await reload('user', config)
   await reload('user', config)
   expect(requestGateway).toHaveBeenCalledTimes(outcome === 'refused' ? 2 : 1)
+  if (outcome === 'voice-stopped') {
+    const state = $sessionStates.get()[surface === 'main' ? RUNTIME_SESSION_ID : 'tile-retry']
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+    expect(state.messages).toEqual([])
+  }
 })
 
 it('revokes a cached fresh proof without overwriting newer output or a new checkpoint', () => {

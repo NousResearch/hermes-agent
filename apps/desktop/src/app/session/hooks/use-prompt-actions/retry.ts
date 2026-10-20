@@ -5,7 +5,7 @@ import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { chatMessageText } from '@/lib/chat-messages'
 
-import { isSessionNotFoundError, withSessionNotFoundResume } from './utils'
+import { isSessionNotFoundError, isVoiceStoppedReceipt, withSessionNotFoundResume } from './utils'
 
 /** Error-card intent is explicit; normal Reload remains a deliberate regenerate. */
 export interface RetryRunConfig {
@@ -84,11 +84,15 @@ export async function submitFailedRetry(
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>,
   onRecovered: (sessionId: string) => void,
   stillOwned: () => boolean = () => true
-): Promise<void> {
+): Promise<'admitted' | 'voice-stopped'> {
   const method = 'retry_token' in plan ? 'prompt.retry' : 'prompt.submit'
   const call = async (targetId: string) => {
     try {
-      return await requestGateway(method, { session_id: targetId, ...plan }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+      return await requestGateway<{ voice_stopped?: boolean }>(
+        method,
+        { session_id: targetId, ...plan },
+        PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+      )
     } catch (error) {
       if (error instanceof JsonRpcGatewayError && error.code === -32601) {
         throw new Error('This backend cannot continue a failed turn. Review completed work before continuing.')
@@ -100,7 +104,8 @@ export async function submitFailedRetry(
   if ('text' in plan) {
     // A refusal proves no admission only on its original runtime, never on a recovered owner.
     try {
-      await call(sessionId)
+      const receipt = await call(sessionId)
+      return isVoiceStoppedReceipt(receipt) ? 'voice-stopped' : 'admitted'
     } catch (error) {
       if (
         isSessionNotFoundError(error) ||
@@ -111,13 +116,31 @@ export async function submitFailedRetry(
       }
       throw error
     }
-    return
   }
   await withSessionNotFoundResume(sessionId, storedSessionId, call, {
     requestGateway,
     onRecovered,
     driftReason: () => (stillOwned() ? null : 'Retry session changed')
   })
+  return 'admitted'
+}
+
+/** A voice stop admits no turn and will never produce a completion event. */
+export function settleVoiceStoppedRetry(
+  state: ClientSessionState,
+  messageId: string,
+  optimistic?: ChatMessage[]
+): ClientSessionState {
+  if (state.messages !== optimistic) return state
+  const index = state.messages.findIndex(message => message.id === messageId)
+  return {
+    ...state,
+    busy: false,
+    awaitingResponse: false,
+    turnLive: false,
+    turnStartedAt: null,
+    messages: state.messages.filter((_, i) => i !== index && i !== index - 1)
+  }
 }
 
 /** Only definitive pre-admission refusals; a lost/timeout response may already have started work. */

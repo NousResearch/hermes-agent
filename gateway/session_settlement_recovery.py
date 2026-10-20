@@ -61,7 +61,10 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
-    if captured_result.get('failure_reason'):
+    if isinstance(captured_result.get('error_surface'), dict):
+        # Gateway-owned refusals already carry their authoritative descriptor.
+        complete['error_surface'] = captured_result['error_surface']
+    elif captured_result.get('failure_reason'):
         from agent.error_surface import build_error_surface_from_result
         complete['error_surface'] = build_error_surface_from_result(captured_result)
     if response and captured_result.get('response_reused'):
@@ -101,10 +104,52 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
-    payload = completion_payload(row, settled, response, captured)
+    complete = completion_payload(row, settled, response, captured)
     if live.retry_checkpoint is not None and live.retry_checkpoint['generation'] == row['generation']:
-        payload['retry_token'] = live.retry_checkpoint['token']
-    live.event_stream.publish(ref.session_id, payload)
+        complete['retry_token'] = live.retry_checkpoint['token']
+    notice = owner_stop_notice(captured, settled['outcome'], row)
+    if notice and not complete.get('warning'):
+        # ``warning`` is the slot every surface already renders on message.complete (Ink activity
+        # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
+        complete['warning'] = notice
+    live.event_stream.publish(ref.session_id, complete)
+
+
+RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+                            'Send your message again once Hermes reconnects.')
+SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
+                             'Send your message again once Hermes is back.')
+
+
+def owner_stop_notice(captured, outcome, row=None):
+    """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
+    ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
+    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it.
+    An unattended ``row`` (cron, automation, webhook) has nobody to resend it, so it gets the
+    neutral automation copy instead of resend advice (#134889 GW-20, GW-10's rule)."""
+    # The cause is the one the turn recorded when it was interrupted (stop() interrupts with these
+    # reasons), never the runner's flags at publication: a user Stop whose settlement was delayed
+    # until after shutdown began is still the user's Stop.
+    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+    cause = ((captured or {}).get('result') or {}).get('interrupt_message') if outcome == 'interrupted' else None
+    notice = {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
+              _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
+    if notice is not None and row is not None:
+        from gateway.session_unattended_unknown import is_unattended
+        if is_unattended(row):
+            from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+            return AUTOMATION_INTERRUPTED_NOTICE
+    return notice
+
+
+def gateway_refusal_boundary(captured, outcome):
+    """``(notice, display_metadata)`` for a failed turn the gateway itself refused with a renderable
+    descriptor (``session_cron.execute``: the only producer of ``result.error_surface``), else None."""
+    value = (captured or {}).get('result') or {}
+    surface, error = value.get('error_surface'), value.get('error')
+    if outcome != 'failed' or not isinstance(surface, dict) or not isinstance(error, str) or not error:
+        return None
+    return error, {'error': error, 'error_surface': dict(surface)}
 
 
 def _release_media(authority, row):

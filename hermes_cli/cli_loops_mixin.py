@@ -4,12 +4,11 @@ Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (impor
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 import threading
 import time
 
 from agent.i18n import t
+from hermes_cli.gateway_client import GatewayClientError
 from rich.markup import escape as _escape
 
 
@@ -125,21 +124,19 @@ class CLILoopsMixin:
         out.cursor_goto(0, 0)
         out.flush()
         cc = ChatConsole()
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        # The banner plan startup uses (show_banner): a gateway session's banner is the new
+        # session's snapshot (its tools, MCP included, and main's short label), never this
+        # process's registry.
+        from hermes_cli.cli_info_mixin import banner_plan
+        plan = banner_plan(self, cc)
+        if plan.banner_kw is None:
             cc.print(_build_compact_banner())
+        elif plan.inventory is not None:
+            self._show_gateway_banner(build_welcome_banner, plan.inventory, plan.banner_kw)
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-            agent = getattr(self, "agent", None)
-            ctx_len = None
-            if agent and hasattr(agent, "context_compressor"):
-                ctx_len = agent.context_compressor.context_length
-            from agent.context_pin import is_context_pinned
-            build_welcome_banner(
-                console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
-                tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider,
-                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
+            build_welcome_banner(tools=tools, **plan.banner_kw)
         _cprint(_fresh_start())
         self._print_random_tip()
 
@@ -352,29 +349,79 @@ class CLILoopsMixin:
                 q.not_empty.notify_all()
         return before, after
 
+    def _gateway_queue_store(self):
+        """The gateway session store when this CLI is a viewer of the gateway's session, else None."""
+        from hermes_cli.gateway_tools_notify import gateway_store
+        return gateway_store(self) if getattr(self, "session_id", None) else None
+
+    def _queue_items(self) -> list:
+        """``[(admission_id | None, item)]``: the owner's queued admissions (run first, in its FIFO
+        order), then the turns still waiting in ``_pending_input``."""
+        items: list = []
+        store = self._gateway_queue_store()
+        if store is not None:
+            from hermes_cli import gateway_queue
+            items = list(gateway_queue.queued_rows(self, store))
+        return items + [(None, item) for item in self._pending_input_items()]
+
     def _queue_enqueue(self, text: str) -> None:
         from cli import _cprint
         payload = self._expand_paste_references(text)
-        self._pending_input.put(payload)
+        store = self._gateway_queue_store() if self._agent_running else None
+        if store is not None:
+            # #134889 N5: the gateway's durable FIFO holds it (committed at accept, kept across an owner
+            # restart, run once after the current turn), never this process.
+            from hermes_cli import gateway_queue
+            try:
+                gateway_queue.submit_queued(self, store, payload)
+            except gateway_queue.QueueOutcomeUnknown as exc:  # sent, no answer: it may be queued
+                _cprint(f"  {t('cli.queue.submit_unknown', error=exc)}")
+                return
+            except GatewayClientError as exc:  # the owner refused, or it was never sent: nothing is held here
+                _cprint(f"  {t('cli.queue.gateway_refused', error=exc)}")
+                return
+        else:
+            self._pending_input.put(payload)
         key = "cli.queue.queued_next_turn" if self._agent_running else "cli.queue.queued"
         _cprint(f"  {t(key, preview=_preview(payload))}")
 
     def _queue_list(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
-        items = self._pending_input_items()
+        items = self._queue_items()
         if not items:
             _cprint(f"  {t('cli.queue.empty')}" + ("" if rest else "  " + _queue_usage()))
             return
         _cprint(f"  {t('cli.queue.pending_header', count=len(items))}")
-        for idx, item in enumerate(items, 1):
+        for idx, (_, item) in enumerate(items, 1):
             tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
             _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
 
+    def _queue_gateway_call(self, verb, index, *args):
+        """One owner verb on queued item ``index``; its refusal is printed (in its own words), never raised."""
+        from cli import _cprint
+        from hermes_cli import gateway_queue
+        from hermes_cli.gateway_client import GatewayRPCError
+        try:
+            return getattr(gateway_queue, verb)(self, self._gateway_queue_store(), *args)
+        except GatewayRPCError as exc:
+            if str(exc) in gateway_queue.STARTED_REFUSALS:  # the drain claimed it first: it runs as sent
+                _cprint(f"  {t('cli.queue.already_started', index=index)}")
+            else:
+                key = "cli.queue.edit_refused" if verb == "replace" else "cli.queue.remove_refused"
+                _cprint(f"  {t(key, index=index, error=exc)}")
+        except GatewayClientError as exc:  # no answer: the owner may have applied it
+            _cprint(f"  {t('cli.queue.change_unknown', index=index, error=exc)}")
+        return None
+
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
+        owned = [admission for admission, _ in self._queue_items() if admission]
+        cleared = sum(1 for idx, admission in enumerate(owned, 1)
+                      if self._queue_gateway_call("cancel", idx, admission) == "cancelled")
         before, _ = self._mutate_pending_input(lambda items: [])
-        key = "cli.queue.cleared_one" if len(before) == 1 else "cli.queue.cleared_other"
-        _cprint(f"  {t(key, count=len(before))}")
+        cleared += len(before)
+        key = "cli.queue.cleared_one" if cleared == 1 else "cli.queue.cleared_other"
+        _cprint(f"  {t(key, count=cleared)}")
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
@@ -383,13 +430,26 @@ class CLILoopsMixin:
         if idx is None:
             _cprint(f"  {t('cli.queue.usage_remove')}")
             return
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
+        if 1 <= idx <= owned:
+            admission, text = items[idx - 1]
+            verdict = self._queue_gateway_call("cancel", idx, admission)
+            if verdict == "cancelled":
+                _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(text)))}")
+            elif verdict == "stopped":  # claimed between the list and the cancel: the owner interrupted it
+                _cprint(f"  {t('cli.queue.started_stopped', index=idx)}")
+            elif verdict == "started":
+                _cprint(f"  {t('cli.queue.already_started', index=idx)}")
+            return
+        local = idx - owned
         removed: list = []
         before, _ = self._mutate_pending_input(
-            lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
+            lambda items: (removed.append(items.pop(local - 1)) or items) if 1 <= local <= len(items) else items)
         if removed:
             _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(removed[0])))}")
         else:
-            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=len(before))}")
+            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
 
     def _queue_edit(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
@@ -402,18 +462,26 @@ class CLILoopsMixin:
             return
         new_prompt = bits[1]
         new_text = self._expand_paste_references(new_prompt.strip())
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
+        if 1 <= idx <= owned:
+            # The owner admits the edit as a new admission at the back of its FIFO.
+            if self._queue_gateway_call("replace", idx, items[idx - 1][0], new_text):
+                _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
+            return
+        local = idx - owned
 
         def _edit(items: list) -> list:
-            if 1 <= idx <= len(items):
+            if 1 <= local <= len(items):
                 # A voice-queued item keeps its sentinel so the concise voice-response
                 # prefix still applies (#65827).
-                voice = isinstance(items[idx - 1], _VoiceInputMessage)
-                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+                voice = isinstance(items[local - 1], _VoiceInputMessage)
+                items[local - 1] = _VoiceInputMessage(new_text) if voice else new_text
             return items
 
         before, after = self._mutate_pending_input(_edit)
         if before == after:
-            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=len(before))}")
+            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
         else:
             _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
 
@@ -424,6 +492,12 @@ class CLILoopsMixin:
         if src is None or dst is None:
             _cprint(f"  {t('cli.queue.usage_move')}")
             return
+        owned = sum(1 for admission, _ in self._queue_items() if admission)
+        if owned and min(src, dst) <= owned and src != dst:
+            # The owner's FIFO runs admissions in the order they were sent; it has no reorder verb.
+            _cprint(f"  {t('cli.queue.move_gateway_fifo')}")
+            return
+        src, dst = src - owned, dst - owned
 
         def _move(items: list) -> list:
             if 1 <= src <= len(items) and 1 <= dst <= len(items):
@@ -432,9 +506,9 @@ class CLILoopsMixin:
 
         before, after = self._mutate_pending_input(_move)
         if before == after and src != dst:
-            _cprint(f"  {t('cli.queue.move_out_of_range', size=len(before))}")
+            _cprint(f"  {t('cli.queue.move_out_of_range', size=owned + len(before))}")
         else:
-            _cprint(f"  {t('cli.queue.moved', source=src, destination=dst)}")
+            _cprint(f"  {t('cli.queue.moved', source=src + owned, destination=dst + owned)}")
 
     def _cmd_queue(self, cmd_original: str):
         """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit
@@ -477,7 +551,9 @@ class CLILoopsMixin:
             except Exception as exc:
                 _cprint(f"  {t('cli.steer.failed', error=exc)}")
             else:
-                if accepted:
+                if accepted == "voice_stopped":  # TUI-26: the owner ended the voice chat; consumed
+                    pass
+                elif accepted:
                     _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
                 else:
                     _cprint(f"  {t('cli.steer.rejected_empty')}")
@@ -527,6 +603,11 @@ class CLILoopsMixin:
             return None
         return self._session_bound_manager(
             attr, label, (lambda: lambda sid: remote(sid, connection)) if gateway else local)
+
+    def _mark_automation_stale(self) -> None:
+        """Agent thread: the gateway published this session's goal/loop state mid-turn (a tool moved it).
+        The dock re-reads the mirrored managers on its next spinner-thread poll (``cli_session_dock``)."""
+        self._automation_stale = True
 
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""

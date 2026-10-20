@@ -1146,6 +1146,43 @@ automatically requeue the message because doing so without durable ordering and
 idempotency could process it twice. Non-positive values use the 5-second
 default.
 
+## Gateway Restart Drain
+
+When the gateway stops or restarts (SIGTERM, `hermes update`, `hermes gateway stop`, or the final
+phase of `hermes gateway restart` / `/restart`), `agent.restart_drain_timeout` is how many seconds
+it lets in-flight chat turns keep running before it interrupts them:
+
+```yaml
+agent:
+  restart_drain_timeout: 0          # default: interrupt in-flight chat turns at once
+  cron_drain_timeout: 30            # floor for cron jobs and api_server (/v1) runs
+  restart_after_turn_timeout: 1800  # /restart and `gateway restart`: wait for turns BEFORE stopping
+```
+
+With the default `0`, a restart interrupts a running turn immediately. The turn settles as
+interrupted and is never run again; the TUI and Desktop show a "Gateway restarting" (or "Gateway
+shutting down") notice on that turn, and you send the message again once Hermes reconnects.
+Queued messages behind it are kept and run in order on the new gateway.
+
+Set a positive value if you would rather let turns finish:
+
+```yaml
+agent:
+  restart_drain_timeout: 60
+```
+
+A longer drain makes every restart and update wait up to that long. `HERMES_RESTART_DRAIN_TIMEOUT`
+overrides the config value.
+
+:::caution systemd `TimeoutStopSec`
+The generated systemd unit sizes `TimeoutStopSec` from this value: the larger of
+`restart_drain_timeout` and `cron_drain_timeout` + 10 s, plus 30 s of headroom, and at least 60 s
+(`gateway/restart.py`, `resolve_systemd_timeout_stop_sec`). If you raise `restart_drain_timeout`,
+re-run `hermes gateway install` so the unit picks up the new budget. Otherwise systemd SIGKILLs the
+gateway in the middle of its drain. launchd caps its stop timeout at 60 s, so on macOS the drain
+is limited to what fits inside that.
+:::
+
 ## Session Stall Watchdog
 
 The gateway runs a notify-only stall watchdog (`agent.session_stall_timeout`, default `300` seconds, `0` = disabled). When a busy session has a **pending inbound follow-up** and the agent's shared activity clock has been idle for at least this long, the gateway logs a WARNING and sends the user a one-shot notification:

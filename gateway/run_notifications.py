@@ -65,7 +65,8 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
 # Retries of a refused notice: the process watcher's completions (~5 min at the default 5 s check
-# interval) and the watch drain's events (~4 min from its 4 s base delay + 2 s cadence) share this budget.
+# interval) and the watch drain's events (~4 min from its 4 s base delay + 2 s cadence) share these
+# constants; each event keeps its own attempt count.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
 _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
 # Drain retries of a refused watch event follow the same bounded-backoff policy, keyed to the

@@ -155,11 +155,33 @@ class GatewayNotificationOwnershipMixin:
         if verdict != "terminal":
             return False
         live = cast(Any, self).session_store.peek_session_id(session_key) or ""
+        
+        # Pass the classification results to avoid re-lookup in _gone_pin_cause
+        from gateway.run import _USER_BOUNDARY_END_REASONS
+        verdict, hop, row = await cast(Any, self)._lookup_completion_owner(pinned, live)
+        
+        if row is not None:
+            if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
+                # Note: "session_reset" is a user boundary (/new) despite "automatic" in the name
+                if row.get("end_reason") == "session_reset":
+                    cause = f"session {hop} was reset (session_reset)"
+                else:
+                    cause = f"session {hop} was closed at a user boundary ({row['end_reason']})"
+            else:
+                cause = f"session {hop} is a subagent transcript with no owning conversation"
+        else:
+            try:
+                missing = await cast(Any, self)._session_db.get_session(hop) is None
+            except (sqlite3.Error, StateDbReplacedError):
+                cause = f"session {hop} could not be re-read"
+            else:
+                cause = f"session {hop} no longer exists" if missing else f"session {hop} has unresolvable delegate provenance"
+        
         logger.warning(
             "Dropping %s notification of process %s: pinned session %s is permanently gone (%s); the "
             "route now runs %s and refuses it (%s). Output remains available via process(action='log').",
             evt.get("type") or "<unknown>", evt.get("session_id") or "<unknown>", pinned,
-            await self._gone_pin_cause(pinned, live), live or "<none>", refusal,
+            cause, live or "<none>", refusal,
         )
         return True
 
@@ -174,9 +196,9 @@ class GatewayNotificationOwnershipMixin:
             return "its owner could not be re-read"
         if row is not None:
             if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
-                # Distinguish between user boundaries and system resets
+                # Note: "session_reset" is a user boundary (/new) despite "automatic" in the name
                 if row.get("end_reason") == "session_reset":
-                    return f"session {hop} was automatically reset"
+                    return f"session {hop} was reset (session_reset)"
                 else:
                     return f"session {hop} was closed at a user boundary ({row['end_reason']})"
             return f"session {hop} is a subagent transcript with no owning conversation"

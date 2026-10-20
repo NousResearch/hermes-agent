@@ -1,0 +1,2 @@
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+[claude-code:unrecognized_model] {"model":"claude-haiku-5-5","query_source":"sdk"}

@@ -390,6 +390,9 @@ class StreamDeliveryMixin:
             # content deltas.
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
+        from agent.turn_end_hooks import defers_text_delivery
+        if defers_text_delivery():
+            return
         self._call_quietly(self.reasoning_callback, text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
         # serialized every streaming thread in the process behind a config cache hit.

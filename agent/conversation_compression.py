@@ -40,6 +40,7 @@ from agent.conversation_compression_telemetry import (
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.turn_end_hooks import without_rejected_messages
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
@@ -2167,10 +2168,8 @@ def _message_text(message: Any) -> str:
     return ""
 
 
-_SYNTHETIC_USER_FLAGS = (
-    "_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic", "_turn_end_synthetic",
-    "_dropped_toolcall_nudge",
-)
+_SYNTHETIC_USER_FLAGS = ("_todo_snapshot_synthetic", "_empty_recovery_synthetic", "_verification_stop_synthetic",
+                         "_pre_verify_synthetic", "_turn_end_synthetic", "_dropped_toolcall_nudge")
 
 
 def _is_real_user_message(message: Any) -> bool:
@@ -4131,8 +4130,8 @@ def compress_context(
     # finishes or closes in its daemon worker. Otherwise four timed-out streams retain all four shared
     # compression-pool slots until the auxiliary stream's longer absolute ceiling expires. See #23975.
     _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
-    phase = _run_summary_phase(
-        agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
+    phase = _run_summary_phase(  # rejected completion drafts and repair feedback never reach the summary
+        agent, without_rejected_messages(messages), lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
         commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
     )

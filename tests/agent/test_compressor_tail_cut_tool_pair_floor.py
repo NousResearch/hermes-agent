@@ -57,7 +57,7 @@ def _cut(compressor, messages):
 def _pairing_violations(messages, start, end):
     """Indices kept (head + tail) must never reference a summarised partner."""
     n = len(messages)
-    kept = set(range(0, min(start, n))) | set(range(min(end, n), n))
+    kept = set(range(min(start, n))) | set(range(min(end, n), n))
     parent = {}
     for i, m in enumerate(messages):
         for tc in m.get("tool_calls") or []:

@@ -26,6 +26,21 @@ npm run perf -- cold-start stream keystroke transcript --spawn --prod
 npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-baseline
 ```
 
+## Profiling an existing workspace
+
+```bash
+node scripts/perf/run.mjs live-window --seconds 15 --json ~/.hermes/cache/scratch/live-window.json
+# Attribution is a separate pass, not an FPS comparison:
+node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile ~/.hermes/cache/scratch
+```
+
+`live-window` never opens/closes tabs, seeds messages, moves focus, or forces GC.
+It records frame intervals, long tasks, visible/mounted transcript counts, and
+heap/DOM counters. Keep the same panes and workload for before/after captures.
+Record restarts, HMR, and code updates separately: a fresh renderer is not a
+valid after measurement for a long-running renderer. Heap counters alone do not
+prove a leak. Heavy render/atom counters must be stopped before timing.
+
 ## Dev vs prod
 
 By default the harness measures the **dev** renderer (fast to spin up, good for

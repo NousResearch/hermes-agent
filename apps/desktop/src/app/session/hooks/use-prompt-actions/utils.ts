@@ -3,11 +3,14 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import type { ErrorSurface } from '@/lib/error-surface'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import type { SubmissionDestination } from './submission-destination'
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
@@ -278,8 +281,28 @@ export function isGatewayTimeoutError(error: unknown): boolean {
 export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
+/**
+ * prompt.submit refused an unconfirmed truncation that would archive later user turns (#133716).
+ * The server counts turns with its own predicate, so it can refuse a cut the client judged shallow:
+ * callers roll back at once (the submit wrote nothing), ask, and re-run the action with the deep cut
+ * forced, so the retry re-reads and re-validates the session like any first attempt.
+ */
+export const GATEWAY_DEEP_TRUNCATE_REFUSED_CODE = 4033
+
+export function isDeepTruncateRefusal(error: unknown): boolean {
+  return error instanceof JsonRpcGatewayError && error.code === GATEWAY_DEEP_TRUNCATE_REFUSED_CODE
+}
+
 export function isSessionBusyError(error: unknown): boolean {
-  return /session busy/i.test(error instanceof Error ? error.message : String(error))
+  // The shared owner answers its typed reason (`session_busy`), the legacy sidecar prose.
+  return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))
+}
+
+/** A busy refusal because another writer holds the compression lock (`field: 'compression'`). */
+export function isCompressionBusyError(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+
+  return data?.reason === 'session_busy' && data.field === 'compression'
 }
 
 // prompt.submit refused because another surface (TUI, messaging gateway)
@@ -291,6 +314,59 @@ export function isSessionNotOwnedError(error: unknown): boolean {
   const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
 
   return reason === 'SESSION_NOT_OWNED' || /already has a live owner/i.test(error instanceof Error ? error.message : '')
+}
+
+// prompt.submit refused because the gateway that owns this chat is mid-turn and could not queue
+// the send (4090 / SESSION_OWNER_BUSY, #140385). Transient: the turn ends on its own.
+export function isSessionOwnerBusyError(error: unknown): boolean {
+  return gatewayReason(error) === 'SESSION_OWNER_BUSY'
+}
+
+// The refused send's staged images are gone server-side: SESSION_OWNER_BUSY unstages them (#140968),
+// and any refusal whose prose says the image was removed did the same.
+export function refusalDroppedImages(error: unknown): boolean {
+  return (
+    isSessionOwnerBusyError(error) || /\bimages?\b[^.]*\bremoved\b/i.test(error instanceof Error ? error.message : '')
+  )
+}
+
+function gatewayReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+}
+
+// The error card's surface for an ownership refusal: another surface owns the session (#106217,
+// deterministic: drop Retry, offer a new session), or the gateway owner is mid-turn and could not
+// queue the send (#140385, transient: Retry once the turn ends). Empty for any other error.
+export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSurface } {
+  if (isSessionNotOwnedError(error)) {
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
+  }
+
+  if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {
+    // The owner may already hold the send: a Retry would run a second copy.
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_UNCONFIRMED', retryable: false } }
+  }
+
+  return isSessionOwnerBusyError(error)
+    ? { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } }
+    : {}
+}
+
+// RT-37: a legacy backend handed this prompt to the gateway that owns the chat, where it waits in
+// the owner's FIFO behind the gateway's turn. The queued-row card (the backend's
+// pending_submissions) stands for it until the owner starts it: no optimistic bubble or spinner.
+export function isForwardedReceipt(
+  legacyAccepted: boolean,
+  result: { forwarded?: boolean | null; status?: string } | undefined
+): boolean {
+  return legacyAccepted && result?.forwarded === true && result.status === 'queued'
+}
+
+/** TUI-26: the owner ended the session's voice chat on a typed stop phrase and admitted nothing. The
+ * identityless legacy retry gets the same reply (the sidecar forwards it to the ledger owner), and no
+ * turn will complete that send either. */
+export function isVoiceStoppedReceipt(result: { voice_stopped?: boolean } | undefined): boolean {
+  return result?.voice_stopped === true
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -421,25 +497,20 @@ export function imageFilenameFromPath(filePath: string): string {
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
 //
-// `cachedDataUrl` is the attachment's `previewUrl` when the composer already
-// read the file for the chip thumbnail — that preview is the FULL file as a
-// base64 data URL (attachmentPreviewDataUrl → readFileDataUrl), not a
-// downscaled copy, so reusing it skips a second disk read + IPC round-trip of
-// the same bytes at submit. Only a `;base64,` data URL qualifies; anything
-// else falls through to the disk read.
+// Always re-reads from disk rather than trusting `attachment.previewUrl` as a
+// cache: once a thumbnail is generated, `attachImagePath` keeps only the
+// bounded (≤512px) `thumbnailUrl` and drops `previewUrl` — so a cached
+// `previewUrl` is never guaranteed to be the full-resolution bytes the model
+// needs, and trusting it here would risk silently uploading a downscaled copy.
 export async function readImageForRemoteAttach(
-  filePath: string,
-  cachedDataUrl?: string
+  filePath: string
 ): Promise<{ contentBase64: string; filename: string } | null> {
-  if (cachedDataUrl?.includes(';base64,')) {
-    const cached = base64FromDataUrl(cachedDataUrl)
+  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
 
-    if (cached) {
-      return { contentBase64: cached, filename: imageFilenameFromPath(filePath) }
-    }
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
   }
 
-  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
   return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null
@@ -457,6 +528,10 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   }
 
   const dataUrl = await reader(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    return null
+  }
 
   return dataUrl || null
 }
@@ -594,9 +669,9 @@ export function renderRpcResult(response: unknown, name: string): string {
     ]
 
     if (Array.isArray(r.credits_lines)) {
-      for (const credit of r.credits_lines) {
-        if (typeof credit === 'string' && credit.trim()) {
-          lines.push(credit.trim())
+      for (const line of r.credits_lines) {
+        if (typeof line === 'string' && line.trim()) {
+          lines.push(line.trim())
         }
       }
     }
@@ -701,6 +776,12 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 }
 
 export interface SubmitTextOptions {
+  /** Original slash invocation: retries must not re-expand a prepared prompt. */
+  retryText?: string
+  /** Captured by slash dispatch before asynchronous expansion. */
+  destination?: SubmissionDestination
+  /** Stable caller-owned identity; retain across uncertain admission retries. */
+  submission_id?: string
   attachments?: ComposerAttachment[]
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
@@ -710,6 +791,8 @@ export interface SubmitTextOptions {
    *  (queue drain, steer, external submit requests): the check is a no-op
    *  without it. */
   composerScope?: string | null
+  /** This submit's fresh draft acquired a stored key. Never fired for navigation. */
+  onComposerScopeAssigned?: (scope: string) => void
   /** What the transcript shows for this send, when it differs from the text
    *  the agent receives. A `/skill` invocation expands into the whole skill
    *  body — model-facing scaffolding the UI must never render — so the slash
@@ -726,7 +809,17 @@ export interface SubmitTextOptions {
   /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
+  /** A spoken turn from the chained voice conversation: the gateway runs it on
+   *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
+  voiceTurn?: boolean
   fromQueue?: boolean
+  /** Called once with the EXACT session identity the backend accepted the
+   *  prompt into — the live runtime id after any stale-runtime recovery, plus
+   *  the durable stored id when the caller knows it. A caller that must prove
+   *  delivery to another surface (Quick Entry) uses this instead of guessing
+   *  from the foreground session. Never called for a rejected or aborted
+   *  submit, and never for slash commands, which never reach prompt.submit. */
+  onAccepted?: (identity: { runtimeSessionId: string; storedSessionId: null | string }) => void
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

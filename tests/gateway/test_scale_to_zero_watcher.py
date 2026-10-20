@@ -75,6 +75,11 @@ def _runner_with(
     r._draining = draining
     r._scale_to_zero_cooldown_until = 0.0
     r._scale_to_zero_no_suspend_logged = False
+    r._scale_to_zero_direct_platform_logged = False
+    # The pre-dormant gate re-check reads these (relay-only unless a test says otherwise).
+    r.config = None
+    r.adapters = {}
+    r._profile_adapters = {}
     r._last_inbound_at = time.time()
     r._running_agents = {}
     r._background_tasks = set()

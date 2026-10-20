@@ -4,8 +4,10 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import contextlib
 import os
-from typing import Tuple
+import threading
+from typing import Optional, Tuple
 
+from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
 
 
@@ -33,7 +35,7 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     san = _bt._sanitize_url_for_logs
     try:
         import requests  # lazy — shared module object, test patches still apply
-        response = requests.get(version_url, timeout=10)
+        response = requests.get(version_url, timeout=10, **loopback_request_kwargs(version_url))
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
@@ -47,15 +49,73 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+# Live ``/browser connect`` endpoints, one per profile home (``hermes_home_key()``): a multiplexed
+# gateway serves every profile from this process, so a process-wide value would reach them all.
+_live_overrides: dict[str, str] = {}
+_live_overrides_lock = threading.Lock()
+
+
+def live_cdp_override() -> str:
+    """The current profile's live ``/browser connect`` endpoint, or "".
+
+    On a multiplexed gateway a context with no profile bound (a bare ``threading.Thread`` or stdlib
+    executor that did not copy the caller's context) answers "" rather than the launch profile's
+    endpoint, the way ``get_secret`` fails closed. Single-profile processes are unchanged."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None and is_multiplex_active():
+        return ""
+    with _live_overrides_lock:
+        return _live_overrides.get(hermes_home_key(), "")
+
+
+def set_live_cdp_override(url: Optional[str]) -> None:
+    """Set (or with a falsy ``url`` clear) the current profile's live endpoint and bump its generation."""
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key()
+    with _live_overrides_lock:
+        if url:
+            _live_overrides[key] = url
+        else:
+            _live_overrides.pop(key, None)
+        _live_generations[key] = _live_generations.get(key, 0) + 1
+
+
+# Per-profile count of live-endpoint publishes. A browser session records the value it saw before
+# resolving its endpoint; ``_get_session_info`` closes one whose profile published in between (it may
+# have resolved the old URL after ``/browser connect``'s second reap had already run).
+_live_generations: dict[str, int] = {}
+
+
+def live_cdp_generation(home_key: Optional[str] = None) -> int:
+    """The current (or ``home_key``'s) profile's live-endpoint generation."""
+    from hermes_constants import hermes_home_key
+    with _live_overrides_lock:
+        return _live_generations.get(home_key or hermes_home_key(), 0)
+
+
+def env_cdp_url() -> str:
+    """``BROWSER_CDP_URL`` from this profile's secret scope. A routed profile (multiplex, or a scope
+    bound for another home) reads only its own ``.env``: ``os.environ`` holds the launch profile's
+    value. Single-profile reads fall through to ``os.environ`` as before (``get_secret``)."""
+    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    if serves_routed_profile():
+        value = (current_secret_scope() or {}).get("BROWSER_CDP_URL")
+    else:
+        value = get_secret("BROWSER_CDP_URL")
+    return (value or "").strip()
+
+
 def _get_cdp_override_raw() -> str:
     """Return the *configured* CDP override without any network I/O.
 
-    Precedence: ``BROWSER_CDP_URL`` env (live ``/browser connect``), then ``browser.cdp_url``. Is-it-configured
+    Precedence: this profile's live ``/browser connect``, then its ``BROWSER_CDP_URL`` (:func:`env_cdp_url`),
+    then ``browser.cdp_url``. Is-it-configured
     gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
     :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
     schema build with no error.
     """
-    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    env_override = live_cdp_override() or env_cdp_url()
     return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
 
 
@@ -69,7 +129,7 @@ def _get_cdp_override() -> str:
     return _resolve_cdp_override(raw) if (raw := _get_cdp_override_raw()) else ""
 
 
-def _get_dialog_policy_config() -> Tuple[str, float]:
+def _get_dialog_policy_config() -> tuple[str, float]:
     """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s``; supervisor defaults when absent/invalid."""
     _bt = _origin()
     # Deferred so browser_tool imports in minimal environments.

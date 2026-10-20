@@ -55,6 +55,9 @@ children remain fenced even when a script removes the inherited task ID: CLI and
 tool mutations are rejected, rather than treating that script as an orchestrator.
 Board/database routing and workspace paths are retained. Descendants can read an
 existing board without running schema migrations; its owner must initialize it.
+The fence is scoped to the lineage's board root (the marker's value is that root, plus the
+dispatcher-pinned `HERMES_KANBAN_DB`): a descendant that works against a different Kanban
+home — a test or reproduction under a scratch `HERMES_HOME` — gets a normal read-write board.
 
 The dispatcher explicitly grants a newly assigned worker its own scope. The managed
 Hermes-tools MCP endpoint can likewise act for its supervising worker, while the
@@ -130,6 +133,7 @@ So lane authors don't have to reimplement these:
 - **Run-level retry** — when a task is retried (post-block, post-crash, post-reclaim), the worker can use the `expected_run_id` parameter on terminating tools to fail fast if its own run was already superseded.
 - **Per-task max runtime** — `task.max_runtime_seconds` hard-caps wall-clock time per run, regardless of PID liveness. Catches genuinely-deadlocked workers that the live-PID extension would otherwise keep running.
 - **Stranded-task detection** — a ready task whose assignee never produces a claim within `kanban.stranded_threshold_seconds` (default 30 min) shows up in `hermes kanban diagnostics` as a `stranded_in_ready` warning. Severity escalates to error at 2x the threshold and critical at 6x. Catches typo'd assignees, deleted profiles, and down external worker pools in one signal — identity-agnostic, no per-board allowlist to curate.
+- **Running with open parents** — a `running` card whose direct parent is not `done`/`archived` (the parent reopened mid-run, or the link predates the running-child refusal) shows a `running_with_open_parents` warning: the dependency gate is not serialising the two runs and `kanban_complete` will be refused until the parent finishes. Read-only; suggests `hermes kanban unlink`.
 - **Legacy review dependency deadlock** — a parent sticky-blocked with `review-required:` while one or more direct children remain dependency-gated in `todo` produces an immediate `review_dependency_deadlock` error. The diagnostic is read-only: it suggests completing the finished phase or unlinking the incorrect edge but never removes a user block automatically.
 
 ## Related

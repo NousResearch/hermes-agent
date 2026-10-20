@@ -54,6 +54,9 @@ def _poll():
 def test_ssl_transport_error_keeps_detail_and_adds_hint(monkeypatch, call, code):
     exc = ssl.SSLEOFError(8, _SSL_EOF_MESSAGE)
     monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _RaisingClient(exc))
+    # The persistent-blip path retries before failing (see test_codex_device_login_transient_retry);
+    # skip its backoff sleeps so this shape test stays instant.
+    monkeypatch.setattr(auth_codex.time, "sleep", lambda *_: None)
 
     with pytest.raises(AuthError) as excinfo:
         call()
@@ -68,6 +71,7 @@ def test_ssl_transport_error_keeps_detail_and_adds_hint(monkeypatch, call, code)
 def test_plain_timeout_has_no_ssl_hint(monkeypatch):
     exc = httpx.ConnectTimeout("timed out")
     monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _RaisingClient(exc))
+    monkeypatch.setattr(auth_codex.time, "sleep", lambda *_: None)  # skip retry backoff
 
     with pytest.raises(AuthError) as excinfo:
         _login_post()

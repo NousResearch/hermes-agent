@@ -1,14 +1,14 @@
-"""Serve-start bootstrap for the Nous free tier: the ONE place a free-tier identity is created.
+"""Serve-start record of who carries inference, for ``setup.status`` and ``setup.ready``.
 
-Every Hermes process that may need the free tier runs this once at boot (``hermes serve`` on a
-daemon thread beside the other background boots; the CLI first-run guard synchronously). It
-inventories credentials cheap-first, creates the identity only when the launch gate is open
-(:func:`hermes_cli.anon_auth.guest_enabled`), resolves which provider carries inference, records
-the answer in process memory, and tells every connected client with one ``setup.ready`` event.
-
-Nothing else mints. ``free_tier.status`` and ``setup.status`` read the record; provider resolution
-never reaches the portal; a dead credential is replaced by the explicit re-mint in
-``auth_nous.resolve_nous_runtime_credentials``. Ruling: NS-845 Q1.2 (recorded on NS-847).
+``hermes serve`` runs this once at boot on a daemon thread. It never creates an identity: the
+desktop's welcome-trial claim (``hermes_cli.welcome_trial``) and the first hosted connector action
+are the only creators. On the desktop's local backend it first records a fresh install's onboarding
+decision (``onboarding_run.latch_first_install``), settles a claim cut off before its marker write
+(``welcome_trial.settle_interrupted_claim``), then keeps the trial for a guest that already ran
+on the free model (``welcome_trial.grandfather_existing_guest``). Then it inventories
+credentials cheap-first, resolves which provider carries inference, records the answer in process
+memory, and tells every connected client with one ``setup.ready`` event. ``free_tier.status`` and
+``setup.status`` read the record; provider resolution never reaches the portal.
 """
 
 from __future__ import annotations
@@ -16,13 +16,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("hermes_cli.auth")
 
-# The desktop's first ``setup.status`` waits this long for the record before falling back to a live
-# probe. The mint budget is 5 s (``GUEST_MINT_TIMEOUT_SECONDS``); the rest covers the inventory.
+# The desktop's first ``setup.status`` waits this long for the record before falling back to a live probe.
 SETUP_READY_WAIT_SECONDS = 8.0
 SETUP_READY_EVENT = "setup.ready"
 
@@ -34,20 +33,40 @@ class SetupRecord:
 
     provider_configured: bool      # some provider can carry inference (free tier included)
     inference_provider: str        # ``resolve_provider("auto")``'s answer, "" when nothing resolves
-    free_tier: bool                # the identity that exists is the free tier AND the tier is on
+    free_tier_account: bool        # the identity that exists is a guest that carries inference here
     has_identity: bool             # a Nous identity (free tier or account) is on disk
     other_providers: bool          # the inventory found something usable BESIDES the free tier
-    error: str = ""                # why the mint did not happen, when it did not; "" otherwise
+    error: str = ""                # why the last trial claim failed, when it did; "" otherwise
+    # The mint memo's verdict, verbatim (``anon_auth.MintFailure.as_payload``):
+    # ``{error, error_code, retryable, retry_after}`` after a failed claim, else ``{}``.
+    # One wire shape: every status RPC spreads it as is.
+    failure: dict[str, Any] = field(default_factory=dict)
     finished_at: float = field(default_factory=time.time)
 
-    def as_payload(self) -> Dict[str, Any]:
-        return asdict(self)
+    @property
+    def free_tier_route(self) -> bool:
+        return self.free_tier_account and self.inference_provider == "nous"
+
+    def as_payload(self) -> dict[str, Any]:
+        # The broadcast carries the failure block flat, the same shape ``setup.status`` spreads,
+        # so a client keys on ``error_code`` identically whichever surface it read.
+        payload = asdict(self)
+        payload.update(payload.pop("failure"))
+        payload["free_tier_route"] = self.free_tier_route
+        return payload
+
+    def failure_fields(self) -> dict[str, Any]:
+        return dict(self.failure)
 
 
 _lock = threading.Lock()
 _record: Optional[SetupRecord] = None
 _done = threading.Event()
 _started = False
+# ``(mtime_ns, size)`` of the files the inventory reads, taken by the inventory that built the
+# current record; ``reconcile_record`` re-inventories only when they moved.
+_inventory_stamp: Optional[tuple] = None
+_INVENTORY_FILES = ("config.yaml", ".env", "auth.json")
 
 
 def current_record() -> Optional[SetupRecord]:
@@ -57,30 +76,82 @@ def current_record() -> Optional[SetupRecord]:
 
 def wait_for_record(timeout: float = SETUP_READY_WAIT_SECONDS) -> Optional[SetupRecord]:
     """Block up to ``timeout`` seconds for a bootstrap that is IN FLIGHT, then return whatever it
-    produced. Returns None at once when no bootstrap ever started in this process (a bare
-    ``tui_gateway`` under test, an old serve without the boot hook): the caller falls back to its
-    live probe instead of paying the wait for nothing."""
+    produced, reconciled with any provider configured since (:func:`reconcile_record`). Returns
+    None at once when no bootstrap ever started in this process (a bare ``tui_gateway`` under
+    test, an old serve without the boot hook): the caller falls back to its live probe instead of
+    paying the wait for nothing."""
     if not _started:
         return None
     _done.wait(timeout)
-    return _record
+    return reconcile_record()
+
+
+def reconcile_record() -> Optional[SetupRecord]:
+    """Let a provider configured AFTER boot count: a record that says ``provider_configured:
+    false`` is re-inventoried once ``config.yaml`` / ``.env`` / ``auth.json`` moved since the
+    inventory that built it, and replaced (+ ``setup.ready``) when something now carries
+    inference. The identity and failure block are kept as is. A record that already says ``True`` is never re-probed, so the answer
+    only moves false -> true here. Every write path that assigns the main model (the Models page,
+    a picker key save) calls this for the immediate broadcast; ``setup.status`` calls it for
+    writes this process never saw (``hermes setup`` / ``hermes model`` from a shell, a hand edit).
+    The record is the LAUNCH profile's: a call scoped to another profile's home (a dashboard
+    write with ``?profile=B``) leaves it alone, or B's providers would open the launch gate."""
+    global _record
+    record = _record
+    if record is None or record.provider_configured:
+        return record
+    from hermes_constants import get_process_hermes_home, hermes_home_key
+    if hermes_home_key() != hermes_home_key(get_process_hermes_home()) or _inventory_stamp == _config_stamp():
+        return record
+    if not _inventory_other_providers():
+        return _record
+    refreshed = replace(record, provider_configured=True, other_providers=True,
+                        inference_provider=_resolve_inference(), finished_at=time.time())
+    with _lock:
+        if _record is not record:  # a retry replaced it meanwhile; its inventory is newer
+            return _record
+        _record = refreshed
+    _due_changed()
+    _broadcast(refreshed)
+    return refreshed
 
 
 def reset_for_tests() -> None:
-    global _record, _started
+    global _record, _started, _inventory_stamp
     with _lock:
         _record = None
         _started = False
+        _inventory_stamp = None
         _done.clear()
+
+
+def _config_stamp() -> tuple:
+    from hermes_cli.config import get_hermes_home
+    home = get_hermes_home()
+    stamp = []
+    for name in _INVENTORY_FILES:
+        try:
+            st = (home / name).stat()
+            stamp.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamp.append(None)
+    return tuple(stamp)
 
 
 def _inventory_other_providers() -> bool:
     """Is anything usable configured BESIDES the free tier? Asks the resolver ladder itself (the
     thing that picks the provider for a turn) with the free-tier rung hidden: an explicit key, a
     config pin, a sign-in or a host credential answers; nothing else falls through to
-    ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard counts
-    keyless catalog providers as "configured" and is True on a blank machine."""
+    ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard also
+    counts host credentials (gh auth, Claude Code) and a config pin, and it does not hide the
+    free-tier rung.
+
+    Stamps the config files BEFORE reading them, so a write that lands during the inventory is
+    seen by the next :func:`reconcile_record`.
+    """
+    global _inventory_stamp
     from hermes_cli.auth import resolve_provider
+    _inventory_stamp = _config_stamp()
     try:
         return resolve_provider("auto", skip_free_tier=True) != "nous"
     except Exception as exc:
@@ -96,13 +167,28 @@ def _resolve_inference() -> str:
         return ""
 
 
-def run_bootstrap(*, announce: bool = True) -> SetupRecord:
-    """Inventory -> ensure identity (gate permitting) -> resolve inference -> record -> broadcast.
+def _build_record(*, other: bool) -> SetupRecord:
+    """One inventory pass into a record. Reads only: no identity is created here."""
+    from hermes_cli import anon_auth
 
-    Runs every boot; only the mint is gated. Idempotent per process: a second call returns the
-    existing record without touching the portal. Never raises. ``announce=False`` skips the
-    ``setup.ready`` event: the plain CLI has no client to tell and its stdout is the user's terminal.
-    """
+    state: Optional[dict[str, Any]] = anon_auth.current_nous_state()
+    failure: dict[str, Any] = {} if state else (anon_auth.last_mint_failure() or {})
+    free_tier_account = anon_auth.free_inference_active(state) if state else False
+    return SetupRecord(
+        provider_configured=other or free_tier_account or (bool(state) and not anon_auth.is_guest_state(state)),
+        inference_provider=_resolve_inference(),
+        free_tier_account=free_tier_account,
+        has_identity=bool(state),
+        other_providers=other,
+        error=str(failure.get("error") or ""),
+        failure=failure,
+    )
+
+
+def run_bootstrap(*, announce: bool = True) -> SetupRecord:
+    """Grandfather an existing free-model guest -> inventory -> resolve inference -> record ->
+    broadcast. Idempotent per process: a second call returns the existing record. Never raises.
+    ``announce=False`` skips the ``setup.ready`` event."""
     global _record, _started
     with _lock:
         if _record is not None:
@@ -113,33 +199,47 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
                 return _record
         _started = True
 
-    from hermes_cli import anon_auth
-
-    other = _inventory_other_providers()
-    error = ""
-    state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
-    if anon_auth.guest_enabled():
-        try:
-            # ``other`` decides whether the mint may also claim ``active_provider`` (NS-845 Q1.3).
-            state = anon_auth.ensure_portal_identity(explicit=True, carries_inference=not other)
-        except Exception as exc:
-            error = str(exc)
-            logger.info("Nous free tier not set up at boot: %s", exc)
-    free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
-    record = SetupRecord(
-        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
-        inference_provider=_resolve_inference(),
-        free_tier=free_tier,
-        has_identity=bool(state),
-        other_providers=other,
-        error=error,
-    )
+    try:
+        from hermes_cli import anon_auth
+        from hermes_cli.onboarding_run import latch_first_install
+        if anon_auth.on_local_desktop_backend():
+            latch_first_install()
+    except Exception:  # the next boot tries again; onboarding.state still answers live
+        logger.warning("onboarding: could not record the first-install decision", exc_info=True)
+    try:
+        from hermes_cli.welcome_trial import grandfather_existing_guest, settle_interrupted_claim
+        settle_interrupted_claim()
+        grandfather_existing_guest()
+    except Exception:  # the record still says who carries inference without it
+        logger.warning("free tier: could not check for an existing free-model guest", exc_info=True)
+    record = _build_record(other=_inventory_other_providers())
     with _lock:
         _record = record
         _done.set()
     if announce:
         _broadcast(record)
     return record
+
+
+def refresh_record(*, announce: bool = True) -> Optional[SetupRecord]:
+    """Rebuild the launch profile's record after the identity changed (a trial claim), so
+    ``setup.status`` and the ``setup.ready`` listeners move with it. None before the first bootstrap."""
+    global _record
+    if _record is None:
+        return None
+    record = _build_record(other=_inventory_other_providers())
+    with _lock:
+        _record = record
+    _due_changed()
+    if announce:
+        _broadcast(record)
+    return record
+
+
+def _due_changed() -> None:
+    from hermes_cli import onboarding_due
+
+    onboarding_due.invalidate()
 
 
 def _broadcast(record: SetupRecord) -> None:
@@ -151,7 +251,9 @@ def _broadcast(record: SetupRecord) -> None:
 
 
 def start_background_bootstrap() -> threading.Thread:
-    """``hermes serve`` entry: run on a daemon thread so a slow portal never delays the socket."""
-    thread = threading.Thread(target=run_bootstrap, daemon=True, name="free-tier-bootstrap")
+    """``hermes serve`` entry: run on a daemon thread so the inventory never delays the socket."""
+    from agent.memory_provider import spawn_context_thread
+
+    thread = spawn_context_thread(run_bootstrap, name="free-tier-bootstrap")
     thread.start()
     return thread

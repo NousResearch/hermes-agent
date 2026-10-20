@@ -20,12 +20,13 @@
  *    Mode until previously-painted rows were carried forward.
  */
 
+import { queryClient } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, useRoster } from './data'
+import { $botMeta, $lastRoster, botMentionTag, cachedUnionRoster, primeRoster, ROSTER_KEY, useRoster } from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -40,12 +41,12 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
-  const { useQuery } = await import('@tanstack/react-query')
+  const { QueryClient: Client, useQuery } = await import('@tanstack/react-query')
 
   return {
     atom,
     host: hostMock,
-    queryClient: { getQueryData: vi.fn(), invalidateQueries: vi.fn() },
+    queryClient: new Client({ defaultOptions: { queries: { retry: false } } }),
     useQuery,
     useValue: (store: { get: () => unknown }) => store.get()
   }
@@ -574,6 +575,42 @@ describe('connect-on-demand sources', () => {
   })
 })
 
+describe('an aggregate roster failure keeps the last-known remote rows', () => {
+  // Same shape the pane paints: one rich local row + one remote row already
+  // carried into $lastRoster by a previous successful refresh.
+  const previouslyPainted = (connectionId: string) =>
+    [
+      { last_session: { id: 'this-chat', last_active: 1 }, name: 'default' },
+      {
+        connectionId,
+        connectionKind: 'ssh',
+        connectionLabel: 'Spark',
+        handle: 'bob',
+        name: 'bob',
+        remoteSource: true,
+        sourceScoped: true
+      }
+    ] as RosterRow[]
+
+  it('retains previously painted remote rows as unreachable when host.agents() rejects', async () => {
+    // mergedRoster(local, null) rejects host.agents(): the union probe fails
+    // (e.g. a registered WSL backend's localhost forwarding went down) while
+    // the active source's profiles.list still answers (#98844).
+    $lastRoster.set(previouslyPainted('spark'))
+
+    const rows = await mergedRoster(
+      { profiles: [{ last_session: { id: 'this-chat', last_active: 1 }, name: 'default' }] },
+      null
+    )
+
+    expect(rows.find(row => row.name === 'bob' && row.connectionId === 'spark')).toMatchObject({
+      remoteSource: true,
+      sourceReachable: false
+    })
+    expect(rows.filter(row => row.name === 'default')).toHaveLength(1)
+  })
+})
+
 describe('a stalled profiles.list cannot pin the spinner forever', () => {
   it('gives up after bounded retries and surfaces the error', async () => {
     // `retry: true` keeps React Query in isLoading until the first success, so
@@ -595,5 +632,102 @@ describe('a stalled profiles.list cannot pin the spinner forever', () => {
 
     expect(result.current.isLoading).toBe(false)
     expect(hostMock.request.mock.calls.length).toBeGreaterThan(1)
+  })
+})
+
+describe('the roster only caches rows from the connection it is keyed under', () => {
+  const routes = [
+    { connectionId: 'local', mode: 'local', primary: true, profile: 'default', targetProfile: 'default' },
+    { connectionId: 'vps', mode: 'remote', profile: 'default', targetProfile: 'default' }
+  ]
+
+  const vpsList = { profiles: [{ display_name: 'Agent A', name: 'default' }] }
+  const localList = { profiles: [{ display_name: 'Agent B', name: 'default' }] }
+
+  function renderRoster() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+
+    return { client, result: renderHook(() => useRoster(), { wrapper }).result }
+  }
+
+  afterEach(() => {
+    hostMock.profileRoutes = undefined
+  })
+
+  it('asks the keyed connection by route, not an ambient socket that sits on another machine', async () => {
+    hostMock.state.connectionId.get.mockReturnValue('vps')
+    hostMock.agents.mockRejectedValue(new Error('no union roster on this build'))
+    hostMock.profileRoutes = vi.fn(async () => routes)
+    hostMock.request.mockResolvedValue(localList)
+    hostMock.requestProfile.mockImplementation(async (route: { connectionId: string }) =>
+      route.connectionId === 'vps' ? vpsList : localList
+    )
+
+    const { result } = renderRoster()
+
+    await waitFor(() => expect(result.current.data).toBeTruthy())
+    expect(result.current.data?.profiles?.map(row => row.display_name)).toEqual(['Agent A'])
+    expect(hostMock.request).not.toHaveBeenCalled()
+  })
+
+  it('never answers a fetch whose connection was switched away mid-flight', async () => {
+    // Keyed to 'local' at render; the window switches to the VPS while the
+    // fetch is underway, so whatever socket answers now is not 'local'.
+    let published = 'local'
+    hostMock.state.connectionId.get.mockImplementation(() => published)
+    hostMock.agents.mockRejectedValue(new Error('no union roster on this build'))
+    hostMock.profileRoutes = vi.fn(async () => {
+      published = 'vps'
+
+      return routes
+    })
+    hostMock.request.mockResolvedValue(vpsList)
+    hostMock.requestProfile.mockResolvedValue(vpsList)
+
+    const { client } = renderRoster()
+    const localKey = [...ROSTER_KEY, 'local']
+
+    // The fetch and its bounded retries (1s, 2s) all refuse: none may send a
+    // request, so the VPS answer is never cached as this device's roster.
+    await waitFor(() => expect(client.getQueryState(localKey)?.status).toBe('error'), { timeout: 6000 })
+    expect(client.getQueryData(localKey)).toBeUndefined()
+    expect(hostMock.request).not.toHaveBeenCalled()
+    expect(hostMock.requestProfile.mock.calls.every(([route]) => route.connectionId === 'vps')).toBe(true)
+  })
+})
+
+describe('a launch that never opens the Bots pane', () => {
+  it('names a remote bot by what its backend reports, not a stale cached title', async () => {
+    queryClient.clear()
+    $botMeta.set({ 'vps::default': { title: 'Agent B' } })
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    hostMock.request.mockResolvedValue({ profiles: [{ display_name: 'Agent B', name: 'default' }] })
+    hostMock.agents.mockResolvedValue({
+      agents: [
+        { connectionId: 'local', connectionKind: 'local', handle: 'default', profile: 'default' },
+        {
+          connectionId: 'vps',
+          connectionKind: 'remote',
+          connectionLabel: 'VPS',
+          handle: 'default',
+          profile: 'default',
+          profileMetadata: { display_name: 'Agent A', title: 'Agent A' }
+        }
+      ],
+      primaryConnectionId: 'local'
+    })
+
+    await primeRoster()
+
+    const vps = cachedUnionRoster()?.profiles?.find(row => row.connectionId === 'vps')
+
+    expect(vps).toBeTruthy()
+    // The composer's @handle and group prompts read these; the pane never ran.
+    expect(botMentionTag(vps!)).toBe('agent-a')
+    expect($botMeta.get()['vps::default']?.title).toBe('Agent A')
   })
 })

@@ -178,7 +178,7 @@ required_environment_variables:
 The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
 
 :::tip Sandbox Passthrough
-When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
+When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](../user-guide/security.md#environment-variable-passthrough) for details.
 :::
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
@@ -320,6 +320,8 @@ skills:
 
 Snippets run with the skill directory as their working directory, and output is capped at 4000 characters. Failures (timeouts, non-zero exits) show up as a short `[inline-shell error: ...]` marker instead of breaking the whole skill.
 
+Trust scoping: community hub installs never auto-execute snippets, even with the flag on — the hub's install scan blocks a community skill carrying this DSL on a caution/dangerous verdict, and a `--force` install (or one from before the scanner caught the pattern) must not re-arm what the gate refused. That covers every `SKILL.md` nested inside a community install and another profile's install reached through `skills.external_dirs`; if a skills tree's hub lock (`.hub/lock.json`) is unreadable, nothing in that tree expands until it is repaired. Bundled, trusted, and your own skills expand as before.
+
 ### Test It
 
 Run the skill and verify the agent follows the instructions correctly:
@@ -393,7 +395,7 @@ Hermes can *propose* automations and let you accept them with one tap, instead o
 /suggestions catalog     # add the curated starter automations
 ```
 
-Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
+Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob_manage` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
 
 The **important-mail monitor** catalog entry is the poll→classify→surface pattern: it scores inbox items with a cheap classifier model (`auxiliary.monitor` in `config.yaml`) and delivers only the ones above an urgency threshold, staying silent otherwise.
 

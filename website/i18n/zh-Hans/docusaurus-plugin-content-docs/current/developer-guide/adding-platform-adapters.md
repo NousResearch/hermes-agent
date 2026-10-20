@@ -122,7 +122,7 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
-        install_hint="pip install my-platform-sdk",
+        install_hint="Declare my-platform-sdk in this plugin's Python dependencies, then retry hermes plugins enable my-platform",
         # 环境变量驱动的自动配置 — 在适配器构建前从环境变量
         # 填充 PlatformConfig.extra。参见下方"环境变量驱动的自动配置"章节。
         env_enablement_fn=_env_enablement,
@@ -570,16 +570,13 @@ await self.handle_message(event)
 
 ### 9. 可选：平台提示
 
-**`agent/prompt_builder.py`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在 `_PLATFORM_HINTS` 字典中添加条目。这会将平台专属指导注入系统 prompt：
+**`ctx.register_platform` 的 `platform_hint=`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在其注册表条目上声明提示（文本可放在 `adapter_hint.py` 这类轻量同级模块中）。它会被注入系统 prompt；`agent/prompt_builder.py::PLATFORM_HINTS` 只保留核心界面：
 
 ```python
-_PLATFORM_HINTS = {
-    # ...
-    "newplat": (
-        "You are chatting via NewPlat. It supports markdown formatting "
-        "but has a 4000-character message limit."
-    ),
-}
+PLATFORM_HINT = (
+    "You are chatting via NewPlat. It supports markdown formatting "
+    "but has a 4000-character message limit."
+)
 ```
 
 并非所有平台都需要提示 — 仅在 agent 行为应有所不同时添加。
@@ -680,7 +677,7 @@ async def disconnect(self):
 
 | 适配器 | 模式 | 复杂度 | 适合参考的场景 |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | 中 | 简单 REST API 集成 |
-| `weixin.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
+| `plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
 | `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

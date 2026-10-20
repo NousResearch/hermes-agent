@@ -5,6 +5,7 @@ description: 'NetBox change management: query DCIM/IPAM objects, build a reviewe
   with a journal and roll back.'
 maintainer: andrewvieyra
 tier: community
+category: tools
 docs_url: https://github.com/andrewvieyra/hermes-plugin-netbox
 platforms: []
 capabilities:

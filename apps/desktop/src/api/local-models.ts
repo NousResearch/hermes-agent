@@ -2,33 +2,41 @@ import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJ
 
 import { hermesApi, profileScoped } from './client'
 
+export interface LocalModelsScope {
+  connectionId: string | null
+  profile: string
+}
+
 // The desktop surface of the managed llama.cpp runtime: status/catalog
 // reads, download/install/activate jobs, and server control.
 
-export function getLocalModelsStatus(): Promise<LocalModelsStatus> {
+export function getLocalModelsStatus(scope?: LocalModelsScope): Promise<LocalModelsStatus> {
   return hermesApi<LocalModelsStatus>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: '/api/local-models/status'
   })
 }
 
-export function getLocalHardware(): Promise<LocalHardware> {
+export function getLocalHardware(scope?: LocalModelsScope): Promise<LocalHardware> {
   return hermesApi<LocalHardware>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: '/api/local-models/hardware'
   })
 }
 
-export function getLocalCatalog(): Promise<{ models: LocalCatalogModel[] }> {
+export function getLocalCatalog(scope?: LocalModelsScope): Promise<{ models: LocalCatalogModel[] }> {
   return hermesApi<{ models: LocalCatalogModel[] }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: '/api/local-models/catalog'
   })
 }
 
-export function installLocalRuntime(backend?: string): Promise<{ backend: string; job_id: string; tag: string }> {
+export function installLocalRuntime(
+  backend?: string,
+  scope?: LocalModelsScope
+): Promise<{ backend: string; job_id: string; tag: string }> {
   return hermesApi<{ backend: string; job_id: string; tag: string }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { backend: backend ?? null },
     method: 'POST',
     path: '/api/local-models/runtime/install'
@@ -44,67 +52,95 @@ export interface QuickstartResponse {
   needs_runtime: boolean
 }
 
-export function quickstartLocalModels(modelId?: string): Promise<QuickstartResponse> {
+export function quickstartLocalModels(modelId?: string, scope?: LocalModelsScope): Promise<QuickstartResponse> {
   return hermesApi<QuickstartResponse>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { model_id: modelId ?? null },
     method: 'POST',
     path: '/api/local-models/quickstart'
   })
 }
 
-export function downloadLocalModel(modelId: string): Promise<{ already_downloaded?: boolean; job_id: null | string }> {
+export function downloadLocalModel(
+  modelId: string,
+  scope?: LocalModelsScope
+): Promise<{ already_downloaded?: boolean; job_id: null | string }> {
   return hermesApi<{ already_downloaded?: boolean; job_id: null | string }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { model_id: modelId },
     method: 'POST',
     path: '/api/local-models/download'
   })
 }
 
-export function deleteLocalModel(modelId: string): Promise<{ ok: boolean }> {
+export function deleteLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     method: 'DELETE',
     path: `/api/local-models/models/${encodeURIComponent(modelId)}`
   })
 }
 
-export function getLocalRuntimeJob(jobId: string): Promise<LocalRuntimeJob> {
+export function getLocalRuntimeJob(jobId: string, scope?: LocalModelsScope): Promise<LocalRuntimeJob> {
   return hermesApi<LocalRuntimeJob>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: `/api/local-models/jobs/${encodeURIComponent(jobId)}`
   })
 }
 
-export function getLocalModelsJobs(): Promise<{ jobs: LocalRuntimeJob[] }> {
+export function getLocalModelsJobs(scope?: LocalModelsScope): Promise<{ jobs: LocalRuntimeJob[] }> {
   return hermesApi<{ jobs: LocalRuntimeJob[] }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: '/api/local-models/jobs'
   })
 }
 
-export function activateLocalModel(modelId: string): Promise<{ job_id: string }> {
+// Pause/resume a download-phase job (catalog model, quickstart, runtime
+// install/update, HF-browsed). The backend answers {ok, paused} /
+// {ok, resumed} — a false flag (no live download handle, e.g. a
+// quickstart engine leg) is reported to the caller, not treated as success.
+export function pauseLocalDownload(jobId: string, scope?: LocalModelsScope): Promise<{ ok: boolean; paused: boolean }> {
+  return hermesApi<{ ok: boolean; paused: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/pause'
+  })
+}
+
+export function resumeLocalDownload(
+  jobId: string,
+  scope?: LocalModelsScope
+): Promise<{ ok: boolean; resumed: boolean }> {
+  return hermesApi<{ ok: boolean; resumed: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/resume'
+  })
+}
+
+export function activateLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ job_id: string }> {
   return hermesApi<{ job_id: string }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { model_id: modelId },
     method: 'POST',
     path: '/api/local-models/activate'
   })
 }
 
-export function ejectLocalModel(modelId: string): Promise<{ ok: boolean }> {
+export function ejectLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { model_id: modelId },
     method: 'POST',
     path: '/api/local-models/eject'
   })
 }
 
-export function setLocalServer(action: 'start' | 'stop'): Promise<{ ok: boolean }> {
+export function setLocalServer(action: 'start' | 'stop', scope?: LocalModelsScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { action },
     method: 'POST',
     path: '/api/local-models/server'
@@ -128,26 +164,31 @@ export interface HFFileGroup {
   fit: 'fits-gpu' | 'needs-ram' | 'too-big' | 'unknown'
 }
 
-export function searchHFModels(q: string, limit = 20): Promise<{ hits: HFSearchHit[] }> {
+export function searchHFModels(
+  q: string,
+  limit: number = 20,
+  scope?: LocalModelsScope
+): Promise<{ hits: HFSearchHit[] }> {
   return hermesApi<{ hits: HFSearchHit[] }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: `/api/local-models/search?q=${encodeURIComponent(q)}&limit=${limit}`
   })
 }
 
-export function listHFRepoFiles(repo: string): Promise<{ files: HFFileGroup[] }> {
+export function listHFRepoFiles(repo: string, scope?: LocalModelsScope): Promise<{ files: HFFileGroup[] }> {
   return hermesApi<{ files: HFFileGroup[] }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     path: `/api/local-models/search/files?repo=${encodeURIComponent(repo)}`
   })
 }
 
 export function downloadBrowsedModel(
   repo: string,
-  paths: string[]
+  paths: string[],
+  scope?: LocalModelsScope
 ): Promise<{ already_downloaded?: boolean; job_id: null | string; model_id: string }> {
   return hermesApi<{ already_downloaded?: boolean; job_id: null | string; model_id: string }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { paths, repo },
     method: 'POST',
     path: '/api/local-models/download-browsed'
@@ -155,10 +196,11 @@ export function downloadBrowsedModel(
 }
 
 export function sideloadLocalModel(
-  path: string
+  path: string,
+  scope?: LocalModelsScope
 ): Promise<{ already_present?: boolean; model_id: string; ok: boolean }> {
   return hermesApi<{ already_present?: boolean; model_id: string; ok: boolean }>({
-    ...profileScoped(),
+    ...(scope ?? profileScoped()),
     body: { path },
     method: 'POST',
     path: '/api/local-models/sideload'

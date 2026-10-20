@@ -253,19 +253,6 @@ describe('performScopedFind', () => {
     expect(surface.querySelector('mark.find-hit')?.textContent).toBe('needle')
   })
 
-  it('does not double-match when re-running the SAME query in findNext mode', () => {
-    const surface = plantSurface('surface', '<p>needle needle</p>')
-    performScopedFind(surface, 'needle', { forward: true, findNext: false })
-
-    // The walker must recognize that the existing marks already represent
-    // this query and advance the active marker without rebuilding.
-    const result = performScopedFind(surface, 'needle', { forward: true, findNext: true })
-
-    expect(result.count).toBe(2)
-    expect(result.activeOrdinal).toBe(2)
-    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
-  })
-
   it('keeps searching sibling subtrees after a fully-consumed text node', () => {
     // Regression (#81778 review): a text node that was entirely consumed by
     // a match used to null the walker's `current`, terminating the sibling

@@ -75,7 +75,7 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
     env["HERMES_SECRET_KEY"] = secret_key
 
     try:
-        proc = subprocess.Popen(  # noqa: S602 — command is the user's own config
+        proc = subprocess.Popen(
             ["/bin/sh", "-c", command], env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,  # stderr captured and DISCARDED — never inherited
             start_new_session=True,  # so the hard timeout can kill the whole group
@@ -118,9 +118,9 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
     return stdout_bytes.decode("utf-8", errors="replace")
 
 
-def _parse_dotenv_map(stdout: str) -> Dict[str, str]:
+def _parse_dotenv_map(stdout: str) -> dict[str, str]:
     """Parse a KEY=VALUE blob; comments and non-env-shaped lines are skipped."""
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for raw in stdout.replace("\r\n", "\n").split("\n"):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -190,194 +190,3 @@ class CommandSource(SecretSource):
             return result
         result.secrets = secrets
         return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def apply_command_secrets(
-    *,
-    command: str,
-    override_existing: bool = False,
-    timeout_seconds: float = _COMMAND_TIMEOUT_SECONDS,
-    max_output_bytes: int = _MAX_OUTPUT_BYTES,
-    home_path: Optional[Path] = None,
-) -> FetchResult:
-    """Run the helper once at startup and set its KEY=VALUE output on
-    ``os.environ``.
-
-    LEGACY shim retained for API symmetry with ``apply_bitwarden_secrets``;
-    the startup path goes through :class:`CommandSource` + the registry
-    orchestrator instead (which owns precedence and the environ writes).
-    """
-    result = FetchResult()
-
-    command = (command or "").strip()
-    if not command:
-        result.error = (
-            "secrets.command.enabled is true but secrets.command.command is "
-            "empty.  Set the helper command in config.yaml."
-        )
-        return result
-
-    if _is_windows():
-        result.warnings.append(
-            "the 'command' secret source is POSIX-only (needs /bin/sh); "
-            "skipping on Windows"
-        )
-        return result
-
-    # The list/enumerate path: run the helper exactly ONCE with an empty
-    # HERMES_SECRET_KEY and parse its stdout as a dotenv blob.
-    stdout = _run_helper(command, "", timeout_seconds, max_output_bytes)
-    if stdout is None:
-        # _run_helper already logged structured fields to stderr.
-        result.warnings.append(
-            "helper command failed at startup; no secrets applied "
-            "(process env / .env values remain in effect)"
-        )
-        return result
-
-    secrets = _parse_dotenv_map(stdout)
-    result.secrets = secrets
-    if not secrets:
-        result.warnings.append(
-            "helper output was not a KEY=VALUE map; nothing applied at "
-            "startup (a bare-value helper still resolves single keys on demand)"
-        )
-        return result
-
-    for key, value in secrets.items():
-        if value.strip() == "":
-            # Whitespace-only placeholder entries are "no value" — applying
-            # them would flow into an Authorization header → guaranteed 401.
-            result.skipped.append(key)
-            continue
-        if not override_existing and os.environ.get(key):
-            # Process env / .env win — same precedence as bitwarden.
-            result.skipped.append(key)
-            continue
-        os.environ[key] = value
-        result.applied.append(key)
-
-    return result
-
-def parse_secret_output(stdout: str, wanted_key: str) -> Optional[str]:
-    """Parse a secret-fetch helper's stdout.  Supports BOTH shapes:
-
-    * a bare value (single secret): the whole trimmed stdout is the value.
-    * a dotenv blob (KEY=VALUE lines): parse them and return the entry for
-      ``wanted_key``.
-
-    Mirrors the TS ``parseSecretOutput`` exactly, including the cross-key
-    misroute guard and the base64-padding disambiguation.
-    """
-    text = stdout.replace("\r\n", "\n")
-    lines = text.split("\n")
-
-    # 1. Exact dotenv match wins: scan for a `wanted_key=...` line.  This
-    #    is deterministic and never returns another key's value.
-    dotenv_lines = [
-        line
-        for line in (raw.strip() for raw in lines)
-        if line and not line.startswith("#") and _ENV_LINE.match(line)
-    ]
-    for line in dotenv_lines:
-        m = _ENV_LINE.match(line)
-        assert m is not None  # filtered above
-        if m.group(1) == wanted_key:
-            value = unquote_dotenv_value(m.group(2))
-            # Whitespace-only (e.g. a quoted `K="  "` placeholder) is "no
-            # value": it would otherwise flow into an Authorization header
-            # → guaranteed 401.
-            return value if value.strip() != "" else None
-
-    # 2. The output is a multi-key dotenv dump that does NOT contain the
-    #    wanted key → None, rather than mis-returning an unrelated line as
-    #    a bare value.  Only >=2 env-shaped lines count as a dump: a SINGLE
-    #    non-matching env-shaped line falls through to the bare-value
-    #    branch, because a bare secret can itself match the KEY=VALUE shape
-    #    (e.g. base64 with '=' padding, "dGVzdA==") and must not be
-    #    misclassified as a dump.
-    if len(dotenv_lines) > 1:
-        return None
-
-    # 3. Otherwise treat the whole output as a single bare value (a per-key
-    #    helper that printed just the secret).  Trim first so whitespace-only
-    #    output (a ' '/'\t' placeholder entry) resolves to None, never a "key".
-    value = text.strip()
-    if value == "":
-        return None
-
-    # SECURITY (S2): a single env-shaped line for a DIFFERENT key must not
-    # be returned as the wanted secret.  A sloppy helper (e.g. `head -1
-    # env-file`, or a grep that matched the wrong line) emitting
-    # `OTHER_KEY=realvalue` would otherwise flow — key name, '=' and the
-    # OTHER key's value — into an Authorization header sent to the WANTED
-    # key's endpoint: cross-provider credential leakage, not just a 401.
-    # Disambiguation from a bare base64 secret: base64 padding only ever
-    # produces an env-shaped line whose "value" part is empty or all '='
-    # (`dGVzdA==` → key `dGVzdA`, value `=`), so a non-trivial value part
-    # after a non-matching key means a misrouted dotenv entry → None.
-    env_shaped = _ENV_LINE.match(value)
-    if (
-        env_shaped
-        and env_shaped.group(1) != wanted_key
-        and re.fullmatch(r"=*", env_shaped.group(2).strip()) is None
-    ):
-        return None
-    return value
-
-def get_command_secret(
-    *,
-    command: str,
-    key: str,
-    timeout_seconds: float = _COMMAND_TIMEOUT_SECONDS,
-    max_output_bytes: int = _MAX_OUTPUT_BYTES,
-) -> Optional[str]:
-    """Resolve a single secret by running the helper with the key in
-    ``HERMES_SECRET_KEY``.  Returns None on any failure — never raises."""
-    command = (command or "").strip()
-    if not command:
-        return None
-    stdout = _run_helper(command, key, timeout_seconds, max_output_bytes)
-    if stdout is None:
-        return None
-    return parse_secret_output(stdout, key)
-
-def list_command_secrets(
-    *,
-    command: str,
-    timeout_seconds: float = _COMMAND_TIMEOUT_SECONDS,
-    max_output_bytes: int = _MAX_OUTPUT_BYTES,
-) -> Dict[str, str]:
-    """Enumerate secrets by running the helper ONCE with an empty key.
-
-    Returns the dotenv map ONLY when the helper emits a KEY=VALUE blob;
-    a bare-value helper returns ``{}``.  Never raises.
-    """
-    command = (command or "").strip()
-    if not command:
-        return {}
-    stdout = _run_helper(command, "", timeout_seconds, max_output_bytes)
-    if stdout is None:
-        return {}
-    return _parse_dotenv_map(stdout)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'get_source_environment': ('agent.secret_sources.base', 'get_source_environment'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

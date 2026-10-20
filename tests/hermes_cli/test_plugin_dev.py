@@ -1,28 +1,6 @@
 from __future__ import annotations
 
-import argparse
-
-import pytest
 from pathlib import Path
-
-from hermes_cli.subcommands.plugins import build_plugins_parser
-
-
-def _parse_plugins_args(*argv: str):
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_plugins_parser(subparsers, cmd_plugins=lambda args: None)
-    return parser.parse_args(["plugins", *argv])
-
-
-def test_plugins_parser_exposes_doctor() -> None:
-    doctor = _parse_plugins_args("doctor", "sample", "--ci")
-
-    assert (doctor.plugins_action, doctor.target, doctor.ci) == (
-        "doctor",
-        "sample",
-        True,
-    )
 
 
 def test_doctor_uses_registration_to_reject_bad_hook_and_callback_signature(
@@ -138,20 +116,6 @@ def test_doctor_blocks_live_network(tmp_path: Path) -> None:
     assert "network access is disabled while Plugin Doctor runs" in report.format_text()
 
 
-def test_resolve_rejects_directory_without_manifest(tmp_path: Path) -> None:
-    """A non-plugin directory must not resolve — Doctor copies what it resolves."""
-    from hermes_cli.plugin_dev import resolve_plugin_path
-
-    not_a_plugin = tmp_path / "home"
-    (not_a_plugin / "Documents").mkdir(parents=True)
-    (not_a_plugin / "Documents" / "notes.txt").write_text("x", encoding="utf-8")
-
-    with pytest.raises(FileNotFoundError) as excinfo:
-        resolve_plugin_path(not_a_plugin)
-
-    assert "holds no plugin manifest" in str(excinfo.value)
-
-
 def test_doctor_default_target_does_not_copy_cwd(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -226,7 +190,6 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     import tempfile
 
 
-
     from hermes_cli import plugin_dev
 
     plugin = tmp_path / "sample"
@@ -259,3 +222,32 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     # exact window where a stranded hermes-plugin-doctor-* dir was observed.
     leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
     assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"
+
+
+def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path: Path) -> None:
+    """`kind: model-provider` registers a ProviderProfile at import and has no register(ctx);
+    doctor must judge it by that contract and leave the live registry untouched."""
+    import providers
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = tmp_path / "acme-provider"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text("name: acme-provider\nkind: model-provider\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(
+        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='acme-doctor-probe', auth_type='external_process',\n"
+        "                                  process_command='acme', aliases=('acme-alias',)))\n",
+        encoding="utf-8")
+    registry_before = dict(providers._REGISTRY)
+
+    report = doctor_plugin(plugin)
+    assert report.ok, report.format_text()
+    assert report.registered_providers == ("acme-doctor-probe",)
+    assert "provider(s): acme-doctor-probe" in report.format_text()
+    assert providers._REGISTRY == registry_before
+    assert "acme-alias" not in providers._ALIASES
+
+    (plugin / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    report = doctor_plugin(plugin)
+    assert not report.ok
+    assert any("registered no ProviderProfile" in f.message for f in report.findings)

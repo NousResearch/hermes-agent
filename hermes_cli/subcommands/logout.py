@@ -11,6 +11,6 @@ def build_logout_parser(subparsers, *, cmd_logout: Callable) -> None:
         "logout", help="Clear authentication for an inference provider",
         description="Remove stored credentials and reset provider config")
     logout_parser.add_argument(
-        "--provider", choices=["nous", "openai-codex", "xai-oauth", "spotify"], default=None,
+        "--provider", choices=["nous", "openai-codex", "xai-oauth"], default=None,
         help="Provider to log out from (default: active provider)")
     logout_parser.set_defaults(func=cmd_logout)

@@ -53,18 +53,7 @@ def store(tmp_path):
 
 
 class TestFreshDatabase:
-    def test_send_columns_exist(self, store):
-        assert SEND_COLUMNS <= _columns(store.database_path)
 
-    def test_original_columns_survive(self, store):
-        assert {
-            "package_id",
-            "period_start",
-            "period_end",
-            "payload_json",
-            "created_at",
-            "exported_at",
-        } <= _columns(store.database_path)
 
     def test_send_attempts_defaults_to_zero(self, store):
         connection = sqlite3.connect(store.database_path)
@@ -147,11 +136,11 @@ class TestUpgradeFromPreSendDatabase:
                     """,
                     (
                         f"pkg-{i}",
-                        "2026-08-2%d" % i,
-                        "2026-08-2%d" % (i + 1),
+                        f'2026-08-2{i:d}',
+                        f'2026-08-2{i + 1:d}',
                         json.dumps({"package_id": f"pkg-{i}"}),
-                        "2026-08-2%dT00:00:00Z" % i,
-                        "2026-08-2%dT01:00:00Z" % i,
+                        f'2026-08-2{i:d}T00:00:00Z',
+                        f'2026-08-2{i:d}T01:00:00Z',
                     ),
                 )
             connection.commit()

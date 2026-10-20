@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.model_switch import ModelSwitchResult
 
@@ -130,6 +130,36 @@ def test_custom_to_other_custom_endpoint_drops_the_inline_key(seeded_home):
         base_url="http://10.0.0.9:1234/v1", api_mode="anthropic_messages", is_global=True)
     persist_model_selection(same_provider_other_host)
     assert "api_key" not in _model_block(seeded_home)
+
+
+def test_provider_switch_drops_the_key_env_pointer_but_a_same_route_repick_keeps_it(seeded_home):
+    """``model.key_env`` is a credential POINTER (custom-endpoint activation writes it with no inline
+    key). Surviving a provider switch it routes the new provider's requests to the old endpoint's
+    env var, so it clears like ``api_key``; a same-route re-pick keeps it like ``api_key``."""
+    from hermes_cli.model_switch import persist_model_selection
+    seed = _SEED.replace("  api_key: sk-stale\n", "  key_env: CUSTOM_BOX_API_KEY\n")
+    (seeded_home / "config.yaml").write_text(seed, encoding="utf-8")
+    persist_model_selection(_RESULT)
+    assert "key_env" not in _model_block(seeded_home)
+
+    (seeded_home / "config.yaml").write_text(seed, encoding="utf-8")
+    same_route = ModelSwitchResult(
+        success=True, new_model="local-model", target_provider="custom",
+        base_url="http://localhost:1234/v1", api_mode="anthropic_messages", is_global=True)
+    persist_model_selection(same_route)
+    assert _model_block(seeded_home)["key_env"] == "CUSTOM_BOX_API_KEY"
+
+    # Registry providers get the pointer too (Desktop stores e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY
+    # as model.key_env with provider lmstudio, #106336): a same-route model re-pick keeps it.
+    (seeded_home / "config.yaml").write_text(
+        seed.replace("provider: custom\n", "provider: lmstudio\n")
+            .replace("CUSTOM_BOX_API_KEY", "HERMES_CUSTOM_LMSTUDIO_API_KEY"), encoding="utf-8")
+    persist_model_selection(ModelSwitchResult(
+        success=True, new_model="qwen3-8b", target_provider="lmstudio",
+        base_url="http://localhost:1234/v1", api_mode="openai_chat", is_global=True))
+    block = _model_block(seeded_home)
+    assert block["default"] == "qwen3-8b"
+    assert block["key_env"] == "HERMES_CUSTOM_LMSTUDIO_API_KEY"
 
 
 def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypatch):

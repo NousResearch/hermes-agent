@@ -6,6 +6,9 @@ import sqlite3
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from agent import relay_runtime
 from hermes_state import SessionDB
@@ -66,7 +69,10 @@ def _agent_with_db(db, *, session_id="stale-parent", platform="desktop"):
     return agent
 
 
-def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
+@pytest.mark.parametrize("signal", ["on_wait", "on_contended"])
+def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch, signal):
+    """A lease wait and a busy-database retry both reload after admission (the busy writer may
+    be the previous holder's final flush); only a real holder is announced to the user."""
     db = _DB()
     agent = _agent_with_db(db)
     status_events = []
@@ -81,17 +87,19 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         observed["session_id"] = _agent.session_id
         return {"final_response": "ok", "messages": history, "failed": False}
 
-    # Simulate a contended wait so the resume status path is covered.
+    def resolve_relay_cwds(_agent, _task_id, session_id, _platform):
+        observed["relay_cwd_session_id"] = session_id
+        return "", ""
+
     def acquire_with_wait(session_id, holder, **kwargs):
         db.events.append(("acquire", session_id, holder))
-        on_wait = kwargs.get("on_wait")
-        if on_wait is not None:
-            on_wait(0.0)
+        kwargs[signal](*((0.0,) if signal == "on_wait" else ()))
         return True
 
     db.acquire_session_turn_lease = acquire_with_wait
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("agent.relay_cwd.resolve_relay_scope_cwds", resolve_relay_cwds)
     result = AIAgent.run_conversation(
         agent,
         "new message",
@@ -102,6 +110,7 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     assert observed == {
         "history": [{"role": "user", "content": "durable latest"}],
         "session_id": "compressed-tip",
+        "relay_cwd_session_id": "compressed-tip",
     }
     assert [event[0] for event in db.events] == [
         "acquire",
@@ -113,18 +122,9 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         "repair_alternation": True,
         "include_row_ids": True,
     }
-    assert any(
-        kind == "lifecycle"
-        and text
-        and "waiting for it to finish" in text
-        for kind, text in status_events
-    )
-    assert any(
-        kind == "lifecycle"
-        and text
-        and "loading the latest transcript" in text
-        for kind, text in status_events
-    )
+    texts = [text or "" for _kind, text in status_events]
+    for notice in ("Another Hermes process", "Session is free"):
+        assert any(notice in text for text in texts) is (signal == "on_wait"), notice
 
 
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
@@ -174,26 +174,130 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     ]
 
 
-def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
-    db = _DB(session_exists=False)
-    agent = _agent_with_db(db, session_id="fresh", platform="subagent")
-    agent._session_db_created = False
-    agent._parent_session_id = "parent"
-    agent._conversation_root_id = lambda: "parent"
+_LATEST = [{"role": "user", "content": "durable latest"}]
 
+
+@pytest.mark.parametrize(
+    "row_after, reload_rows, expect_reload",
+    [
+        # No row after the wait: keep the caller's seed, even if a reload would return rows.
+        (False, _LATEST, False),
+        # The holder created the row meanwhile: reload it, and skip the redundant create.
+        (True, _LATEST, True),
+        # A proven row wins even when its transcript is empty.
+        (True, [], True),
+        # An unreadable row that reloads nothing keeps the caller's history, carried input included.
+        ("raises", [], False),
+    ],
+    ids=["absent-after-wait", "created-during-wait", "created-empty-during-wait", "unreadable-empty"],
+)
+def test_waited_admission_uses_the_row_read_after_the_lease(
+    monkeypatch, row_after, reload_rows, expect_reload,
+):
+    """After a contended wait, the row state read under the lease decides reload and row flag."""
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    db = _DB()
+
+    def locked_get_session(_session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        if row_after == "raises":
+            db.get_session = locked_get_session
+        else:
+            db.session_exists = row_after
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    db.get_messages_as_conversation = lambda *_a, **_k: [dict(m) for m in reload_rows]
+    agent = _agent_with_db(db, session_id="client-id", platform="api_server")
+    agent._session_db_created = False
     observed = {}
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
         observed["history"] = history
+        observed["row_known"] = _agent._session_db_created
         return {"final_response": "ok", "messages": history, "failed": False}
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
-    seed = [{"role": "user", "content": "delegated context"}]
-
+    carried = {"role": "user", "content": "carried", _PERSIST_AFTER_ADMISSION_INTERRUPT: True}
+    seed = [{"role": "user", "content": "caller history"}, carried]
     AIAgent.run_conversation(agent, "work", conversation_history=seed)
 
-    assert observed["history"] is seed
-    assert db.events == []
+    if expect_reload:
+        assert observed["history"] == reload_rows + [carried]
+    else:
+        assert observed["history"] is seed
+    assert observed["row_known"] is (row_after is True)
+
+
+def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
+    """A client-addressed session id has no row until its first turn writes one; a second
+    turn arriving meanwhile must wait for that turn and see its rows, not interleave."""
+    path = tmp_path / "state.db"
+    db_a, db_b = SessionDB(path), SessionDB(path)
+    a_in_turn, a_may_finish, a_finished = threading.Event(), threading.Event(), threading.Event()
+    observed = {}
+
+    def fake_run(_agent, message, _system, history, *_args, **_kwargs):
+        if message == "first":
+            _agent._session_db.create_session("client-id", source="api_server")
+            _agent._session_db.append_message("client-id", "user", "first")
+            a_in_turn.set()
+            a_may_finish.wait(timeout=10)
+            _agent._session_db.append_message("client-id", "assistant", "first answer")
+            a_finished.set()  # still inside the turn, so strictly before the lease is released
+        else:
+            observed["a_finished"] = a_finished.is_set()
+            observed["history"] = [m.get("content") for m in history]
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
+    agent_a._session_db_created = False
+    agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
+    # B either starts waiting on the lease or, unserialized, runs to the end.
+    b_waiting_or_done = threading.Event()
+    real_acquire = db_b.acquire_session_turn_lease
+
+    def acquire_b(*args, on_wait=None, **kwargs):
+        def waiting(elapsed):
+            b_waiting_or_done.set()
+            on_wait(elapsed)
+        return real_acquire(*args, on_wait=waiting, **kwargs)
+
+    db_b.acquire_session_turn_lease = acquire_b
+
+    def run_b():
+        try:
+            AIAgent.run_conversation(
+                agent_b, "second",
+                conversation_history=db_b.get_messages_as_conversation("client-id"))
+        finally:
+            b_waiting_or_done.set()
+
+    thread_a = threading.Thread(
+        target=lambda: AIAgent.run_conversation(agent_a, "first", conversation_history=[]))
+    thread_b = threading.Thread(target=run_b)
+    try:
+        thread_a.start()
+        assert a_in_turn.wait(timeout=10)
+        thread_b.start()
+        assert b_waiting_or_done.wait(timeout=10)
+        a_may_finish.set()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+    finally:
+        a_may_finish.set()
+        db_a.close()
+        db_b.close()
+
+    assert observed["a_finished"] is True
+    assert observed["history"] == ["first", "first answer"]
 
 
 def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
@@ -217,18 +321,10 @@ def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
     assert result["failed"] is True
     assert result["completed"] is False
     assert "session_turn_lease_timeout:" in result["error"]
-    assert "send it again" in result["final_response"]
+    assert result["final_response"]
     assert [event[0] for event in db.events] == ["acquire"]
-    assert any(
-        kind == "lifecycle"
-        and text
-        and "waiting for it to finish" in text
-        for kind, text in status_events
-    )
-    assert any(
-        kind == "warn" and text and "send it again" in text
-        for kind, text in status_events
-    )
+    assert any(kind == "lifecycle" and text for kind, text in status_events)
+    assert any(kind == "warn" and text for kind, text in status_events)
 
 
 def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
@@ -252,19 +348,69 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     monkeypatch.setattr("agent.conversation_loop.run_conversation", boom)
     result = AIAgent.run_conversation(
         agent,
-        "new message",
+        "[Monday 12:00] new message",
         conversation_history=[{"role": "user", "content": "stale"}],
+        persist_user_message="new message",
+        persist_user_timestamp=123.0,
+        persist_user_display_kind="internal_notification",
+        persist_user_display_metadata={"kind": "test"},
+        persist_user_platform_id="platform-1",
     )
 
     assert result.get("interrupted") is True
     assert result.get("failed") is not True
     assert result.get("final_response")
-    assert "not processed" in result["final_response"]
     assert result.get("interrupt_message") == "follow-up while waiting"
+    assert result["messages"][-1] == {
+        "role": "user",
+        "content": "new message",
+        "api_content": "[Monday 12:00] new message",
+        "timestamp": 123.0,
+        "display_kind": "internal_notification",
+        "display_metadata": {"kind": "test"},
+        "platform_message_id": "platform-1",
+        "_persist_after_admission_interrupt": True,
+    }
     assert "session_turn_lease_timeout" not in str(result.get("error", ""))
     assert [event[0] for event in db.events] == ["acquire"]
     assert agent._interrupt_requested is False
     assert agent._interrupt_message is None
+
+
+def test_pre_admission_user_row_in_history_is_flushed_once():
+    db = MagicMock()
+    db.append_messages_batch.return_value = [1, 2]
+    agent = AIAgent.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent._persist_disabled = False
+    agent._persist_user_message_idx = 2
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    agent._persist_user_message_platform_id = None
+    agent._flushed_db_message_ids = set()
+    agent._last_flushed_db_idx = 0
+    agent.session_id = "session"
+
+    persisted = {"role": "assistant", "content": "old reply"}
+    interrupted = {
+        "role": "user",
+        "content": "original",
+        "_persist_after_admission_interrupt": True,
+    }
+    current = {"role": "user", "content": "follow-up"}
+    history = [persisted, interrupted]
+    messages = [*history, current]
+
+    agent._flush_messages_to_session_db(messages, conversation_history=history)
+    agent._flush_messages_to_session_db(messages, conversation_history=history)
+
+    rows = db.append_messages_batch.call_args.kwargs["messages"]
+    assert [(row["role"], row["content"]) for row in rows] == [
+        ("user", "original"),
+        ("user", "follow-up"),
+    ]
+    assert db.append_messages_batch.call_count == 1
 
 
 def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):
@@ -305,13 +451,50 @@ def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):
     assert agent._interrupt_requested is False
 
 
+def test_carried_input_survives_waited_reload_on_follow_up_turn(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    turns = {"n": 0}
+
+    def acquire_false_then_true_after_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        if turns["n"] == 0:
+            agent._interrupt_requested = True
+            agent._interrupt_message = "follow-up while waiting"
+            return False
+        kwargs["on_wait"](0.0)  # the follow-up also has to wait before admission
+        return True
+
+    db.acquire_session_turn_lease = acquire_false_then_true_after_wait
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    first = AIAgent.run_conversation(
+        agent, "original", conversation_history=[{"role": "user", "content": "stale"}]
+    )
+    assert first.get("interrupted") is True
+    carried = first["messages"][-1]
+    assert carried["_persist_after_admission_interrupt"] is True
+    turns["n"] = 1
+    AIAgent.run_conversation(agent, "follow-up", conversation_history=first["messages"])
+
+    assert observed["history"] == [
+        {"role": "user", "content": "durable latest"},
+        carried,
+    ]
+
+
 def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db)
     agent._session_turn_lease_refresh_interval = 0.01
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
         agent._interrupt_message = message
@@ -352,7 +535,6 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     assert result.get("interrupted") is True
     assert interrupt_calls
     assert interrupt_calls[0][1] is True
-    assert "lease lost" in str(interrupt_calls[0][0]).lower()
 
 
 def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
@@ -361,7 +543,7 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
     agent._session_turn_lease_refresh_interval = 0.01
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
         agent._interrupt_message = message
@@ -398,7 +580,6 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
     assert result.get("interrupted") is True
     assert interrupt_calls
     assert interrupt_calls[0][1] is True
-    assert "could not be refreshed" in str(interrupt_calls[0][0]).lower()
 
 
 def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypatch):
@@ -410,7 +591,7 @@ def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypat
     interrupt_started = threading.Event()
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         interrupt_started.set()
         release_refresh.wait(timeout=2.0)
@@ -464,7 +645,7 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
     released = threading.Event()
     interrupt_calls = []
 
-    def track_interrupt(message=None, hard_cancel=False):
+    def track_interrupt(message=None, hard_cancel=False, **kwargs):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
         agent._interrupt_message = message

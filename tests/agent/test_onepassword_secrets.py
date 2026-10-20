@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources import onepassword as op  # noqa: E402
+from agent.secret_sources import onepassword as op
 
 
 @pytest.fixture(autouse=True)
@@ -215,6 +215,17 @@ def test_find_op_pinned_path_not_on_path(tmp_path, monkeypatch):
     assert op.find_op(str(pinned)) == pinned
 
 
+
+
+def test_op_child_env_forwards_config_directory(monkeypatch):
+    """The op child must retain an explicit 1Password config location."""
+    monkeypatch.setenv("OP_CONFIG_DIR", "/tmp/op-config")
+    monkeypatch.setenv("UNRELATED_PROVIDER_TOKEN", "must-not-leak")
+
+    env = op._op_child_env("")
+
+    assert env["OP_CONFIG_DIR"] == "/tmp/op-config"
+    assert "UNRELATED_PROVIDER_TOKEN" not in env
 
 
 # ---------------------------------------------------------------------------

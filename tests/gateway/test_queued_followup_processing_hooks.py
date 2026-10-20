@@ -136,6 +136,30 @@ def _install_fake_agent(monkeypatch, tmp_path, agent_cls):
 SESSION_KEY = "agent:main:telegram:dm:4242"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic_last", [False, True])
+async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp_path, diagnostic_last):
+    _TwoTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
+    (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="follow-up", source=_source(), internal=diagnostic_last,
+        metadata={"notification_category": "diagnostic"} if diagnostic_last else {}, message_id="queued")
+    result = await runner._run_agent(message="first", context_prompt="", history=[], source=_source(),
+        session_id="queue-policy", session_key=SESSION_KEY,
+        persist_user_display_metadata=None if diagnostic_last else {"notification_category": "diagnostic"})
+    assert _TwoTurnAgent.calls == ["first", "follow-up"]
+    assert result["final_response"] == "done-2"
+    assert result["_notification_reply_muted"] is diagnostic_last
+    from gateway.warning_notifications import diagnostic_wake_muted
+    outer = MessageEvent(text="first", source=_source(), internal=not diagnostic_last)
+    outer._notification_reply_muted = result["_notification_reply_muted"]
+    assert diagnostic_wake_muted(outer) is diagnostic_last
+
+
 def _source():
     return SessionSource(platform=Platform.TELEGRAM, chat_id="4242", chat_type="dm")
 

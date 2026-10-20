@@ -10,6 +10,7 @@ import { expect, test, vi } from 'vitest'
 import {
   CREATE_NO_WINDOW,
   execGit,
+  gitEnvForSimpleGit,
   killTimedGitChildren,
   NO_CONSOLE_GIT_SCRIPT,
   planNoConsoleGitSpawn,
@@ -151,6 +152,33 @@ test('non-windows git spawn keeps the git binary and argv', () => {
   assert.equal(plan.command, '/usr/bin/git')
   assert.deepEqual(plan.args, ['status', '--porcelain'])
   assert.equal(plan.creationFlags, 0)
+})
+
+test('simple-git env filter removes guarded ambient keys without mutating the input', () => {
+  const input = {
+    GIT_DIR: '/tmp/repo',
+    GIT_SSH_COMMAND: 'ssh -i key',
+    GIT_TRACE: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    VISUAL: 'vim',
+    EDITOR: 'nano',
+    PAGER: 'less',
+    HERMES_GIT_ARGV0: 'git',
+    HERMES_GIT_NO_CONSOLE: '1',
+    HERMES_GIT_DRY_RUN: '1',
+    PATH: '/usr/bin'
+  }
+
+  const original = { ...input }
+
+  assert.deepEqual(gitEnvForSimpleGit(input), {
+    GIT_TERMINAL_PROMPT: '0',
+    HERMES_GIT_ARGV0: 'git',
+    HERMES_GIT_NO_CONSOLE: '1',
+    HERMES_GIT_DRY_RUN: '1',
+    PATH: '/usr/bin'
+  })
+  assert.deepEqual(input, original)
 })
 
 test('missing python does not rewrite git argv', () => {

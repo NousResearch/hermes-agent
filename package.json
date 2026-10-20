@@ -50,6 +50,10 @@
     "@electron/osx-sign": {
       "isbinaryfile": "5.0.7"
     },
+    "@xmldom/xmldom@^0.8": "0.8.15",
+    "axios": "1.20.0",
+    "fast-uri": "3.1.8",
+    "joi": "18.2.9",
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
@@ -78,7 +82,7 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
+    "electron@41.10.7": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true,

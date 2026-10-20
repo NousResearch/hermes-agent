@@ -165,6 +165,26 @@ export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: str
   return env
 }
 
+export function gitEnvForSimpleGit(base: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+
+  for (const [key, value] of Object.entries(base || {})) {
+    if (
+      value === undefined ||
+      (key.startsWith('GIT_') && key !== 'GIT_TERMINAL_PROMPT') ||
+      key === 'EDITOR' ||
+      key === 'VISUAL' ||
+      key === 'PAGER'
+    ) {
+      continue
+    }
+
+    env[key] = value
+  }
+
+  return env
+}
+
 export function planNoConsoleGitSpawn({
   gitBin,
   args,

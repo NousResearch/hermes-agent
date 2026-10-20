@@ -8,10 +8,10 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
+import { simpleGit } from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
-import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
+import { execGit, gitEnvForSimpleGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
@@ -19,14 +19,14 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
-// simple-git 3.x validates a custom binary path against an ASCII whitelist —
-// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
-// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
-// space in the default `C:\Program Files\Git\...`, the parentheses in
-// `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
-// the escape hatch simple-git THROWS on such a path; with it, it console.warns
-// this exact message — the flag only downgrades the throw. Exported so gitFor
-// and its tests share one source of truth.
+// simple-git validates a custom binary path against an ASCII whitelist:
+// letters, digits, `/ . \ _ ~ -`, with an optional `C:` drive prefix.
+// Everything outside it is "restricted": a space in the default
+// `C:\Program Files\Git\...`, the parentheses in `Program Files (x86)`, the
+// accented user name in `C:\Users\João\...`. Without the escape hatch
+// simple-git THROWS on such a path; with `allowUnsafeCustomBinary` the path is
+// accepted (simple-git 4.x — the 3.x warning is gone). Exported so gitFor and
+// its tests share one source of truth.
 export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
   'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
 
@@ -82,6 +82,10 @@ function gitFor(cwd, gitBin) {
       binary,
       maxConcurrentProcesses: 4,
       trimmed: false,
+      // simple-git 4.x strips guarded ambient env keys at spawn time and throws
+      // for a guarded key passed explicitly through `.env()`. GIT_TERMINAL_PROMPT
+      // is the one guarded key this app must control (no TTY in Electron).
+      allowEnvironment: ['GIT_TERMINAL_PROMPT'],
       ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
     })
 
@@ -89,12 +93,10 @@ function gitFor(cwd, gitBin) {
     return makeGit()
   }
 
-  // With the escape hatch set, simple-git still console.warns that same message on
-  // every factory call — the flag only downgrades the throw to a warning. The
-  // binary was resolved by this process, never supplied by the renderer, so on
-  // Windows (where the standard git lives under a spaced "Program Files") that
-  // warning is pure console spam. Filter exactly that message, for the
-  // synchronous factory call only.
+  // The binary was resolved by this process, never supplied by the renderer, so
+  // on Windows (where the standard git lives under a spaced "Program Files")
+  // suppress only the known custom-binary warning, if a simple-git older than
+  // 4.x emits it, for the synchronous factory call.
   const originalWarn = console.warn
 
   console.warn = (message?: unknown, ...rest: unknown[]) => {
@@ -106,7 +108,13 @@ function gitFor(cwd, gitBin) {
   try {
     const git = makeGit()
 
-    return Array.isArray(binary) ? git.env(noConsoleGitEnv(process.env, gitBin || 'git')) : git
+    // simple-git 4.x drops guarded keys from the spawn env and throws for one
+    // passed explicitly. Filter here so the v3 semantics survive: the HERMES_*
+    // no-console markers and GIT_TERMINAL_PROMPT are kept (the latter is also
+    // declared in `allowEnvironment` above), GIT_DIR/EDITOR/VISUAL/PAGER are not.
+    return Array.isArray(binary)
+      ? git.env(gitEnvForSimpleGit(noConsoleGitEnv(process.env, gitBin || 'git')))
+      : git
   } finally {
     console.warn = originalWarn
   }

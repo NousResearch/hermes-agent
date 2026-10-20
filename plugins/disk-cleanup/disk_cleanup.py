@@ -13,6 +13,7 @@ import functools
 import json
 import logging
 import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -208,6 +209,14 @@ def _is_auto_delete(item: Dict, age: int) -> bool:
     """Category-and-age auto-delete rule. Files past ``_LARGE_FILE_BYTES`` are
     prompt-only regardless of category: ``quick()`` must never remove them —
     they surface in the deep ``large`` prompt group instead."""
+    # A failed refresh must not authorize deletion using the recorded size.
+    try:
+        current = Path(item["path"]).stat()
+    except OSError as exc:
+        _log(f"SKIP unknown size: {item['path']}: {exc}")
+        return False
+    if stat.S_ISREG(current.st_mode):
+        item["size"] = current.st_size
     if item["size"] > _LARGE_FILE_BYTES:
         return False
     cat = item["category"]

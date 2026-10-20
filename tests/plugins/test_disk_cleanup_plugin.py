@@ -475,6 +475,35 @@ class TestLargeFilePromptOnly:
         assert any(dg._prompt_group(i, 0) == "large" for i in prompt), \
             "the grown file must land in the deep 'large' prompt group"
 
+    @pytest.mark.parametrize("operation", ["dry_run", "quick"])
+    def test_unreadable_size_never_authorizes_deletion(self, _isolate_env, monkeypatch, operation):
+        dg = _load_lib()
+        p = _isolate_env / "cache" / "unreadable.bin"
+        p.parent.mkdir()
+        self._tracked_entry(_isolate_env, p, "temp", age_days=30, size=1)
+        real_stat, real_exists, real_is_file = Path.stat, Path.exists, Path.is_file
+
+        def fail_target(path, *args, **kwargs):
+            if path == p:
+                raise PermissionError("injected unreadable cleanup size")
+            return real_stat(path, *args, **kwargs)
+
+        # Enumeration/type checks succeed, but reading the current size fails.
+        # Only that filesystem boundary is simulated; unlink remains real.
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "exists", lambda path: True if path == p else real_exists(path))
+            scoped.setattr(Path, "is_file", lambda path: True if path == p else real_is_file(path))
+            scoped.setattr(Path, "stat", fail_target)
+            if operation == "dry_run":
+                auto, _prompt = dg.dry_run()
+                assert not auto, "unknown current size must not authorize deletion"
+            else:
+                summary = dg.quick()
+                assert summary["deleted"] == summary["freed"] == 0
+        assert p.read_bytes() == b"x"
+        assert dg.load_tracked()[0]["path"] == str(p)
+        assert "unreadable cleanup size" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
+
 
 # ---------------------------------------------------------------------------
 # Plugin hooks tests

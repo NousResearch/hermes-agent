@@ -689,7 +689,7 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 /skills pending             # list staged skill writes + a one-line gist each
 /skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
 /skills approve <id>        # apply it (or 'all')
-/skills reject <id>         # drop it (or 'all')
+/skills reject <id> [reason]  # drop it (or 'all'); kept with the reason in pending/rejected/
 /skills approval on         # turn the gate on (or 'off') and persist it
 ```
 
@@ -697,6 +697,18 @@ The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
+
+A rejection is kept under `~/.hermes/pending/rejected/skills/<id>.json` as
+metadata, the reason and a SHA-256 of the proposal; the proposed skill content
+is kept only when you opt in, and kept rejections are deleted after
+`retention_days` (the same settings as for memory):
+
+```yaml
+skills:
+  rejected_writes:
+    keep_content: false   # true = also keep the proposed content
+    retention_days: 30    # 0 = keep them
+```
 
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are

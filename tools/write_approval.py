@@ -12,6 +12,7 @@ interactive CLI only) or **stages** the write under
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -65,12 +66,12 @@ def _normalize_enabled(value: Any) -> bool:
 _PENDING_ID_RE = re.compile(r"[0-9a-f]{8}")  # how stage_write mints ids: uuid4().hex[:8]
 
 
-def _pending_dir(subsystem: str) -> Path:
-    """``<HERMES_HOME>/pending/<subsystem>``; raises when a symlink inside the store leads elsewhere
-    (a planted link would make reads, deletes and approvals act on files outside it)."""
+def _pending_dir(subsystem: str, *, rejected: bool = False) -> Path:
+    """``<HERMES_HOME>/pending[/rejected]/<subsystem>``; raises when a symlink inside the store leads
+    elsewhere (a planted link would make reads, deletes and approvals act on files outside it)."""
     if subsystem not in _SUBSYSTEMS:
         raise ValueError(f"unknown write-approval subsystem {subsystem!r}")
-    d = get_hermes_home().resolve() / "pending" / subsystem
+    d = get_hermes_home().resolve() / "pending" / ("rejected" if rejected else "") / subsystem
     if d.resolve() != d:
         raise ValueError(f"pending store {d} is a link that leaves the Hermes home")
     return d
@@ -130,12 +131,14 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     except Exception as e:  # disk failure, or a store refused as a link
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
         record["error"] = f"the pending {subsystem} store could not be written"  # callers report it, not "staged"
+    _prune_rejected(subsystem)
     return record
 
 
 def list_pending(subsystem: str) -> list[dict[str, Any]]:
     """Return all pending records for ``subsystem``, oldest first. A record's ``id`` is its file
     name, never the id written inside it (approve and discard act on that id)."""
+    _prune_rejected(subsystem)
     records: list[dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
@@ -210,6 +213,78 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
+
+
+def _rejected_settings(subsystem: str) -> tuple[bool, int]:
+    """``(keep_content, retention_days)`` from ``<subsystem>.rejected_writes``. A config that cannot be
+    read keeps no content and deletes nothing (the safe side of each)."""
+    try:
+        from hermes_cli.config import FailedConfigRead, cfg_get, load_config
+        config = load_config()
+        if isinstance(config, FailedConfigRead):
+            return False, 0
+        conf = cfg_get(config, subsystem, "rejected_writes", default=None)
+        conf = conf if isinstance(conf, dict) else {}
+        return _normalize_enabled(conf.get("keep_content", False)), max(0, int(conf.get("retention_days", 30)))
+    except Exception:
+        logger.warning("write_approval: %s.rejected_writes unreadable; keeping no content", subsystem, exc_info=True)
+        return False, 0
+
+
+def _prune_rejected(subsystem: str) -> None:
+    """Delete kept rejections older than ``<subsystem>.rejected_writes.retention_days`` (0 = keep them)."""
+    days = _rejected_settings(subsystem)[1]
+    if not days:
+        return
+    cutoff = time.time() - days * 86400
+    try:
+        d = _pending_dir(subsystem, rejected=True)
+    except ValueError:
+        return  # a linked rejected/ dir: never delete through it
+    for p in d.glob("*.json"):
+        with suppress(OSError):
+            if _PENDING_ID_RE.fullmatch(p.stem) and not p.is_symlink() and p.stat().st_mtime < cutoff:
+                p.unlink()
+
+
+def _payload_target(payload: Any) -> str:
+    """The skill name(s) or memory target a staged payload acts on."""
+    if not isinstance(payload, dict):
+        return ""
+    ops = [op for op in payload.get("operations") or [] if isinstance(op, dict)]
+    names = [payload.get("name") or payload.get("target"), *(op.get("name") for op in ops)]
+    return ", ".join(dict.fromkeys(str(n) for n in names if n))
+
+
+def reject_pending(subsystem: str, pending_id: str, reason: str = "") -> bool:
+    """Reject a pending write: drop it from the queue, keep the rejection under
+    ``<HERMES_HOME>/pending/rejected/<subsystem>/<id>.json`` and pass it to the ``on_write_rejected``
+    plugin hook. The kept record is metadata (id, action, target, origin, times, reason and a SHA-256 of
+    the proposed payload); the payload and summary too only with ``<subsystem>.rejected_writes.keep_content``.
+    Returns True if it existed."""
+    record = claim_pending(subsystem, pending_id)
+    if record is None:
+        return False
+    keep_content = _rejected_settings(subsystem)[0]
+    payload = record.get("payload")
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    kept = record if keep_content else {k: record[k] for k in ("subsystem", "action", "origin", "created_at")
+                                        if k in record}
+    kept = {**kept, "id": pending_id, "target": _payload_target(payload), "rejected_at": time.time(),
+            "reason": (reason or "").strip(), "payload_sha256": digest}
+    try:
+        atomic_json_write(_pending_dir(subsystem, rejected=True) / f"{pending_id}.json", kept)
+    except Exception:  # pragma: no cover - disk failure path
+        logger.error("Failed to keep rejected %s/%s", subsystem, pending_id, exc_info=True)
+    finish_claim(subsystem, pending_id, applied=True)
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if has_hook("on_write_rejected"):
+            invoke_hook("on_write_rejected", subsystem=subsystem, pending_id=pending_id,
+                        reason=kept["reason"], record=kept)
+    except Exception:
+        logger.debug("on_write_rejected hook failed for %s/%s", subsystem, pending_id, exc_info=True)
+    return True
 
 
 def pending_count(subsystem: str) -> int:

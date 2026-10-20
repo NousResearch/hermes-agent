@@ -475,6 +475,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
+| `on_write_rejected` | Observer | A staged memory/skill write was rejected with `/memory` or `/skills reject <id> [reason]`; return ignored. | `subsystem`, `pending_id`, `reason`, `record` | `record` is the kept rejection: metadata, `reason` and `payload_sha256`; the proposed content only with `<subsystem>.rejected_writes.keep_content`. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1815,6 +1816,10 @@ Auxiliary LLM calls — session titling, context compression, MoA advisors and t
 ### `on_skill_lifecycle`
 
 Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
+
+### `on_write_rejected`
+
+Fires after a pending write staged by `memory.write_approval` / `skills.write_approval` is rejected (`/memory reject <id> [reason]`, `/skills reject <id> [reason]`, or `all`). `record` is what is kept under `<HERMES_HOME>/pending/rejected/<subsystem>/<id>.json`: `id`, `action`, `target`, `origin`, `created_at`, `rejected_at`, `reason` and `payload_sha256` (a SHA-256 of the proposed write); the proposed `payload` and `summary` only when `memory.rejected_writes.keep_content` / `skills.rejected_writes.keep_content` is true. Kept records are deleted after `rejected_writes.retention_days` (default 30). Observer-only; use it to learn from what a reviewer turned down.
 
 ### Kanban lifecycle observers
 

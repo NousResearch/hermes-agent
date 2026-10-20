@@ -26,7 +26,7 @@ def _fmt_pending_list(subsystem: str) -> str:
         if subsystem == wa.MEMORY:
             lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
     lines.append("")
-    lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
+    lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id> [reason]")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
@@ -58,7 +58,7 @@ def handle_pending_subcommand(
 
 
 def _usage(subsystem: str) -> str:
-    return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
+    return f"Usage: /{subsystem} approve <id> | reject <id> [reason]  (<id> may be 'all')"
 
 
 def _approve(subsystem: str, rest: list[str], memory_store) -> str:
@@ -152,11 +152,11 @@ def _apply_one(subsystem: str, rec, memory_store):
 def _reject(subsystem: str, rest: list[str]) -> str:
     if not rest:
         return _usage(subsystem)
-    target = rest[0]
+    target, reason = rest[0], " ".join(rest[1:])
     if target.lower() == "all":
-        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
+        n = sum(1 for rec in wa.list_pending(subsystem) if wa.reject_pending(subsystem, rec["id"], reason))
         return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
+    if wa.reject_pending(subsystem, target, reason):
         return f"Rejected pending {subsystem} write '{target}'."
     return f"No pending {subsystem} write with id '{target}'."
 

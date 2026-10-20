@@ -1331,10 +1331,10 @@ DEFAULT_CONFIG = {
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
         "write_approval": False,
+        "rejected_writes": {"keep_content": False, "retention_days": 30},  # what /memory reject keeps
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # Periodic built-in memory review; 0 when an external provider auto-extracts.
-        "nudge_interval": 10,
+        "nudge_interval": 10,  # Periodic built-in memory review; 0 when an external provider auto-extracts.
         # One external provider: bundled (retaindb, byterover) or catalog-installed (honcho,
         # hindsight, supermemory, mem0, openviking, holographic). Empty = built-in only.
         "provider": "",
@@ -1495,10 +1495,10 @@ DEFAULT_CONFIG = {
         # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
         # pending, /skills diff <id>, /skills approve|reject <id>.
         "write_approval": False,
+        "rejected_writes": {"keep_content": False, "retention_days": 30},  # what /skills reject keeps
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
-        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
-        # See #79686.
+        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block. See #79686.
         "ledger": True,
         # Size cap for that ledger: once the file grows past this, the next append rewrites it
         # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep

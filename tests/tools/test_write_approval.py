@@ -603,3 +603,114 @@ def test_a_claim_left_by_a_crash_goes_back_to_the_queue(hermes_home):
     os.utime(d / f"{crashed['id']}.claimed", (old, old))
     assert [r["id"] for r in wa.list_pending(wa.MEMORY)] == [crashed["id"]]
     assert wa.claim_pending(wa.MEMORY, live["id"]) is None             # the live claim is still held
+
+
+# ---------------------------------------------------------------------------
+# Rejections are kept with their reason and reported to on_write_rejected
+# ---------------------------------------------------------------------------
+
+def _capture_rejections():
+    from hermes_cli.plugins import get_plugin_manager
+    mgr, events = get_plugin_manager(), []
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("on_write_rejected", []).append(lambda **kw: events.append(kw))
+    return mgr, saved, events
+
+
+def _set_rejected_writes(subsystem, **conf):
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault(subsystem, {})["rejected_writes"] = conf
+    cfg.save_config(c)
+
+
+def _reject_one(hermes_home, reason_words):
+    """Stage a skill write, reject it with *reason_words*; return (staged, kept file text, hook events)."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "PROPOSED-TEXT"},
+                         summary="create probe: PROPOSED-TEXT", origin="foreground")
+    mgr, saved, events = _capture_rejections()
+    try:
+        handle_pending_subcommand(wa.SKILLS, ["reject", rec["id"], *reason_words])
+    finally:
+        mgr._hooks = saved
+    assert wa.get_pending(wa.SKILLS, rec["id"]) is None
+    return rec, Path(hermes_home, "pending", "rejected", "skills", f"{rec['id']}.json").read_text(), events
+
+
+def test_reject_keeps_metadata_with_reason_and_fires_hook(hermes_home):
+    """By default the kept rejection and the on_write_rejected record carry the reason, id, target, times and
+    a hash of the proposal, never the proposed content; the queue drops the entry."""
+    import hashlib
+    rec, text, events = _reject_one(hermes_home, ["duplicates", "an", "existing", "skill"])
+    kept = json.loads(text)
+    assert "PROPOSED-TEXT" not in text and "payload" not in kept and "summary" not in kept
+    assert {k: kept[k] for k in ("id", "action", "target", "origin", "reason")} == {
+        "id": rec["id"], "action": "create", "target": "probe", "origin": "foreground",
+        "reason": "duplicates an existing skill"}
+    assert kept["created_at"] == rec["created_at"] and kept["rejected_at"] >= rec["created_at"]
+    assert kept["payload_sha256"] == hashlib.sha256(
+        json.dumps(rec["payload"], sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert [(e["subsystem"], e["pending_id"], e["reason"], e["record"]) for e in events] == [
+        ("skills", rec["id"], "duplicates an existing skill", kept)]
+
+
+def test_reject_keeps_the_content_only_when_opted_in(hermes_home):
+    _set_rejected_writes("skills", keep_content=True)
+    rec, text, events = _reject_one(hermes_home, ["no"])
+    kept = json.loads(text)
+    assert kept["payload"] == rec["payload"] and kept["reason"] == "no" and "payload_sha256" in kept
+    assert events[0]["record"] == kept
+
+
+def test_kept_rejections_are_pruned_after_retention_days(hermes_home):
+    """Listing or staging deletes kept rejections older than retention_days; 0 keeps them all."""
+    import time
+    from tools import write_approval as wa
+    old_rec, _, _ = _reject_one(hermes_home, ["old"])
+    new_rec, _, _ = _reject_one(hermes_home, ["new"])
+    d = wa._pending_dir(wa.SKILLS, rejected=True)
+    old = time.time() - 31 * 86400
+    os.utime(d / f"{old_rec['id']}.json", (old, old))
+    _set_rejected_writes("skills", retention_days=0)
+    wa.list_pending(wa.SKILLS)
+    assert sorted(p.stem for p in d.glob("*.json")) == sorted([old_rec["id"], new_rec["id"]])
+    _set_rejected_writes("skills", retention_days=30)
+    wa.list_pending(wa.SKILLS)
+    assert [p.stem for p in d.glob("*.json")] == [new_rec["id"]]
+    os.utime(d / f"{new_rec['id']}.json", (old, old))
+    wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": "c"}, summary="c", origin="foreground")
+    assert [p.stem for p in d.glob("*.json")] == [new_rec["id"]]              # memory's store is not skills'
+    wa.stage_write(wa.SKILLS, {"action": "delete", "name": "probe"}, summary="d", origin="foreground")
+    assert list(d.glob("*.json")) == []
+
+
+def test_reject_never_copies_or_reports_a_file_outside_the_store(hermes_home, tmp_path):
+    """A path-like id or a linked record is refused by reject_pending (nothing copied under
+    pending/rejected/, no hook), and a linked rejected/ dir is never written through."""
+    from pathlib import Path
+    from tools import write_approval as wa
+    victim = Path(hermes_home, "victim.json")
+    victim.write_text('{"id": "victim", "payload": {}}', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    pending = Path(hermes_home, "pending", "skills")
+    pending.mkdir(parents=True)
+    (pending / "deadbeef.json").symlink_to(victim)
+    mgr, saved, events = _capture_rejections()
+    try:
+        for bad in ("../../victim", str(victim.with_suffix("")), "a/b", "deadbeef"):
+            assert wa.reject_pending(wa.SKILLS, bad, "why") is False, bad
+    finally:
+        mgr._hooks = saved
+    assert victim.exists() and events == [] and not Path(hermes_home, "pending", "rejected").exists()
+    (pending / "deadbeef.json").unlink()
+
+    rec = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "x"},
+                         summary="create probe", origin="foreground")
+    Path(hermes_home, "pending", "rejected").mkdir()
+    Path(hermes_home, "pending", "rejected", "skills").symlink_to(outside)
+    assert wa.reject_pending(wa.SKILLS, rec["id"], "why") is True
+    assert list(outside.iterdir()) == [] and wa.get_pending(wa.SKILLS, rec["id"]) is None

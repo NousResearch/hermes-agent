@@ -2506,11 +2506,6 @@ export const deOverrides = {
         unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
-      catalogTitle: 'Plugin-Katalog',
-      catalogBrowse: 'Durchsuchen',
-      catalogHide: 'Katalog-Browser ausblenden',
-      catalogHint:
-        'Klicken Sie bei einem Plugin auf „+ Zu diesem Agenten hinzufügen“ – geprüfte Einträge werden an ihrem gepinnten Commit in das gewählte Profil installiert. Gebündelte Agent+Desktop-Plugins bieten beide Hälften an.',
       alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
       catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>

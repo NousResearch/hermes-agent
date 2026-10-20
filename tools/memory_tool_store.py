@@ -366,6 +366,18 @@ class MemoryStore:
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
+    def read(self, target: str) -> dict[str, Any]:
+        """Entries of *target* as stored on disk (read-only: no gate, no drift guard, no write)."""
+        path = self._path_for(target)
+        raw, read_ok = self._read_raw_checked(path)
+        if not read_ok:
+            return _read_failed_error(path)
+        entries = list(dict.fromkeys(self._parse_entries(raw)))
+        self._set_entries(target, entries)
+        return {
+            "success": True, "target": target, "entries": entries,
+            "usage": self._usage_pct(target, self._char_count(target))}
+
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()

@@ -139,7 +139,7 @@ jobs:
       # checkout: no blobs (filter), no other files (sparse), but DO fetch
       # tags -- they are the whole input, and the default shallow checkout
       # has none.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           filter: blob:none
@@ -205,7 +205,7 @@ jobs:
       windows-legs: ${{ steps.gen.outputs.windows-legs }}
       macos-legs: ${{ steps.gen.outputs.macos-legs }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
@@ -240,7 +240,7 @@ jobs:
       windows-arch: ${{ steps.inputs.outputs.windows-arch }}
       macos-arch: ${{ steps.inputs.outputs.macos-arch }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
       - id: inputs
@@ -355,7 +355,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: tests/install/e2e-assets/playback.html
@@ -425,7 +425,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           sparse-checkout: |

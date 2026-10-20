@@ -34,6 +34,17 @@ def _cmd_add(args) -> None:
     )
 
     c = _console()
+
+    def _ask(reader, prompt, default=""):
+        """``reader`` (``input``/``getpass``) that aborts on exhausted
+        stdin: maps ``EOFError``/``ValueError`` to the already-imported
+        ``VaultError`` — re-prompt loops over a closed stdin would
+        otherwise spin forever, and a bare call raises a raw ``EOFError``."""
+        try:
+            return reader(prompt).strip() or default
+        except (EOFError, ValueError):
+            raise VaultError("stdin is closed or exhausted — run `hermes vault add` interactively") from None
+
     c.print(
         "[bold]Add a vault item[/] (the password is encrypted at rest and the "
         "agent never sees it; the identifier is visible metadata the agent "
@@ -42,36 +53,35 @@ def _cmd_add(args) -> None:
 
     kind = (args.kind or "").strip().lower()
     while kind not in VAULT_KINDS:
-        kind = input(f"Kind ({'/'.join(VAULT_KINDS)}) [login]: ").strip().lower() or "login"
+        kind = _ask(input, f"Kind ({'/'.join(VAULT_KINDS)}) [login]: ", "login").lower()
         if kind not in VAULT_KINDS:
             c.print(f"[red]Unknown kind {kind!r}[/]")
             kind = ""
 
     label = ""
     while not label:
-        label = input("Label (e.g. 'GitHub work account'): ").strip()
+        label = _ask(input, "Label (e.g. 'GitHub work account'): ")
 
     try:
         if kind == "login":
             origin = ""
             while not origin:
-                origin = input("Site origin (e.g. https://github.com): ").strip()
+                origin = _ask(input, "Site origin (e.g. https://github.com): ")
             id_type = ""
             while id_type not in LOGIN_IDENTIFIER_TYPES:
-                id_type = (
-                    input(f"Identifier type ({'/'.join(LOGIN_IDENTIFIER_TYPES)}) [email]: ")
-                    .strip()
-                    .lower()
-                    or "email"
-                )
+                id_type = _ask(
+                    input, f"Identifier type ({'/'.join(LOGIN_IDENTIFIER_TYPES)}) [email]: ", "email",
+                ).lower()
             identifier = ""
             while not identifier:
-                identifier = input(f"{id_type.capitalize()}: ").strip()
+                identifier = _ask(input, f"{id_type.capitalize()}: ")
             password = ""
             while not password:
-                password = getpass.getpass("Password (hidden): ")
-            otp_secret = getpass.getpass(
-                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
+                password = _ask(getpass.getpass, "Password (hidden): ")
+            otp_secret = _ask(
+                getpass.getpass,
+                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ",
+            )
             # identifier_type/identifier are stored as metadata (not secret);
             # add_item moves them out of the encrypted payload.
             secret = {
@@ -89,16 +99,16 @@ def _cmd_add(args) -> None:
             fields = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             origin = ""
             while not origin:
-                origin = input("Site origin the item may be filled on (e.g. https://shop.example.com): ").strip()
+                origin = _ask(input, "Site origin the item may be filled on (e.g. https://shop.example.com): ")
             c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
             secret = {}
             for field in fields:
                 required = field in REQUIRED_FIELDS[kind]
                 prompt = f"{field.replace('_', ' ')}{'' if required else ' (optional)'}: "
                 read = getpass.getpass if kind == "payment" else input
-                value = read(prompt).strip()
+                value = _ask(read, prompt)
                 while required and not value:
-                    value = read(prompt).strip()
+                    value = _ask(read, prompt)
                 if value:
                     secret[field] = value
             meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin)

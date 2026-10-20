@@ -5,10 +5,12 @@ import {
   directiveFrameHeight,
   evaluateIntent,
   frameSizeFromMessage,
+  frameWidthPlan,
   INTENT_THROTTLE_MS,
   intentAckMessage,
   intentScript,
   MAX_INTENT_LENGTH,
+  measurementScript,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -118,11 +120,12 @@ describe('frameSizeFromMessage', () => {
     token: 'tok',
     height: 500,
     width: 300,
+    viewport: 640,
     ...over
   })
 
   it('accepts our message with our token, height clamped', () => {
-    expect(frameSizeFromMessage(msg(), 'tok')).toEqual({ height: 500, width: 300 })
+    expect(frameSizeFromMessage(msg(), 'tok')).toEqual({ height: 500, viewport: 640, width: 300 })
     expect(frameSizeFromMessage(msg({ height: 12 }), 'tok')?.height).toBe(120)
     expect(frameSizeFromMessage(msg({ height: 5000 }), 'tok')?.height).toBe(1200)
     expect(frameSizeFromMessage(msg({ height: 500.7 }), 'tok')?.height).toBe(501)
@@ -133,6 +136,14 @@ describe('frameSizeFromMessage', () => {
     expect(frameSizeFromMessage(msg({ width: 'wide' }), 'tok')?.width).toBe(0)
     expect(frameSizeFromMessage(msg({ width: Infinity }), 'tok')?.width).toBe(0)
     expect(frameSizeFromMessage(msg({ width: -10 }), 'tok')?.width).toBe(0)
+  })
+
+  it('carries the frame viewport, sanitized to 0 when missing or hostile', () => {
+    expect(frameSizeFromMessage(msg(), 'tok')?.viewport).toBe(640)
+    expect(frameSizeFromMessage(msg({ viewport: undefined }), 'tok')?.viewport).toBe(0)
+    expect(frameSizeFromMessage(msg({ viewport: 'wide' }), 'tok')?.viewport).toBe(0)
+    expect(frameSizeFromMessage(msg({ viewport: Infinity }), 'tok')?.viewport).toBe(0)
+    expect(frameSizeFromMessage(msg({ viewport: -10 }), 'tok')?.viewport).toBe(0)
   })
 
   it('rejects wrong type, wrong token, and hostile shapes', () => {
@@ -276,5 +287,60 @@ describe('intentScript', () => {
     await expect(send('   ')).resolves.toEqual({ error: 'invalid', ok: false })
     expect(posted).toHaveLength(0)
     expect(win.hermes?.maxLength).toBe(MAX_INTENT_LENGTH)
+  })
+})
+
+describe('measurementScript', () => {
+  // Run the injected script against a fake document so the frame side of the
+  // protocol is exercised for real: what it posts, including the viewport.
+  function mountMeasure() {
+    const posted: Array<Record<string, unknown>> = []
+    const parent = { postMessage: (data: Record<string, unknown>) => posted.push(data) }
+
+    const fakeDocument = {
+      body: {
+        children: [{ getBoundingClientRect: () => ({ height: 100, left: 0, right: 300, width: 300 }) }],
+        scrollHeight: 400
+      },
+      documentElement: { clientWidth: 900, scrollHeight: 400 }
+    }
+
+    const body = measurementScript('tok')
+      .replace(/^<script>/, '')
+      .replace(/<\/script>$/, '')
+
+    new Function('document', 'parent', 'addEventListener', 'ResizeObserver', body)(
+      fakeDocument,
+      parent,
+      () => {},
+      undefined
+    )
+
+    return posted
+  }
+
+  it('posts height, intrinsic width and the frame viewport', () => {
+    expect(mountMeasure()).toEqual([
+      { height: 400, token: 'tok', type: 'hermes-inline-preview-size', viewport: 900, width: 300 }
+    ])
+  })
+})
+
+describe('frameWidthPlan', () => {
+  it('fills when nothing measurable was reported', () => {
+    expect(frameWidthPlan(0, 640)).toBe('fill')
+    expect(frameWidthPlan(320, 0)).toBe('fill')
+    expect(frameWidthPlan(0, 0)).toBe('fill')
+  })
+
+  it('fills when the content spans its viewport (a fluid page)', () => {
+    expect(frameWidthPlan(640, 640)).toBe('fill')
+    // Within the resize tolerance of the viewport still counts as spanning.
+    expect(frameWidthPlan(636, 640)).toBe('fill')
+  })
+
+  it('latches the intrinsic width when the content is narrower than its viewport', () => {
+    expect(frameWidthPlan(635, 640)).toBe(635)
+    expect(frameWidthPlan(320, 900)).toBe(320)
   })
 })

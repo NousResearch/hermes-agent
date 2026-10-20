@@ -63,6 +63,7 @@ def test_unwrap_desktop_scope_not_blocked():
     assert block is None and name == "drive_preview"
 
 
-def test_non_surface_tool_keeps_generic_message():
+def test_absent_non_surface_core_tool_reports_unavailability():
+    # computer_use is a deferred core tool: absent here, tool_search cannot surface it either.
     err = json.loads(_bridge("computer_use", TUI_SCOPE))["error"]
-    assert "not available in this session" in err
+    assert "not available in this execution context" in err

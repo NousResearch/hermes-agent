@@ -149,10 +149,11 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // — without it Desktop only ever showed the acknowledgement (#99065).
     const text = coerceGatewayText(payload?.text).trim()
 
-    if (text && sessionId) {
+    if (sessionId) {
       const taskId = String(payload?.task_id ?? '').trim()
       const question = coerceGatewayText(payload?.question).trim()
       const header = `[btw${question ? ` "${question}"` : ''}${taskId ? ` (${taskId})` : ''}]`
+      const answer = text || 'No answer was returned. Please try /btw again.'
 
       flushQueuedDeltas(sessionId)
       updateSessionState(sessionId, state => ({
@@ -162,7 +163,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
           {
             id: `btw-complete-${taskId || Date.now()}`,
             role: 'system',
-            parts: [textPart(`${header}\n${text}`, occurredAt)],
+            parts: [textPart(`${header}\n${answer}`, occurredAt)],
             timestamp: occurredAt
           }
         ]

@@ -1,3 +1,5 @@
+import { isUndeliveredCorrectionRefusal } from '@hermes/shared/json-rpc-channel'
+
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse, SessionActivateResponse } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
@@ -135,13 +137,25 @@ function submitParams(
   }
 }
 
+/** A correction the owner confirmed it never delivered becomes the next prompt: the same row and
+ *  submission_id, admitted durably behind any running turn. Kept as a control it would be refused
+ *  again on every retry, since the generation it names is over (#141511). */
+export function readmitAsPrompt(item: QueueItem): void {
+  delete item.controlMethod
+  delete item.executionGeneration
+  item.legacyAttempted = false
+  item.queued = true
+  savePendingInput(item)
+}
+
+/** Settles a busy-correction reply; false when the owner refused it before any agent saw the text. */
 function settleControlReply(
   item: QueueItem,
   r: PromptSubmitResponse,
   deps: SubmitPromptDeps,
   focused: () => boolean,
   sid: string
-): void {
+): boolean {
   // A bare stop phrase typed as a busy correction ended the voice chat and reached
   // no turn (TUI-26): settled, rendered as the stop-phrase event, the turn untouched.
   if (r?.voice_stopped === true) {
@@ -151,10 +165,15 @@ function settleControlReply(
       deps.gw.publishLocalEvent({ payload: { stop_phrase: true, typed: true }, session_id: sid, type: 'voice.transcript' })
     }
 
-    return
+    return true
   }
 
   const control = r as PromptSubmitResponse & { execution_generation?: number }
+
+  // 'rejected' is the owner's "not corrected, queue it as the next prompt" (no live agent took it).
+  if (control?.status === 'rejected' && control.execution_generation === item.executionGeneration) {
+    return false
+  }
 
   const accepted =
     control.execution_generation === item.executionGeneration && ['queued', 'redirected'].includes(control.status ?? '')
@@ -164,6 +183,8 @@ function settleControlReply(
   if (focused()) {
     deps.sys(accepted ? t('canonical.submit.correction', control.status) : t('canonical.submit.correctionRejected'))
   }
+
+  return true
 }
 
 interface AdmissionContext {
@@ -333,6 +354,16 @@ export function submitPrompt(
     markSubmitting()
   }
 
+  const readmit = (item: QueueItem) => {
+    readmitAsPrompt(item)
+    submitPrompt(text, deps, showUserMessage, displayOverride, {
+      behindTurn: true,
+      destination,
+      queueItem: item,
+      skipDetectDrop: true
+    })
+  }
+
   const startSubmit = (displayText: string, submitText: string, show = true) => {
     if (ownsTurn()) {
       beginOwnedTurn(deps, text, displayOverride, displayText, show)
@@ -362,7 +393,9 @@ export function submitPrompt(
       )
       .then(r => {
         if (item?.controlMethod) {
-          settleControlReply(item, r, deps, focused, sid)
+          if (!settleControlReply(item, r, deps, focused, sid)) {
+            readmit(item)
+          }
 
           return
         }
@@ -405,6 +438,12 @@ export function submitPrompt(
 
         if (item && preAdmissionRefusal && !deps.gw.isCanonical && !item.attachments?.length) {
           await submitLegacy(item, sid, submitText, deps, focused)
+
+          return
+        }
+
+        if (item?.controlMethod && isUndeliveredCorrectionRefusal(e)) {
+          readmit(item)
 
           return
         }

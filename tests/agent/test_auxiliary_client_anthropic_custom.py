@@ -62,6 +62,34 @@ def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
     assert client.base_url == "https://api.minimax.io/anthropic"
 
 
+def test_custom_endpoint_anthropic_messages_restores_dual_surface_v1():
+    """api_mode=anthropic_messages + a dual-surface ``/v1`` base → the SDK client must be
+    built against the restored ``/anthropic`` Messages surface (#128830)."""
+    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+
+    with patch(
+        "agent.auxiliary_client._resolve_custom_runtime",
+        return_value=(
+            "https://api.minimax.io/v1",
+            "minimax-key",
+            "anthropic_messages",
+        ),
+    ), patch(
+        "agent.auxiliary_client._read_main_model",
+        return_value="claude-sonnet-4-6",
+    ):
+        adapter_patch, fake_client = _install_anthropic_adapter_mocks()
+        with adapter_patch as mock_build:
+            client, model = _try_custom_endpoint()
+
+    assert isinstance(client, AnthropicAuxiliaryClient), (
+        "Custom endpoint with api_mode=anthropic_messages must return the "
+        f"native Anthropic wrapper, got {type(client).__name__}"
+    )
+    mock_build.assert_called_once_with("minimax-key", "https://api.minimax.io/anthropic")
+    assert client.base_url == "https://api.minimax.io/anthropic"
+
+
 def test_custom_endpoint_anthropic_messages_falls_back_when_sdk_missing():
     """Graceful degradation when anthropic SDK is unavailable."""
     from agent.auxiliary_client import _try_custom_endpoint

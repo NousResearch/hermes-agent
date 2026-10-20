@@ -36,7 +36,7 @@ def test_plugins_manage_install_failure():
 
 def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     """Non-catalog installs are refused — their update flows stay CLI-owned."""
-    from hermes_cli import plugins_cmd
+    from hermes_cli import plugins_cmd, plugins_cmd_catalog
 
     plugins_root = tmp_path / "plugins"
     (plugins_root / "plain-git-plugin").mkdir(parents=True)
@@ -50,7 +50,26 @@ def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
         }
     )
 
-    assert "error" in resp
+    assert resp["error"]["code"] == 4020
+    assert "not a catalog install" in resp["error"]["message"]
+
+    # A generic error is insufficient: the bound server helpers must reach the
+    # catalog guard AND return a real successful response for a catalog install.
+    catalog_target = plugins_root / "catalog-demo"
+    catalog_target.mkdir()
+    monkeypatch.setattr(plugins_cmd_catalog, "catalog_install_record", lambda target: {"catalog_name": "demo"})
+    monkeypatch.setattr(
+        plugins_cmd_catalog, "repin_catalog_plugin",
+        lambda target, sidecar, **kwargs: plugins_cmd_catalog.RepinResult("a" * 40, False, target.name, []),
+    )
+    success = server.handle_request({
+        "id": "2", "method": "plugins.manage", "params": {"action": "update", "name": "catalog-demo"},
+    })
+    assert success["id"] == "2"
+    assert success["result"]["ok"] is True
+    assert success["result"]["unchanged"] is True
+    assert success["result"]["name"] == "catalog-demo"
+
 
 def test_plugins_manage_list_reports_desktop_half(tmp_path):
     """A unified package (plugin.yaml + desktop/plugin.js) is reported with ``has_desktop_half`` so the

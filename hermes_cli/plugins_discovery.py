@@ -29,13 +29,6 @@ logger = logging.getLogger("hermes_cli.plugins")
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 
-# Per-harness manifest directories plugin repos ship for OTHER agent harnesses (e.g. obra/superpowers keeps one
-# plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
-# parsing it on every discovery pass only spams warnings (#101962).
-_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
-    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
-})
-
 # Set while a caller reads a profile's config WITHOUT wanting that profile's plugins in this process:
 # the multiplex preflight loads a PARKED profile's gateway config for the duplicate-credential guard,
 # and ``load_gateway_config`` discovers plugins in the scope it runs under. Importing them runs their
@@ -153,8 +146,9 @@ def scan_directory(
         if child.name.startswith("__") and child.name.endswith("__"):
             logger.debug("Skipping dunder plugin path %s", child)
             continue
-        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
-            logger.debug("Skipping %s (foreign-harness manifest convention)", child)
+        # Hidden trees include unpublished install/update clones and foreign-harness metadata.
+        if child.name.startswith("."):
+            logger.debug("Skipping hidden plugin path %s", child)
             continue
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
         # and test doubles can still raise. Fail closed per child.

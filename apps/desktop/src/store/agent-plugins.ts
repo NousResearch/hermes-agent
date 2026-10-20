@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
-import { notifyError } from '@/store/notifications'
+import { translateNow } from '@/i18n'
+import { notify, notifyError } from '@/store/notifications'
 
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
@@ -365,7 +366,7 @@ export async function installAgentPlugin(
  *  when already at pin, `consent` when the new pin widens the plugin — the
  *  backend changed nothing and waits for `acceptCapabilities`. */
 export type AgentPluginUpdateOutcome =
-  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
+  { kind: 'applied' | 'unchanged' | 'failed' | 'unknown' } | { kind: 'consent'; sha: string; deltaLines: string[] }
 
 /** Re-pin a catalog-installed plugin to the current catalog SHA (backend
  *  `plugins.manage update`; catalog installs only). Refreshes the list on
@@ -390,7 +391,8 @@ export async function updateAgentPlugin(
       delta_lines?: string[]
     }>(
       'plugins.manage',
-      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
+      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (result?.consent_required) {
@@ -405,6 +407,17 @@ export async function updateAgentPlugin(
 
     return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+
+    if (/^request timed out after \d+s: plugins\.manage$/.test(message)) {
+      notify({
+        kind: 'warning',
+        message: translateNow('chat.catalogInstall.updatePending', name)
+      })
+
+      return { kind: 'unknown' }
+    }
+
     notifyError(e, failMessage)
 
     return { kind: 'failed' }

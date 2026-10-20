@@ -292,3 +292,20 @@ class TestCmdListJson:
             payload = json.loads(captured.out)
             assert len(payload) == 1
             assert payload[0]["status"] == "enabled"
+
+
+def test_staging_is_invisible_to_runtime_and_cli_discovery(tmp_path):
+    """TH1-1177: unpublished copies cannot collide with the live plugin."""
+    from hermes_cli.plugins_discovery import scan_directory
+    from hermes_cli.plugins_cmd import _scan_level
+
+    _make_plugin_dir(tmp_path, "live", {"name": "live"})
+    _make_category_plugin(tmp_path, "category", "visible", {"name": "visible"})
+    for staging in (".update-fixture", ".install-fixture", ".repin-preview-fixture"):
+        _make_category_plugin(tmp_path, staging, "plugin", {"name": "live"})
+    _make_plugin_dir(tmp_path / "category", ".update-fixture", {"name": "live"})
+    runtime = scan_directory(tmp_path, "user")
+    listing = {}
+    _scan_level(tmp_path, "user", set(), "", 0, listing)
+    assert {m.key for m in runtime} == {"live", "category/visible"}
+    assert set(listing) == {"live", "category/visible"}

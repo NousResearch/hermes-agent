@@ -424,6 +424,9 @@ hermes plugins install user/repo             # install from Git, then prompt Ena
 hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins update my-plugin --force      # same, accepting a caution security-scan verdict without the question
+hermes plugins update                        # list every plugin with an update, then "Update all N? [Y/n]"
+hermes plugins update --yes                  # same, without the question (scripts, cron; required without a terminal)
 hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
                                              # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
@@ -451,7 +454,20 @@ check runs when `plugins.auto_update_check_hours` is due: default 24 hours,
 desktop sync-status view. This is not a hard once-per-day limit if you configure
 a different interval.
 
-By default, updates require `hermes plugins update NAME`. Setting
+`hermes plugins update` with no name runs the same check and lists the
+plugins it can move: catalog installs (re-pinned to the reviewed catalog
+commit) and tracked Git installs (pulled). It names every plugin it skips and
+why: pinned, needs fixing, status unknown, or a pip distribution Hermes does
+not upgrade. In a terminal it asks once, then updates each plugin through the
+same path as `hermes plugins update NAME`, so new capabilities, a widened
+catalog pin and scan findings still prompt per plugin. One failure does not
+stop the rest; the summary lists what updated, what was already current and
+what failed with its reason (exit code 1 if any failed). Without a terminal
+it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
+consent prompts fail closed as in any non-interactive update (new
+capabilities stay ungranted, a widened catalog pin is not applied).
+
+By default, plugins only update when you run `hermes plugins update`. Setting
 `plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
 Both routes use the update security scan. Auto-apply does not manage pinned,
 manual, drifted, or pip-distribution rows.
@@ -557,7 +573,7 @@ granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
 widen its access. Catalog re-pins go one step further: when the new pin adds
 tools, hooks, Python dependencies, host capabilities, a provider sign-in
-(`requires_auth`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
+(`requires_auth`), a new or changed OAuth client (`oauth:`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
 anything moves, and the Desktop / dashboard **Update** button opens the same
 confirmation. Declining (or a non-interactive session) leaves the plugin at
 the old pin.
@@ -766,6 +782,20 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **safe** | Installs normally, no extra output |
 | **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
 | **dangerous** | Blocked. `--force` does **not** override |
+
+`hermes plugins update` scans the new code with the same rules before it
+replaces the installed copy, so a plugin that picks up risky code in an update
+is flagged before it runs. A caution verdict on a Git update asks
+`Update anyway? [y/N]`, and `hermes plugins update NAME --force` accepts it
+without the question. Hermes Desktop shows the same findings in a dialog with an
+**Update anyway** button. Catalog updates move to a reviewed pin, so a caution
+verdict there does not ask. In every case nothing changes until the update is
+accepted.
+
+Hermes Desktop shows an **Update** button on a Git-installed plugin when the
+last update check found a newer commit. The gateway runs that check every
+`plugins.auto_update_check_hours` (default 24), and `hermes plugins check-updates`
+runs it on demand.
 
 On `hermes plugins update`, a dangerous verdict on the updated tree
 disables the plugin until you review the findings and re-enable it. A

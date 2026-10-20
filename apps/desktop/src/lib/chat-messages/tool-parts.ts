@@ -412,6 +412,10 @@ export interface SettledClarifyProjection {
   streamId: string | null
 }
 
+/** A tool call that neither returned nor was sealed: it is still running. */
+export const hasUnresolvedToolCall = (message: ChatMessage) =>
+  message.parts.some(part => part.type === 'tool-call' && part.result === undefined && part.completedAt === undefined)
+
 /**
  * Find the message that owns a tool call, by its stable call id, anywhere in
  * the transcript — not just in the currently-streaming bubble.

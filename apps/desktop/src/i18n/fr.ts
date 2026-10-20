@@ -11,6 +11,7 @@ import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
+import { frPluginUpdate } from './fr_plugin_update'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
@@ -493,14 +494,6 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  billingBlock: {
-    titleNous: 'Plus de crédits Nous',
-    titleProvider: provider => `Plus de crédits — ${provider}`,
-    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
-    openBilling: 'Ouvrir la facturation',
-    addCredits: 'Ajouter des crédits',
-    dismiss: 'Fermer'
-  },
   sendDiagnostics: {
     title: 'Envoyer les diagnostics à Nous',
     privacyNotice:
@@ -2530,14 +2523,7 @@ export const frOverrides = {
       pinnedProvenance: (sha: string) =>
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
-      updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
-      updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
-      updated: (name: string) =>
-        `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez le gateway pour l’appliquer.`,
-      updateConsentTitle: (name: string) => `${name} demande davantage`,
-      updateConsentBody: (name: string, sha: string) =>
-        `Le nouvel épinglage de ${name} dans le catalogue (${sha}) ajoute des surfaces que la version installée n’a pas. Appliquez-le uniquement si vous leur faites confiance :`,
-      updateConsentConfirm: 'Appliquer la mise à jour',
+      ...frPluginUpdate,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `Désinstaller ${name} ?`,
@@ -5069,6 +5055,10 @@ export const frOverrides = {
         loop_error: {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
+        },
+        cron_session_read_only: {
+          title: 'Cette conversation appartient à une tâche planifiée',
+          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
         },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',

@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."
@@ -690,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ حدث خطأ ما ولم أستطع إكمال هذا الرد.{hint}\nاستخدم /retry لإعادة المحاولة، أو /new لبدء محادثة جديدة. التفاصيل التقنية في سجل البوّابة (`hermes logs`)."
     history_unavailable: "⚠️ سجل هذه الجلسة غير متاح مؤقتًا، لذا لم تُعالج هذه الرسالة. اطلب من المشغّل فحص state.db، ثم أعد الإرسال بعد أن يعود سليمًا. استخدم /reset فقط إن كنت تريد فعلًا بدء محادثة جديدة."
     no_credentials: "⚠️ تعذّر الاتصال بخدمة نموذج الذكاء الاصطناعي، لذا لم تُعالج هذه الرسالة. استخدم /login لتسجيل الدخول مجددًا، أو /model لاختيار نموذج آخر. إن استمرّ الفشل، شغّل `hermes doctor` على المضيف."
+    cron_session_read_only: "⚠️ هذه المحادثة تابعة لمهمة مجدولة ولا تشغّل سوى تلك المهمة، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها."
   skills:
     disabled: "مهارة **{name}** مثبّتة لكنها معطّلة.\nفعّلها بـ: `hermes skills config`"
     not_installed: "مهارة **{name}** متاحة لكنها غير مثبّتة.\nثبّتها بـ: `hermes skills install {install_name}`"
@@ -1688,6 +1690,21 @@ slash:
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:
+  modern:
+    thought_for: "فكّر لمدة {seconds} ث"
+    thought: "فكّر"
+    working: "يعمل…"
+    preparing: "جارٍ تحضير {what}…"
+    hint_steer: "توجيه"
+    hint_queue: "إضافة للطابور"
+    hint_interrupt: "مقاطعة"
+    hint_stop: "إيقاف"
+    hint_commands: "الأوامر"
+    hint_files: "الملفات"
+    hint_shell: "الطرفية"
+    placeholder_busy_steer: "اكتب لتوجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_interrupt: "اكتب لإعادة توجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_queue: "اكتب لإضافة رسالة إلى الطابور بعد هذه الجولة"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "تعذّر تحميل الفوترة"
@@ -2231,6 +2248,7 @@ cli:
     queue_heading: "قائمة الانتظار · {count} في الانتظار · /queue list{controls}"
     more_queued: "+{count} أخرى"
     transcript_unavailable: "النص المباشر غير متاح بعد."
+    control_pending: "جارٍ الإرسال…"
     steer_prompt: "توجيه: "
     roster_empty: "لا وكلاء فرعيين نشطين ولا عمليات في الخلفية. تصل النتائج في المحادثة."
     entry_gone: "هذا العنصر لم يعد نشطًا."
@@ -2369,6 +2387,14 @@ cli:
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
     moved: "نُقل عنصر قائمة الانتظار من {source} إلى {destination}."
     usage_add: "الاستخدام: /queue add <prompt>"
+    gateway_refused: "لم تضعه البوابة في الطابور: {error}. لم يُضف شيء؛ أرسله مرة أخرى عند انتهاء الدور."
+    submit_unknown: "لم تُجب البوابة ({error})، لذا قد تكون الرسالة في الطابور بالفعل. راجع /queue list قبل إرسالها مجددًا."
+    move_gateway_fifo: "تشغّل البوابة المطالبات في الطابور بترتيب إرسالها؛ عدّل واحدة أو احذفها بدلاً من ذلك."
+    remove_refused: "تعذّرت إزالة عنصر الطابور {index}: {error}"
+    edit_refused: "تعذّر تعديل عنصر الطابور {index}: {error}"
+    already_started: "بدأ عنصر الطابور {index} بالفعل؛ سيُنفَّذ كما أُرسل."
+    started_stopped: "كان عنصر الطابور {index} قد بدأ بالفعل؛ أوقفته البوابة."
+    change_unknown: "لم تُجب البوابة بشأن عنصر الطابور {index} ({error})؛ راجع /queue list قبل المحاولة مجددًا."
   reload:
     env_reloaded: "أُعيد تحميل .env (تم تحديث {count} متغيّر)"
   steer:

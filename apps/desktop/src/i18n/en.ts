@@ -8,12 +8,14 @@ import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
+import { enErrorLayers } from './en_error_layers'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
+import { enPluginUpdate } from './en_plugin_update'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -2158,13 +2160,7 @@ export const en: Translations = {
       pinnedProvenance: (sha: string) =>
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
-      updateToPin: (sha: string) => `Update to ${sha}`,
-      updateFailed: (name: string) => `Could not update ${name}`,
-      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
-      updateConsentTitle: (name: string) => `${name} asks for more`,
-      updateConsentBody: (name: string, sha: string) =>
-        `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
-      updateConsentConfirm: 'Apply update',
+      ...enPluginUpdate,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
       uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,
@@ -4507,31 +4503,7 @@ export const en: Translations = {
       react: 'React',
       dismissError: 'Dismiss error',
       responseStopped: 'Response stopped',
-      errorLayers: {
-        auth: 'Sign-in problem',
-        billing: 'Out of credits',
-        disk: 'Disk full',
-        endpoint: "Can't reach your model server",
-        gateway: 'Hermes hit a problem',
-        generic: "Hermes couldn't finish this reply",
-        provider: 'The AI service returned an error',
-        runtime: 'Hermes hit a problem',
-        streaming: 'The reply was cut off'
-      },
-      errorLayerBodies: {
-        auth: 'The AI service rejected your sign-in. Check the credentials for this provider, then send your message again.',
-        billing: 'Your account has no credits left for this provider. Top up or switch provider, then send again.',
-        disk: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.',
-        endpoint:
-          "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
-        gateway:
-          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
-        provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
-        runtime:
-          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        streaming: 'The connection dropped before the reply finished. Retry to send it again.'
-      },
+      ...enErrorLayers,
       errorCodes: {
         auth: {
           title: provider => `${provider} rejected your sign-in`,
@@ -4632,6 +4604,10 @@ export const en: Translations = {
         SESSION_OWNER_BUSY: {
           title: 'Hermes is busy in this chat',
           body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+        },
+        cron_session_read_only: {
+          title: 'This chat belongs to a scheduled job',
+          body: 'It only runs that job, so your message was not run. Start a new chat to send it.'
         },
         SESSION_OWNER_UNCONFIRMED: {
           title: 'Your message may already be queued',

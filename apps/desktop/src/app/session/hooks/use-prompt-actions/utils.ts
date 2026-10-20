@@ -298,6 +298,13 @@ export function isSessionBusyError(error: unknown): boolean {
   return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))
 }
 
+/** A busy refusal because another writer holds the compression lock (`field: 'compression'`). */
+export function isCompressionBusyError(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+
+  return data?.reason === 'session_busy' && data.field === 'compression'
+}
+
 // prompt.submit refused because another surface (TUI, messaging gateway)
 // holds this session's lease (4090 / SESSION_NOT_OWNED, #106217). The gateway
 // stamps the machine reason in `error.data.reason`; the prose fallback covers
@@ -353,6 +360,13 @@ export function isForwardedReceipt(
   result: { forwarded?: boolean | null; status?: string } | undefined
 ): boolean {
   return legacyAccepted && result?.forwarded === true && result.status === 'queued'
+}
+
+/** TUI-26: the owner ended the session's voice chat on a typed stop phrase and admitted nothing. The
+ * identityless legacy retry gets the same reply (the sidecar forwards it to the ledger owner), and no
+ * turn will complete that send either. */
+export function isVoiceStoppedReceipt(result: { voice_stopped?: boolean } | undefined): boolean {
+  return result?.voice_stopped === true
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))

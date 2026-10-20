@@ -275,3 +275,84 @@ async def test_restart_waits_for_a_direct_busy_input_queued_behind_a_slow_captur
         await adapter.cancel_background_tasks()
         await async_wait_until(lambda: not mutation_tasks(authority), timeout=10)
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_buzz_split_text_merges_through_the_reader(monkeypatch):
+    """Buzz was left out of the #140973 serial-reader sweep: both the WS listener and the poll
+    sweep await ``_handle_events`` before reading the next batch (#141378)."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    # as both readers do: the next batch only after the previous _handle_events returned
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'first half')])
+    await adapter._handle_events('chan', state, [_buzz_event(2, 'second half')])
+    assert await owner.settle(2) == [('first half\nsecond half', 0)]
+
+
+def _buzz(monkeypatch):
+    from collections import OrderedDict
+
+    from plugins.platforms.buzz.adapter import BuzzAdapter
+
+    monkeypatch.setenv('BUZZ_ALLOWED_USERS', 'aa11bb22')
+    adapter = BuzzAdapter(PlatformConfig(enabled=True))
+    async def _name(pubkey):
+        return pubkey[:8]
+    adapter._resolve_user_name = _name  # the CLI-backed resolver has no place in a unit test
+    state = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
+    adapter._channel_state['chan'] = state
+    return adapter, state, adapter.build_source(chat_id='chan', chat_type='dm', user_id='aa11bb22')
+
+
+def _buzz_event(i, text):
+    return {'id': f'e{i}', 'kind': 9, 'pubkey': 'aa11bb22', 'content': text, 'created_at': i}
+
+
+@pytest.mark.asyncio
+async def test_buzz_cursor_never_passes_an_uncommitted_input(monkeypatch):
+    """Buzz saves its receive cursor after ``_handle_events`` returns, deferred while a busy burst is
+    held. The reader marks the next event seen before dispatching it, so a write that lands in that gap
+    must still name only committed inputs: a restart restores the saved cursor and skips the rest."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    saved = []
+    monkeypatch.setattr(type(adapter), '_write_cursors', staticmethod(lambda path, payload: saved.append(
+        (payload['channels']['chan']['last_ts'], {row['request_id'] for row in _rows(owner.authority)}))))
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'held')])
+    assert owner.key in adapter._shared_bursts and saved == []  # returned with the input only held
+    gate, real_name = asyncio.Event(), adapter._resolve_user_name
+
+    async def slow_name(pubkey):  # e2 is marked seen, not yet dispatched, while the burst commits
+        await gate.wait()
+        return await real_name(pubkey)
+    adapter._resolve_user_name = slow_name
+    second = asyncio.create_task(adapter._handle_events('chan', state, [_buzz_event(2, 'next')]))
+    await async_wait_until(lambda: saved, timeout=15, what='the deferred cursor write')
+    gate.set()
+    await asyncio.wait_for(second, 10)
+    assert await owner.settle(3) == [('held', 0), ('next', 0)]
+    assert saved[0][0] == 1, saved
+    # Every saved cursor names only events that had an admission row when it was written.
+    assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved
+
+
+@pytest.mark.asyncio
+async def test_buzz_cursor_write_waiting_on_disk_skips_a_newer_held_burst(monkeypatch):
+    """e1's deferred write is due but waits behind a slow earlier write; meanwhile e2 arrives and is
+    held. The waiting write must still land the cursor as it was when e1 committed, not e2's."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    saved = []
+    monkeypatch.setattr(type(adapter), '_write_cursors', staticmethod(lambda path, payload: saved.append(
+        (payload['channels']['chan']['last_ts'], {row['request_id'] for row in _rows(owner.authority)}))))
+    await adapter._cursor_write_lock.acquire()  # the earlier write, still in its fsync
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'held')])
+    await async_wait_until(lambda: adapter._cursor_write_lock._waiters, timeout=15,
+                           what="e1's committed write to queue on the lock")
+    await adapter._handle_events('chan', state, [_buzz_event(2, 'next')])
+    assert owner.key in adapter._shared_bursts  # e2 is held, not committed
+    adapter._cursor_write_lock.release()
+    await async_wait_until(lambda: saved, timeout=15, what='the waiting cursor write')
+    assert saved[0][0] == 1, saved
+    assert await owner.settle(3) == [('held', 0), ('next', 0)]
+    assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved

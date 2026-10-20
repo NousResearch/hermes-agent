@@ -43,7 +43,9 @@ async def _build_profile_authority(runner, name, home, *, register):
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = getattr(runner._session_db, '_db', runner._session_db)
-        if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        if db is None:
+            raise RuntimeError(_store_open_failure(runner, home))
+        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
         try:
@@ -54,6 +56,21 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise
     registry.replace(home, authority)
     return authority
+
+
+def _store_open_failure(runner, home):
+    """Why *home*'s ``state.db`` has no handle: the scoped handle caches answer None for a failed open
+    (and while they back off), so the park reason named an ownership mismatch over the real cause, a
+    legacy store that crashed its migration on every open (#141467). The reason is the exception the
+    failed open recorded; reopening here to learn it could create or migrate the store, and would skip
+    the caches' backoff."""
+    path = home / 'state.db'
+    caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
+              getattr(runner, '_session_db_handle_cache', None))
+    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    if error:
+        return f'{path} did not open: {error}'
+    return f'{path} is unavailable (its last open failed; retry pending)'
 
 
 def _park_reserved_profile(runner, name, home, exc):
@@ -235,7 +252,8 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     through its own fenced path). ``in_process`` also hard-interrupts the running agent of each
     executing in-process turn, or latches the generation ``adopt_agent`` consumes before it exists.
     ``reason`` (a gateway restart/shutdown) is recorded on each worker it signals, so the turn settles
-    with that cause; a worker already stopped (the user's Stop came first) keeps none."""
+    with that cause; a worker already stopped (the user's Stop came first) keeps none. A worker
+    still being spawned gets the same Stop and cause through latches (``_stop_spawning_managed``)."""
     from hermes_state_runtime import RuntimeStoreError
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
@@ -250,6 +268,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
             # loop escalates on that latch alone (terminate after STOP_ACK_SECONDS).
             logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
         signalled += 1
+    signalled += _stop_spawning_managed(authority, workers, reason)
     if not in_process:
         return signalled
     from agent.interrupt_compat import request_hard_interrupt
@@ -257,7 +276,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
-        if generation is None or sid in workers:
+        if generation is None or sid in workers or sid in getattr(authority, '_managed_spawning', {}):
             continue
         adopted_generation, agent = authority.adopted.get(sid, (None, None))
         if adopted_generation != generation:
@@ -268,6 +287,26 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
             request_hard_interrupt(agent, 'Profile stopping', tool_reason='gateway shutdown')
         signalled += 1
     return signalled
+
+
+def _stop_spawning_managed(authority, workers, reason):
+    """A managed turn whose worker is still being spawned has nothing to signal yet: latch the
+    Stop for its generation (``adopt_agent`` delivers it to the worker, which is never
+    bootstrapped) and, for a gateway restart/shutdown, the cause its pre-bootstrap interrupted
+    result carries (#134889 GW-22). A user's Stop latched first keeps no cause."""
+    stopped = 0
+    for sid, generation in list(getattr(authority, '_managed_spawning', {}).items()):
+        if sid in workers:
+            continue
+        stops = authority.pending_stops
+        if reason and stops.get(sid) != generation:
+            causes = getattr(authority, 'pending_stop_causes', None)
+            if causes is None:
+                causes = authority.pending_stop_causes = {}
+            causes[sid] = (generation, reason)
+        stops[sid] = generation
+        stopped += 1
+    return stopped
 
 
 def stop_managed_turns(runner, reason=None):

@@ -19,7 +19,7 @@
   "/compact": null,
   "/compose": null,
   "/compress": null,
-  "/config": "terminal",
+  "/config": null,
   "/context": null,
   "/copy": "terminal",
   "/cron": "terminal",
@@ -44,7 +44,7 @@
   "/hb": null,
   "/heartbeat": null,
   "/help": null,
-  "/history": "terminal",
+  "/history": null,
   "/image": "terminal",
   "/import": null,
   "/indicator": "terminal",
@@ -127,6 +127,6 @@
   "/voice": "composer-voice",
   "/wake": null,
   "/whoami": null,
-  "/worktree": null,
+  "/worktree": "terminal",
   "/yolo": null
 }

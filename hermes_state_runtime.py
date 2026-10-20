@@ -234,12 +234,20 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))
         if changed.rowcount != 1:
             raise RuntimeStoreError('stale_generation')
-        return _row(_admission(conn, row['admission_id']))
+        claimed = _row(_admission(conn, row['admission_id']))
+        # The transcript high-water mark at the claim (``messages.id`` is AUTOINCREMENT across every
+        # session): a row above it on this conversation was written by this turn, so settlement can
+        # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
+        claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
+        return claimed
     return db._execute_write(write)
 
 
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
-                         result: dict | None = None, _transfers=None) -> dict:
+                         result: dict | None = None, _transfers=None, _terminal_write=None) -> dict:
+    """``_terminal_write(conn, row)`` is the owner's same-transaction effect (a transcript notice,
+    ``gateway.session_results.finish_result``); like ``resolve_unknown_session_input``'s it must
+    not commit, may run again on SQLite retry, and raising rolls the settlement back."""
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
     from hermes_state_terminal import compact_result, encode_result
@@ -252,6 +260,8 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
         _retire_admission_workers(conn, row, epoch)
+        if _terminal_write is not None:
+            _terminal_write(conn, row)
         if result is not None:
             from hermes_state_terminal import RESULT_PREFIX
             encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))
@@ -884,9 +894,15 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    source = None
     if not auxiliary:
-        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
-        # session row was minted with its real surface at admission, so nothing to repair here.
+        # ``source`` is the worker platform (turn_usage._agent_session_source). A Desktop
+        # managed worker passes ``gui``; created_surface maps that to ``desktop``. The row
+        # is usually stamped at admission. A compression child can still be NULL (or an
+        # auxiliary-usage ``unknown``), and this worker never create_session's it, so fill
+        # only an unset column, as the creator upsert does.
+        raw = payload.get('source')
+        source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
     if set(payload) - allowed:
@@ -908,6 +924,17 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
     else:
         db._update_token_counts_in_transaction(conn, session_id, **payload)
+        # The managed worker's platform is the policy label (gui), not the in-process
+        # agent surface (desktop). Stamp the same created_surface the insert uses.
+        from gateway.session_policy import created_surface
+        from hermes_state_compression import _UNSET_CREATED_SQL, stamp_compression_ancestors
+        surfaced = created_surface(source)
+        if surfaced:
+            conn.execute(
+                "UPDATE sessions SET created_source=? WHERE id=? AND "
+                + _UNSET_CREATED_SQL.format(col="created_source"),
+                (surfaced, session_id))
+            stamp_compression_ancestors(conn, session_id)
     return {'value': None}
 
 

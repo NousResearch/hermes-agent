@@ -56,14 +56,21 @@ _live_overrides_lock = threading.Lock()
 
 
 def live_cdp_override() -> str:
-    """The current profile's live ``/browser connect`` endpoint, or ""."""
-    from hermes_constants import hermes_home_key
+    """The current profile's live ``/browser connect`` endpoint, or "".
+
+    On a multiplexed gateway a context with no profile bound (a bare ``threading.Thread`` or stdlib
+    executor that did not copy the caller's context) answers "" rather than the launch profile's
+    endpoint, the way ``get_secret`` fails closed. Single-profile processes are unchanged."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None and is_multiplex_active():
+        return ""
     with _live_overrides_lock:
         return _live_overrides.get(hermes_home_key(), "")
 
 
 def set_live_cdp_override(url: Optional[str]) -> None:
-    """Set (or with a falsy ``url`` clear) the current profile's live endpoint."""
+    """Set (or with a falsy ``url`` clear) the current profile's live endpoint and bump its generation."""
     from hermes_constants import hermes_home_key
     key = hermes_home_key()
     with _live_overrides_lock:
@@ -71,6 +78,20 @@ def set_live_cdp_override(url: Optional[str]) -> None:
             _live_overrides[key] = url
         else:
             _live_overrides.pop(key, None)
+        _live_generations[key] = _live_generations.get(key, 0) + 1
+
+
+# Per-profile count of live-endpoint publishes. A browser session records the value it saw before
+# resolving its endpoint; ``_get_session_info`` closes one whose profile published in between (it may
+# have resolved the old URL after ``/browser connect``'s second reap had already run).
+_live_generations: dict[str, int] = {}
+
+
+def live_cdp_generation(home_key: Optional[str] = None) -> int:
+    """The current (or ``home_key``'s) profile's live-endpoint generation."""
+    from hermes_constants import hermes_home_key
+    with _live_overrides_lock:
+        return _live_generations.get(home_key or hermes_home_key(), 0)
 
 
 def env_cdp_url() -> str:

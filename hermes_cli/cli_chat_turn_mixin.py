@@ -71,11 +71,18 @@ class CLIChatTurnMixin:
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             _retire_agent(self)
-        if self.agent is None:
-            _cprint(f"{_DIM}{t('cli.chat.initializing_agent')}{_RST}")
-        if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
-            return None
+        # A first-turn agent build shows in the live spinner (the spinner thread repaints it), never
+        # as a scrollback line.
+        initializing = t("cli.chat.initializing_agent") if self.agent is None else ""
+        if initializing:
+            self._spinner_text = initializing
+        try:
+            if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
+                                    request_overrides=turn_route.get("request_overrides")):
+                return None
+        finally:
+            if initializing and getattr(self, "_spinner_text", "") == initializing:
+                self._spinner_text = ""
         agent = self.agent
         if agent is None:
             return None
@@ -92,8 +99,9 @@ class CLIChatTurnMixin:
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        _cprint("")
+        if not getattr(self, "_modern_layout", False):
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
@@ -246,6 +254,10 @@ class CLIChatTurnMixin:
             # display_callback only when token streaming is off: with streaming on,
             # _stream_delta already renders the text and this would print it twice.
             def display_callback(sentence: str):
+                if not turn.box_opened and getattr(self, "_modern_layout", False):
+                    from hermes_cli.cli_modern_layout import answer_label
+                    turn.box_opened = True
+                    _cprint(answer_label())
                 if not turn.box_opened:
                     turn.box_opened = True
                     label = " ☤ Hermes "
@@ -624,7 +636,11 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
-            if reasoning:
+            if reasoning and getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import thought_rows
+                for line in thought_rows(None, reasoning, self.reasoning_full):
+                    _cprint(line)
+            elif reasoning:
                 w = self._scrollback_box_width()
                 r_label = f" {t('cli.chat.reasoning_label')} "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
@@ -667,15 +683,26 @@ class CLIChatTurnMixin:
             already_streamed = (
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
             ) and not is_error_response
+            modern = getattr(self, "_modern_layout", False)
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
-                _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
+                if modern:
+                    from hermes_cli.cli_modern_layout import closing_separator
+                    _cprint(closing_separator(True))
+                else:
+                    _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
             elif already_streamed:
                 # _flush_stream() already closed the streamed box; a post-stream transform
                 # hook shows a suffix for append-only changes, else the full replacement.
                 _post_stream_text = _post_stream_transform_output(response, turn.result)
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
+            elif modern:
+                from hermes_cli.cli_modern_layout import answer_label, closing_separator
+                _cprint(answer_label())
+                ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
+                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),

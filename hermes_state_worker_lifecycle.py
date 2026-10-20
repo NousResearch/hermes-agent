@@ -272,3 +272,6 @@ def insert_session_row_in_transaction(
         self._delete_unreferenced_system_prompts(conn)
     if parent_session_id:
         self._inherit_parent_session_metadata(conn, session_id)
+    # The upsert may have just filled a compression tip's created_source (update_token_counts).
+    from hermes_state_compression import stamp_compression_ancestors
+    stamp_compression_ancestors(conn, session_id)

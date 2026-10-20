@@ -58,7 +58,7 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
     args = (method, _profile_label(profile), exc.reason,
             f' field={exc.field}' if getattr(exc, 'field', None) else '',
             f' detail={exc.detail}' if getattr(exc, 'detail', None) else '')
-    if getattr(exc, 'field', None) or getattr(exc, 'detail', None):
+    if exc.reason != 'session_busy' and (getattr(exc, 'field', None) or getattr(exc, 'detail', None)):
         logger.warning(line, *args)
     else:
         logger.debug(line, *args)
@@ -539,30 +539,20 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        from gateway.session_live_listing import live_entries
         sessions = []
-        for sid in tuple(self.authority.sessions):
-            candidate = SessionRef(self.actor.profile_id, sid)
-            try:
-                handle = await self.authority.resolve(self.actor, candidate)
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
-                    raise
-                continue
-            row = self.authority.db.get_session(sid)
+        for entry in await live_entries(self.authority, self.actor):
+            row = entry.row
             # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
-            # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES or (
+            # finite one-shot runs are not conversations, as on every other picker. Closed by its last
+            # viewer and idle: main lists it as resumable (the stored feed), not as a live session.
+            if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
-            from gateway.session_local_close import closed_and_unviewed
-            if closed_and_unviewed(self.authority, sid, handle):
-                # Closed by its last viewer and idle: main lists it as resumable (the stored
-                # feed), not as a live session.
-                continue
-            sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
+            sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
-                             'running': handle.execution_state == 'running'})
+                             'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
 
@@ -690,10 +680,64 @@ class AuthorityConnection:
         return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
 
     async def submit(self, ref, params):
+        if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
+            self._record_voice_stop(ref, params)
+            return {'voice_stopped': True}
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)
         return asdict(receipt)
+
+    def _voice_stop_key(self, ref, params):
+        request_id = params.get('submission_id') or params.get('input_id')
+        if not isinstance(request_id, str) or not request_id:
+            return None
+        return (self.actor.subject, ref.profile_id, ref.session_id, request_id)
+
+    def _voice_stop_replay(self, ref, params):
+        """A retry of a stop this owner already consumed (its reply was lost; Ink offers Alt+K on the
+        same submission id). Voice is off by then, so the phrase check alone would admit ``stop`` as a
+        turn: the request identity answers it again, as an admission's replay would."""
+        key = self._voice_stop_key(ref, params)
+        if key is None or key not in getattr(self.authority, '_consumed_voice_stops', {}):
+            return False
+        if ref.session_id not in self.subscriptions:
+            return False  # submission() refuses it as permission_denied
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        return True
+
+    def _record_voice_stop(self, ref, params):
+        from collections import OrderedDict
+        key = self._voice_stop_key(ref, params)
+        if key is None:
+            return
+        consumed = self.authority.__dict__.setdefault('_consumed_voice_stops', OrderedDict())
+        consumed[key] = True
+        consumed.move_to_end(key)
+        while len(consumed) > 256:
+            consumed.popitem(last=False)
+
+    async def _typed_voice_stop(self, ref, params):
+        """TUI-26: a bare stop phrase typed while the session's voice chat is on ends the chat
+        (the sidecar's ``methods_prompt._consume_typed_stop_phrase``, its typed twin of the spoken
+        stop) and is never admitted. Only a submitter attached to the session may end it, and only
+        on a LOCAL session: a messaging lane's own ``/voice`` mode belongs to that chat, so a
+        viewer's typed text there is admitted untouched."""
+        text = params.get('text')
+        if not isinstance(text, str):
+            return False
+        if ref.session_id not in self.subscriptions:
+            return False  # submission() refuses it as permission_denied
+        self.authority.authorize(self.actor, ref, 'session:submit')
+        live = self.authority.sessions.get(ref.session_id)
+        source = getattr(live, 'source', None)
+        if source is None or source.platform != Platform.LOCAL:
+            return False
+        from gateway.session_config import local_voice_enabled
+        if not local_voice_enabled(ref.session_id):
+            return False
+        from tui_gateway import server
+        return await asyncio.to_thread(server._consume_typed_stop_phrase, text, ref.session_id, emit=False)
 
     def submission(self, ref, params):
         """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
@@ -719,13 +763,13 @@ class AuthorityConnection:
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
-            raise RuntimeStoreError('session_busy') from exc
+            raise busy_refusal(exc) from exc
         except RuntimeStoreError as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.

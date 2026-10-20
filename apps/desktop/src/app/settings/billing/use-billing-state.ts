@@ -531,7 +531,8 @@ function pendingTransition(
  * gateway). The already-scheduled downgrade target renders as an inert "Scheduled"
  * marker; other lower tiers stay actionable (picking one reschedules). With no active
  * subscription the lowest-order ($0 / free) tier stands in as the current plan, so
- * there is no "subscribe to Free" upgrade and no downgrade state.
+ * there is no "subscribe to Free" upgrade and no downgrade state — the stand-in
+ * is not a real subscription, so no tier sits "below" it regardless of tier_order.
  *
  * Empty unless `capable`: only a plans-capable account gets actionable tiles, and the
  * plan card / deep-link gate on the same verdict — so the grid never mints an
@@ -566,10 +567,14 @@ function derivePlanTiers(
   }
 
   // No active subscription → the lowest-order ($0 / free) tier stands in as the
-  // current plan: inert, never a "subscribe to Free" upgrade, and (being lowest)
-  // never leaving room for a downgrade.
+  // current plan: inert, never a "subscribe to Free" upgrade, and never leaving
+  // room for a downgrade.
   const currentTier = explicitCurrent ?? (current == null ? gridTiers[0] : undefined)
-  const currentOrder = currentTier?.tier_order
+  // Downgrade is only meaningful against a REAL subscription's tier. Without one
+  // the stand-in is just the $0 default — NAS does not guarantee it carries the
+  // lowest tier_order, so an order comparison can mislabel paid tiers with a
+  // smaller order as downgrades (#137544); every non-stand-in tier is a choice.
+  const currentOrder = current != null ? currentTier?.tier_order : undefined
   const manageBase = subscription.portal_url ?? fallbackPortalUrl
   // Only a downgrade has a target tier to mark; a cancellation has none.
   const pendingName = pending?.kind === 'downgrade' ? pending.tierName : null

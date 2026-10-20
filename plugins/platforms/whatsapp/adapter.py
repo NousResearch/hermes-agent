@@ -350,6 +350,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
+    serial_receive_loop = True  # the bridge poll loop awaits each media message before the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)

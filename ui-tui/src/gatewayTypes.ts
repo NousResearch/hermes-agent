@@ -505,6 +505,12 @@ export interface ToolsConfigureResponse {
 
 // ── MCP ──────────────────────────────────────────────────────────────
 
+export interface SessionExportResponse {
+  content: string
+  filename?: string
+  format: string
+}
+
 export interface ReloadMcpResponse {
   status?: string
   message?: string

@@ -12,6 +12,7 @@ const PLUGIN_BACKED_MESSAGING_SOURCES = [
   { id: 'google_chat', label: 'Google Chat' },
   { id: 'irc', label: 'IRC' },
   { id: 'line', label: 'LINE' },
+  { id: 'nextcloud_talk', label: 'Nextcloud Talk' },
   { id: 'ntfy', label: 'ntfy' },
   { id: 'raft', label: 'Raft' },
   { id: 'simplex', label: 'SimpleX Chat' },

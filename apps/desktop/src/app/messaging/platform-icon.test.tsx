@@ -8,6 +8,7 @@ const PLUGIN_BACKED_PLATFORMS = [
   { id: 'google_chat', name: 'Google Chat' },
   { id: 'irc', name: 'IRC' },
   { id: 'line', name: 'LINE' },
+  { id: 'nextcloud_talk', name: 'Nextcloud Talk' },
   { id: 'ntfy', name: 'ntfy' },
   { id: 'raft', name: 'Raft' },
   { id: 'simplex', name: 'SimpleX Chat' },

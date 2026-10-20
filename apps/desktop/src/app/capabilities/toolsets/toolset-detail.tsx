@@ -30,13 +30,15 @@ export function ToolsetDetail({
   const { t } = useI18n()
   const navigate = useNavigate()
   const tools = toolNames(toolset)
-  const label = toolsetDisplayLabel(toolset)
+  const label = toolsetDisplayLabel(toolset, t.skills.toolsetLabels)
 
   return (
     <>
       {/* "Configured" as a resting state is noise — only the warn state earns a pill. */}
       <DetailHeader
-        description={asText(toolset.description) || t.skills.noDescription}
+        description={
+          t.skills.toolsetDescriptions?.[toolset.name] ?? (asText(toolset.description) || t.skills.noDescription)
+        }
         pills={!toolset.configured && <PanelPill tone="warn">{t.skills.needsKeys}</PanelPill>}
         title={label}
       />

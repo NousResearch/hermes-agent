@@ -48,7 +48,15 @@ it('reads and persists the owning profile through A → B → A and restart', as
     const key = request.profile || 'default'
 
     if (request.method === 'PUT') {
-      configs[key] = structuredClone((request.body as { config: HermesConfigRecord }).config)
+      const incoming = structuredClone((request.body as { config: HermesConfigRecord }).config)
+      configs[key] = {
+        ...configs[key],
+        ...incoming,
+        display: {
+          ...(configs[key].display as Record<string, unknown>),
+          ...(incoming.display as Record<string, unknown>)
+        }
+      }
 
       return { ok: true }
     }

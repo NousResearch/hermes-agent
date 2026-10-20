@@ -259,6 +259,7 @@ import {
 } from './external-terminal'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { resolveFeatureFlags } from './feature-flags'
+import { looksBinary } from './file-preview-content'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -446,6 +447,7 @@ import { previewHttpUrlTarget } from './preview-url-target'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
+  primaryStartupProfile,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -1763,27 +1765,6 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.yaml': 'yaml',
   '.yml': 'yaml',
   '.zsh': 'shell'
-}
-
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
 }
 
 function previewFileMetadata(filePath, mimeType) {
@@ -11873,7 +11854,10 @@ async function prepareProfileDeleteRequest(request) {
   }
 
   if (decision.action === 'teardown-primary') {
-    writeActiveDesktopProfile('default')
+    if (readActiveDesktopProfile() === decision.profile) {
+      writeActiveDesktopProfile('default')
+    }
+
     await Promise.all([teardownPrimaryBackendAndWait(), teardownPoolBackendAndWait(decision.profile)])
 
     return decision.profile
@@ -11888,6 +11872,7 @@ async function prepareProfileRenameRequest(request) {
   return prepareProfileRenameLifecycle(request, {
     isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
     primaryProfileKey,
+    readActiveDesktopProfile,
     reloadPrimaryWindow: () => {
       mainWindow?.reload()
     },
@@ -11985,7 +11970,9 @@ async function startHermes(requestedProfile?: string) {
   // argument. An explicit profile-scoped caller names both.
   const { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
     ? { argvProfile: requestedProfile, routingProfile: requestedProfile }
-    : resolveLaunchProfile(readActiveDesktopProfile)
+    : resolveLaunchProfile(() =>
+        primaryStartupProfile(readActiveDesktopProfile(), managedPrimaryRestoreOwners.values().next().value?.profile)
+      )
 
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createPluginContext } from '@/contrib/plugin'
 import { type PluginSettingsRoute, resolvePluginSettingsTarget } from '@/contrib/settings-pages'
+import { I18nProvider } from '@/i18n'
 import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
 
 import { OverlayNav } from '../overlays/overlay-split-layout'
@@ -155,5 +156,15 @@ describe('Settings ▸ Plugins', () => {
 
     await waitFor(() => expect(screen.getByText('No plugin has settings yet.')).toBeTruthy())
     expect(screen.getByRole('link', { name: /Manage plugins/ }).getAttribute('href')).toBe('#/capabilities?tab=plugins')
+  })
+  it('keeps the Korean settings empty state and manage route localized', async () => {
+    requestGateway.mockImplementationOnce(async () => ({ plugins: [] }))
+    render(
+      <I18nProvider configClient={null} initialLocale="ko">
+        <Harness />
+      </I18nProvider>
+    )
+    await waitFor(() => expect(screen.getByText('아직 설정 페이지를 제공하는 플러그인이 없습니다.')).toBeTruthy())
+    expect(screen.getByRole('link', { name: '플러그인 관리' }).getAttribute('href')).toBe('#/capabilities?tab=plugins')
   })
 })

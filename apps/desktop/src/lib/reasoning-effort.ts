@@ -40,15 +40,21 @@ export function reasoningEffortClamp(
 
 /** Compact label; a clamped pick shows both ends ("Ultra→Max") so the pill
  *  never presents a Hermes step as a wire level the route does not have. */
-export function reasoningEffortLabel(effort: string, wire?: string): string {
+export function reasoningEffortLabel(
+  effort: string,
+  wire?: string,
+  labels?: Partial<Record<ReasoningEffort | 'none', string>>
+): string {
   const key = normalize(effort)
   const clamp = reasoningEffortClamp(effort, wire)
 
+  const label = (value: ReasoningEffort | 'none') => labels?.[value] ?? SHORT_LABELS[value]
+
   if (clamp) {
-    return `${SHORT_LABELS[clamp.effort]}→${SHORT_LABELS[clamp.wire]}`
+    return `${label(clamp.effort)}→${label(clamp.wire)}`
   }
 
-  return key ? (SHORT_LABELS[key] ?? effort) : ''
+  return key === 'none' || isReasoningEffort(key) ? label(key) : effort
 }
 
 /** Thinking is on unless a level explicitly says otherwise; an empty value

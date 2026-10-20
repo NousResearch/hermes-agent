@@ -473,18 +473,20 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
   useSettingDeepLink('config:appearance', page => page !== undefined && show(page as AppearanceSubpageId))
 
-  // One box does double duty: filter installed themes live (below), and run a
-  // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
-  // backend) for anything not already installed.
+  // Filter installed themes live, and search the VS Code Marketplace through
+  // the Cmd-K "Install theme…" backend for anything not already installed.
   const needle = normalize(query)
+
+  const themeDescription = (theme: Pick<DesktopTheme, 'name' | 'description'>) =>
+    !isUserTheme(theme.name) ? (a.themeDescriptions[theme.name] ?? theme.description) : theme.description
 
   const filteredThemes = availableThemes
     .filter(
       theme =>
         !needle ||
-        theme.label.toLowerCase().includes(needle) ||
-        theme.name.toLowerCase().includes(needle) ||
-        theme.description.toLowerCase().includes(needle)
+        normalize(theme.label).includes(needle) ||
+        normalize(theme.name).includes(needle) ||
+        normalize(themeDescription(theme)).includes(needle)
     )
     // Active theme first; stable sort keeps the rest in their original order.
     .sort((a, b) => Number(b.name === themeName) - Number(a.name === themeName))
@@ -625,7 +627,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                                     {theme.label}
                                   </div>
                                   <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                                    {theme.description}
+                                    {themeDescription(theme)}
                                   </div>
                                 </div>
                               </button>

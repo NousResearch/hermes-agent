@@ -112,6 +112,21 @@ export type BotsMessages = {
     retryNow: string
     rosterUnavailable: (reason: string) => string
     waitingForGateway: string
+
+    activityToastsOn: string
+    activityToastsOff: string
+    filterRoster: string
+    activeFilters: (count: number) => string
+    filterRosterActive: (count: number) => string
+    allGateways: string
+    hidden: string
+    gatewayError: string
+    thisDevice: string
+    attentionAuth: string
+    attentionQuota: string
+    attentionConfig: string
+    attentionBlocked: string
+    title: string
   }
   /** User-made roster sections (folders the user files bots into). */
   sections: {
@@ -192,6 +207,53 @@ export type BotsMessages = {
     chatEmpty: string
     /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
     kickoff: string
+
+    pinnedToTop: (name: string) => string
+    unpinned: (name: string) => string
+    shownInRoster: (name: string) => string
+    hiddenFromRoster: (name: string) => string
+    metadataFailed: string
+    groupsFailed: string
+    duplicating: (name: string) => string
+    duplicated: (name: string, source: string) => string
+    draftDiscarded: (name: string) => string
+    draftCleanupFailed: (name: string) => string
+    createError: string
+    created: (name: string) => string
+    createdOn: (name: string, target: string) => string
+    createDesc: string
+    nameTaken: (name: string) => string
+    nameTakenOn: (name: string, target: string) => string
+    createOn: string
+    currentConnection: (name: string) => string
+    remoteCreateHint: (target: string) => string
+    titleLabel: string
+    titlePlaceholder: string
+    descriptionLabel: string
+    generalTab: string
+    cloneFrom: string
+    cloneFromOn: (target: string) => string
+    freshProfile: string
+    inheritedModel: string
+    soulLabel: string
+    shareAuth: string
+    shareAuthHint: string
+    createEmpty: string
+    capabilitiesNameTaken: string
+    capabilitiesNeedName: string
+    skillsUnsupported: string
+    catalogUnsupported: string
+    emptySkillsHint: string
+    catalogFrom: (source: string) => string
+    defaultToolsetsHint: string
+    catalogInstalled: string
+    catalog: string
+    mcpCatalogHint: string
+    createAction: string
+    deleteDescPrefix: string
+    deleteDescBetween: string
+    deleteDescSuffix: string
+    deleteSuccess: (name: string) => string
   }
   /** Avatar picker: shapes, blobs, pets, uploads, generation. */
   avatar: {
@@ -217,6 +279,29 @@ export type BotsMessages = {
     savedLocallyDescriptionFailed: string
     generate: string
     generating: string
+
+    auto: string
+    autoHint: string
+    lockFace: string
+    lockFaceHint: string
+    unlock: string
+    faceFollowsName: string
+    faceLocked: string
+    imageModelUnavailable: (restartAction: string) => string
+    checkingImageBackend: string
+    chooseImage: string
+    blobKinds: {
+      round: string
+      organic: string
+      boxy: string
+      capsule: string
+      nub: string
+      cloud: string
+      droplet: string
+      hexagon: string
+      sun: string
+      triangle: string
+    }
   }
   /** Group chats: the room, its composer, threads and activity feed. */
   group: {
@@ -297,6 +382,23 @@ export type BotsMessages = {
     wantsToRunCommand: (handle: string) => string
     asks: (handle: string) => string
     answerTo: (member: string) => string
+
+    openChat: string
+    availableMembers: (available: number, total: number) => string
+    memberAdded: (name: string, group: string) => string
+    memberRemoved: (name: string, group: string) => string
+    newGroupPlaceholder: string
+    nameExample: string
+    createAndJoin: string
+    createdWithBots: (name: string, count: number) => string
+    createDesc: (max: number) => string
+    memberInGroups: (handle: string, groups: string) => string
+    noBotMatches: (query: string) => string
+    createBotFirst: string
+    atLeastTwo: string
+    createAction: (count: string) => string
+    deleteDesc: (name: string) => string
+    deleteSuccess: (name: string) => string
   }
   /** Skills hub + MCP setup surfaces embedded in the bot editor. */
   tools: {
@@ -453,5 +555,45 @@ export type BotsMessages = {
     runsInterval: (count: number, unit: string) => string
     runsRaw: string
     timesTotal: (count: number) => string
+
+    am: string
+    pm: string
+    untitledJob: string
+    nameNulError: string
+    instructionNulError: string
+    resultSucceeded: string
+    resultFailed: string
+    resultDeliveryFailed: string
+    resultBlockedConfig: string
+    detailStatus: string
+    detailActive: string
+    detailPaused: string
+    detailCompleted: string
+    repeatForever: string
+    repeatTimes: (count: number | string) => string
+    detailSchedule: string
+    detailRawSchedule: string
+    detailRepeat: string
+    detailNextRun: string
+    detailLastRun: string
+    detailLastResult: string
+    detailWorkdir: string
+    detailDesc: string
+    legacyPaused: string
+    unitFromNow: (unit: string) => string
+    stopAfterPrefix: string
+    stopAfterSuffix: string
+  }
+
+  model: {
+    customProvider: string
+    customModel: string
+    providerExample: string
+    modelExample: string
+    backToDropdowns: string
+    inheritLaunchProfile: string
+    enterManually: string
+    gatewayDefault: string
+    nameExample: string
   }
 }

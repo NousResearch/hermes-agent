@@ -1,10 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { getSkills, type ProfileScope, profileScopeKey } from '@/hermes'
+import type { Translations } from '@/i18n/types'
 import { normalize } from '@/lib/text'
 import type { OfficialSkillInfo, SkillInfo } from '@/types/hermes'
 
 import { asText, includesQuery } from '../../settings/helpers'
+
+import { officialSkillDescription, skillDescription } from './korean-descriptions'
 
 // Skills live in the RQ cache so switching tabs/pages paints the cached list
 // instantly (no reload flash) and mount only fires a deduped background
@@ -32,7 +35,11 @@ export const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'nu
 export const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
 // Catalog rows have no usage yet — plain A–Z, with tags as searchable metadata.
-export function filteredOfficial(skills: OfficialSkillInfo[], query: string): OfficialSkillInfo[] {
+export function filteredOfficial(
+  skills: OfficialSkillInfo[],
+  query: string,
+  copy?: Translations['skills']
+): OfficialSkillInfo[] {
   const q = normalize(query)
 
   return skills
@@ -41,20 +48,32 @@ export function filteredOfficial(skills: OfficialSkillInfo[], query: string): Of
         !q ||
         includesQuery(skill.name, q) ||
         includesQuery(skill.description, q) ||
+        includesQuery(officialSkillDescription(skill, copy), q) ||
+        includesQuery(copy?.skillCategoryNames?.[skill.category], q) ||
         includesQuery(skill.category, q) ||
         skill.tags.some(tag => includesQuery(tag, q))
     )
     .sort((a, b) => asText(a.name).localeCompare(asText(b.name)))
 }
 
-export function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): SkillInfo[] {
+export function filteredSkills(
+  skills: SkillInfo[],
+  query: string,
+  desc: boolean,
+  copy?: Translations['skills']
+): SkillInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
 
   return skills
     .filter(
       skill =>
-        !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
+        !q ||
+        includesQuery(skill.name, q) ||
+        includesQuery(skill.description, q) ||
+        includesQuery(skillDescription(skill, copy), q) ||
+        includesQuery(copy?.skillCategoryNames?.[skill.category], q) ||
+        includesQuery(skill.category, q)
     )
     .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
 }

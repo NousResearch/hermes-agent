@@ -47,6 +47,8 @@ export function rankSearchOption(option: string, search: string): number {
  * `ConfigField` routes here when `schema.searchable === true`.
  */
 export function SearchableSelect({
+  'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
   value,
   onChange,
   options,
@@ -54,6 +56,8 @@ export function SearchableSelect({
   emptyMessage = 'No results found.',
   clearLabel
 }: {
+  'aria-labelledby'?: string
+  'aria-describedby'?: string
   value: string
   onChange: (value: string) => void
   options: string[]
@@ -80,8 +84,10 @@ export function SearchableSelect({
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
+          aria-describedby={ariaDescribedBy}
           aria-expanded={open}
           aria-haspopup="listbox"
+          aria-labelledby={ariaLabelledBy}
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',

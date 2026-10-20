@@ -100,6 +100,28 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
 
+def _kill_owned_process(registry: Any, process: dict, reason: str) -> None:
+    """Teardown kill of one owned background process, always logged with who asked.
+
+    ``reason`` is the session-level end reason a TUI/desktop teardown stamps on the agent
+    (``tui_close``, ``lru_evict``, ...). When it is set and the agent was promised a completion
+    notice (notify_on_complete), the notice is KEPT: the session is told the job was stopped
+    unfinished instead of waiting on it forever. A delegated child's close (no reason) still
+    consumes it — the child's summary is the deliverable, not its processes."""
+    tell_owner = bool(reason and process.get("notify_on_complete"))
+    source = f"agent_close:{reason}" if reason else "agent_close"
+    logger.info("Lifecycle kill proc=%s owner=%s source=agent_close reason=%s notice_kept=%s",
+                process["session_id"], process["owner_task_id"], reason or "-", tell_owner)
+    # Stamp the source before signalling: the reader thread can publish the completion the moment the
+    # process dies, ahead of kill_process's own bookkeeping, and the notice must still say who stopped it.
+    live = registry.get(process["session_id"]) if tell_owner else None
+    if live is not None:
+        live.termination_source = source
+    result = registry.kill_process(process["session_id"], source=source, consume_output=not tell_owner)
+    if live is not None and result.get("status") == "error":
+        live.termination_source = ""  # still running: a later natural exit must not read as stopped
+
+
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
@@ -117,9 +139,7 @@ class ClientLifecycleMixin:
                     # user can still stop it on purpose via process_manage kill.
                     if process.get("persist_on_release"):
                         continue
-                    process_registry.kill_process(
-                        process["session_id"], source="agent_close", consume_output=True,
-                    )
+                    _kill_owned_process(process_registry, process, getattr(self, "_close_reason", ""))
 
         def release_computer_use() -> None:
             from tools.computer_use.tool import release_computer_use_session

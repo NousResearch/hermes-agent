@@ -600,6 +600,10 @@ export interface SessionInfo {
    *  long tool call and is false for a zombie whose process died (#88443).
    *  Undefined against older backends and for non-cron rows. */
   scheduler_owned?: boolean
+  /** Running background processes + live async delegations this session owns, counted by the
+   *  backend at list time. Lets the sidebar show Working for a session with a job still running
+   *  even when this window has never opened it. Absent = none, or an older backend. */
+  background_work?: number
   last_active: number
   message_count: number
   model: null | string

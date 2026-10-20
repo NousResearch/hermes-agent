@@ -158,6 +158,12 @@ export const $sessionDotStateById = computed(
     claim(persistedUnread, 'unread')
 
     claim(background, 'background')
+    // Same claim from the list row: the backend counts each session's running jobs, so a session
+    // this window never opened (started on the phone, before a restart) still reads as Working.
+    claim(
+      sessions.filter(s => (s.background_work ?? 0) > 0).map(s => s.id),
+      'background'
+    )
     // Async delegation: the parent turn has ended but its subagents are still
     // running, so the session's work continues in child sessions. Same visual
     // claim as background processes — and it yields to `working` below the

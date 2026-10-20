@@ -31,5 +31,16 @@ export const zhNotices = {
     title: '电脑在 Hermes 工作时进入了睡眠',
     message: 'Hermes 可以在任务运行时保持电脑唤醒。屏幕仍会照常关闭，使用电池时电脑仍可能睡眠。',
     action: '运行期间保持唤醒'
+  },
+  billingBlock: {
+    titleNous: 'Nous 额度已用尽',
+    titleProvider: provider => `额度已用尽 — ${provider}`,
+    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
+    openBilling: '打开账单',
+    addCredits: '添加额度',
+    dismiss: '忽略'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

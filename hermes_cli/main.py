@@ -1343,11 +1343,11 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
         if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key, skip_launch_stubs=True)
             if sessions:
                 return sessions[0]["id"]
         # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1)
+        sessions = db.search_sessions(source=source, limit=1, skip_launch_stubs=True)
         return sessions[0]["id"] if sessions else None
     return None
 

@@ -318,12 +318,21 @@ export function parseOscColor(data: string): string | undefined {
 // in xterm.js-based terminals like VS Code). tmux is allowlisted because it
 // accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
 // terminal.
-const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
+const EXTENDED_KEYS_TERMINALS = [
+  'iTerm.app',
+  'kitty',
+  'WezTerm',
+  'alacritty',
+  'ghostty',
+  'tmux',
+  'windows-terminal',
+  'vscode'
+]
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
-export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+export function supportsExtendedKeys(terminal: string | null = env.terminal): boolean {
+  return EXTENDED_KEYS_TERMINALS.includes(terminal ?? '')
 }
 
 /** True when the Kitty keyboard protocol push (CSI >1u) must be skipped for

@@ -118,6 +118,14 @@ def _get_worktree_isolation() -> bool:
     working copy. Git-only and local-backend-only; otherwise silently ignored."""
     return bool(_cfg().get("worktree_isolation", False))
 
+def _get_child_scratch_isolation() -> bool:
+    """delegation.child_scratch_isolation (bool, default True): each child runs in its
+    own unique scratch subdirectory (instead of the parent's shared cwd), so parallel
+    children never see or contend for each other's files. Unlike worktree isolation this
+    works outside git repos and on any terminal backend. The scratch dir is created
+    under the Hermes scratch cache and pruned with the normal idle-scratch cleanup."""
+    return bool(_cfg().get("child_scratch_isolation", True))
+
 def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
     dispatch is REJECTED (not queued) so a runaway model can't pile up unbounded background work; the caller then

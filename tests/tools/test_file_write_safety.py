@@ -626,7 +626,7 @@ class TestProtectedInstructionFiles:
     def _gate_on(self, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, [])
+            ft, "_protected_instruction_config", lambda: (True, [], [])
         )
         yield
 
@@ -932,7 +932,7 @@ class TestProfileHomeExemptsHermesRoot:
     def _gate_on(self, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, [])
+            ft, "_protected_instruction_config", lambda: (True, [], [])
         )
         # The resolved-home slot is filled once per process; keep the fixture honest.
         monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)

@@ -9,6 +9,17 @@ import { exposePluginSDK } from "./plugins";
 import { ThemeProvider } from "./themes";
 import { HERMES_BASE_PATH } from "./lib/api";
 
+// Register the service worker (PWA installability + offline bundles). Only in
+// the browser; a failed registration (e.g. insecure context) is non-fatal.
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    const swUrl = `${HERMES_BASE_PATH || ""}/sw.js`;
+    navigator.serviceWorker.register(swUrl).catch(() => {
+      /* SW unavailable (insecure/private mode) — app still works, just no install */
+    });
+  });
+}
+
 // Expose the plugin SDK before rendering so plugins loaded via <script>
 // can access React, components, etc. immediately.
 exposePluginSDK();

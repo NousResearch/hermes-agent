@@ -17,9 +17,9 @@ from typing import Any, Dict, Optional
 # ledger's OOM-suspicion heuristic: a level that makes a later unclean death
 # "suspected OOM" already warns while the process is alive.
 _CRITICAL_AVAILABLE_KIB = 64 * 1024  # < 64 MiB available
-_CRITICAL_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal
+_CRITICAL_AVAILABLE_FRACTION = 0.0005  # < 0.05% of MemTotal (~64 MiB)
 _ELEVATED_AVAILABLE_KIB = 128 * 1024  # < 128 MiB available
-_ELEVATED_AVAILABLE_FRACTION = 0.15  # < 15% of MemTotal
+_ELEVATED_AVAILABLE_FRACTION = 0.001   # < 0.1% of MemTotal (~128 MiB)
 _PRESSURE_TIERS = (  # order-sensitive: worst first
     ("critical", _CRITICAL_AVAILABLE_KIB, _CRITICAL_AVAILABLE_FRACTION),
     ("elevated", _ELEVATED_AVAILABLE_KIB, _ELEVATED_AVAILABLE_FRACTION),

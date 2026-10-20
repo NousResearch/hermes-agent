@@ -12,6 +12,22 @@ describe('legacy modified return parsing', () => {
   })
 })
 
+describe('Android/mobile CRLF-Enter (CRLF fused as one token)', () => {
+  it('parses a lone CRLF read as one Enter keypress', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\r\n')
+
+    expect(keys).toEqual([expect.objectContaining({ name: 'return', ctrl: false, meta: false, shift: false, raw: undefined })])
+  })
+
+  it('still keeps CR/LF embedded in a larger text token as paste/newline content', () => {
+    // CR/LF are not split points — a token like 'a\r\nb' stays whole so a
+    // non-bracketed paste does not prematurely submit the composer.
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'a\r\nb')
+
+    expect(keys).toEqual([expect.objectContaining({ raw: 'a\r\nb' })])
+  })
+})
+
 describe('legacy function-key parsing', () => {
   it.each([
     ['f1', '\x1bOP'],

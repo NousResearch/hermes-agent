@@ -73,6 +73,7 @@ import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
 import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
+import { PwaInstallBanner } from "@/components/PwaInstallBanner";
 import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -578,6 +579,7 @@ export default function App() {
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
       <MultiplexStandaloneBanner status={sidebarStatus} />
+      <PwaInstallBanner />
       <SharedMetricsConsentBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -763,7 +765,7 @@ export default function App() {
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
                 isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                  ? "pb-[env(safe-area-inset-bottom,0px)] pt-1 sm:pt-2 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}

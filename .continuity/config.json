@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "project": "Hermes",
+  "repo_id": "hermes-agent",
+  "risk_tier": "T3",
+  "integration_ref": "origin/main",
+  "toolchain_lock": ".continuity/toolchain.lock.json",
+  "goal": "Pilot deterministic cross-agent continuity in Hermes",
+  "expected_repo_root": "/Volumes/Storage Unit/Application-Data/Codex/worktrees/hermes-continuity-pilot-20260824",
+  "external_volume": "/Volumes/Storage Unit",
+  "state_root": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824",
+  "max_output_chars": 8000,
+  "basic_memory": {
+    "project": "hermes-continuity-pilot",
+    "card_path": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/basic-memory/notes/continuity/hermes-agent/current.md"
+  },
+  "beads": {
+    "binary": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/bin/bd",
+    "data_dir": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/beads",
+    "issues_path": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/beads/issues.jsonl",
+    "active_task": "hermes-continuity-b6l",
+    "timeout_seconds": 15,
+    "completion_timeout_seconds": 60
+  },
+  "spec": {
+    "change_id": "001-global-continuity-pilot",
+    "path": "specs/001-global-continuity-pilot/spec.md"
+  },
+  "instructions": [
+    "AGENTS.md",
+    ".specify/memory/constitution.md",
+    ".agents/skills/speckit-implement/SKILL.md",
+    ".claude/skills/speckit-implement/SKILL.md"
+  ],
+  "dependency_identity": {
+    "python": ".venv/bin/python",
+    "requirements_lock": ".continuity/ci-requirements.txt"
+  },
+  "native_observation_policy": {
+    "required_surfaces": ["claude", "codex", "hermes"],
+    "max_age_seconds": 300,
+    "hosts": {
+      "claude": {
+        "path": "/Users/phill-mac/.local/bin/claude",
+        "sha256": "1495eb7c42d3b4451f5f1cd38b6d498d22a4a38c802bc2be5c1cf1795e64820d"
+      },
+      "codex": {
+        "path": "/Users/phill-mac/.local/bin/codex",
+        "sha256": "ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02"
+      },
+      "hermes": {
+        "path": "/Users/phill-mac/.local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11",
+        "sha256": "216061c513cab74dec6698580a9d51c5ab8ae8dc3d90f3ae88a57bbc4a9b1a92"
+      }
+    }
+  },
+  "evidence_policy": {
+    "focused_suite": {
+      "name": "focused-suite",
+      "argv": [
+        "/bin/bash",
+        "scripts/run_tests.sh",
+        "tests/test_continuity_control_plane.py"
+      ],
+      "timeout_seconds": 1800
+    },
+    "full_suite": {
+      "name": "full-suite",
+      "argv": [
+        "/bin/bash",
+        "scripts/run_tests.sh"
+      ],
+      "timeout_seconds": 7200
+    },
+    "runtime_checks": [
+      {
+        "name": "claude-project-hook-observation",
+        "argv": [
+          ".venv/bin/python",
+          "scripts/continuity_native_observation.py",
+          "--surface",
+          "claude",
+          "--config",
+          ".continuity/config.json"
+        ],
+        "surface": "claude",
+        "event": "project-admission",
+        "adapter_path": ".claude/settings.json",
+        "bound_paths": [
+          ".claude/settings.json"
+        ],
+        "native": true,
+        "timeout_seconds": 180
+      },
+      {
+        "name": "codex-project-hook-observation",
+        "argv": [
+          ".venv/bin/python",
+          "scripts/continuity_native_observation.py",
+          "--surface",
+          "codex",
+          "--config",
+          ".continuity/config.json"
+        ],
+        "surface": "codex",
+        "event": "project-admission",
+        "adapter_path": ".codex/hooks.json",
+        "bound_paths": [
+          ".codex/hooks.json",
+          ".codex/config.toml"
+        ],
+        "native": true,
+        "timeout_seconds": 180
+      },
+      {
+        "name": "hermes-native-hook-observation",
+        "argv": [
+          ".venv/bin/python",
+          "scripts/continuity_native_observation.py",
+          "--surface",
+          "hermes",
+          "--config",
+          ".continuity/config.json",
+          "--hermes-home",
+          "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/hermes-home/.hermes"
+        ],
+        "surface": "hermes",
+        "event": "hooks-list-doctor-and-fresh-session",
+        "adapter_path": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/hermes-home/.hermes/config.yaml",
+        "bound_paths": [
+          "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/hermes-home/.hermes/config.yaml",
+          "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/hermes-home/.hermes/continuity-adapter-manifest.json"
+        ],
+        "native": true,
+        "timeout_seconds": 300
+      }
+    ],
+    "rollback_check": {
+      "name": "hermes-adapter-rollback",
+      "argv": [
+        ".venv/bin/python",
+        "scripts/install_continuity_adapters.py",
+        "--repo-root",
+        "/Volumes/Storage Unit/Application-Data/Codex/worktrees/hermes-continuity-pilot-20260824",
+        "--hermes-home",
+        "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/hermes-home/.hermes",
+        "--rollback-dry-run"
+      ],
+      "mode": "dry-run",
+      "timeout_seconds": 180
+    }
+  },
+  "evidence_executables": [
+    {
+      "path": "/bin/bash",
+      "sha256": "16303dedab719ddb63efd9dd68092a0da37b397bfd4fcb856d5f1c86c5ee414b"
+    },
+    {
+      "path": ".venv/bin/python",
+      "sha256": "216061c513cab74dec6698580a9d51c5ab8ae8dc3d90f3ae88a57bbc4a9b1a92"
+    }
+  ],
+  "external_instructions": [
+    {
+      "path": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/hermes-home/.hermes/skills/speckit-implement/SKILL.md",
+      "sha256": "511f28d0a64c8a39ca9d50d4506b9db2d092ad847ac430213587cd41f3bb4aa8"
+    }
+  ],
+  "event_log": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/events/events.jsonl",
+  "receipt_dir": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824/receipts"
+}

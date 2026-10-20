@@ -14,7 +14,6 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { Check, Loader2, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { confirm } from '@/store/confirm'
 import {
   $fleetUpdateRequest,
   $pluginFleet,
@@ -23,15 +22,11 @@ import {
   type FleetInstall,
   fleetInstallKey,
   type FleetSkippedSource,
-  type FleetUpdateOutcome,
   openFleetUpdate,
-  settleFleetInstalls,
-  updateFleetInstall
+  settleFleetInstalls
 } from '@/store/plugin-fleet-updates'
 
-type RowState = 'pending' | 'running' | 'done' | 'failed' | 'declined'
-
-const UPDATE_CONCURRENCY = 3
+import { type FleetRowState as RowState, runFleetBatch } from './fleet-update-run'
 
 const pinLabel = (install: FleetInstall) => install.row.catalog_version ?? install.row.catalog_sha?.slice(0, 8) ?? ''
 
@@ -69,7 +64,8 @@ function StateGlyph({ state }: { state: RowState }) {
  * Review-then-apply dialog for updating agent plugins on every gateway and
  * profile that runs an outdated catalog pin. One line per install; the same
  * lines become the live progress list once the user confirms. A pin that
- * widens a plugin asks ONCE for the whole batch rather than per profile.
+ * widens a plugin, or a caution scan verdict, asks ONCE for the whole batch
+ * rather than per profile (`runFleetBatch`).
  */
 export function FleetUpdateDialog({
   installs,
@@ -136,66 +132,7 @@ export function FleetUpdateDialog({
 
   const run = async () => {
     setPhase('running')
-    const queue = [...installs]
-    const settled = new Set<string>()
-    const needsConsent: { install: FleetInstall; outcome: Extract<FleetUpdateOutcome, { kind: 'consent' }> }[] = []
-    let applied = 0
-
-    const apply = async (install: FleetInstall, accept: boolean) => {
-      setState(install, 'running')
-      const outcome = await updateFleetInstall(install, accept)
-
-      if (outcome.kind === 'consent') {
-        needsConsent.push({ install, outcome })
-        setState(install, 'pending')
-
-        return
-      }
-
-      if (outcome.kind === 'failed') {
-        setState(install, 'failed', outcome.error)
-
-        return
-      }
-
-      applied += outcome.kind === 'applied' ? 1 : 0
-      settled.add(fleetInstallKey(install))
-      setState(install, 'done')
-    }
-
-    const drain = async (items: FleetInstall[], accept: boolean) => {
-      const work = [...items]
-
-      await Promise.all(
-        Array.from({ length: Math.min(UPDATE_CONCURRENCY, work.length) }, async () => {
-          for (let next = work.shift(); next; next = work.shift()) {
-            await apply(next, accept)
-          }
-        })
-      )
-    }
-
-    await drain(queue, false)
-
-    if (needsConsent.length > 0) {
-      const lines = [...new Set(needsConsent.flatMap(entry => entry.outcome.deltaLines))]
-      const names = [...new Set(needsConsent.map(entry => entry.install.row.name))].join(', ')
-
-      const ok = await confirm({
-        confirmLabel: t.skills.plugins.updateConsentConfirm,
-        description: [p.consentBody(names, needsConsent.length), ...lines].join('\n'),
-        title: t.skills.plugins.updateConsentTitle(names)
-      })
-
-      const pending = needsConsent.splice(0).map(entry => entry.install)
-
-      if (ok) {
-        await drain(pending, true)
-      } else {
-        pending.forEach(install => setState(install, 'declined'))
-      }
-    }
-
+    const { applied, settled } = await runFleetBatch(installs, t.skills.plugins, setState)
     settleFleetInstalls(settled)
     setPhase('done')
     onFinished?.(applied)
@@ -309,7 +246,8 @@ export function FleetUpdateDialog({
   )
 }
 
-/** Plugins-tab header button: present only while some profile on some gateway is behind its pin. */
+/** Plugins-tab header action (beside Install from Git, styled like the Skills tab's "Update all"):
+ *  present only while some profile on some gateway is behind its pin. */
 export function FleetUpdateAllButton() {
   const { t } = useI18n()
   const f = t.skills.plugins.fleet
@@ -325,9 +263,9 @@ export function FleetUpdateAllButton() {
       <Button
         data-testid="plugin-fleet-update-all"
         onClick={() => openFleetUpdate(outdated, f.titleAll)}
-        size="sm"
+        size="xs"
         type="button"
-        variant="outline"
+        variant="text"
       >
         {f.updateAll(outdated.length)}
       </Button>

@@ -208,8 +208,23 @@ describe('updateFleetInstall', () => {
     })
 
     request.mockResolvedValueOnce({ ok: true })
-    await updateFleetInstall(install, true)
+    await updateFleetInstall(install, { acceptCapabilities: true })
     expect(request.mock.calls[1][3]).toMatchObject({ accept_capabilities: true })
+  })
+
+  it('surfaces a scan block and retries a caution verdict only with force', async () => {
+    const finding = { category: 'execution', description: 'eval', file: 'helper.py', line: 1, severity: 'high' }
+    request.mockResolvedValueOnce({ ok: false, scan_blocked: true, scan_verdict: 'caution', scan_findings: [finding] })
+
+    await expect(updateFleetInstall(install)).resolves.toEqual({
+      kind: 'scan',
+      verdict: 'caution',
+      findings: [finding]
+    })
+
+    request.mockResolvedValueOnce({ ok: true })
+    await expect(updateFleetInstall(install, { force: true })).resolves.toEqual({ kind: 'applied' })
+    expect(request.mock.calls[1][3]).toMatchObject({ action: 'update', force: true, profile: 'work' })
   })
 
   it('turns a transport error into a failed row, not a throw', async () => {

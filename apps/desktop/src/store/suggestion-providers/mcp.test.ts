@@ -14,9 +14,10 @@ const mocks = vi.hoisted(() => ({
   request: vi.fn()
 }))
 
-vi.mock('@/api/client', () => ({ capabilityScoped: () => undefined }))
+vi.mock('@/api/client', () => ({ capabilityScoped: () => undefined, setSessionOwnerResolver: () => {} }))
 vi.mock('@/hermes', () => ({
   addMcpServer: async () => {},
+  setApiRequestProfile: () => {},
   getMcpCatalog: async () => ({
     entries: [
       {

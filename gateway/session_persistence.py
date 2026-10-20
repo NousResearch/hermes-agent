@@ -449,6 +449,21 @@ class SessionPersistenceMixin:
         """For a routing entry whose row has ended: ``"prune"``, a replacement entry (repoint), or
         None (keep as-is)."""
         from gateway.session_lifecycle import _now
+        local_target = self._local_receipt_target(entry)
+        if local_target is not None:
+            # The authority's receipt names the route's target (a compression child after a
+            # split); its first admitted turn reopens a stamped row. A peer-row recovery here
+            # adopted an empty, never-admitted replacement instead (#140642).
+            if local_target == entry.session_id:
+                return None
+            import copy
+            repointed = copy.copy(entry)
+            repointed.session_id = local_target
+            logger.warning(
+                "gateway.session: repointing stale sessions.json entry %r from ended %s "
+                "(end_reason=%r) to its local receipt target %s", key, entry.session_id,
+                row["end_reason"], local_target)
+            return repointed
         recovered_entry = None
         if entry.origin is not None:
             try:

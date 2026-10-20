@@ -1,3 +1,4 @@
+import type { PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -53,8 +54,11 @@ export interface AgentPluginRow {
   catalog_sha?: string
   /** Human label the catalog attaches to that pin ("1.4.0"); shown on the Update button when present. */
   catalog_version?: string | null
-  /** Installed SHA differs from the catalog pin — an update is available. */
+  /** An update is available: the catalog pin moved past the installed SHA, or (git installs) the last
+   *  update check found a newer remote commit. */
   update_available?: boolean
+  /** Git installs: what the last update check found to move to (a commit or a feed version). */
+  update_target?: string
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
   /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
@@ -438,49 +442,116 @@ export async function installAgentPlugin(
   }
 }
 
-/** Outcome of `updateAgentPlugin`: `applied` when the re-pin landed, `unchanged`
- *  when already at pin, `consent` when the new pin widens the plugin — the
- *  backend changed nothing and waits for `acceptCapabilities`. */
-export type AgentPluginUpdateOutcome =
-  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
+/** One security-scan finding on an update the scan blocked. */
+export interface AgentPluginScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
 
-/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
- *  `plugins.manage update`; catalog installs only). Refreshes the list on
- *  success. A pin that adds tools / hooks / deps / capabilities / a Desktop half
- *  comes back as `consent` with the delta; the caller confirms and retries with
- *  `acceptCapabilities`. */
+/** Outcome of `updateAgentPlugin`: `applied` when the update landed, `unchanged`
+ *  when already current, `consent` when a new catalog pin widens the plugin
+ *  (retry with `acceptCapabilities`), `scan` when the security scan blocked the
+ *  new code (a `caution` verdict can be retried with `force`). The backend
+ *  changed nothing for `consent` and `scan`. */
+export type AgentPluginUpdateOutcome = AgentPluginUpdateReplyOutcome | { kind: 'failed' }
+
+/** What a `plugins.manage update` reply says, short of a failure. */
+export type AgentPluginUpdateReplyOutcome =
+  | { kind: 'applied' | 'unchanged' }
+  | { kind: 'consent'; sha: string; deltaLines: string[] }
+  | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
+
+export interface AgentPluginUpdateOptions {
+  /** Apply a catalog re-pin the user confirmed after a `consent` outcome. */
+  acceptCapabilities?: boolean
+  /** Apply an update whose scan returned caution, after the user saw the findings. */
+  force?: boolean
+}
+
+/** Wire reply of `plugins.manage update`. */
+export interface AgentPluginUpdateReply {
+  ok?: boolean
+  unchanged?: boolean
+  consent_required?: boolean
+  sha?: string
+  delta_lines?: string[]
+  scan_blocked?: boolean
+  scan_verdict?: string
+  scan_findings?: AgentPluginScanFinding[]
+  error?: string
+}
+
+/** `plugins.manage update` params for one plugin, with the overrides the user approved. */
+export function agentPluginUpdateParams(name: string, options: AgentPluginUpdateOptions = {}): PluginsManageParams {
+  const params: PluginsManageParams = { action: 'update', name }
+
+  if (options.acceptCapabilities) {
+    params.accept_capabilities = true
+  }
+
+  if (options.force) {
+    params.force = true
+  }
+
+  return params
+}
+
+/** Read an update reply: the override the backend asks for, or whether the update landed.
+ *  `null` when the backend refused without one (the caller reports the failure). Shared by
+ *  the single-profile update below and the fleet-wide one (`store/plugin-fleet-updates`). */
+export function readAgentPluginUpdateReply(
+  result: AgentPluginUpdateReply | null | undefined
+): AgentPluginUpdateReplyOutcome | null {
+  if (result?.consent_required) {
+    return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+  }
+
+  if (result?.scan_blocked) {
+    return { kind: 'scan', verdict: result.scan_verdict ?? 'dangerous', findings: result.scan_findings ?? [] }
+  }
+
+  if (!result?.ok) {
+    return null
+  }
+
+  return { kind: result.unchanged ? 'unchanged' : 'applied' }
+}
+
+/** Update an installed plugin (backend `plugins.manage update`): a catalog install
+ *  re-pins to the current catalog SHA, a git install pulls. Refreshes the list on
+ *  success. */
 export async function updateAgentPlugin(
   request: GatewayRequest,
   name: string,
   failMessage: string,
   profile?: string | null,
-  acceptCapabilities = false
+  options: AgentPluginUpdateOptions = {}
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
 
   try {
-    const result = await request<{
-      ok?: boolean
-      unchanged?: boolean
-      consent_required?: boolean
-      sha?: string
-      delta_lines?: string[]
-    }>(
+    const result = await request<AgentPluginUpdateReply>(
       'plugins.manage',
-      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
+      withProfile({ ...agentPluginUpdateParams(name, options) }, profile),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
-    if (result?.consent_required) {
-      return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+    const outcome = readAgentPluginUpdateReply(result)
+
+    if (!outcome) {
+      throw new Error(failMessage)
     }
 
-    if (!result?.ok) {
-      throw new Error(failMessage)
+    if (outcome.kind === 'consent' || outcome.kind === 'scan') {
+      return outcome
     }
 
     await loadAgentPlugins(request, profile)
 
-    return { kind: result.unchanged ? 'unchanged' : 'applied' }
+    return outcome
   } catch (e) {
     notifyError(e, failMessage)
 
@@ -553,8 +624,12 @@ export async function saveAgentPluginSettings(
       }
     }
 
+    // A secret-only save still makes the (empty) settings call: the backend's save is what tells a
+    // Desktop half `plugin.<id>.settings.changed`, and a new API key is the change it most needs.
+    const wroteSecret = Object.values(opts.secrets).some(Boolean)
+
     const result =
-      Object.keys(opts.values).length > 0
+      Object.keys(opts.values).length > 0 || wroteSecret
         ? await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
             'plugins.manage',
             withProfile({ action: 'settings', key: opts.key, values: opts.values }, opts.profile)

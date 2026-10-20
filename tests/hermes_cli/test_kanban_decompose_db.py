@@ -70,6 +70,25 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decomposed_children_wait_on_the_roots_unfinished_parent(kanban_home):
+    """The root waited on an upstream task; the children that now do its work
+    must wait too, instead of dispatching before the upstream is done."""
+    with kbc.connect() as conn:
+        upstream = kb.create_task(conn, title="design schema", assignee="architect")
+        tid = kb.create_task(conn, title="build feature", parents=[upstream], triage=True)
+        child_ids = decompose_triage_task(
+            conn, tid, root_assignee="orch", author="decomposer",
+            children=[{"title": "migration"}, {"title": "API", "parents": [0]}],
+        )
+        assert [kb.get_task(conn, c).status for c in child_ids] == ["todo", "todo"]
+        assert kb.claim_task(conn, child_ids[0], claimer="probe:1") is None
+
+        kb.claim_task(conn, upstream, claimer="probe:2")
+        assert kb.complete_task(conn, upstream, result="schema v1", summary="schema v1")
+        assert kb.get_task(conn, child_ids[0]).status == "ready"
+        assert kb.get_task(conn, child_ids[1]).status == "todo"
+
+
 def test_decompose_records_audit_comment_and_event(kanban_home):
     with kbc.connect() as conn:
         tid = _create_triage(conn)

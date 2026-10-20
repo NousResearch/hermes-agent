@@ -6,14 +6,52 @@ import subprocess
 from pathlib import Path
 
 
+_STABLE_TAG_RE = re.compile(r"v\d+\.\d+\.\d+(?:\.\d+)?")
+_CANARY_TAG_RE = re.compile(r"v\d+\.\d+\.\d+\+canary\.20\d{6}T\d{6}Z")
+
+
+def _commit_for_tag(repo: Path, tag: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(repo), "rev-list", "-1", f"{tag}^{{commit}}"],
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    ).strip()
+
+
 def pick_tags(repo: Path, count: int, exclude: str = "") -> list[str]:
     if not 1 <= count <= 10:
         raise ValueError("Tag count must be between one and ten")
-    raw = subprocess.check_output(["git", "-C", str(repo), "for-each-ref", "--sort=creatordate",
-                                   "--format=%(refname:short)", "refs/tags/v*"], text=True, encoding="utf-8")
-    tags = [tag for tag in raw.splitlines() if re.fullmatch(r"v\d+\.\d+\.\d+(?:\.\d+)?", tag) and tag != exclude]
+    # Sorting ref names avoids reading missing tag objects before the per-tag guard.
+    raw = subprocess.check_output(["git", "-C", str(repo), "for-each-ref", "--sort=refname",
+                                   "--format=%(refname:short)", "refs/tags/v*"], text=True, encoding="utf-8", timeout=60)
+    try:
+        head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                       text=True, encoding="utf-8", timeout=60).strip()
+    except subprocess.CalledProcessError:
+        head = ""
+    dated_tags = []
+    for tag in raw.splitlines():
+        if not (_STABLE_TAG_RE.fullmatch(tag) or _CANARY_TAG_RE.fullmatch(tag)):
+            continue
+        if tag == exclude:
+            continue
+        try:
+            commit = _commit_for_tag(repo, tag)
+            timestamp = int(subprocess.check_output(
+                ["git", "-C", str(repo), "show", "-s", "--format=%ct", commit],
+                text=True, encoding="utf-8", timeout=60,
+            ).strip())
+        except subprocess.CalledProcessError:
+            continue
+        # A tag pointing at the tested HEAD would make the update leg a no-op.
+        if head and commit == head:
+            continue
+        dated_tags.append((timestamp, tag))
+    dated_tags.sort(key=lambda entry: entry[0])
+    tags = [tag for _, tag in dated_tags]
     if not tags:
-        raise ValueError("No released baseline tags remain")
+        return []
     if len(tags) <= count:
         return tags
     if count == 1:

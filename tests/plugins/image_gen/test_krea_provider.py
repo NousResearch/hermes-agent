@@ -802,14 +802,13 @@ class TestKrea3:
         assert krea2["source_image_role"] == "style"
         assert "creativity" in krea2["creative_controls"]
 
-    def test_managed_capabilities_describe_the_stored_model_the_dispatcher_sends(self, monkeypatch):
-        """On the managed path generate() receives ``image_gen.model`` explicitly, so the schema must
-        describe that model even when KREA_IMAGE_MODEL names another one."""
+    def test_capabilities_describe_the_stored_model_the_dispatcher_sends(self, monkeypatch):
+        """Managed and direct dispatch both pass ``image_gen.model`` to generate() explicitly, so the
+        schema must describe that model even when KREA_IMAGE_MODEL names another one."""
         import plugins.image_gen.krea as krea_mod
 
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
-        monkeypatch.setattr(krea_mod, "_load_krea_config", lambda: {"provider": "nous", "model": "krea-3"})
-        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
-        assert krea_mod.KreaImageGenProvider().capabilities()["creative_controls"] == ["thinking", "resolution"]
-        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: None)
-        assert "creativity" in krea_mod.KreaImageGenProvider().capabilities()["creative_controls"]
+        for provider, gateway in (("nous", _managed_cfg()), ("krea", None)):
+            monkeypatch.setattr(krea_mod, "_load_krea_config", lambda p=provider: {"provider": p, "model": "krea-3"})
+            monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda g=gateway: g)
+            assert krea_mod.KreaImageGenProvider().capabilities()["creative_controls"] == ["thinking", "resolution"]

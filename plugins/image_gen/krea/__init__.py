@@ -535,9 +535,9 @@ class KreaImageGenProvider(StaticImageGenProvider):
         return bool(get_secret("KREA_API_KEY")) or _managed_krea_gateway_ready()
 
     def capabilities(self) -> dict[str, Any]:
-        # The managed dispatcher names the stored ``image_gen.model`` explicitly; resolve the same way
-        # so the schema describes the model that will run, whatever KREA_IMAGE_MODEL says.
-        stored = _load_krea_config().get("model") if _resolve_managed_krea_gateway() is not None else None
+        # Both dispatchers (managed and direct) name the stored ``image_gen.model`` explicitly; resolve
+        # the same way so the schema describes the model that will run, whatever KREA_IMAGE_MODEL says.
+        stored = _load_krea_config().get("model")
         _, meta = _resolve_model(stored if isinstance(stored, str) else None)
         if meta.get("edit"):
             return {

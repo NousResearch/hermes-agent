@@ -810,6 +810,9 @@ class CLIModalMixin:
         elif target_state == "failed":
             state["phase"] = "failed"
         elif target_state == "pending" and self._connection_fields(target):
+            if state["phase"] == "form":
+                state["payload"] = snapshot  # still being filled in: keep the field and unsent input
+                return
             # The backend refused the answer because a required field is still empty: reopen the
             # form on the first one it named, over the draft the panel kept.
             missing = {field.get("name") for field in self._connection_fields(target)}

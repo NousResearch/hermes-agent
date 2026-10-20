@@ -275,6 +275,11 @@ class TestClarifyBatchPanel:
         cli._connection_callback(dict(payload))  # a replay-gap recovery re-sends the same snapshot
         assert cli._connection_state["target"]["name"] == "asana"
         assert cli._connection_state["drafts"]["asana"]["TOKEN"] == "typed-not-sent"
+        cli._connection_sync_input_buffer = MagicMock()
+        cli._connection_callback({**payload, "seq": 5})  # ...or a newer one, the form still open
+        assert cli._connection_state["phase"] == "form"
+        assert cli._connection_state["drafts"]["asana"]["TOKEN"] == "typed-not-sent"
+        cli._connection_sync_input_buffer.assert_not_called()
         assert cli._capture_modal_input_snapshot.call_count == 1
 
 

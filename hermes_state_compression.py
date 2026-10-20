@@ -438,6 +438,9 @@ class SessionCompressionMixin:
             "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
         if updated.rowcount != 1:
             raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
+        # A child on a real surface stamps the chain's unset ancestors, so compressing a conversation
+        # whose root predates write-time stamping lists it again under its surface.
+        stamp_compression_ancestors(conn, child_session_id)
         from hermes_state_local_lineage import advance_local_target
         advance_local_target(conn, parent_session_id, child_session_id)
         if parent["archived"]:

@@ -69,3 +69,21 @@ def test_stamp_walks_through_a_same_surface_mid_segment(tmp_path, mid_created, e
             expected_root, mid_created, "cli"]
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("root_created", [None, "unknown", "local"])
+def test_compressing_a_stamped_tip_stamps_its_legacy_root(tmp_path, root_created):
+    """A chain compressed before write-time stamping has an unset root and a stamped tip. The
+    next compression publish copies the tip's surface to the child and stamps the root."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        tip = _compress(db, root_created, "legacy-tip")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id=?", (tip,))
+            db._conn.commit()
+        db.publish_compression_child(
+            parent_session_id=tip, child_session_id="new-tip", source="local",
+            messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+        assert [_created(db, sid) for sid in ("parent-" + tip, tip, "new-tip")] == ["cli"] * 3
+    finally:
+        db.close()

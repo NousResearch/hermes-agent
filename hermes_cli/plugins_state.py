@@ -21,6 +21,14 @@ _PLUGIN_STATE_LOCKS: dict[str, threading.RLock] = {}
 _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
 
 
+def _plugin_home_key() -> Path:
+    """Resolved active Hermes home: plugin managers register against their owning profile."""
+    try:
+        return get_hermes_home().expanduser().resolve()
+    except Exception:
+        return get_hermes_home().expanduser()
+
+
 def _plugin_relative_segments(key: str) -> tuple[str, ...]:
     """Validate/split a plugin-relative settings key; global paths, traversal, and core roots are rejected
     before any config read.

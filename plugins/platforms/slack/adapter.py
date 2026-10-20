@@ -43,11 +43,12 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
-    is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
+    is_host_excluded_by_no_proxy, resolve_proxy_url, ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -2964,7 +2965,7 @@ class SlackAdapter(AssistantThreadTitles, BasePlatformAdapter):
         file_uploads: list[dict[str, Any]] = []
         initial_comment_parts: list[str] = []
         async with client_factory(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]}
         ) as http_client:
             for image_url, alt_text in chunk:
                 if alt_text:
@@ -6284,7 +6285,7 @@ class SlackAdapter(AssistantThreadTitles, BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:

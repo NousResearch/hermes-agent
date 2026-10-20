@@ -411,7 +411,9 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        # creds["model"] is None when delegation.model is blank (children inherit): report what the child runs on.
+        role=unit.top_role, model=unit.creds["model"] or next(
+            (getattr(c, "model", None) for c in child_agents if getattr(c, "model", None)), None),
         runner=run_unit,
         approval_reservation=completion_reservation,
         on_unstarted=lambda: release_background_approval_task(reservation),

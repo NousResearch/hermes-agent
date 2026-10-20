@@ -103,7 +103,7 @@ def test_registered_prompt_worker_launch_refusal_settles_accepted_claim(monkeypa
         monkeypatch.setattr(server, "_wire_callbacks", lambda *_args: None)
         monkeypatch.setattr(server, "_register_session_cwd", lambda *_args: None)
         monkeypatch.setattr(server, "_session_cwd", lambda *_args: str(tmp_path))
-        monkeypatch.setattr(server, "_admit_prompt_turn", lambda *_args: ([], agent))
+        monkeypatch.setattr(server, "_admit_prompt_turn", lambda *_args, **_kwargs: ([], agent))
         monkeypatch.setattr(server, "_routing_provenance_db", lambda *_args: nullcontext(None))
         monkeypatch.setattr(server, "_reopen_routed_session_row", lambda *_args: None)
         monkeypatch.setattr(server, "_start_session_work", lambda *_args, **_kwargs: None)

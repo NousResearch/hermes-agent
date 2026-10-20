@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -43,7 +43,17 @@ export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 // the same `onRequest` registry as a request whose `respond` issues the RPC.
 const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
 
-const ATTACH_REQUIRED = new Set(['prompt.submit', 'approval.respond', 'clarify.respond', 'session.interrupt', 'prompt.cancel', 'session.rewind'])
+const ATTACH_REQUIRED = new Set([
+  'prompt.submit',
+  'approval.respond',
+  'clarify.respond',
+  'session.interrupt',
+  'prompt.cancel',
+  'session.rewind',
+  'prompt.steer_queued',
+  'prompt.replace_queued'
+])
+
 // A branch is a CAS mutation on the PARENT: an un-attached parent (right-click on a sidebar row
 // that was never opened) has no cached revision, so attach it first to learn one. Move to project
 // (`session_key`) is the same CAS mutation on a sidebar row.
@@ -68,8 +78,18 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
   return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
 }
 
+// A caller timeout of 0 (or less) means no deadline, as in the shared channel, which arms no timer
+// for it. Callers that wait on a way-out offer instead (onboarding.state / onboarding.start) pass 0.
+function requestDeadline(timeoutMs: number | undefined): number {
+  const budget = timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+
+  return budget > 0 ? Date.now() + budget : Number.POSITIVE_INFINITY
+}
+
 function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
   signal?.throwIfAborted()
+
+  if (deadline === Number.POSITIVE_INFINITY) { return 0 }
   const remaining = deadline - Date.now()
 
   if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
@@ -115,16 +135,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (this.deliveredPrompts.has(id)) { return }
     this.deliveredPrompts.set(id, { sessionId: sid, profile })
-    const choices = Array.isArray(p.choices) ? p.choices : []
-
-    // The question card reads one `questions[]` shape. A canonical clarify prompt is one
-    // question (the shared gateway asks a batch one card at a time), so its prompt id doubles
-    // as the qid that `clarify.lock` answers with (see `request` below).
-    const params: Record<string, unknown> = kind === 'clarify'
-      ? { session_id: sid, answers: p.answers,
-          questions: Array.isArray(p.questions) ? p.questions : [{ qid: id, question: p.question, choices, multi_select: p.multi_select }] }
-      : { session_id: sid, request_id: id, command: p.command, description: p.description, choices,
-          allow_permanent: choices.includes('always'), edit: p.edit }
+    const params = canonicalPromptParams(kind, sid, p)
 
     let settled = false
 
@@ -375,7 +386,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const generation = this.connectionGeneration
-    const deadline = Date.now() + (timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+    const deadline = requestDeadline(timeoutMs)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
@@ -402,6 +413,12 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // The attach may have identified the named launch profile behind an
     // implicit route. Its revision and generation are cached under that owner.
     params = this.routeCanonicalParams(method, params)
+
+    // Answered locally only once the owner's route is known: a named launch profile's
+    // retained rewind is keyed under its name, which a redial forgets until the attach.
+    const local = this.protocol.localAnswer(method, params)
+
+    if (local) { return local as T }
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)

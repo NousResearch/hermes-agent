@@ -32,12 +32,15 @@ def test_dashboard_heal_skips_writable_open_when_gateway_holds_store(tmp_path, s
     with patch("hermes_state_registry.acquire") as acquire, patch(
         "hermes_state_holders.foreign_state_db_holders",
         return_value=[(99, "hermes gateway run --replace")],
+    ), patch(
+        "hermes_state_holders._read_proc_argv",
+        return_value=["/usr/bin/hermes", "gateway", "run", "--replace"],
     ):
         if stale:
-            with pytest.raises(HTTPException, match="Browsing does not repair") as raised:
+            with pytest.raises(HTTPException, match="running gateway owns it") as raised:
                 _open_session_db_at_path(db_path, read_only=True)
             assert raised.value.status_code == 503
-            assert "Start or restart this profile's gateway" in raised.value.detail
+            assert "Restart that gateway" in raised.value.detail
         else:
             db = _open_session_db_at_path(db_path, read_only=True)
             try:

@@ -574,7 +574,49 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
     profile = _current_session_profile() or "default"
-    return "default" if profile == "default" else f"profile:{profile}"
+    base = "default" if profile == "default" else f"profile:{profile}"
+    return _workspace_container_key(base, task_id)
+
+
+def workspace_key_for(cwd: str) -> str:
+    """The ``:ws:`` digest of a host workspace: computed ONCE when the session binds it
+    (``gateway.session_policy.bind_turn_workspace``), so container keying never depends on live
+    filesystem state at lookup time."""
+    import hashlib
+    resolved = os.path.realpath(os.path.expanduser(cwd))
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+
+
+def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
+    """Persistent Docker key for a session that registered a workspace: one container per
+    (profile, workspace), not per profile (#140665).
+
+    A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
+    override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
+    concurrent session shared the container bound to whichever workspace created it first; sessions
+    in the same folder still share one. Sessions with no registered workspace keep the profile key.
+
+    Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
+    hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
+    only a container alias to its parent (``register_container_alias``), so the alias chain is
+    followed: the child runs in its parent's workspace container, never the profile's.
+    Reads the raw table (not :func:`resolve_task_overrides`, which calls back into key resolution).
+    """
+    if not task_id:
+        return base
+    if task_id.startswith(f"{base}:ws:"):
+        return task_id
+    for key in dict.fromkeys((task_id, _resolve_container_alias(task_id))):
+        overrides = _task_env_overrides.get(_qualify_task_key(key))
+        if not overrides or overrides.get("cwd_source") != "session":
+            continue
+        digest = overrides.get("workspace_key")
+        cwd = overrides.get("cwd")
+        if not digest and isinstance(cwd, str) and cwd.strip() and "\0" not in cwd:
+            digest = workspace_key_for(cwd)
+        if digest:
+            return f"{base}:ws:{digest}"
+    return base
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
@@ -902,7 +944,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, self_repo_block,
+    gateway_lifecycle_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
@@ -1112,6 +1154,9 @@ class _ExecPlan:
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+    # Set when a foreground `cmd &` (the trailing `&` its only backgrounding) is run as
+    # terminal(command="cmd", background=true) instead of being refused: the command to run.
+    auto_background_command: Optional[str] = None
 
 
 _PROMOTED_NOTE = (
@@ -1188,16 +1233,22 @@ def _plan_execution(
         # need the command itself rewritten, which the tool cannot do safely.
         # The detachment guidance applies whether or not the call is promoted: a promoted `cmd &`
         # would start a tracked shell that exits at once while its payload runs untracked.
-        guidance = _foreground_background_guidance(command)
-        if guidance:
-            raise _Rejected(_error_json(guidance, status="error"))
-        if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
-            promoted = timeout
+        # Exception: a lone TRAILING `&` is unambiguous (the caller asked for exactly what
+        # background=true does), so run it that way instead of spending a model turn on a resend.
+        auto_bg = trailing_amp_background_command(command)
+        if auto_bg is None:
+            guidance = _foreground_background_guidance(command)
+            if guidance:
+                raise _Rejected(_error_json(guidance, status="error"))
+            if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+                promoted = timeout
+    else:
+        auto_bg = None
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
-        promoted_from_foreground_timeout=promoted,
+        promoted_from_foreground_timeout=promoted, auto_background_command=auto_bg,
     )
 
 
@@ -1451,6 +1502,11 @@ def terminal_tool(
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
         )
+        auto_bg = getattr(plan, "auto_background_command", None)
+        if auto_bg is not None:
+            # From here on this IS a background=true call for the stripped command: every guard
+            # below (lifecycle, workdir, self-repo, dangerous-command approval) sees what runs.
+            command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
@@ -1516,6 +1572,7 @@ def terminal_tool(
                 completion_output_chars=_completion_output_chars,
                 heartbeat_seconds=heartbeat,
                 persist_on_release=persist_on_release,
+                auto_backgrounded=auto_bg is not None and plan.promoted_from_foreground_timeout is None,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)

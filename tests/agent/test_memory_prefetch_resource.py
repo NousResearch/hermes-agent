@@ -54,15 +54,18 @@ def test_prefetch_worker_reserves_before_thread_offer_and_finishes_after_physica
         return "result"
     manager = MemoryManager()
     provider = Provider(leaf)
+    monkeypatch.setattr(memory_module, "_MAX_INFLIGHT_CALLS", 1)
     manager._external_prefetch_timeout = 0.01
     original = memory_module.spawn_context_thread
+    threads = []
     def factory(fn, **kwargs):
         rows = ChatExecutionStore(tmp_path).inspect_resources("key")
         assert len(rows) == 1 and rows[0]["state"] == "reserved"
         ids.append(rows[0]["resource_id"])
-        return original(fn, **kwargs)
+        thread = original(fn, **kwargs)
+        threads.append(thread)
+        return thread
     monkeypatch.setattr("agent.memory_manager.spawn_context_thread", factory)
-    manager._external_prefetch_threads[provider.name] = None
     try:
         with bind_chat_execution(tmp_path, "key", 1):
             assert manager._prefetch_provider(provider, "q", session_id="session") == ""
@@ -81,11 +84,9 @@ def test_prefetch_worker_reserves_before_thread_offer_and_finishes_after_physica
         assert len(ids) == 1
     finally:
         release.set()
-        threads = list(manager._external_prefetch_threads.values())
         for thread in threads:
-            if thread is not None:
-                thread.join(10)
-                assert not thread.is_alive()
+            thread.join(10)
+            assert not thread.is_alive()
     assert len(ids) == 1 and ids[0]
     assert ChatExecutionStore(tmp_path).inspect_resources("key")[0]["state"] == "finished"
 
@@ -97,22 +98,24 @@ def test_stale_resource_start_refuses_provider_body(tmp_path, monkeypatch, later
     manager = MemoryManager()
     provider = Provider(lambda *args: called.append(args))
     from agent.memory_manager import spawn_context_thread as original
+    threads = []
     def factory(fn, **kwargs):
         changes = {"fence": lambda: store.begin_recovery("key", 1, "stop"),
                    "successor": lambda: store.reserve("key", 1, 1),
                    "parent_finished": lambda: store.worker_finished("key", 1)}
         assert changes[later]()
-        return original(fn, **kwargs)
+        thread = original(fn, **kwargs)
+        threads.append(thread)
+        return thread
     monkeypatch.setattr("agent.memory_manager.spawn_context_thread", factory)
     try:
         with bind_chat_execution(tmp_path, "key", 1):
             with pytest.raises(RuntimeError, match="admission"):
                 manager._prefetch_provider(provider, "q", session_id="session")
     finally:
-        for thread in manager._external_prefetch_threads.values():
-            if thread is not None:
-                thread.join(5)
-                assert not thread.is_alive()
+        for thread in threads:
+            thread.join(5)
+            assert not thread.is_alive()
     assert called == []
     assert store.inspect_resources("key")[0]["state"] == "reserved"
 

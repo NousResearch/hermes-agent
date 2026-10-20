@@ -273,7 +273,8 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
-    already restarted, so a Serve-only install isn't restarted a second time here.
+    already handled (restarted, declined, or failed; each already reported), so a Serve-only
+    install isn't restarted a second time here and a declined or failed unit isn't retried (#141021).
 
     See #83595.
     """
@@ -976,6 +977,8 @@ def _run_post_update_maintenance(
                 followups.append((name, reason))
 
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
+    from hermes_cli.update_windows_acl import repair_windows_home_acl
+    owed_step("windows_home_acl", repair_windows_home_acl)
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
     # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix

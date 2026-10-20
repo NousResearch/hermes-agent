@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
@@ -210,14 +210,69 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
     )
 
 
-def not_deferrable_error(name: str) -> str:
+# Toolsets a managed worker turn never offers (agent/managed_worker.py::WORKER_DISABLED_TOOLSETS,
+# ef52a09a558), with the supported way to get the same work done from inside that turn.
+_MANAGED_WORKER_ALTERNATIVES = {
+    "delegation": ("a delegated child needs its own owner-registered execution, which a managed worker "
+                   "turn (every Kanban card, and opted-in managed sessions) cannot reserve. Don't retry it: "
+                   "split fan-out into child cards with kanban_create (parents=[<this task>]), or do the "
+                   "subtask yourself in this turn."),
+}
+
+
+def managed_worker_unavailable_reason(name: str) -> Optional[str]:
+    """Why ``name`` is absent in THIS managed worker process, or None anywhere else.
+
+    The generic wording cannot say a toolset was removed by the worker boundary on purpose,
+    so a model told only "not available" keeps trying to reach ``delegate_task`` another way."""
+    from agent.runtime_session_store import is_worker_process
+    from tools.tool_search_catalog import _registry_toolset
+    reason = _MANAGED_WORKER_ALTERNATIVES.get(_registry_toolset(name)) if is_worker_process() else None
+    return f"'{name}' is not offered in a managed worker turn: {reason}" if reason else None
+
+
+def unavailable_in_session_reason(name: str) -> str:
+    """Why a registered tool absent from THIS session cannot be reached, whatever its door.
+
+    Deferral is a property of the tool, availability one of the session: a deferred tool the
+    session does not carry (``defer: [delegate_task]`` in a worker) is no more findable through
+    ``tool_search`` than a stripped core tool is callable directly."""
+    return managed_worker_unavailable_reason(name) or (
+        f"'{name}' is not available in this execution context. "
+        "Don't retry it — state the assumption and proceed with the work.")
+
+
+def session_unavailable_error(name: str, session_tool_names: Optional[Iterable[str]]) -> Optional[str]:
+    """The unavailability message when a core tool is missing from the session's own tool list,
+    whether or not ``defer:`` moved it behind the bridge; None without session context, when
+    the session carries it, or for MCP/plugin/unregistered names (an absent one may be a stale
+    catalog that ``tool_search`` can still refresh). A missing GUI surface keeps its own reason."""
+    if session_tool_names is None or name in set(session_tool_names):
+        return None
+    from tools.tool_search import _core_tool_names, out_of_scope_reason  # late: imports this module
+    if name not in _core_tool_names() or _registry_entry(name) is None:
+        return None
+    return out_of_scope_reason(name) or unavailable_in_session_reason(name)
+
+
+def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] = None) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
     cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
-    the second group 'call it directly' is the opposite of what they must do."""
+    the second group 'call it directly' is the opposite of what they must do.
+
+    ``_HERMES_CORE_TOOLS`` is a *static* list, so a core tool stripped from this session's
+    toolset (clarify in a subagent, kanban worker) otherwise gets told "call it directly"
+    — an instruction that can never resolve, burning a turn on a confident wrong answer.
+    When the caller passes the session-scoped names, absence is reported as unavailability
+    instead. Stays None for callers with no session context; deliberately never consults the
+    global blocklist, because a top-level session legitimately has these tools.
+    """
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
+        if session_tool_names is not None and name not in set(session_tool_names):
+            return unavailable_in_session_reason(name)
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"

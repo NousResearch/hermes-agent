@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Etwas ist schiefgelaufen und ich konnte diese Antwort nicht fertigstellen.{hint}\nVersuchen Sie es mit /retry erneut oder starten Sie mit /new eine neue Konversation. Technische Details stehen im Gateway-Log (`hermes logs`)."
     history_unavailable: "⚠️ Der Verlauf dieser Sitzung ist vorübergehend nicht verfügbar, daher wurde diese Nachricht nicht verarbeitet. Bitten Sie den Betreiber, state.db zu prüfen, und senden Sie erneut, sobald alles in Ordnung ist. Verwenden Sie /reset nur, wenn Sie bewusst eine neue Konversation beginnen möchten."
     no_credentials: "⚠️ Ich konnte keine Verbindung zum KI-Modelldienst herstellen, daher wurde diese Nachricht nicht verarbeitet. Verwenden Sie /login, um sich erneut anzumelden, oder /model, um ein anderes Modell zu wählen. Falls es weiterhin fehlschlägt, führen Sie `hermes doctor` auf dem Host aus."
+    cron_session_read_only: "⚠️ Dieser Chat gehört zu einer geplanten Aufgabe und führt nur diese aus, daher wurde deine Nachricht nicht ausgeführt. Starte einen neuen Chat, um sie zu senden."
   skills:
     disabled: "Der Skill **{name}** ist installiert, aber deaktiviert.\nAktivieren Sie ihn mit: `hermes skills config`"
     not_installed: "Der Skill **{name}** ist verfügbar, aber nicht installiert.\nInstallieren Sie ihn mit: `hermes skills install {install_name}`"

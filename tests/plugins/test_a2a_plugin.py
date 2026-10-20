@@ -126,6 +126,36 @@ class TestBindSafety:
         assert security.A2ASecurityContext.capture().resolve_bind_host() == "localhost"
 
 
+    def test_v6_wildcard_serves_both_stacks_and_keeps_ipv4_identity(self, monkeypatch):
+        """``A2A_HOST=::`` is one dual-stack socket: IPv6 and IPv4 peers both reach it, and an IPv4
+        peer keeps its plain ``ip:a.b.c.d`` identity (not ``ip:::ffff:a.b.c.d``), so an allow-list
+        written in IPv4 still admits it."""
+        try:
+            with socket.socket(socket.AF_INET6) as probe:
+                probe.bind(("::", 0))
+        except OSError:
+            pytest.skip("host cannot bind IPv6 '::'")
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "ip:127.0.0.1")
+        monkeypatch.setenv("A2A_HOST", "::")
+        adapter, _base = _make_live_adapter(monkeypatch)
+        auth = {"Authorization": "Bearer topsecret"}
+        tasks_list = {"jsonrpc": "2.0", "id": "1", "method": "tasks/list", "params": {}}
+
+        async def run():
+            assert await adapter.connect() is True
+            try:
+                for host in ("[::1]", "127.0.0.1"):
+                    card = await asyncio.to_thread(_get_json, f"http://{host}:{adapter.port}/.well-known/agent-card.json")
+                    assert "capabilities" in card
+                resp = await asyncio.to_thread(_post_json, f"http://127.0.0.1:{adapter.port}/", tasks_list, auth)
+                assert "error" not in resp, resp
+            finally:
+                await adapter.disconnect()
+
+        asyncio.run(run())
+
+
 class TestPeerIdentity:
     """authenticate() maps presented credentials to identities; the body
     never asserts who the peer is."""
@@ -914,6 +944,33 @@ def _send_body(text, ctx="", extra_params=None):
     if extra_params:
         params.update(extra_params)
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
+
+
+@pytest.mark.parametrize("spelling", ["::1", "[::1]"])
+def test_ipv6_loopback_bind_serves_and_advertises_a_bracketed_url(monkeypatch, spelling):
+    """``A2A_HOST=::1`` (or its URL spelling ``[::1]``) is an accepted no-token bind: the listener
+    must come up on it and every advertised URL, including the Host-less fallback, must be one a
+    peer can parse (IPv6 literal in exactly one pair of brackets)."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        pytest.skip("host cannot bind IPv6 '::1'")
+    monkeypatch.setenv("A2A_HOST", spelling)
+    adapter, _ = _make_live_adapter(monkeypatch)
+    base = f"http://[::1]:{adapter.port}"
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return await asyncio.to_thread(_get_json, base + "/.well-known/agent-card.json")
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run())["url"].startswith(base + "/")
+    assert adapter._base_url(None) == base + "/"
 
 
 @pytest.mark.integration

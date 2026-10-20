@@ -272,15 +272,6 @@ export const zhOverrides = {
 
   ...zhNotices,
 
-  billingBlock: {
-    titleNous: 'Nous 额度已用尽',
-    titleProvider: provider => `额度已用尽 — ${provider}`,
-    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
-    openBilling: '打开账单',
-    addCredits: '添加额度',
-    dismiss: '忽略'
-  },
-
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
     privacyNotice:
@@ -4407,6 +4398,10 @@ export const zhOverrides = {
         ssl_cert_verification: {
           title: '安全连接失败',
           body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+        },
+        cron_session_read_only: {
+          title: '此聊天属于一个定时任务',
+          body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
         }
       },
       errorLayers: {

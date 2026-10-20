@@ -623,13 +623,15 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
-        display = {}
+        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+        from tui_gateway.tool_progress import _todo_state_from_history
+        history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
-                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
+                [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
+                'messages': history, **display, 'message_count': len(history),
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -637,7 +639,10 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info,
-                'pending_connection': pending_connection(self.authority, ref.session_id)}
+                'pending_connection': pending_connection(self.authority, ref.session_id),
+                # The newest todo result in the transcript, the snapshot the session's agent hydrates
+                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
+                'todo_state': _todo_state_from_history(history)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

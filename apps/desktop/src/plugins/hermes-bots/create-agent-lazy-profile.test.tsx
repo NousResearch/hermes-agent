@@ -351,6 +351,55 @@ describe('cancelling New Bot discards its draft profile', () => {
     expect(mocks.createCanonicalChat).not.toHaveBeenCalled()
   })
 
+  // The draft lives where it was CREATED. Moving "Create on" afterwards must not
+  // send the delete to the newly picked machine, where a real bot of the same
+  // name may live, and must not leave the draft behind on its own machine.
+  it('discards a local draft locally when "Create on" moves to another machine', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' }))
+    expect(mocks.requestProfile).not.toHaveBeenCalledWith(expect.anything(), 'cli.exec', expect.anything())
+  })
+
+  it('discards a remote draft on its own machine when "Create on" moves back', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() =>
+      expect(mocks.skillsView.at(-1)).toMatchObject({ fixedConnection: 'studio', fixedProfile: 'inbox-triage' })
+    )
+
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: /This Mac/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'studio' }), 'cli.exec', {
+        argv: ['profile', 'delete', 'inbox-triage', '--yes']
+      })
+    )
+    expect(mocks.deleteBot).not.toHaveBeenCalled()
+  })
+
   it('never deletes a bot the dialog finished creating', async () => {
     await renderDialog(true)
     fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))

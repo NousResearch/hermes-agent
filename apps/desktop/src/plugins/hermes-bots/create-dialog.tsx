@@ -153,14 +153,22 @@ function capabilityPayload(
   return payload
 }
 
-/** Delete a draft profile the New Agent dialog minted: on the remote target it
- *  was created on (`cli.exec`), else locally. Fire-and-forget with a toast. A
- *  cancel while profiles.create is still in flight is caught by that flight
- *  itself (the dialog's draftGenRef), since the draft is only recorded once the
- *  RPC returns (#141623). */
-function discardDraftProfile(draft: string, remoteRequest: null | ((method: string, params: Record<string, unknown>) => Promise<unknown>)) {
-  const discard = remoteRequest
-    ? remoteRequest('cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
+/** Gateway RPC on a create target: `target` is a registry connection id (its
+ *  default backend, no gateway switch) or '' for the active gateway. */
+function requestOnTarget<T>(target: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
+  return target
+    ? host.requestProfile({ connectionId: target, mode: 'remote', profile: 'default', targetProfile: 'default' }, method, params)
+    : host.request(method, params)
+}
+
+/** Delete a draft profile the New Agent dialog minted, on the `target` it was
+ *  created on: a remote connection (`cli.exec`) or '' for local. Fire-and-forget
+ *  with a toast. A cancel while profiles.create is still in flight is caught by
+ *  that flight itself (the dialog's draftGenRef), since the draft is only
+ *  recorded once the RPC returns (#141623). */
+function discardDraftProfile(draft: string, target: string) {
+  const discard = target
+    ? requestOnTarget(target, 'cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
     : deleteBot({ name: draft })
 
   void Promise.resolve(discard)
@@ -286,21 +294,14 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     ? (connections || []).find(c => c.id === targetConnection)?.label || targetConnection
     : ''
 
+  /** Where the profile is created right now: the picked connection id for a
+   *  remote target, '' for the active gateway. */
+  const createTarget = remoteTarget ? targetConnection : ''
+
   /** Gateway RPC on the create target: the picked connection's default
    *  backend for remote targets, the active gateway otherwise. */
   const requestForTarget = <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
-    remoteTarget
-      ? host.requestProfile(
-          {
-            connectionId: targetConnection,
-            mode: 'remote',
-            profile: 'default',
-            targetProfile: 'default'
-          },
-          method,
-          params
-        )
-      : host.request(method, params)
+    requestOnTarget<T>(createTarget, method, params)
 
   // Set once ensureAgentCreated() materializes the profile for the live
   // Capabilities tab (CapabilitiesView needs a real backend to point at). State —
@@ -334,14 +335,16 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     : roster.some(b => !b.remoteSource && b.name === slug && b.name !== createdRef.current)
 
   // Opening Capabilities (or MCP setup) materializes a DRAFT profile so the live
-  // config surfaces have a backend; cancelling deletes it (discardDraftProfile).
-  const removeDraftProfile = (draft: string) => discardDraftProfile(draft, remoteTarget ? requestForTarget : null)
+  // config surfaces have a backend; cancelling deletes it (discardDraftProfile)
+  // on the machine it was CREATED on, recorded with it: the "Create on" picker
+  // may point elsewhere by then, and a same-named bot there is not the draft.
+  const draftTargetRef = useRef('')
 
   const discardDraft = () => {
     const draft = createdRef.current
     draftGenRef.current += 1
     createdRef.current = flightRef.current = null
-    draft && removeDraftProfile(draft)
+    draft && discardDraftProfile(draft, draftTargetRef.current)
   }
 
   const reset = () => {
@@ -477,6 +480,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     }
 
     const generation = draftGenRef.current
+    const target = createTarget
 
     const flight = singleFlight(flightRef, async () => {
       await requestForTarget('profiles.create', {
@@ -509,12 +513,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       // Discarded mid-create: delete the profile this flight minted, configure nothing.
       if (generation !== draftGenRef.current) {
-        removeDraftProfile(slug)
+        discardDraftProfile(slug, target)
 
         return null
       }
 
       createdRef.current = slug
+      draftTargetRef.current = target
 
       // Apply capability picks from the Advanced tabs (best-effort; the
       // profile exists either way and Edit Profile can finish the job).
@@ -750,6 +755,9 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                 b.editor.createOn,
                 <Select
                   onValueChange={value => {
+                    // A draft minted on the old home is not this bot anymore.
+                    discardDraft()
+                    setCreatedForCaps(null)
                     setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
                     // The capability catalog and clone list belong to the
                     // target backend — refetch for the new home. The live

@@ -977,3 +977,26 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
     assert [c.choices[0].finish_reason for c in finishes] == ["stop"]  # CONTINUATION is not the end
     assert "".join(c.choices[0].delta.content or "" for c in chunks) == "part one part two"
     assert (finishes[0].usage.prompt_tokens, finishes[0].usage.initial_prompt_tokens) == (32968, 100)
+
+
+_VERTEX_NATIVE_BASE = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+
+
+@pytest.mark.parametrize("api_key,base_url,bearer", [
+    ("ya29.token", _VERTEX_NATIVE_BASE, True),
+    ("opaque-oauth-token", _VERTEX_NATIVE_BASE, True),
+    ("AIzaExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AQ.ExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AIzaStudioKey", "https://generativelanguage.googleapis.com/v1beta", False),
+])
+def test_vertex_oauth_token_sent_as_bearer_but_api_keys_are_not(api_key, base_url, bearer):
+    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+    assert is_native_gemini_base_url(base_url)
+    headers = GeminiNativeClient(api_key=api_key, base_url=base_url)._headers()
+    if bearer:
+        assert headers["Authorization"] == f"Bearer {api_key}"
+        assert "x-goog-api-key" not in headers
+    else:
+        assert headers["x-goog-api-key"] == api_key
+        assert "Authorization" not in headers

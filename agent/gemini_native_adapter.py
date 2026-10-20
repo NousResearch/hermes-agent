@@ -141,12 +141,24 @@ _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
 def is_vertex_express_base_url(base_url: str) -> bool:
-    """An aiplatform host speaking the native API with an API key: the bare express surface, or its
-    ``…/projects/{p}/locations/{l}`` form, which reaches models served only in ``global`` (Gemini 4).
-    The OAuth Vertex provider's ``…/endpoints/openapi`` base is OpenAI-compatible and must stay off
-    the native adapter."""
+    """An aiplatform host speaking the native API: the bare express surface, or its
+    ``…/projects/{p}/locations/{l}`` form (express keys reaching ``global``-only models such as
+    Gemini 4, and the OAuth Vertex provider's ``…/publishers/google`` base). An explicit
+    ``…/endpoints/openapi`` base is OpenAI-compatible and must stay off the native adapter."""
     normalized = str(base_url or "").strip().lower()
     return "aiplatform.googleapis.com" in normalized and "/endpoints/" not in normalized
+
+
+def uses_vertex_oauth_bearer(base_url: str, api_key: str) -> bool:
+    """True when the credential is a Google OAuth2 access token (Vertex provider), sent as
+    ``Authorization: Bearer``. A ``/projects/`` aiplatform base alone is not proof: express keys
+    (``AIza``/``AQ.``) use that form too and Vertex rejects them as bearers."""
+    key = str(api_key or "").strip()
+    if key.startswith("ya29."):
+        return True
+    normalized = str(base_url or "").strip().lower()
+    return ("aiplatform.googleapis.com" in normalized and "/projects/" in normalized
+            and not key.startswith(("AIza", "AQ.")))
 
 
 def normalize_gemini_base_url(base_url: Optional[str]) -> str:
@@ -899,6 +911,8 @@ class GeminiNativeClient:
         self.close()
 
     def _auth_headers(self) -> dict[str, str]:
+        if uses_vertex_oauth_bearer(self.base_url, self.api_key):
+            return {"Authorization": f"Bearer {self.api_key}"}
         return {"x-goog-api-key": self.api_key}
 
     def _headers(self) -> dict[str, str]:
@@ -906,7 +920,8 @@ class GeminiNativeClient:
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
-        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
+        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url,
+                                 key_guidance=not uses_vertex_oauth_bearer(self.base_url, self.api_key))
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

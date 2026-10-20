@@ -10,7 +10,7 @@ def test_scoped_members_respect_disabled_and_keep_other_profiles(tmp_path, monke
     other = other_home / "plugins" / "same"
     for member in (current, other):
         member.mkdir(parents=True)
-        (member / "pyproject.toml").write_text('[project]\nname="test"\nversion="1"\n')
+        (member / "pyproject.toml").write_text('[project]\nname="test"\nversion="1"\ndependencies=["requests"]\n')
     (home / "config.yaml").write_text('plugins:\n  enabled: [group/plugin]\n  disabled: []\n')
     (other_home / "config.yaml").write_text('plugins:\n  enabled: [same]\n')
     assert set(enabled_member_dirs()) == {current, other}
@@ -149,3 +149,18 @@ def test_buildable_member_without_a_version_gets_one_and_keeps_its_name(tmp_path
     member = _workspace_member(plugin, root, identity=plugin)
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project == {"name": "noversion-plugin", "version": "0.0.0"}
+
+
+def test_only_a_pyproject_needing_the_environment_is_a_member(tmp_path, monkeypatch):
+    """A pyproject kept for tests or tooling (dependencies = []) stays out: its whole tree fed the stamp."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugin = home / "plugins" / "tooling"
+    plugin.mkdir(parents=True)
+    (home / "config.yaml").write_text("plugins:\n  enabled: [tooling]\n", encoding="utf-8")
+    project = plugin / "pyproject.toml"
+    for table, member in (('dependencies=["requests"]\n', True), ("dependencies=[]\n", False),
+                          ('[project.optional-dependencies]\npostgres=["psycopg"]\n', True),
+                          ('[build-system]\nrequires=[]\nbuild-backend="backend"\n', True)):
+        project.write_text('[project]\nname="tooling"\nversion="1"\n' + table, encoding="utf-8")
+        assert enabled_member_dirs() == ([plugin] if member else []), table

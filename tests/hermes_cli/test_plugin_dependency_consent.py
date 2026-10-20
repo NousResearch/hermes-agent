@@ -7,10 +7,10 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import plugins_cmd
-from tests.pm.test_plugin_survival_contract import admission_env
+from tests.pm.test_plugin_survival_contract import _member, admission_env
 
 
-@pytest.mark.parametrize('python_surface', [None, 'pyproject', 'legacy'])
+@pytest.mark.parametrize('python_surface', [None, 'empty-pyproject', 'pyproject', 'legacy'])
 def test_install_only_requests_relevant_python_consent(admission_env, monkeypatch, capsys, python_surface):
     root, home = admission_env
     source = root / 'plugin-source'
@@ -21,9 +21,11 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
     (source / 'plugin.yaml').write_text(yaml.safe_dump(manifest), encoding='utf-8')
     (source / '__init__.py').write_text('def register(ctx):\n    pass\n', encoding='utf-8')
     (source / 'package.json').write_text(json.dumps({'name': 'sidecar-plugin', 'version': '1.0.0'}), encoding='utf-8')
-    if python_surface == 'pyproject':
+    if python_surface in ('empty-pyproject', 'pyproject'):
+        dependencies = '["never-install-without-consent==1"]' if python_surface == 'pyproject' else '[]'
         (source / 'pyproject.toml').write_text(
-            '[project]\nname="sidecar-plugin"\nversion="1.0"\nrequires-python=">=3.14"\n', encoding='utf-8')
+            f'[project]\nname="sidecar-plugin"\nversion="1.0"\nrequires-python=">=3.14"\ndependencies={dependencies}\n',
+            encoding='utf-8')
     env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
     for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
         subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
@@ -36,7 +38,7 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
     assert not (installed / 'node_modules').exists()
     enabled = yaml.safe_load(config_path.read_text(encoding='utf-8'))['plugins']['enabled']
     output = capsys.readouterr().out
-    if python_surface is None:
+    if python_surface in (None, 'empty-pyproject'):
         assert 'sidecar-plugin' in enabled
         assert 'declares Python dependencies' not in output
     else:
@@ -106,8 +108,7 @@ def test_dashboard_install_publishes_a_plugin_the_config_already_selects(admissi
     source.mkdir()
     (source / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'mem-twin'}), encoding='utf-8')
     (source / '__init__.py').write_text('class Twin(MemoryProvider): ...\n', encoding='utf-8')
-    (source / 'pyproject.toml').write_text(
-        '[project]\nname="mem-twin"\nversion="1.0"\nrequires-python=">=3.11"\n', encoding='utf-8')
+    _member(source, 'mem-twin')
     env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
     for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
         subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
@@ -135,7 +136,8 @@ def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
     target.mkdir()
     (staged / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'active-plugin'}), encoding='utf-8')
     (staged / 'pyproject.toml').write_text(
-        '[project]\nname="active-plugin"\nversion="1.0"\nrequires-python=">=3.11"\n', encoding='utf-8')
+        '[project]\nname="active-plugin"\nversion="1.0"\nrequires-python=">=3.11"\ndependencies=["requests"]\n',
+        encoding='utf-8')
     monkeypatch.setattr(ws, 'enabled_plugin_dirs', lambda **kwargs: [target])
     syncs = []
     monkeypatch.setattr('pm.client.sync_venv', lambda **kwargs: syncs.append(kwargs))

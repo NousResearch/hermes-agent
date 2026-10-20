@@ -57,10 +57,20 @@ def _needs_chromium_sandbox_bypass() -> bool:
     return apparmor_restricts_unprivileged_userns()
 
 
+def chromium_sandbox_bypass_enabled(browser_env: dict[str, str]) -> bool:
+    """True when the sandbox bypass must be applied for *browser_env*: this host needs it (root,
+    Docker, AppArmor-restricted user namespaces) and the user has not pinned args of their own.
+
+    Exposed separately because a lane that starts the real binary itself has to put the flags on
+    its ARGV, where ``AGENT_BROWSER_ARGS`` is inert (#135904).
+    """
+    return ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
+            and _needs_chromium_sandbox_bypass())
+
+
 def _apply_chromium_sandbox_args(browser_env: dict[str, str]) -> None:
     """Add required Chromium sandbox flags without overriding user settings."""
-    if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-            and _needs_chromium_sandbox_bypass()):
+    if chromium_sandbox_bypass_enabled(browser_env):
         _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
         browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 

@@ -285,6 +285,71 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
+    def _resolve_capturing_launch_envs(self, tmp_path, base_env):
+        """Drive one full real-profile resolve with ``base_env`` as the only inherited env, capturing
+        both Chromium launch lanes: the env of the binary this module Popens, and the env of the
+        agent-browser daemon (whose first command, ``get cdp-url``, launches a Chromium of its own)."""
+        import tools.browser_tool as bt
+        self._reset()
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_env"] = kw.get("env")
+            captured["chrome_argv"] = list(argv)
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        def fake_agent_browser_spawn(argv, env, socket_dir, tag):
+            captured["agent_env"] = env
+            return Mock(wait=Mock(return_value=0), returncode=0)
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt, "_build_browser_env", side_effect=lambda: dict(base_env)), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_session, "_popen_agent_browser", side_effect=fake_agent_browser_spawn), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            cdp, err = bt_real_profile._real_profile_cdp()
+        bt._real_profile_chrome_procs.clear()
+        self._reset()
+        assert (cdp, err) == ("http://127.0.0.1:41000", None)
+        return captured
+
+    def test_sandbox_bypass_reaches_every_real_profile_launch_lane(self, tmp_path):
+        """#135904: on AppArmor-userns / root / Docker hosts, real-profile browsing must carry the
+        Chromium sandbox bypass on both lanes that start a browser: the env of the binary this
+        module launches itself, and the daemon env agent-browser launches its own session-probe
+        Chromium with ("No usable sandbox" there is the failure the issue reports). Red before the
+        fix: neither env carried the args."""
+        with patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True):
+            captured = self._resolve_capturing_launch_envs(tmp_path, base_env={})
+        # The lane this module launches itself needs the flags on its ARGV: AGENT_BROWSER_ARGS is
+        # agent-browser's variable and never reaches a Chromium Popen'd with it (hence the fix).
+        for flag in ("--no-sandbox", "--disable-dev-shm-usage"):
+            assert flag in captured["chrome_argv"], flag
+        # The daemon probes by launching its own Chromium through agent-browser, which reads the var.
+        assert captured["agent_env"]["AGENT_BROWSER_ARGS"] == "--no-sandbox,--disable-dev-shm-usage"
+
+    def test_sandbox_bypass_never_overrides_an_explicit_agent_browser_args(self, tmp_path):
+        """An explicit AGENT_BROWSER_ARGS is the user's own choice and passes through untouched on
+        both lanes, even on a host where the auto-bypass would otherwise fire."""
+        with patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True):
+            captured = self._resolve_capturing_launch_envs(
+                tmp_path, base_env={"AGENT_BROWSER_ARGS": "--disable-gpu"})
+        assert "-no-sandbox" not in " ".join(captured["chrome_argv"])
+        for lane in ("chrome_env", "agent_env"):
+            assert captured[lane]["AGENT_BROWSER_ARGS"] == "--disable-gpu", lane
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

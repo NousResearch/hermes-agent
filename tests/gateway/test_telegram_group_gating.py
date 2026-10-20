@@ -37,6 +37,7 @@ def _make_adapter(
     group_allow_from=None,
     allowed_chats=None,
     group_allowed_chats=None,
+    observe_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bots_require_mention=None,
@@ -79,6 +80,8 @@ def _make_adapter(
         extra["group_allowed_chats"] = group_allowed_chats
     else:
         extra["group_allowed_chats"] = []
+    if observe_allowed_chats is not None:
+        extra["observe_allowed_chats"] = observe_allowed_chats
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
@@ -312,6 +315,145 @@ class _FakeSessionStore:
 
     def append_to_transcript(self, session_id, message, skip_db=False):
         self.messages.append((session_id, message, skip_db))
+
+
+@pytest.mark.asyncio
+async def test_observation_allowlist_stores_unauthorized_media_and_location_without_dispatch():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        observe_allowed_chats=["-100"],
+        group_allow_from=["222"],
+        observe_unmentioned_group_messages=True,
+    )
+    store = _FakeSessionStore()
+    adapter._session_store = store
+    adapter.handle_message = AsyncMock()
+    adapter._cache_observed_media = AsyncMock()
+
+    media = _group_message(text=None, caption="@hermes_bot photo", from_user_id=111)
+    for kind in ("sticker", "photo", "video", "audio", "voice", "document"):
+        setattr(media, kind, [object()] if kind == "photo" else None)
+    await adapter._handle_media_message(
+        SimpleNamespace(update_id=1, message=media), SimpleNamespace())
+
+    location = _group_message(text=None, from_user_id=111)
+    location.location = SimpleNamespace(latitude=1.0, longitude=2.0)
+    await adapter._handle_location_message(
+        SimpleNamespace(update_id=2, message=location, effective_message=None), SimpleNamespace())
+
+    adapter.handle_message.assert_not_awaited()
+    adapter._cache_observed_media.assert_awaited_once()
+    assert len(store.messages) == 2
+    assert all(row[1]["observed"] is True for row in store.messages)
+    assert store.messages[0][1]["content"] == "[Alice Example|111]\n@hermes_bot photo"
+    location_text = store.messages[1][1]["content"]
+    assert "latitude: 1.0" in location_text
+    assert "longitude: 2.0" in location_text
+    assert "Ask what" not in location_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_per_user,thread_per_user", [(True, False), (False, True)])
+async def test_observation_only_rejects_split_sessions_before_connect(
+    monkeypatch, tmp_path, group_per_user, thread_per_user,
+):
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = TelegramAdapter(PlatformConfig(
+        enabled=True, token="test-token",
+        extra={"observe_allowed_chats": ["-100"], "observe_unmentioned_group_messages": True,
+               "group_sessions_per_user": group_per_user, "thread_sessions_per_user": thread_per_user},
+    ))
+    adapter._acquire_platform_lock = Mock(side_effect=AssertionError("must not connect"))
+
+    assert await adapter.connect() is False
+    assert adapter._fatal_error_code == "invalid_configuration"
+    assert "group_sessions_per_user: false" in adapter._fatal_error_message
+    assert "thread_sessions_per_user: false" in adapter._fatal_error_message
+
+
+@pytest.mark.asyncio
+async def test_observation_only_config_uses_one_real_group_transcript(monkeypatch, tmp_path):
+    from gateway.run import GatewayRunner, _build_gateway_agent_history
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "group_sessions_per_user: false\n"
+        "telegram:\n"
+        "  allowed_chats: ['-100']\n"
+        "  observe_allowed_chats: ['-100']\n"
+        "  group_allow_from: ['222']\n"
+        "  require_mention: true\n"
+        "  observe_unmentioned_group_messages: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for key in (
+        "TELEGRAM_ALLOWED_CHATS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS", "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "TELEGRAM_REQUIRE_MENTION",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    config = load_gateway_config()
+    assert config.group_sessions_per_user is False
+    adapter = _make_adapter()
+    adapter.config = config.platforms[Platform.TELEGRAM]
+    assert adapter.config.extra["observe_allowed_chats"] == ["-100"]
+    assert not adapter._telegram_group_allowed_chats()
+    runner = GatewayRunner(config)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    adapter.gateway_runner = runner
+    store = runner.session_store
+    adapter._session_store = store
+    queued = []
+    adapter._enqueue_text_event = queued.append
+    adapter._ensure_forum_commands = AsyncMock()
+    adapter._cache_replied_media = AsyncMock()
+    adapter.handle_message = AsyncMock()
+
+    async def receive(msg, update_id):
+        await adapter._handle_text_message(
+            SimpleNamespace(update_id=update_id, message=msg, effective_message=None), SimpleNamespace())
+
+    message = _group_message("observed", from_user_id=111)
+    addressed = "@hermes_bot summarize"
+    await receive(message, 1)
+    await receive(_group_message(addressed, from_user_id=111, entities=[_mention_entity(addressed)]), 2)
+    await receive(_group_message("outside", chat_id=-200, from_user_id=111), 3)
+    command = "/status@hermes_bot"
+    await adapter._handle_command(SimpleNamespace(
+        update_id=4,
+        message=_group_message(command, from_user_id=111, entities=[_bot_command_entity(command, command)]),
+        effective_message=None), SimpleNamespace())
+    assert queued == []
+    adapter.handle_message.assert_not_awaited()
+
+    author = _group_message(addressed, from_user_id=222, entities=[_mention_entity(addressed)])
+    assert adapter._is_user_authorized_from_message(message) is False
+    assert adapter._is_user_authorized_from_message(author) is True
+    assert runner._is_user_authorized(adapter._source_from_message_for_auth(message)) is False
+    assert runner._is_user_authorized(adapter._source_from_message_for_auth(author)) is True
+    await receive(author, 5)
+    assert len(queued) == 1
+    event = queued[0]
+    assert event.source.user_id == "222"
+    admitted = await runner._hm_admit_event(event)
+    assert admitted is not None
+    assert admitted[1].user_id == "222"
+    session = store.get_or_create_session(event.source)
+    history = store.load_transcript(session.session_id)
+    # The transcript coalesces adjacent user rows to preserve role alternation.
+    assert len(history) == 1
+    assert history[0]["observed"] is True
+    assert history[0]["content"] == f"[Alice Example|111]\nobserved\n\n[Alice Example|111]\n{addressed}"
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=event.channel_prompt)
+    assert agent_history == []
+    assert "[Alice Example|111]\nobserved" in observed_context
+    assert addressed in observed_context
 
 
 def test_group_messages_can_require_direct_trigger_via_config():
@@ -736,6 +878,7 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id is None
         assert "[Alice Example|111]" in event.text
+        assert "Ask what they'd like to find nearby" in event.text
 
     asyncio.run(_run())
 

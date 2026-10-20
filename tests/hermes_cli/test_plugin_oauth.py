@@ -582,12 +582,15 @@ def _registered_like_a_fresh_process(monkeypatch) -> None:
     plugin_oauth._bundled_platform_env_names.cache_clear()
 
 
-def test_a_platform_plugin_signs_in_with_the_client_variables_it_declares(idp, monkeypatch):
-    """A ``kind: platform`` plugin lists its client variables in requires_env, as catalog admission demands, and
-    that list also feeds the config form: they stay its own, not variables Hermes uses itself."""
+@pytest.mark.parametrize("secret_field", ["requires_env", "optional_env"])
+def test_a_platform_plugin_signs_in_with_the_client_variables_it_declares(idp, monkeypatch, secret_field):
+    """A ``kind: platform`` plugin lists its client variables in requires_env or optional_env, as catalog admission
+    demands, and both lists also feed the config form: they stay its own, not variables Hermes uses itself."""
     from hermes_cli.config_env_routing import is_registered_env_name
 
-    _plugin(oauth=[_entry(idp)], kind="platform")
+    declared = {"requires_env": [{"name": "VOICE_CLIENT_ID"}], "optional_env": []}
+    declared[secret_field].append({"name": "VOICE_CLIENT_SECRET"})
+    _plugin(oauth=[_entry(idp)], kind="platform", **declared)
     _registered_like_a_fresh_process(monkeypatch)
     assert is_registered_env_name("VOICE_CLIENT_ID") and is_registered_env_name("VOICE_CLIENT_SECRET")
 

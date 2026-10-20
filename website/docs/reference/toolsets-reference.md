@@ -60,8 +60,8 @@ Or in-session:
 | `cronjob` | `cronjob_manage` | Schedule and manage recurring tasks. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
-| `discord` | `discord` | Core Discord text/embed/DM actions (gateway-only). Active on the `hermes-discord` toolset. |
-| `discord_admin` | `discord_admin` | Discord moderation (bans, role changes, channel management). Active on the `hermes-discord` toolset; requires the bot to hold the relevant Discord permissions. |
+| `discord` | `discord` | Read-and-participate actions: `fetch_messages`, `search_members`, `create_thread` (gateway-only). Off by default — opt in via `hermes tools enable discord --platform discord`; the toolset is stripped from the implicit `hermes-discord` expansion until enabled explicitly. |
+| `discord_admin` | `discord_admin` | Server management via the REST API: list guilds/channels/roles, server/channel/member info, pins (`list_pins`/`pin_message`/`unpin_message`), message deletion, and role grants (`add_role`/`remove_role`). Off by default like `discord` — opt in via `hermes tools enable discord_admin --platform discord`. Requires the bot to hold the relevant Discord permissions. |
 | `feishu_doc` | `feishu_doc_read` | Read Feishu/Lark document content. Used by the Feishu document-comment intelligent-reply handler. |
 | `feishu_drive` | `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment` | Feishu/Lark drive comment operations. Scoped to the comment agent; not exposed on `hermes-cli` or other messaging toolsets. |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
@@ -98,7 +98,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-api-server` | Drops `clarify`, `text_to_speech`, `computer_use`, and the kanban tools. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-cron` | Same as `hermes-cli`. |
 | `hermes-telegram` | Same as `hermes-cli`. |
-| `hermes-discord` | Adds `discord` and `discord_admin` on top of `hermes-cli`. |
+| `hermes-discord` | Adds `discord` and `discord_admin` on top of `hermes-cli` — but both are default-off security opt-ins, so the implicit expansion does not include them. Enable via `hermes tools enable discord --platform discord` (and `discord_admin`), or save an explicit `platform_toolsets.discord` list via `hermes tools`. |
 | `hermes-slack` | Same as `hermes-cli`. |
 | `hermes-whatsapp` | Same as `hermes-cli`. |
 | `hermes-signal` | Same as `hermes-cli`. |

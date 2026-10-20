@@ -360,19 +360,19 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 ## `discord` toolset
 
-Registered on the `hermes-discord` platform toolset (gateway only). Uses the same bot token as the messaging adapter.
+Registered on the `hermes-discord` platform toolset (gateway only). Uses the same bot token as the messaging adapter. Off by default (security opt-in): enable with `hermes tools enable discord --platform discord`, then restart the gateway.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `discord` | Read and participate in a Discord server. Actions include `search_members`, `fetch_messages`, `send_message`, `react`, `fetch_channel`, `list_channels`, and more. | `DISCORD_BOT_TOKEN` |
+| `discord` | Read and participate in a Discord server: `fetch_messages` (recent channel history), `search_members` (name-prefix lookup), `create_thread`. Sending messages and reactions goes through the messaging adapter itself, not this tool. | `DISCORD_BOT_TOKEN` |
 
 ## `discord_admin` toolset
 
-Registered on the `hermes-discord` platform toolset. Moderation actions require the bot to hold the matching Discord permissions.
+Registered on the `hermes-discord` platform toolset. Off by default like `discord`; enable with `hermes tools enable discord_admin --platform discord`. Actions require the bot to hold the matching Discord permissions.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `discord_admin` | Manage a Discord server via the REST API: list guilds/channels/roles, create/edit/delete channels, manage role grants, timeouts, kicks, and bans. | `DISCORD_BOT_TOKEN` + bot permissions |
+| `discord_admin` | Manage a Discord server via the REST API: `list_guilds`, `server_info`, `list_channels`, `channel_info`, `list_roles`, `member_info`, `list_pins`, `pin_message`, `unpin_message`, `delete_message`, `add_role`, `remove_role`. | `DISCORD_BOT_TOKEN` + bot permissions |
 
 ## `hermes-yuanbao` toolset
 

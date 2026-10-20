@@ -259,6 +259,60 @@ class TestRealPruning:
         assert "small.py" in names
         assert "weights.bin" not in names  # filtered by size cap
 
+    def test_oversize_drop_treats_globby_names_literally(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """Regression #135605: oversize names handed to ``git rm --cached``
+        came from ``ls-files``, but git read them as glob pathspecs — a name
+        like ``a[12].bin`` also unstaged every file it matched as a glob
+        (``a1.bin``), silently dropping under-cap files from the snapshot."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        wd = tmp_path / "proj"
+        wd.mkdir()
+        (wd / "small.py").write_text("tiny\n")
+        (wd / "a1.bin").write_text("original small file\n")
+        (wd / "a[12].bin").write_bytes(b"\0" * (2 * 1024 * 1024))  # above 1 MB cap
+
+        m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
+        assert m.ensure_checkpoint(str(wd), "initial") is True
+
+        store = _store_path(checkpoint_base)
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(wd)))],
+            store, str(wd),
+        )
+        assert ok
+        names = set(files.splitlines())
+        assert "small.py" in names
+        # Matches a[12].bin only as a glob — must survive the oversize drop.
+        assert "a1.bin" in names
+        assert "a[12].bin" not in names  # the oversize file itself stays out
+
+    def test_safe_restore_keeps_glob_sibling_of_oversize_file(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        """End-to-end #135605: a sibling glob-unstaged by the oversize drop is
+        absent from the checkpoint, so a safe restore classified the under-cap
+        file as agent-created and deleted it from the working tree."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        wd = tmp_path / "proj"
+        wd.mkdir()
+        (wd / "main.py").write_text("print(1)\n")
+        (wd / "a1.bin").write_text("original small file\n")
+        (wd / "a[12].bin").write_bytes(b"\0" * (2 * 1024 * 1024))  # above 1 MB cap
+
+        m = CheckpointManager(enabled=True, max_snapshots=5, max_file_size_mb=1)
+        assert m.ensure_checkpoint(str(wd), "initial") is True
+        m.new_turn()
+        cp = m.list_checkpoints(str(wd))[0]["hash"]
+
+        (wd / "a1.bin").write_text("edited by the agent\n")
+        m.record_agent_write(str(wd / "a1.bin"))
+
+        result = m.restore(str(wd), cp, safe=True)
+        assert result["success"] is True
+        assert (wd / "a1.bin").read_text() == "original small file\n"
+
 
 # =========================================================================
 # CheckpointManager — restoring

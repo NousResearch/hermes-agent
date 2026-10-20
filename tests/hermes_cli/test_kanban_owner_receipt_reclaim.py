@@ -31,6 +31,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli import kanban_owner_recovery
 from hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
@@ -194,3 +195,38 @@ def test_the_pause_still_holds_every_attempt_that_may_be_alive(board, shape):
     assert kb.release_stale_claims(board.conn) == 0
     assert kbd.detect_crashed_workers(board.conn) == []
     assert board.state("t_ghost")["status"] == "running"
+
+
+# --- the gate is decided under the same write lock as the release ---------------------------
+
+_RECLAIM_PATHS = {
+    "ttl": lambda conn: kb.release_stale_claims(conn),
+    "stale": lambda conn: kbd.detect_stale_running(conn, stale_timeout_seconds=1, signal_fn=lambda *_: None),
+    "runtime": lambda conn: kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None),
+}
+
+
+@pytest.mark.parametrize("path", sorted(_RECLAIM_PATHS))
+def test_an_interpreter_bound_after_the_gate_keeps_its_claim(board, monkeypatch, path):
+    """Binding changes neither claim_lock nor worker_pid, so only a re-check inside the
+    reclaim transaction can see an owner that recovered after the first look."""
+    run = board.dead_attempt("t_ghost")
+    board.conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = 't_ghost'")
+    board.conn.commit()
+    real_gate, calls = owner_reclaim_blocked, []
+
+    def gate_then_bind(conn, task_id, **kwargs):
+        verdict = real_gate(conn, task_id, **kwargs)
+        if not calls:  # the recovered owner binds a live interpreter right after the first look
+            board.event(task_id, run, "worker_bound",
+                        {"pid": os.getpid(), "started_at": kbd._process_fingerprint(os.getpid())}, NOW)
+            board.conn.commit()
+        calls.append(verdict)
+        return verdict
+
+    monkeypatch.setattr(kanban_owner_recovery, "owner_reclaim_blocked", gate_then_bind)
+    assert not _RECLAIM_PATHS[path](board.conn)
+    assert calls[0] is False and calls[-1] is True
+    row = board.state("t_ghost")
+    assert (row["status"], row["current_run_id"]) == ("running", run)
+

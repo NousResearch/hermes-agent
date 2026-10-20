@@ -2398,6 +2398,10 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            # Again under the write lock: an interpreter that bound since the check above
+            # changes neither claim_lock nor worker_pid, so the CAS below cannot see it.
+            if owner_reclaim_blocked(conn, row["id"]):
+                continue
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "

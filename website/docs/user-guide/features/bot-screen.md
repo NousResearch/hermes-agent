@@ -187,6 +187,11 @@ are in the bot's own windows and cookie jar; what you sign in to is what the bot
 uses afterwards and in every later session, until the site expires the login.
 Set `browser.headed: true` so the bot's own browsing is visible on the screen too.
 
+Without a screen there is no shared jar: each browser task gets its own, so state
+does not outlive the task. Two tasks at once cannot share one — Chromium lets the
+first `--user-data-dir` holder win and refuses the second — so per-task isolation
+is what keeps concurrent browser work possible.
+
 The dock is seeded **once**, the first time the screen starts for a profile.
 The guard is the panel layout file
 `<HERMES_HOME>/bot-desktop/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml`:

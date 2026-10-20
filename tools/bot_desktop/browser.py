@@ -34,6 +34,23 @@ def profile_dir() -> Path:
     return runtime.state_dir() / "browser-profile"
 
 
+def resolved_profile_pin(raw: Optional[str] = None) -> str:
+    """The user-data-dir a browser child should get, as an absolute path.
+
+    Same rules as :func:`profile_dir`, but taking the value that is actually on its way to the
+    child instead of re-reading ``os.environ``. ``_build_browser_env`` already carries an
+    inherited ``AGENT_BROWSER_PROFILE`` into the child env, so a host-lane ``setdefault`` would
+    keep that value verbatim — and a relative one like ``pin`` reaches agent-browser as a Chrome
+    profile *name* rather than the ``<HERMES_HOME>/pin`` the docs promise. Resolving here also
+    gives every lane the same jar, whatever path the value arrived by.
+    """
+    value = (os.environ.get("AGENT_BROWSER_PROFILE", "") if raw is None else raw).strip()
+    if not value:
+        return str(profile_dir())
+    expanded = os.path.expanduser(value)
+    return str(Path(expanded) if os.path.isabs(expanded) else runtime.get_hermes_home() / expanded)
+
+
 def executable() -> Optional[str]:
     """The Chromium agent-browser launches: an explicit ``AGENT_BROWSER_EXECUTABLE_PATH``, else the newest
     Playwright Chromium it bundles, else a system Chrome/Chromium. ``None`` when there is none.
@@ -174,8 +191,15 @@ def env_for_agent(env: dict) -> dict:
     and leaving it would put the agent and the dock on different binaries over one ``--user-data-dir``,
     where Chromium's singleton swallows the dock's launch into the windowless process. Only runs while a
     screen is up (:func:`runtime.desktop_env`), so the heavier build is pinned just when it is the point.
+
+    The user's pin is resolved on the way through, not merely carried: a relative value reaches
+    ``desktop_env`` verbatim (``_build_browser_env`` inherits it), and agent-browser reads a bare
+    ``pin`` as a Chrome profile *name* to go looking for, so the documented ``<HERMES_HOME>/pin``
+    silently stopped meaning that (#132755).
     """
     env.setdefault("AGENT_BROWSER_PROFILE", str(profile_dir()))
+    if env.get("AGENT_BROWSER_PROFILE"):
+        env["AGENT_BROWSER_PROFILE"] = resolved_profile_pin(env["AGENT_BROWSER_PROFILE"])
     exe = executable()
     if exe:
         pinned = env.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()

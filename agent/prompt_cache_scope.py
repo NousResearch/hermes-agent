@@ -37,6 +37,23 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
+def conversation_id(agent: Any) -> str:
+    """The id plugins key per-conversation state on: the compression-lineage root of ``agent.session_id``
+    (the cache scope's walk), so compression rotation keeps it while ``/new`` and ``/branch`` start a new
+    one. A delegated child or review fork reports its parent's, stamped at spawn. Memoized per physical id."""
+    inherited = getattr(agent, "_inherited_conversation_id", None)
+    if isinstance(inherited, str) and inherited:
+        return inherited
+    sid = str(getattr(agent, "session_id", None) or "")
+    memo = getattr(agent, "_conversation_id_memo", None)
+    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == sid:
+        return memo[1]
+    root = _lineage_root(sid, getattr(agent, "_session_db", None)) if sid else None
+    if root is not None:
+        agent._conversation_id_memo = (sid, root)
+    return root or sid
+
+
 def _agent_source(
     agent: Any, session_id: str, session_db: Any, row_source: Optional[str] = None
 ) -> str:

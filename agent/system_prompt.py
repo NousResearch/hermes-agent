@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
+from agent.prompt_cache_scope import conversation_id
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
@@ -90,7 +91,8 @@ def _plugin_session_info(agent: Any) -> dict[str, str]:
     except Exception:
         cwd = ""
     info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
-    info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
+    info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd,
+                conversation_id=conversation_id(agent))
     return info
 
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agent.i18n import t
-from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -1003,6 +1003,8 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
+    # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
+    review_agent._inherited_conversation_id = conversation_id(agent)
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.

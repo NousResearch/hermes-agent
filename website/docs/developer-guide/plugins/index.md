@@ -836,9 +836,15 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
-   `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
+4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `conversation_id`,
+   `user_task`, `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
    works; `**kwargs` is how you opt into the full, additively growing context.
+5. **Key per-conversation state on `conversation_id`:** `session_id` names the current transcript
+   segment, and a rotating compression (`compression.in_place: false`) replaces it mid-conversation.
+   `conversation_id` is the id of the conversation's first session and does not change. `/new` and
+   `/branch` start a new conversation. A delegated subagent's calls carry its own `session_id` and its
+   delegator's `conversation_id`. Both are empty when the call has no session (for example, a tool call
+   from inside an `execute_code` script).
 
 ## Step 5: Write the registration
 

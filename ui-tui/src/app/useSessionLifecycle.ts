@@ -9,10 +9,10 @@ import type {
   SessionCloseResponse,
   SessionCreateResponse,
   SessionDetachResponse,
+  SessionInfo,
   SessionTitleResponse,
   SetupStatusResponse
 } from '@hermes/shared/gateway-types'
-import type { SessionInfo } from '@hermes/shared/gateway-types'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { STARTUP_WORKSPACE_CWD } from '../config/env.js'

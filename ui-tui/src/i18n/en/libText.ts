@@ -4,7 +4,7 @@
 
 export const libTextEn = {
   libText: {
-    // gatewayClient.ts — transport-drop reasons that reject in-flight RPCs and
+    // @hermes/shared/gateway-client (given Ink's `t`) — transport-drop reasons that reject in-flight RPCs and
     // therefore surface in the transcript. `gateway not connected` /
     // `gateway not running` are deliberately NOT here: app/userMessages.ts
     // parses them (NOT_CONNECTED_RE) and rewrites them into plain words.

@@ -42,13 +42,14 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 
 The Ink TUI's gateway client lives in `apps/shared` (`@hermes/shared`), so another Node frontend can use it without compiling Ink's source. It dials the owner with a ticket, reads `runtime.describe` before `session.create`, translates requests and results for `hermes-gateway-v1` (`@hermes/shared/gateway-canonical`), reconnects with backoff, re-ensures a gone owner a bounded number of times per minute, and emits typed events (`@hermes/shared/gateway-types`).
 
-The client does not know where its connection comes from. The caller passes `connect(start, recover)`, which returns `{url, protocols, profile_id, instance_id}` and runs again for every reconnect (tickets are single-use). Ink passes its `gateway_bootstrap.py` helper; any other local client can run `hermes gateway attach --json` (with `--start` on the first call and `--recover` when asked to recover) and pass its `url` and `protocols`:
+The client does not know where its connection comes from. The caller passes `connect(start, recover)`, which returns `{url, protocols, profile_id, instance_id}` and runs again for every reconnect (tickets are single-use). Ink passes its `gateway_bootstrap.py` helper; any other local client can run `hermes gateway attach --json` (added with this client's split, #142159) (with `--start` on the first call and `--recover` when asked to recover) and pass its `url` and `protocols`:
 
 ```ts
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 import { GatewayClient } from '@hermes/shared/gateway-client'
+import type { AnyGatewayEvent } from '@hermes/shared/gateway-types'
 
 const gw = new GatewayClient({
   connect: async (start, recover) => {
@@ -60,13 +61,13 @@ const gw = new GatewayClient({
   }
 })
 
-gw.on('event', event => { /* typed AnyGatewayEvent */ })
+gw.on('event', (event: AnyGatewayEvent) => { /* … */ })
 gw.start()
 gw.drain()
 const session = await gw.request('session.create', {})
 ```
 
-`hermes gateway attach` exits non-zero with the verdict on stdout when there is no owner to attach, so `execFile` rejects and the client retries on its backoff. Other options (`attachUrl`, `sidecarUrl`, timeouts, `toolProgress`, `onLifecycle`, `text`, `fallbackWebSocket`) are documented on `GatewayClientOptions`. Browser-safe modules stay in `apps/shared/src/`; Node-only ones (the client, `prompt-history`) are in `apps/shared/src/node/`, and `apps/shared/src/node/boundary.test.ts` fails if the package's program ever includes a file from another workspace.
+`hermes gateway attach` exits non-zero with the verdict on stdout when there is no owner to attach, so `execFile` rejects and the client retries on its backoff. Sessions are created with `source: "tui"`, the gateway's terminal-client policy, and `session.create` refuses an owner whose `runtime.describe` does not offer it. Other options (`terminalConnectFailure`, `attachUrl`, `sidecarUrl`, timeouts, `toolProgress`, `onLifecycle`, `text`, `fallbackWebSocket`) are documented on `GatewayClientOptions`. Browser-safe modules stay in `apps/shared/src/`; Node-only ones (the client, `prompt-history`) are in `apps/shared/src/node/`, and `apps/shared/src/node/boundary.test.ts` fails if the package's program ever includes a file from another workspace.
 
 ### Method catalog (selected)
 

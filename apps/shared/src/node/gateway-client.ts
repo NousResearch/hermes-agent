@@ -40,7 +40,8 @@ export const RECONNECT_BASE_MS = 1_000
 export const RECONNECT_MAX_MS = 30_000
 
 /** One attach grant: the owner's WebSocket URL and the subprotocols (with the single-use ticket) to
- *  dial it with. `hermes gateway attach --json` prints these fields. */
+ *  dial it with. From `hermes gateway attach --json`: its `url`, `protocols`, and `endpoint.profile_id`
+ *  / `endpoint.instance_id`. */
 export interface GatewayConnection { url: string; protocols: string[]; profile_id: string; instance_id: string }
 
 /** `start`: the client's first attach (ensure the owner); `recover`: a bounded re-ensure of an owner
@@ -49,8 +50,8 @@ export type ConnectGateway = (start: boolean, recover: boolean) => Promise<Gatew
 
 export interface GatewayClientOptions {
   connect: ConnectGateway
-  /** A `connect` failure no retry can fix (the client reports it once and stops). */
-  isTerminalConnectFailure?: (error: Error) => boolean
+  /** For a `connect` failure no retry can fix, the line to report; the client then stops retrying. */
+  terminalConnectFailure?: (error: Error) => string | undefined
   /** An explicit listener to dial instead of `connect` (Ink: `HERMES_TUI_GATEWAY_URL`); read per request. */
   attachUrl?: () => null | string
   /** A socket every event frame is mirrored to (Ink: `HERMES_TUI_SIDECAR_URL`). */
@@ -63,6 +64,7 @@ export interface GatewayClientOptions {
   toolProgress?: () => string | undefined
   /** Lifecycle breadcrumbs worth persisting (they also land in the `/logs` tail). */
   onLifecycle?: (line: string) => void
+  /** User-facing text by Ink catalog key (default: `gatewayText`, English). */
   text?: GatewayText
   /** The WebSocket implementation when the runtime has no global `WebSocket` (Node < 22). */
   fallbackWebSocket?: typeof WebSocket
@@ -584,8 +586,10 @@ export class GatewayClient extends EventEmitter {
 
       // No reconnect fixes this (Ink: the helper's interpreter cannot load Hermes, gateway_bootstrap.py
       // `gateway unavailable:`), so report it once instead of retrying every 30 s forever (#138878).
-      if (this.options.isTerminalConnectFailure?.(this.bootstrapError)) {
-        this.lifecycle(`[lifecycle] gateway bootstrap cannot start; not retrying: ${this.bootstrapError.message.match(/^gateway unavailable: .*$/m)?.[0]}`)
+      const terminal = this.options.terminalConnectFailure?.(this.bootstrapError)
+
+      if (terminal !== undefined) {
+        this.lifecycle(`[lifecycle] gateway bootstrap cannot start; not retrying: ${terminal}`)
 
         return
       }

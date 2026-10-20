@@ -10,7 +10,6 @@ import {
 } from '@hermes/ink'
 import { sharedControlParams } from '@hermes/shared/gateway-canonical'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
-import type { SubagentListResponse } from '@hermes/shared/gateway-types'
 import type {
   AnyGatewayEvent,
   ClarifyLockResponse,
@@ -18,6 +17,7 @@ import type {
   SessionActiveListResponse,
   SessionCloseResponse,
   SharedControlRespondResponse,
+  SubagentListResponse,
   TerminalResizeResponse
 } from '@hermes/shared/gateway-types'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'

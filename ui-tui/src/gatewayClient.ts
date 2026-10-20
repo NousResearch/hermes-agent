@@ -19,7 +19,8 @@ export class GatewayClient extends SharedGatewayClient {
       attachUrl: envUrl('HERMES_TUI_GATEWAY_URL'),
       connect: bootstrap,
       fallbackWebSocket: UndiciWebSocket as unknown as typeof WebSocket,
-      isTerminalConnectFailure: error => isTerminalBootstrapFailure(error.message),
+      terminalConnectFailure: error =>
+        isTerminalBootstrapFailure(error.message) ? error.message.match(/^gateway unavailable: .*$/m)?.[0] : undefined,
       onLifecycle: recordParentLifecycle,
       requestTimeoutMs: REQUEST_TIMEOUT_MS,
       sidecarUrl: envUrl('HERMES_TUI_SIDECAR_URL'),

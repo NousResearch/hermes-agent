@@ -9,9 +9,9 @@ import type {
   ConfigFullResponse,
   DelegationStatusResponse,
   GatewaySkin,
+  SessionInfo,
   SessionMostRecentResponse
 } from '@hermes/shared/gateway-types'
-import type { SessionInfo } from '@hermes/shared/gateway-types'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'

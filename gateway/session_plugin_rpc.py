@@ -7,10 +7,10 @@ method carries the trust of a plugin tool. The handler runs off the loop, in the
 """
 import asyncio
 import contextlib
-import inspect
 import json
 import logging
 
+from hermes_cli.plugins_dispatch import resolve_plugin_command_result
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -28,9 +28,9 @@ async def call_plugin_rpc(connection, ref, method, handler, params):
         if 'session:control' not in connection.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
     try:
-        result = await asyncio.to_thread(handler, dict(params), session_id=ref.session_id or None)
-        if inspect.isawaitable(result):
-            result = await result
+        # Resolved in the worker: an ``async def`` handler's body must not run on the gateway loop.
+        result = await asyncio.to_thread(lambda: resolve_plugin_command_result(
+            handler(dict(params), session_id=ref.session_id or None)))
         return json.loads(json.dumps(result))
     except Exception as exc:  # the call's only answer: a plugin failure is the client's error, not a crash
         logger.warning('plugin RPC %s failed', method, exc_info=True)

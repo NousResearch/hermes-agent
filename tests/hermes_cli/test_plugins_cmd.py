@@ -931,6 +931,44 @@ def test_autostash_dirty_tree_promotes_intent_to_add_entries(tmp_path):
     assert git("status", "--porcelain").stdout == ""
 
 
+def test_autostash_dirty_tree_clears_unmerged_index_entries(tmp_path):
+    """A plugin checkout left with an unmerged (UU) index entry — an interrupted merge, or the
+    conflict left by this module's own reapply-failure advice — must still autostash.
+
+    `git stash push` refuses a tree with unmerged entries outright ("needs merge"), which is the
+    exact class of failure `update_cmd_stash._stash_local_changes_if_needed` already handles for
+    `hermes update` via `git reset` (drops only the index conflict state, not the working tree).
+    """
+    import subprocess
+
+    from hermes_cli.plugins_cmd_git import _autostash_dirty_tree
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "f").write_text("base\n", encoding="utf-8")
+    git("add", "f")
+    git("commit", "-qm", "base")
+    git("checkout", "-qb", "other")
+    (tmp_path / "f").write_text("theirs\n", encoding="utf-8")
+    git("commit", "-qam", "other change")
+    git("checkout", "-q", "main")
+    (tmp_path / "f").write_text("ours\n", encoding="utf-8")
+    git("commit", "-qam", "our change")
+    git("merge", "other", check=False)  # conflicts — leaves f unmerged (UU)
+    assert "UU f" in git("status", "--porcelain").stdout
+
+    stashed, error = _autostash_dirty_tree("git", tmp_path)
+
+    assert error == "", "the plugin autostash must not be blocked by an unmerged index entry"
+    assert stashed == git("rev-parse", "refs/stash").stdout.strip()  # the autostash commit sha
+
+
 def test_toggle_plugin_toolset_rewrites_a_list_literal_string_platform_entry(tmp_path, monkeypatch):
     """``hermes plugins enable`` must reach a platform whose ``platform_toolsets`` entry is the
     list-literal string an older ``hermes config set`` stored, and re-save it as a real list —

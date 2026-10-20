@@ -1101,6 +1101,30 @@ next occurrence cannot be computed, the existing run-once fallback is preserved.
 This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
 below. There is no per-job override.
 
+### One-shots missed while the host was off
+
+One-shots are stricter than recurring jobs: more than 120 seconds past its run time,
+a one-shot is retired with a diagnostic rather than fired, because a wall-clock
+reminder arriving hours late can be worse than not arriving. That strictness is
+right when the scheduler was *up* and simply failed to fire, but not when nothing
+was alive to fire it — the host was powered off, or the gateway was stopped.
+
+To make a one-shot that came due during such downtime fire once on the next start,
+set:
+
+```yaml
+cron:
+  catch_up_missed_oneshots: true   # default: false
+```
+
+Or run `hermes config set cron.catch_up_missed_oneshots true`. On startup the
+scheduler records the gap between the previous ticker's last heartbeat and now; a
+one-shot whose run time falls inside that gap is released from the grace gate and
+fires once. A one-shot due while the ticker *was* running is still retired — the
+downtime window is evidence, not a blanket amnesty — and a restart within two tick
+intervals does not count as downtime. Recurring jobs are unaffected; they already
+catch up (above).
+
 ### Misfire catch-up
 
 When an external scheduler provider is active (managed cron on hosted deployments), the gateway also runs a catch-up sweep: a job whose scheduled time passed with no fire delivered — and whose grace window has elapsed — is claimed and run locally, so an outage in the fire hand-off costs minutes instead of the whole day. The sweep is de-duplicated against late scheduler retries by the same store claim used for normal fires.

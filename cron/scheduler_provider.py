@@ -427,6 +427,23 @@ def scheduler_for_profile_mode(
     return InProcessCronScheduler()
 
 
+def _record_startup_downtime() -> None:
+    """Capture the ticker gap this starting ticker just ended, before its first heartbeat
+    overwrites the marker. One-shots due inside that window were skipped, not missed
+    (``cron/ticker_downtime.py``). Resolves the ACTIVE store, so the caller must already be
+    inside the profile's cron scope."""
+    import time as _time
+
+    from cron.jobs import TICKER_INTERVAL_SECONDS, _current_cron_store, get_ticker_heartbeat_age
+    from cron.ticker_downtime import record_startup_gap
+
+    age = get_ticker_heartbeat_age()
+    now = _time.time()
+    # Twice the tick interval: a clean restart within one cycle is not downtime.
+    record_startup_gap(_current_cron_store().cron_dir, None if age is None else now - age, now,
+                       min_gap=2 * TICKER_INTERVAL_SECONDS)
+
+
 class InProcessCronScheduler(CronScheduler):
     """Default in-process 60s ticker; ``start()`` blocks until ``stop_event``. ``can_dispatch`` is
     an optional drain gate; skipped ticks leave due jobs intact for the next allowed tick."""
@@ -473,6 +490,8 @@ class InProcessCronScheduler(CronScheduler):
                 logger.warning(
                     "Marked %d interrupted cron execution(s) unknown after restart", recovered
                 )
+            # Read the previous ticker's last stamp before this one overwrites it.
+            _record_startup_downtime()
             # Heartbeat before the first sleep so `hermes cron status` sees a live ticker
             # immediately.
             record_ticker_heartbeat()
@@ -579,6 +598,8 @@ class InProcessCronScheduler(CronScheduler):
                             "Marked %d interrupted cron execution(s) for profile at %s",
                             recovered, home,
                         )
+                    # Read the previous ticker's last stamp before this one overwrites it.
+                    _record_startup_downtime()
                     record_ticker_heartbeat()
             except BaseException as e:
                 logger.error(

@@ -34,6 +34,7 @@ from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
+from cron import ticker_downtime
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -2811,6 +2812,14 @@ def _cron_config_number(key: str, default: Any, cast: Callable[[Any], Any]) -> A
         return cast(default)
 
 
+def _catch_up_missed_oneshots() -> bool:
+    """``cron.catch_up_missed_oneshots``: whether a one-shot due during ticker downtime fires once
+    on startup instead of being retired. Default False — a wall-clock one-shot firing hours late
+    can be worse than not firing at all, so the operator opts in. Only a real ``true`` enables it
+    (``bool("false")`` is True, so a string value must never be cast directly)."""
+    return _cron_config_number("catch_up_missed_oneshots", False, lambda value: value is True)
+
+
 def _completed_oneshot_retention_days() -> float:
     """``cron.completed_retention_days``; non-positive disables the sweep (records kept forever)."""
     return _cron_config_number("completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS, float)
@@ -3138,6 +3147,16 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     # Due during an outage of its store: it was skipped, not missed; fire it once on recovery.
     if store_health.outage_covers(_current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS):
         return False
+    # Due while no ticker was running (host off, gateway stopped): also skipped rather than missed,
+    # but firing a wall-clock one-shot hours late is the operator's call — opt in with
+    # cron.catch_up_missed_oneshots.
+    if (_catch_up_missed_oneshots()
+            and ticker_downtime.covers(
+                _current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS)):
+        logger.info(
+            "Job '%s' one-shot was due %s while no cron ticker was running; firing once now "
+            "(cron.catch_up_missed_oneshots).", d.label, d.next_run)
+        return False
     claim = d.job.get("run_claim")
     # An outage-covered claim that never reached its fire claim never started: it stays covered.
     if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
@@ -3269,7 +3288,9 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         # fixed window is not enough for a run that outlives a tick. The other process sees the
         # fresh claim and skips; mark_job_run() clears it. The TTL only covers a tick that DIES.
         claim = {"at": now.isoformat(), "by": _machine_id()}
-        if _elapsed_seconds(now, d.next_run_dt) > ONESHOT_GRACE_SECONDS:  # only an outage lets it through
+        if _elapsed_seconds(now, d.next_run_dt) > ONESHOT_GRACE_SECONDS:
+            # Only a store outage or ticker downtime lets a past-grace one-shot through; either way
+            # the claim is marked so a claim that never reached its fire claim stays covered.
             claim["outage"] = True
         job["run_claim"] = claim
         scan.persist(job["id"], run_claim=claim)

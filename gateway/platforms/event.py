@@ -69,9 +69,6 @@ class MessageEvent:
     # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None
-    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
-    # ``message_id`` with new text, so native admission keys it apart from the original send.
-    edit_revision: Optional[str] = None
     # Media attachments: local file paths (for vision tool access)
     media_urls: list[str] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
@@ -110,6 +107,10 @@ class MessageEvent:
     # of ``internal``: these events still go through user authorization. Appended after
     # ``reply_expected`` for positional compat (see the field-order rule above).
     inherit_channel_pin: bool = False
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
+    # ``message_id`` with new text, so native admission keys it apart from the original send.
+    # Appended for positional compat (see the field-order rule above).
+    edit_revision: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

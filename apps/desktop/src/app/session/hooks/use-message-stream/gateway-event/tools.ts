@@ -15,7 +15,7 @@ import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
-import { clearToolProgress, setToolProgress } from '@/store/tool-progress'
+import { clearSessionToolProgress, clearToolProgress, setToolProgress } from '@/store/tool-progress'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
@@ -71,12 +71,17 @@ function appliedLayout(name: string | undefined, result: ToolCallMessagePart['re
 }
 
 /** tool.progress (live MCP progress for a running call): a row annotation, never a transcript
- *  mutation. Also retires it on tool.complete, which then falls through to handleToolEvent. */
+ *  mutation. Retired on tool.complete (which then falls through to handleToolEvent); the dispatcher
+ *  also sweeps a session's leftovers when its turn ends (index.ts). */
 export function handleToolProgressEvent({ deps, event, payload, sessionId }: GatewayEventContext): boolean {
   const toolId = typeof payload?.tool_id === 'string' ? payload.tool_id : ''
 
+  if (!sessionId) {
+    return event.type === 'tool.progress'
+  }
+
   if (event.type === 'tool.complete') {
-    clearToolProgress(toolId)
+    clearToolProgress(sessionId, toolId)
 
     return false
   }
@@ -85,14 +90,22 @@ export function handleToolProgressEvent({ deps, event, payload, sessionId }: Gat
     return false
   }
 
-  if (sessionId && !deps.sessionInterrupted(sessionId)) {
-    setToolProgress(toolId, {
+  if (!deps.sessionInterrupted(sessionId)) {
+    setToolProgress(sessionId, toolId, {
       message: typeof payload?.message === 'string' && payload.message ? payload.message : null,
       percent: typeof payload?.percent === 'number' ? payload.percent : null
     })
   }
 
   return true
+}
+
+/** A finished turn retires its live tool progress even if a tool.complete went missing. Runs for every
+ *  event (the dispatcher's finally), because message.complete is consumed by an earlier handler. */
+export function retireTurnToolProgress(eventType: string, sessionId: string): void {
+  if (eventType === 'message.complete' || eventType === 'error') {
+    clearSessionToolProgress(sessionId)
+  }
 }
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */

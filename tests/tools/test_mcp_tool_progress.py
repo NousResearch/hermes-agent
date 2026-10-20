@@ -54,6 +54,23 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
 
     assert events and all(a[0] == "tool.progress" and a[1] == "mcp__prog__slow" for a, _ in events)
     assert {kw["tool_call_id"] for _, kw in events} == {"call-7"}
-    # 20 notifications over ~2 s, throttled to <= one per 500 ms, the final 100% always delivered.
-    assert 2 <= len(events) <= 8
+    # The throttle drops intermediates (20 sent), never the final 100%; exact pacing is pinned below
+    # on a controlled clock, since sleep() only bounds the delay from below on a loaded runner.
+    assert len(events) < 20
     assert events[-1][1]["percent"] == 100 and events[-1][0][2] == "stage 20"
+
+
+def test_progress_throttle_is_per_call_and_always_passes_first_and_final(monkeypatch):
+    from agent import tool_progress_relay as relay
+
+    clock = [0.0]
+    monkeypatch.setattr(relay.time, "monotonic", lambda: 100.0 + clock[0] / 8)
+    events = []
+    with relay.bound_tool_progress(lambda *a, **kw: events.append(kw["progress"]), "t", "call-1"):
+        report = relay.current_tool_progress()
+        for step in range(1, 11):  # one update every 1/8 s (exact in binary floats), total 100
+            report(step * 10.0, 100.0, None)
+            clock[0] += 1
+
+    # First (10), then one per 500 ms (50: 4/8 s later), and the final 100 regardless of the interval.
+    assert events == [10.0, 50.0, 90.0, 100.0]

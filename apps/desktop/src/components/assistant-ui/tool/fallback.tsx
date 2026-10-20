@@ -347,7 +347,9 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
 
 /** A running row's trailing meta: live MCP progress (`42% · message`, when the server sends it) + the timer. */
 function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCallId?: string }) {
-  const progressText = formatToolProgress(useStore($toolProgressFor(toolCallId)))
+  const sessionId = useStore(useSessionView().$runtimeId) ?? ''
+  const progress = useMemo(() => $toolProgressFor(sessionId, toolCallId), [sessionId, toolCallId])
+  const progressText = formatToolProgress(useStore(progress))
 
   return (
     <>

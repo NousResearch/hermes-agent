@@ -27,7 +27,7 @@ import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
-import { handleToolEvent, handleToolProgressEvent } from './tools'
+import { handleToolEvent, handleToolProgressEvent, retireTurnToolProgress } from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
 
 export type { GatewayEventDeps } from './types'
@@ -299,6 +299,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // last one force-settles a dead turn, partial payload included.
         if (sessionId) {
           noteSessionEvent(sessionId)
+          retireTurnToolProgress(event.type, sessionId)
         }
       }
     },

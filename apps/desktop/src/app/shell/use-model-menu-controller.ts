@@ -21,6 +21,7 @@ import {
 import { $defaultReasoningEffort, markComposerSelectionManual } from '@/store/session'
 
 import type { ModelMenuController } from './model-catalog-menu'
+import { useGatewayConnected } from './use-gateway-connected'
 
 const UNKNOWN_SERVICE_TIER = atom('')
 const optionEdits = new Map<string, symbol>()
@@ -77,6 +78,7 @@ export function useModelMenuController({
   const currentReasoningEffortPending = useStore(view.$reasoningEffortPending)
   const modelPresets = useStore($modelPresets)
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
+  const gatewayConnected = useGatewayConnected(gateway)
   const touchesPrimary = view.kind === 'primary'
 
   // Subscribe to the SAME query the menu runs (identical key ⇒ React Query
@@ -85,6 +87,7 @@ export function useModelMenuController({
   // back to the catalog's reported current, and a non-reactive read would
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
+    enabled: gatewayConnected,
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> =>
       requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })

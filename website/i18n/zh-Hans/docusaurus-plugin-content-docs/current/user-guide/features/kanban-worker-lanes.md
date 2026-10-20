@@ -107,7 +107,7 @@ profile 通道的特化形态：orchestrator 是一个 Hermes profile，其工�
 - **Worker 崩溃** — 宿主本地 PID 已消失的 worker 由 `detect_crashed_workers` 检测并回收；任务的 `consecutive_failures` 递增，断路器触发时可能自动阻塞。
 - **运行级重试** — 任务重试时（post-block、post-crash、post-reclaim），worker 可在终止工具上使用 `expected_run_id` 参数，在自身运行已被取代时快速失败。
 - **每任务最大运行时间** — `task.max_runtime_seconds` 对每次运行的挂钟时间进行硬性限制，与 PID 存活状态无关。可捕获真正死锁的 worker——否则存活 PID 延期机制会让其持续运行。
-- **滞留任务检测** — assignee 在 `kanban.stranded_threshold_seconds`（默认 30 分钟）内始终未产生 claim 的 ready 任务，会在 `hermes kanban diagnostics` 中显示为 `stranded_in_ready` 警告。严重程度在 2 倍阈值时升级为 error，在 6 倍时升级为 critical。可通过单一信号捕获拼写错误的 assignee、已删除的 profile 以及宕机的外部 worker 池——与标识无关，无需维护每个看板的白名单。
+- **滞留任务检测** — assignee 在 `kanban.diagnostics.stranded_threshold_seconds`（默认 30 分钟）内始终未产生 claim 的 ready 任务，会在 `hermes kanban diagnostics` 中显示为 `stranded_in_ready` 警告。严重程度在 2 倍阈值时升级为 error，在 6 倍时升级为 critical。可通过单一信号捕获拼写错误的 assignee、已删除的 profile 以及宕机的外部 worker 池——与标识无关，无需维护每个看板的白名单。
 - **旧版审查依赖死锁** —— 如果父卡以 `review-required:` sticky-block，而直接子卡仍因依赖停在 `todo`，系统会立即产生 `review_dependency_deadlock` error。该诊断只读：它建议完成已经结束的阶段或解除错误依赖，不会自动删除用户的 block。
 
 ## 相关资源

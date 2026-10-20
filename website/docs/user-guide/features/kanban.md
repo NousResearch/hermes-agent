@@ -1023,6 +1023,24 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
+### Diagnostics thresholds (`kanban.diagnostics`)
+
+`hermes kanban diagnostics` resolves its thresholds from the `kanban.diagnostics` sub-section. A flat `kanban.<threshold>` key is not read: the value silently keeps its default, which is easy to miss when a card never raises the warning you expect. The single exception is the failure threshold, which falls back to the dispatcher's `kanban.failure_limit` so the diagnostics breaker and the spawn breaker agree.
+
+| Config key | Default | What it does |
+|------------|---------|--------------|
+| `kanban.diagnostics.failure_threshold` | `kanban.failure_limit` (2) | Consecutive failed runs before `repeated_failures` fires. The legacy `spawn_failure_threshold` key is still accepted as an alias. |
+| `kanban.diagnostics.crash_threshold` | `2` | Consecutive runs whose worker never reported an outcome before `repeated_crashes` fires. |
+| `kanban.diagnostics.blocked_stale_hours` | `24` | Hours a `blocked` card may sit with no comment or unblock since its last `blocked` event before `stuck_in_blocked` fires. |
+| `kanban.diagnostics.stranded_threshold_seconds` | `1800` (30 min) | Age in `ready` without a claim before `stranded_in_ready` fires; severity escalates to error at 2x and critical at 6x. |
+
+```yaml
+kanban:
+  diagnostics:
+    stranded_threshold_seconds: 600
+    blocked_stale_hours: 8
+```
+
 ### Scheduled task starts (`scheduled_at`)
 
 Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.

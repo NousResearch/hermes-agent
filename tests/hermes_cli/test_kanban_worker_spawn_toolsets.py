@@ -138,6 +138,11 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
         "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n    - DISPATCHER_ONLY_TOKEN\n", encoding="utf-8")
     monkeypatch.setenv("DISPATCHER_ONLY_TOKEN", "dispatcher-secret")
     monkeypatch.setenv("SERVICE_INJECTED_SETTING", "dispatcher-setting")
+    # Host policy the cold-started gateway must share with the rest of the host.
+    host = {"HERMES_GATEWAY_LOCK_DIR": str(tmp_path / "locks"), "XDG_STATE_HOME": str(tmp_path / "state"),
+            "HERMES_DISABLE_LAZY_INSTALLS": "1"}
+    for name, value in host.items():
+        monkeypatch.setenv(name, value)
 
     from agent.secret_scope import set_multiplex_active
     from hermes_cli import kanban_db as kb
@@ -173,6 +178,8 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
     # A value only the dispatcher has never reaches the assignee: an overlay cannot remove it.
     for name in ("DISPATCHER_ONLY_TOKEN", "SERVICE_INJECTED_SETTING"):
         assert name not in captured["env"] and name not in owner_env, name
+    for name, value in host.items():
+        assert owner_env.get(name) == value, name
 
 
 def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tmp_path, monkeypatch):

@@ -309,16 +309,28 @@ def _buzz_event(i, text):
 
 
 @pytest.mark.asyncio
-async def test_buzz_cursor_never_passes_a_held_burst(monkeypatch):
-    """Buzz saves its receive cursor after ``_handle_events`` returns. A held busy input is not durable
-    yet, so the saved cursor must not pass it: a restart inside the hold window would skip it."""
+async def test_buzz_cursor_never_passes_an_uncommitted_input(monkeypatch):
+    """Buzz saves its receive cursor after ``_handle_events`` returns, deferred while a busy burst is
+    held. The reader marks the next event seen before dispatching it, so a write that lands in that gap
+    must still name only committed inputs: a restart restores the saved cursor and skips the rest."""
     adapter, state, source = _buzz(monkeypatch)
     owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
     saved = []
     monkeypatch.setattr(type(adapter), '_write_cursors', staticmethod(lambda path, payload: saved.append(
-        (payload['channels']['chan']['last_ts'], holds_busy_burst(adapter, owner.key)))))
+        (payload['channels']['chan']['last_ts'], {row['request_id'] for row in _rows(owner.authority)}))))
     await adapter._handle_events('chan', state, [_buzz_event(1, 'held')])
-    assert owner.key in adapter._shared_bursts  # returned with the input only held
-    assert await owner.settle(2) == [('held', 0)]
-    # The cursor naming event 1 was saved, and only once its burst had committed.
-    assert [last_ts for last_ts, _ in saved] == [1] and not any(held for _, held in saved), saved
+    assert owner.key in adapter._shared_bursts and saved == []  # returned with the input only held
+    gate, real_name = asyncio.Event(), adapter._resolve_user_name
+
+    async def slow_name(pubkey):  # e2 is marked seen, not yet dispatched, while the burst commits
+        await gate.wait()
+        return await real_name(pubkey)
+    adapter._resolve_user_name = slow_name
+    second = asyncio.create_task(adapter._handle_events('chan', state, [_buzz_event(2, 'next')]))
+    await async_wait_until(lambda: saved, timeout=15, what='the deferred cursor write')
+    gate.set()
+    await asyncio.wait_for(second, 10)
+    assert await owner.settle(3) == [('held', 0), ('next', 0)]
+    assert saved[0][0] == 1, saved
+    # Every saved cursor names only events that had an admission row when it was written.
+    assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved

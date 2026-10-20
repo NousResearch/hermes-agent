@@ -72,7 +72,17 @@ class BuzzCursorMixin:
         seen = state.get("seen") or ()
         return int(state.get("last_ts") or 0), len(seen), (next(reversed(seen), None) if seen else None)
 
-    async def _persist_cursors(self) -> None:
-        # The write fsyncs + renames, and on the WebSocket transport this runs once per inbound event.
-        async with self._cursor_write_lock:
-            await asyncio.to_thread(self._write_cursors, self._cursor_path(), self._cursor_payload())
+    def _cursor_writer(self):
+        """A write of the cursor as it stands now. A deferred write runs after the reader marked later
+        events seen before their dispatch committed, so it must never re-read the live state; and a
+        write older than one already landed is skipped, so the file never moves back."""
+        payload = self._cursor_payload()
+        self._cursor_snapshots = generation = self._cursor_snapshots + 1
+
+        async def persist() -> None:
+            # The write fsyncs + renames, and on the WebSocket transport this runs once per inbound event.
+            async with self._cursor_write_lock:
+                if generation > self._cursor_written:
+                    self._cursor_written = generation
+                    await asyncio.to_thread(self._write_cursors, self._cursor_path(), payload)
+        return persist

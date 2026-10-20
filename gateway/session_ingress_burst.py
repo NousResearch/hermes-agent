@@ -183,7 +183,9 @@ async def when_returned_inputs_durable(adapter, persist):
     """Run ``persist()`` once every input a serial reader returned on is committed: a reader that
     saves its own receive cursor after the call returns (Buzz) must not advance it past a held burst,
     or a restart in the hold window loses it. Inline when nothing is pending; otherwise in a tracked
-    task, so the reader reads on (a lost cursor write only replays inputs admission already holds)."""
+    task, so the reader reads on (a lost cursor write only replays inputs admission already holds).
+    ``persist`` must carry the cursor as of this call: by the time a deferred write runs, the reader
+    has already marked later inputs seen that are not committed yet."""
     if not _undurable(adapter):
         await persist()
         return

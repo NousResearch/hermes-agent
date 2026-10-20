@@ -567,6 +567,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         self._restored_cursors: dict[str, dict] = {}
         # Orders off-loop cursor writes: each snapshot is taken under it, so an older one never lands last.
         self._cursor_write_lock = asyncio.Lock()
+        self._cursor_snapshots = self._cursor_written = 0  # cursor write generations taken / landed
         self._channel_names: dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel classification.
         self._channel_meta: dict[str, dict] = {}
@@ -1337,7 +1338,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         self._trim_seen(state)
         if self._cursor_mark(state) != before:  # never past a busy input held uncommitted (serial reader)
             from gateway.session_ingress_burst import when_returned_inputs_durable
-            await when_returned_inputs_durable(self, self._persist_cursors)
+            await when_returned_inputs_durable(self, self._cursor_writer())
 
     @staticmethod
     def _parse_imeta_attachments(event: dict) -> tuple[list[dict], int]:

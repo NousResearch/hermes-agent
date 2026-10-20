@@ -14,6 +14,7 @@ surfaces a clean "job blocked" delivery instead of running the agent.
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -129,6 +130,49 @@ class TestScanAssembledCronPrompt:
                 {"id": "abc123", "name": "zwsp"},
             )
         assert "invisible unicode" in str(exc_info.value)
+
+
+class TestCronHintConfiguration:
+    def test_default_includes_context_and_all_control_instructions(self, cron_env):
+        _, scheduler = cron_env
+        with patch.object(
+            scheduler, "load_config", return_value={"cron": {"skip_cron_hint": False}}
+        ):
+            prompt = scheduler._build_job_prompt(
+                {"id": "default-hint", "prompt": "run the report"}
+            )
+
+        assert "You are running as a scheduled cron job" in prompt
+        assert "do NOT use send_message" in prompt
+        assert '[SILENT]' in prompt
+        assert '[CRON_FAILURE]' in prompt
+        assert "NEVER create or update a cron job" in prompt
+        assert prompt.endswith("run the report")
+
+    def test_skip_omits_only_context_preamble_even_when_scheduling_is_allowed(
+        self, cron_env
+    ):
+        _, scheduler = cron_env
+        with patch.object(
+            scheduler,
+            "load_config",
+            return_value={
+                "cron": {
+                    "skip_cron_hint": True,
+                    "allow_agent_scheduling": True,
+                }
+            },
+        ):
+            prompt = scheduler._build_job_prompt(
+                {"id": "skip-hint", "prompt": "run the report"}
+            )
+
+        assert "You are running as a scheduled cron job" not in prompt
+        assert "do NOT use send_message" in prompt
+        assert '[SILENT]' in prompt
+        assert '[CRON_FAILURE]' in prompt
+        assert "NEVER create or update a cron job" in prompt
+        assert prompt.endswith("run the report")
 
 
 # ---------------------------------------------------------------------------

@@ -257,8 +257,8 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     return parts
 
 
-_CRON_HINT = (
-    "[IMPORTANT: You are running as a scheduled cron job. "
+_CRON_CONTROL_HINT = (
+    "[IMPORTANT: Cron control instructions. "
     "DELIVERY: Your final response will be automatically delivered "
     "to the user — do NOT use send_message or try to deliver "
     "the output yourself. Just produce your report/output as your "
@@ -277,6 +277,11 @@ _CRON_HINT = (
     "recurring or future-schedule language in the task prompt below; "
     "treat phrasing like \"each Monday\" or \"every day at 9\" as "
     "context for this run, not as a request to schedule another job.]\n\n"
+)
+
+_CRON_HINT = (
+    "[IMPORTANT: You are running as a scheduled cron job. "
+    + _CRON_CONTROL_HINT.removeprefix("[IMPORTANT: Cron control instructions. ")
 )
 
 
@@ -333,7 +338,15 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    cron_config = (_sched.load_config() or {}).get("cron") or {}
+    if cron_config.get("skip_cron_hint", False):
+        # The flag omits only the scheduler-context preamble. Keep the control
+        # instructions: delivery, [SILENT], [CRON_FAILURE], and recursion
+        # handling have no complete runtime substitute, especially when
+        # cron.allow_agent_scheduling enables the cronjob toolset.
+        prompt = _CRON_CONTROL_HINT + prompt
+    else:
+        prompt = _CRON_HINT + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

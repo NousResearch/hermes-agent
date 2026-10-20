@@ -1654,11 +1654,15 @@ def _apply_opencode_free_tier_hacks(agent, kwargs: dict) -> dict:
     kwargs["stream"] = True
     kwargs.setdefault("stream_options", {"include_usage": True})
 
-    # For free-tier models, override the Authorization header with "Bearer public" —
-    # the OpenCode relay accepts this for first-party CLI traffic (Issue #49433).
-    # Real API keys get flagged by abuse detection after repeated free-tier use.
-    _auth = kwargs.setdefault("extra_headers", {})
-    _auth["Authorization"] = "Bearer public"
+    # For free-tier models, the relay validates request fingerprint (UA + session
+    # + tools + headers), not the credential. Use Bearer public when no real API
+    # key is available — this is how the OpenCode CLI accesses free-tier without
+    # a manual API key (Issue #49433). When a real key IS set (paid models,
+    # higher quota), keep it.
+    _agent_key = getattr(agent, "api_key", "") or ""
+    if not _agent_key:
+        _auth = kwargs.setdefault("extra_headers", {})
+        _auth["Authorization"] = "Bearer public"
 
     # Strip the OpenAI SDK's X-Stainless-* telemetry headers — the relay's
     # auth gate now rejects any request carrying them (they identify the

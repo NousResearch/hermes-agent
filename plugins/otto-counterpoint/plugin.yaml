@@ -1,0 +1,8 @@
+name: otto-counterpoint
+version: "0.1.0"
+description: "Bounded single-entry admission, deterministic gates, independent counterpoint review, and human-review escalation for Hermes turns. Shadow by default when explicitly enabled; no tools or external effects are granted to review children."
+author: "Otto / Wolney Cardoso"
+hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - transform_llm_output

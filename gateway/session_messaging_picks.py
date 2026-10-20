@@ -43,6 +43,9 @@ async def _pick_model(authority, owner, live, payload, row):
     ctx = _ModelSwitchContext(session_key=live.route, source=live.source,
                               config_path=get_hermes_home() / 'config.yaml', persist_global=False)
     ctx.read_config()
+    # After a restart the chat's saved provider/base_url is only on disk: resolve against it, not
+    # config.yaml's provider, or the record step overwrites it (as run_turn_prepare rehydrates).
+    runner._rehydrate_session_model_override(live.route)
     ctx.apply_override(runner._session_model_override(live.route) or {})
     result, error = await runner._perform_model_switch(ctx, payload['model'], payload.get('provider', ''), live.source)
     if error is not None:

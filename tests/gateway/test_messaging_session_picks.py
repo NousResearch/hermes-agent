@@ -118,3 +118,32 @@ async def test_a_messaging_pick_is_fenced_by_its_receipt_and_revision(tmp_path):
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_cold_model_pick_resolves_against_the_chats_saved_provider(tmp_path, monkeypatch):
+    """After a restart the chat's /model override lives only in the session store: a bare model pick
+    resolves against that saved provider and base URL and keeps them, not config.yaml's provider."""
+    from hermes_cli import model_selection_guards, model_switch
+    seen = {}
+
+    def switch(**k):
+        seen.update(k)
+        return model_switch.ModelSwitchResult(success=True, new_model=k['raw_input'],
+                                              target_provider=k['current_provider'], base_url=k['current_base_url'])
+    monkeypatch.setattr(model_switch, 'switch_model', switch)
+    monkeypatch.setattr(model_selection_guards, 'selection_warnings', lambda *a, **k: [])
+    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    saved = {'model': 'saved-model', 'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'}
+    runner.session_store.set_model_override(route, saved)
+    assert runner._session_model_override(route) is None  # on disk only, as after a restart
+    try:
+        picked = await viewer.dispatch(_mutate(root, fences, 'model', {'model': 'picked'}, 'cold-pick'))
+
+        assert picked.get('result', {}).get('model') == 'picked', picked
+        assert (seen['current_provider'], seen['current_base_url']) == ('custom', 'http://127.0.0.1:9/v1'), seen
+        stored = runner.session_store.get_model_override(route)
+        assert (stored['model'], stored['provider'], stored['base_url']) == ('picked', 'custom', 'http://127.0.0.1:9/v1')
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()

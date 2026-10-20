@@ -187,7 +187,11 @@ export function useModelControls({
             (await queryClient.fetchQuery({
               queryKey: catalogKey,
               queryFn: (): Promise<ModelOptionsResult> =>
-                requestModelOptions({ profile: catalogProfile, request: requestGateway })
+                requestModelOptions({
+                  profile: catalogProfile,
+                  request: requestGateway,
+                  scope: { connectionId: cacheOwnerConnectionId ?? null, profile: catalogProfile }
+                })
             }))
 
           reseedStaleMoa = moaPickRemoved(catalog, 'moa', $currentModel.get())

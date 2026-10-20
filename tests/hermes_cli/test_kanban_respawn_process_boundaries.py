@@ -38,6 +38,9 @@ body = {
     # Dies by SIGKILL with no exit trailer, like an OOM kill. It kills itself, so no
     # test process signals a PID outside its subtree.
     "killed": "import os, signal, time; time.sleep(2); os.kill(os.getpid(), signal.SIGKILL)",
+    # Same death, but alive long after the next tick: a tick is a fresh interpreter and can take
+    # several seconds on a loaded runner, outliving "killed" and reclaiming it mid-assertion.
+    "killed_late": "import os, signal, time; time.sleep(60); os.kill(os.getpid(), signal.SIGKILL)",
     "rate_limited": f"print({KANBAN_WORKER_EXIT_TRAILER!r} + '{kb.KANBAN_RATE_LIMIT_EXIT_CODE}'); "
                     f"raise SystemExit({kb.KANBAN_RATE_LIMIT_EXIT_CODE})",
 }[os.environ["WORKER"]]
@@ -154,8 +157,8 @@ def test_backoff_and_exhaustion_survive_dispatcher_restarts_then_unblock_retries
     assert [e for e in events_after if e.kind == "blocked"] == [e for e in events if e.kind == "blocked"]
 
     assert "Unblocked" in _cli(board, f"unblock {tid}", profile="ops")
-    (pid,) = _tick(board, worker="killed")
-    assert _tick(board, worker="killed") == []  # one retry, not a burst
+    (pid,) = _tick(board, worker="killed_late")
+    assert _tick(board, worker="killed_late") == []  # one retry, not a burst
     task, runs_final, events_final = _snapshot(tid)
     assert task.status == "running" and task.worker_pid == pid
     assert [r["outcome"] for r in runs_final].count("rate_limited") == 3, "history kept"

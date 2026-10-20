@@ -118,3 +118,94 @@ def test_unset_parent_behind_a_reset_edge_takes_the_fast_path(tmp_path):
         assert _created(db, "legacy") is None
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("root_created", [None, "unknown", "local"])
+def test_owner_start_lists_a_legacy_compressed_chain_once(tmp_path, root_created):
+    """A chain compressed before write-time stamping (unset root, stamped tip) and never written
+    since is hidden from ``--source cli``. The owner's start stamps it once; a second start has
+    nothing left to do."""
+    from gateway.session_authority import backfill_compression_created_sources
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        mid = _compress(db, root_created, "mid")
+        db.publish_compression_child(
+            parent_session_id=mid, child_session_id="tip", source="local",
+            messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (root_created, mid))
+            db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id='tip'")
+            db._conn.commit()
+
+        def listed():
+            return [s["id"] for s in SurfaceLabelReader(db).list_sessions_rich(source="cli")]
+
+        assert listed() == []
+        assert backfill_compression_created_sources(db) == 2
+        assert [_created(db, sid) for sid in ("parent-mid", mid, "tip")] == ["cli"] * 3
+        assert listed() == ["tip"]
+        assert backfill_compression_created_sources(db) == 0
+    finally:
+        db.close()
+
+
+def test_owner_start_keeps_known_provenance(tmp_path):
+    """The repair copies only along a compression continuation onto an unset row: a root on another
+    surface, a branch child's surface and a chain with nothing stamped are all left as they are."""
+    from gateway.session_authority import backfill_compression_created_sources
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        _compress(db, "tui", "known")
+        _compress(db, None, "unset")
+        branched = _compress(db, None, "branched")
+        db.create_session("branch", source="cli", parent_session_id="parent-" + branched,
+                          model_config={"_branched_from": "parent-" + branched})
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id IN ('known', 'branch')")
+            db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id IN ('unset', ?)", (branched,))
+            db._conn.commit()
+
+        assert backfill_compression_created_sources(db) == 0
+        assert [_created(db, sid) for sid in ("parent-known", "parent-unset", "parent-branched", "branch")] == [
+            "tui", None, None, "cli"]
+    finally:
+        db.close()
+
+
+def test_owner_start_skips_a_branch_child_of_an_unset_compression_parent(tmp_path):
+    """A branch child is no continuation: the stamp never follows it, so it is no repair candidate
+    either, and a later start does not walk its unset compression parent again."""
+    from gateway.session_authority import backfill_compression_created_sources
+    from hermes_state_compression import _UNSTAMPED_EDGE_CHILD_SQL
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        branched = _compress(db, None, "branched")
+        db.create_session("branch", source="cli", parent_session_id="parent-" + branched,
+                          model_config={"_branched_from": "parent-" + branched})
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id='branch'")
+            db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", (branched,))
+            db._conn.commit()
+
+        assert backfill_compression_created_sources(db) == 0
+        assert db._conn.execute(_UNSTAMPED_EDGE_CHILD_SQL).fetchall() == []
+    finally:
+        db.close()
+
+
+def test_unset_ancestor_probe_reads_only_the_walked_rows(tmp_path):
+    """The fast path runs on every usage write of a stamped compression child: its final lookup
+    must join the walked ids to sessions by key, never scan the table (ms per write at 30k rows)."""
+    from hermes_state_compression import _CHAIN_CAP, _UNSET_ANCESTOR_SQL
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        plan = [row[3] for row in db._conn.execute(
+            "EXPLAIN QUERY PLAN " + _UNSET_ANCESTOR_SQL, ("tip", "cli", _CHAIN_CAP))]
+        assert not [step for step in plan if step.startswith("SCAN") and "up" not in step.split()], plan
+    finally:
+        db.close()

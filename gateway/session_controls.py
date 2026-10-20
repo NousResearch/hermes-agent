@@ -539,30 +539,20 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        from gateway.session_live_listing import live_entries
         sessions = []
-        for sid in tuple(self.authority.sessions):
-            candidate = SessionRef(self.actor.profile_id, sid)
-            try:
-                handle = await self.authority.resolve(self.actor, candidate)
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
-                    raise
-                continue
-            row = self.authority.db.get_session(sid)
+        for entry in await live_entries(self.authority, self.actor):
+            row = entry.row
             # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
-            # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES or (
+            # finite one-shot runs are not conversations, as on every other picker. Closed by its last
+            # viewer and idle: main lists it as resumable (the stored feed), not as a live session.
+            if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
-            from gateway.session_local_close import closed_and_unviewed
-            if closed_and_unviewed(self.authority, sid, handle):
-                # Closed by its last viewer and idle: main lists it as resumable (the stored
-                # feed), not as a live session.
-                continue
-            sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
+            sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
-                             'running': handle.execution_state == 'running'})
+                             'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
 

@@ -477,19 +477,29 @@ def _write_task_script() -> Path:
     # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
     vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    # UTF-16 with BOM: wscript.exe reads a BOM-less .vbs as ANSI and mangles a non-ASCII
+    # HERMES_HOME/PYTHONPATH path (see _atomic_write).
+    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"),
+                  encoding="utf-16")
     return script_path
 
 
-def _atomic_write(path: Path, content: str, tmp: Path) -> None:
+def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8") -> None:
     """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
 
     The staging file is removed even when the rename fails: the Startup-folder caller stages
     inside the Startup folder itself, and Windows opens every file there at login — a leftover
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
+
+    ``encoding`` defaults to UTF-8 for the cmd artifact; ``.vbs`` launchers MUST pass ``utf-16``
+    (BOM included). Windows Script Host decodes a BOM-less script with the system ANSI code page
+    (e.g. CP936), so an install path outside ASCII — ``D:\\开发工具\\...`` — reaches the launcher as
+    mojibake, ``PYTHONPATH`` no longer imports ``hermes_cli``, and every Scheduled-Task or
+    Startup-folder start dies before it logs a line (#139083 family). A UTF-16 LE BOM is the one
+    encoding wscript.exe always honours.
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:
@@ -606,7 +616,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path(), encoding="utf-16")
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():

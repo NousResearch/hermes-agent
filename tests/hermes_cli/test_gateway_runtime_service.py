@@ -160,7 +160,7 @@ def _as_schtasks_exports(xml):
 
 
 @pytest.mark.parametrize("case,reason", [
-    ("bound", None), ("utf16", None), ("wrong_home", "profile_mismatch"),
+    ("bound", None), ("utf16", None), ("utf16_launcher", None), ("wrong_home", "profile_mismatch"),
     ("wrong_user", "service_account_mismatch"), ("missing_user", "service_identity_unverified"),
     ("extra_action", "service_identity_unverified"), ("disabled", "service_disabled"),
     ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
@@ -173,6 +173,8 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
     home = tmp_path / 'requested'
     home.mkdir()
     script = _installed_vbs(home, str(home if case != 'wrong_home' else tmp_path / 'other'))
+    if case == 'utf16_launcher':  # the encoding the installed Scheduled-Task launcher really uses
+        script.write_bytes(script.read_text(encoding='utf-8').encode('utf-16'))
     user = 'DOMAIN\\owner'
     xml = _build_scheduled_task_xml('Hermes_Gateway', script, user)
     if case == 'schtasks_export':
@@ -292,6 +294,26 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
         service.start_existing_gateway_service(found, deadline=time.monotonic()+5)
         assert sum('/Run' in a for a in calls) == 1
     assert script.read_bytes() == original
+
+
+def test_launcher_text_follows_the_launcher_writers(tmp_path):
+    """The reader must decode what the writers produce.
+
+    The Scheduled-Task launcher is written as UTF-16 with a BOM (wscript.exe decodes a BOM-less
+    script with the system ANSI code page and would mangle a non-ASCII install path, #139083
+    family); the ``.cmd`` artifact and launchers written by older versions are UTF-8. Both must
+    verify, and undecodable bytes must still fail closed as ``service_identity_unverified``.
+    """
+    from hermes_cli.gateway_runtime_service_identity import _launcher_text
+
+    body = "' Hermes Agent Gateway\r\nOption Explicit\r\n"
+
+    assert _launcher_text(body.encode('utf-8')) == body
+    assert _launcher_text(body.encode('utf-8-sig')) == body
+    assert _launcher_text(body.encode('utf-16')) == body
+
+    with pytest.raises(ValueError, match='service_identity_unverified'):
+        _launcher_text(b'\xff\xfe\x00')
 
 
 @pytest.mark.platforms("linux")

@@ -234,6 +234,24 @@ def read_definition(path: Path) -> bytes:
         return value
 
 
+def _launcher_text(raw: bytes) -> str:
+    """Decode a generated launcher script.
+
+    The .vbs launcher is written as UTF-16 with a BOM because wscript.exe reads a BOM-less script
+    with the system ANSI code page and would mangle a non-ASCII install path (#139083 family).
+    Historical launchers (and the .cmd artifact) are UTF-8; both must verify.
+    """
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            _unverified()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        _unverified()
+
+
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
     # Recognize the vendor's complete template, not a HERMES_HOME substring
     # inside an arbitrary executable script. Doubled quotes are VB literals.
@@ -307,6 +325,6 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
         _unverified()
-    configured, argv = _vbs_identity(read_definition(script).decode("utf-8"))
+    configured, argv = _vbs_identity(_launcher_text(read_definition(script)))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

@@ -409,6 +409,27 @@ def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_pa
     assert sorted(p.name for p in startup.iterdir()) == []
 
 
+def test_atomic_write_honours_encoding_for_launchers(tmp_path):
+    """.vbs launchers must land as UTF-16 WITH a BOM.
+
+    wscript.exe decodes a BOM-less script with the system ANSI code page, so a non-ASCII install
+    path (D:\\开发工具\\...\\hermes-agent) reaches the launcher as mojibake, ``PYTHONPATH`` stops
+    importing ``hermes_cli``, and every Scheduled-Task or Startup-folder start dies before it can
+    log a line (#139083 family). UTF-16 LE + BOM is the one encoding WSH always honours, so the
+    write itself has to be able to pick the encoding.
+    """
+    target = tmp_path / "Hermes_Gateway.vbs"
+    staging = tmp_path / "Hermes_Gateway.tmp"
+
+    gateway_windows._atomic_write(target, "Option Explicit\r\n", staging, encoding="utf-16")
+
+    raw = target.read_bytes()
+    assert raw.startswith(b"\xff\xfe")
+    # Compare bytes, not text: read_text() would translate the CRLF the writer preserved.
+    assert raw.decode("utf-16") == "Option Explicit\r\n"
+    assert not staging.exists()
+
+
 def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, tmp_path):
     """Debris from a pre-fix failed swap is removed by uninstall() and by an install() that takes the
     Scheduled Task path (which never rewrites the Startup folder itself)."""

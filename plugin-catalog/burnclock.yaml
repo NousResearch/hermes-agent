@@ -1,6 +1,6 @@
 name: burnclock
 repo: https://github.com/jersilb/burnclock-hermes
-sha: "b3cf7ab21b0f251beae4820d911c762c3d74e09f"
+sha: "f873256b540a5ed6fde73a1d4551816d7bd003a2"
 title: Burnclock
 description: 'Status-bar chip with the provider balance and runway tracked by the MIT burnclock
   CLI — `DeepSeek $4.68 · 1.6d`, with a green/amber/red runway dot. Cache-first: every 60 s it
@@ -14,7 +14,7 @@ version: "0.1.0"
 requires_hermes: ">=0.22.0"
 platforms: [macos]
 docs_url: https://github.com/jersilb/burnclock-hermes
-image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/b3cf7ab21b0f251beae4820d911c762c3d74e09f/docs/chip.png
+image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/f873256b540a5ed6fde73a1d4551816d7bd003a2/docs/chip.png
 capabilities:
   provides_tools: []
   provides_hooks: []

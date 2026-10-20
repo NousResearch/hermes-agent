@@ -23,7 +23,8 @@ const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
 beforeEach(() => {
   $sessions.set([])
   $unreadWriteGuard.set(new Map())
-  patch.mockClear()
+  patch.mockReset()
+  patch.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -77,6 +78,56 @@ describe('markSessionUnread', () => {
     // the guard is released (nothing to fence a page about).
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
     expect($unreadWriteGuard.get().has('a')).toBe(false)
+  })
+
+  it('does not let an older failure roll back a newer successful toggle', async () => {
+    let rejectFirst!: (error: Error) => void
+    patch
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject
+          })
+      )
+      .mockResolvedValueOnce({ ok: true })
+    $sessions.set([row('a', { unread: false })])
+
+    const older = markSessionUnread('a', true)
+    const olderResult = older.catch(error => error)
+    const newer = markSessionUnread('a', false)
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    rejectFirst(new Error('older write failed'))
+
+    expect(await olderResult).toEqual(expect.objectContaining({ message: 'older write failed' }))
+    await newer
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
+  })
+
+  it('restores the last confirmed value when two queued toggles both fail', async () => {
+    patch.mockRejectedValue(new Error('offline'))
+    $sessions.set([row('a', { unread: false })])
+
+    const older = markSessionUnread('a', true)
+    const newer = markSessionUnread('a', false)
+    const olderResult = older.catch(error => error)
+    const newerResult = newer.catch(error => error)
+
+    expect(await olderResult).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect(await newerResult).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
+  })
+
+  it('rolls a failed newer toggle back to an older confirmed write', async () => {
+    patch.mockResolvedValueOnce({ ok: true }).mockRejectedValueOnce(new Error('offline'))
+    $sessions.set([row('a', { unread: false })])
+
+    const older = markSessionUnread('a', true)
+    const newer = markSessionUnread('a', false)
+    const newerResult = newer.catch(error => error)
+
+    await older
+    expect(await newerResult).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
   })
 })
 

@@ -355,6 +355,7 @@ function ConfirmingModelPanel({
         ownerConnectionId={ctx.scope ? (ctx.scope.connectionId ?? null) : undefined}
         profile={ctx.profile}
         request={ctx.requestGateway}
+        scope={ctx.scope}
       />
     </div>
   )

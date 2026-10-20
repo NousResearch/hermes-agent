@@ -23,6 +23,7 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
+const getGlobalModelOptions = vi.hoisted(() => vi.fn())
 const tile = vi.hoisted(() => ({ delegate: null as unknown }))
 const confirmMock = vi.fn()
 const notify = vi.fn()
@@ -31,6 +32,7 @@ const dismissNotification = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
+  getGlobalModelOptions,
   setApiRequestProfile: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
 }))
@@ -90,6 +92,7 @@ function Harness({
 describe('useModelControls', () => {
   beforeEach(() => {
     confirmMock.mockReset()
+    getGlobalModelOptions.mockReset()
     notifyError.mockReset()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
@@ -877,6 +880,34 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('default')
     expect($currentProvider.get()).toBe('moa')
     expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('recovers a stale-moa catalog read through REST pinned to the same owner', async () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('default')
+    setCurrentProvider('moa')
+    setCurrentModelSource('manual')
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['gpt-5.5'], name: 'OpenAI', slug: 'openai' }]
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'source-a',
+        cacheProfile: 'berry',
+        queryClient,
+        requestGateway: vi.fn(() => Promise.reject(new Error('owner socket unavailable')))
+      })
+    )
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(
+      { explicitOnly: true },
+      { connectionId: 'source-a', profile: 'berry' }
+    )
+    expect($currentProvider.get()).toBe('openai')
   })
 
   it('never reseeds an ordinary manual pick the catalog lacks (custom slug)', async () => {

@@ -139,6 +139,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
           ownerConnectionId={activeConnectionId || undefined}
           profile={activeGatewayProfile}
           requestGateway={actions.requestGateway}
+          scope={{ connectionId: activeConnectionId, profile: activeGatewayProfile }}
         />
       ) : null,
     [actions, activeConnectionId, activeGatewayProfile, gateway, gatewayState]
@@ -153,6 +154,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
           ownerConnectionId={activeConnectionId || undefined}
           profile={activeGatewayProfile}
           requestGateway={actions.requestGateway}
+          scope={{ connectionId: activeConnectionId, profile: activeGatewayProfile }}
         />
       ) : null,
     [actions, activeConnectionId, activeGatewayProfile, gateway, gatewayState]

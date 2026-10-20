@@ -51,6 +51,12 @@ export function useChatBarState({
         gateway: gateway || undefined,
         profile: modelOptionsProfile || activeGatewayProfile,
         request: requestModelOptionsForOwner,
+        scope: requestModelOptionsForOwner
+          ? {
+              connectionId: modelOptionsOwnerConnectionId ?? null,
+              profile: modelOptionsProfile || activeGatewayProfile
+            }
+          : undefined,
         sessionId: activeSessionId
       }),
     enabled: gatewayOpen

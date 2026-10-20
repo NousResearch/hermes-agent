@@ -19,7 +19,7 @@ import {
   setModelPickerOpen
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { profileScopeForSessionOwner, requestForSessionProfile } from '@/store/session-request-router'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles } from '@/store/session-states'
 
 interface ModelPickerOverlayProps {
@@ -101,6 +101,7 @@ export function ModelPickerOverlay({
       ownerConnectionId={pickerOwner.connectionId}
       profile={pickerOwner.profile}
       request={pickerOwner.route ? requestPickerGateway : undefined}
+      scope={profileScopeForSessionOwner(pickerOwner.route)}
       sessionId={sessionId}
       setupProfile={pickerOwner.route?.profile ?? pickerOwner.profile}
     />

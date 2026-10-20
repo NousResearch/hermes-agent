@@ -1248,6 +1248,105 @@ def test_cancel_failure_denies_keeps_task_owned_and_drains_cleanly() -> None:
     asyncio.run(scenario())
 
 
+def test_callback_registration_failure_denies_reaps_and_drains_cleanly() -> None:
+    import gateway.authorization as authorization
+
+    from gateway.authorization import (
+        PermissionDecision,
+        _quarantined_task_count,
+        _reaper_task_count,
+        authorize_fail_closed,
+    )
+
+    class CallbackRegistrationFailure(BaseException):
+        pass
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+        unhandled: list[dict[str, object]] = []
+        callback_calls = 0
+        registration_failures = 0
+        cancel_calls = 0
+
+        class OneShotCallbackFailureTask(asyncio.Task[Any]):
+            def add_done_callback(self, callback: Any, *, context: Any = None) -> None:
+                nonlocal callback_calls, registration_failures
+                callback_calls += 1
+                if (
+                    callback is authorization._consume_quarantined_task
+                    and registration_failures == 0
+                ):
+                    registration_failures += 1
+                    raise CallbackRegistrationFailure(
+                        "injected one-shot add_done_callback failure"
+                    )
+                super().add_done_callback(callback, context=context)
+
+            def cancel(self, msg: object = None) -> bool:
+                nonlocal cancel_calls
+                cancel_calls += 1
+                return super().cancel(msg)
+
+        class Provider:
+            async def readiness(self) -> bool:
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    await release.wait()
+                    finished.set()
+                    raise RuntimeError("eventual provider failure")
+                raise AssertionError("readiness should only finish after cancellation")
+
+            async def authorize(self, **_kwargs: object) -> PermissionDecision:
+                raise AssertionError("late readiness must not authorize")
+
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        original_task_type = authorization.asyncio.Task
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        setattr(authorization.asyncio, "Task", OneShotCallbackFailureTask)
+        tasks_before = asyncio.all_tasks()
+        try:
+            decision = await authorize_fail_closed(
+                Provider(),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+                timeout_seconds=0.001,
+            )
+            assert decision is PermissionDecision.DENY
+            assert started.is_set()
+            await cancelled.wait()
+            assert registration_failures == 1
+            assert callback_calls >= 3
+            assert cancel_calls == 1
+            assert _quarantined_task_count() == 1
+            assert _reaper_task_count() == 1
+            assert len(asyncio.all_tasks() - tasks_before) == 2
+
+            release.set()
+            await finished.wait()
+            for _ in range(3):
+                await asyncio.sleep(0)
+        finally:
+            setattr(authorization.asyncio, "Task", original_task_type)
+            loop.set_exception_handler(previous_handler)
+
+        assert _quarantined_task_count() == 0
+        assert _reaper_task_count() == 0
+        assert asyncio.all_tasks() == tasks_before
+        assert unhandled == []
+
+    asyncio.run(scenario())
+
+
 def test_provider_contract_excludes_indefinite_cancellation_suppression() -> None:
     from gateway.authorization import AuthorizationProvider, authorize_fail_closed
 

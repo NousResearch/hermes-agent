@@ -24,7 +24,9 @@ _MAX_KNOWN_PERMISSIONS = 512
 # represent operationally, and to a duration appropriate for an ingress check.
 _MAX_AUTHORIZATION_TIMEOUT_SECONDS = 60
 _T = TypeVar("_T")
+_NATIVE_ASYNCIO_TASK = asyncio.Task
 _QUARANTINED_AUTHORIZATION_TASKS: set[asyncio.Task[Any]] = set()
+_AUTHORIZATION_REAPER_TASKS: set[asyncio.Task[Any]] = set()
 
 
 class _DeadlineExpired:
@@ -349,12 +351,45 @@ def _consume_quarantined_task(task: asyncio.Task[Any]) -> None:
         _QUARANTINED_AUTHORIZATION_TASKS.discard(task)
 
 
+async def _reap_quarantined_task(task: asyncio.Task[Any]) -> None:
+    try:
+        try:
+            await task
+        except BaseException:
+            pass
+    finally:
+        _QUARANTINED_AUTHORIZATION_TASKS.discard(task)
+        reaper = asyncio.current_task()
+        if reaper is not None:
+            _AUTHORIZATION_REAPER_TASKS.discard(reaper)
+
+
+def _start_quarantine_reaper(task: asyncio.Task[Any]) -> None:
+    reaper_coroutine = _reap_quarantined_task(task)
+    try:
+        reaper = _NATIVE_ASYNCIO_TASK(reaper_coroutine, loop=task.get_loop())
+    except BaseException:
+        reaper_coroutine.close()
+        if task.done():
+            _consume_task_result(task)
+        return
+    _AUTHORIZATION_REAPER_TASKS.add(reaper)
+
+
 def _cancel_and_quarantine(task: asyncio.Task[Any]) -> None:
     if task.done():
         _consume_task_result(task)
         return
     _QUARANTINED_AUTHORIZATION_TASKS.add(task)
-    task.add_done_callback(_consume_quarantined_task)
+    try:
+        task.add_done_callback(_consume_quarantined_task)
+    except BaseException:
+        try:
+            task.cancel()
+        except BaseException:
+            pass
+        _start_quarantine_reaper(task)
+        return
     try:
         task.cancel()
     except BaseException:
@@ -368,6 +403,12 @@ def _quarantined_task_count() -> int:
     """Return the owned-task quarantine size for focused invariant tests."""
 
     return len(_QUARANTINED_AUTHORIZATION_TASKS)
+
+
+def _reaper_task_count() -> int:
+    """Return the quarantine-reaper registry size for focused invariant tests."""
+
+    return len(_AUTHORIZATION_REAPER_TASKS)
 
 
 def _expire_deadline(deadline: asyncio.Future[None]) -> None:

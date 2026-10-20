@@ -1017,6 +1017,7 @@ function ModelFamilyRow({
 
   const isCurrent = activeId !== null
   const { name, tag } = modelDisplayParts(family.id)
+  const aliasName = provider.model_aliases?.[family.id]
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
   const limit = familyLimit(provider, family, isCurrent)
@@ -1133,7 +1134,16 @@ function ModelFamilyRow({
         <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
           <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
+            {aliasName ? (
+              <>
+                <HighlightMatches foldSeparators query={search} text={aliasName} />{' '}
+                <span className="text-(--ui-text-tertiary)">
+                  (<HighlightMatches foldSeparators query={search} text={family.id} />)
+                </span>
+              </>
+            ) : (
+              <HighlightMatches foldSeparators query={search} text={name} />
+            )}
           </span>
           {tag ? <ModelChip>{tag}</ModelChip> : null}
           {decoration.badge ? (
@@ -1348,7 +1358,7 @@ function groupModels(
 
     const matches = (family: ModelFamily) =>
       foldIncludes(
-        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
+        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)} ${provider.model_aliases?.[family.id] ?? ''}`,
         q
       )
 

@@ -2996,6 +2996,62 @@ class TestAuxiliaryAuthRefreshRetry:
             "fresh-token", "refresh-token-2", 9999999999999, spent_refresh_token="refresh-token")
         stale_client.close.assert_not_called()
 
+    def test_anthropic_uses_newer_disk_token_without_rotating_again(self):
+        """A long-running gateway's cached client lags behind a grant rotated by another process.
+
+        Rotating again would revoke the token a sibling profile just copied; the newer on-disk
+        token is the recovery, so evict the stale client and rebuild from disk.
+        """
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("anthropic", async_mode=False)
+        cache = {cache_key: (MagicMock(), "claude-haiku-4-5-20251001", None)}
+        empty_pool = MagicMock()
+        empty_pool.entry_id_for_api_key.return_value = None
+        empty_pool.entries.return_value = []
+
+        with (
+            patch("agent.auxiliary_client._client_cache", cache),
+            patch("agent.auxiliary_client.load_pool", return_value=empty_pool),
+            patch("agent.anthropic_credentials.read_claude_code_credentials", return_value={
+                "accessToken": "sk-ant-oat01-new-on-disk",
+                "refreshToken": "current-refresh-token",
+                "expiresAt": 9999999999999,
+            }),
+            patch("agent.anthropic_credentials._refresh_oauth_token") as force_refresh,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials(
+                "anthropic", failed_api_key="sk-ant-oat01-revoked-in-cached-client") is True
+            assert cache_key not in cache
+
+        force_refresh.assert_not_called()
+
+    def test_auth_refresh_retry_drops_rejected_explicit_key(self):
+        """After a successful OAuth refresh the retry must resolve from the refreshed source;
+        re-passing the rejected explicit key reproduces the same 401 deterministically."""
+        failing_client = MagicMock()
+        failing_client.base_url = "https://chatgpt.com/backend-api/codex"
+        failing_client.chat.completions = _FailingThenSuccessCompletions()
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-sync")
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[("openai-codex", failing_client, "gpt-5.4"), ("openai-codex", fresh_client, "gpt-5.4")],
+            ) as resolve_mock,
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True),
+        ):
+            resp = call_llm(
+                task="vision", provider="openai-codex", model="gpt-5.4", api_key="stale-key",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-sync"
+        assert resolve_mock.call_args_list[1].kwargs.get("api_key") is None
+
     def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
         """Vertex tokens live ~1h; on a long-running gateway the cached
         auxiliary client's bearer token expires mid-session and 401s.

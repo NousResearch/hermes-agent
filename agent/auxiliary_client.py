@@ -3841,8 +3841,10 @@ def _refresh_nous_credentials() -> bool:
 
 
 def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
-    token = failed_api_key
+    from agent.anthropic_credentials import (
+        _is_oauth_token, _refresh_oauth_token, is_claude_code_token_valid, read_claude_code_credentials,
+    )
+    token = str(failed_api_key or "").strip()
     if not token:
         return False
     pool = load_pool("anthropic")
@@ -3852,6 +3854,16 @@ def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
     # Never spend an ambient login's refresh rotation for another request's key.
     if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
         return bool(_refresh_oauth_token(creds))
+    # Stale cached client: a long-running gateway keeps the OAuth token it was built with while
+    # another process (CLI, sibling profile, credential sync) already rotated the grant on disk.
+    # The newer on-disk token IS the recovery — report success so the caller evicts the cached
+    # client and rebuilds from the current source, without rotating the refresh token again.
+    if _is_oauth_token(token):
+        disk_token = str(creds.get("accessToken", "") or "").strip() if isinstance(creds, dict) else ""
+        if disk_token and disk_token != token and is_claude_code_token_valid(creds):
+            return True
+        if any(str(e.runtime_api_key or "").strip() not in {"", token} for e in pool.entries()):
+            return True
     return False
 
 
@@ -7530,7 +7542,7 @@ def _prepare_aux_request(
 
 class _LadderStep(NamedTuple):
     """A provider request the ladder asks its driver to perform. kind: "call" (client, kwargs) |
-    "retry_same_provider" (provider, model) | "fallback" (fb_client, fb_model, fb_label)."""
+    "retry_same_provider" (provider, model[, drop_api_key]) | "fallback" (fb_client, fb_model, fb_label)."""
     kind: str
     args: tuple
 
@@ -7758,9 +7770,12 @@ def _ladder_credential_rungs(
                 _evict_cached_clients(resolved_provider)
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
+            # Third arg drops the rejected explicit key: the refresh evicted the cache and updated
+            # the credential source, and re-passing resolved_api_key would override both and
+            # deterministically reproduce the same 401.
             step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))
+                (auth_refresh_provider, route.resolved_model or route.final_model, True))
             resp, first_err = yield from _rung(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
             if first_err is None:
@@ -8129,8 +8144,11 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model, *flags = step.args
+        call_kwargs = dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        if flags and flags[0]:  # post-OAuth-refresh retry: resolve from the refreshed source
+            call_kwargs["resolved_api_key"] = None
+        return "retry", (), call_kwargs
     return "fallback", step.args, candidate_kwargs
 
 

@@ -1,0 +1,15 @@
+# CONTRIBUTORS.yml — GitHub to Discord mapping for the Nous Research community
+#
+# Add yourself when submitting your first PR:
+#   1. Add an entry sorted alphabetically by your GitHub username
+#   2. Use your Discord username (with discriminator if applicable, e.g. user#1234)
+#   3. The Discord field is optional — leave it blank or omit it if you prefer
+#
+# This file is used by the PR notification workflow to credit contributors
+# in the Nous Research Discord server.
+#
+# Example:
+#   - github: example-user
+#     discord: example_user#5678
+
+contributors: []

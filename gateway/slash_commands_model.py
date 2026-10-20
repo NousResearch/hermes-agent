@@ -103,6 +103,7 @@ class _ModelSwitchContext:
                 self.current_provider = model_cfg.get("provider", self.current_provider)
                 self.route_provider = model_cfg.get("provider")
                 self.current_base_url = model_cfg.get("base_url", "")
+                self.current_api_key = model_cfg.get("api_key", "") or ""
             self.user_provs = cfg.get("providers")
             try:
                 from hermes_cli.config import get_compatible_custom_providers

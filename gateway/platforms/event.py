@@ -69,7 +69,7 @@ class MessageEvent:
     # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None
-    # Revision of an edited message (Telegram ``edit_date``). An edit re-sends its message's own
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     edit_revision: Optional[str] = None
     # Media attachments: local file paths (for vision tool access)

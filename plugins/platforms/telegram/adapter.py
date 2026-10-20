@@ -4,6 +4,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -7134,13 +7135,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            edit_revision=self._edit_revision(message), timestamp=message.date)
+            edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
 
     @staticmethod
-    def _edit_revision(message) -> Optional[str]:
-        """``edit_date`` of an edited message (whole seconds), None for a new send."""
+    def _edit_revision(message, update_id: Optional[int]) -> Optional[str]:
+        """Identity of one edit of a message, None for a new send. ``edit_date`` has whole-second
+        resolution, so two edits in one second would share it: the update id is unique per edit and
+        stable on redelivery; without one, the edited text tells same-second edits apart."""
         edit_date = getattr(message, "edit_date", None)
-        return str(int(edit_date.timestamp())) if hasattr(edit_date, "timestamp") else None
+        if not hasattr(edit_date, "timestamp"):
+            return None
+        if update_id is not None:
+            return f"u{update_id}"
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").encode()
+        return f"{int(edit_date.timestamp())}.{hashlib.sha256(text).hexdigest()[:16]}"
 
     # -- Message reactions (processing lifecycle) --
 

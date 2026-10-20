@@ -300,6 +300,41 @@ def _pool(n_entries: int, has_available: bool = True):
 
 
 
+# ── Offline fallback locality (#129784) ────────────────────────────────────
+
+
+class TestOfflineFallbackLocality:
+    def test_timeout_keeps_lan_and_container_local_endpoints_eligible(self):
+        from agent.chat_completion_helpers import _fallback_entry_unavailable_without_network
+
+        local_urls = (
+            "http://host.docker.internal:11434/v1",
+            "http://192.168.1.50:11434/v1",
+            "http://ollama.lan:11434/v1",
+        )
+        for base_url in local_urls:
+            assert _fallback_entry_unavailable_without_network(
+                None,
+                {"provider": "ollama", "model": "llama3", "base_url": base_url},
+                reason=FailoverReason.timeout,
+            ) is None
+
+    def test_timeout_skips_public_endpoint_but_provider_errors_do_not(self):
+        from agent.chat_completion_helpers import _fallback_entry_unavailable_without_network
+
+        fallback = {
+            "provider": "openrouter",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+        assert _fallback_entry_unavailable_without_network(
+            None, fallback, reason=FailoverReason.timeout,
+        ) == "network_unreachable"
+        assert _fallback_entry_unavailable_without_network(
+            None, fallback, reason=FailoverReason.server_error,
+        ) is None
+
+
 # ── Skip-self dedup (#22548) ───────────────────────────────────────────────
 
 

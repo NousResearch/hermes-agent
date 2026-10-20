@@ -157,6 +157,75 @@ class TestApplyProfileOverrideHermesHomeGuard:
             f"Expected HERMES_HOME to end with 'coder', got: {result!r}"
         )
 
+    def test_interactive_shell_exported_home_wins_over_sticky_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A HERMES_HOME exported in the user's interactive shell is direct
+        intent and must survive the sticky active_profile: config-resolving
+        commands (mcp add/list) then read/write the named home's config.yaml
+        instead of the active profile's (#137656)."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "mcp", "add", "usage-layer", "--command", "npx"],
+        )
+
+        assert result == str(hermes_root), (
+            f"Interactive shell's explicit HERMES_HOME must be trusted, got: {result!r}"
+        )
+
+    def test_noninteractive_parent_still_follows_sticky_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Machine-set HERMES_HOME (no controlling stdin: systemd's hardcoded
+        root from #22502, cron, containers) keeps following the sticky
+        active_profile — the interactive exemption above must not leak here."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+        )
+
+        assert result is not None and result.endswith("coder"), (
+            f"Non-interactive parent must keep the sticky redirect, got: {result!r}"
+        )
+
+    def test_interactive_shell_still_honours_explicit_profile_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """An explicit -p flag wins even from an interactive shell with
+        HERMES_HOME exported — the exemption only protects the sticky
+        fallback, never a named profile request."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        briefer = hermes_root / "profiles" / "briefer"
+        briefer.mkdir(parents=True, exist_ok=True)
+        (briefer / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
+
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "-p", "briefer", "mcp", "list"],
+        )
+
+        assert result is not None and result.endswith("briefer"), (
+            f"-p must beat an exported HERMES_HOME, got: {result!r}"
+        )
+
 
     @pytest.mark.platforms("posix")
     def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):

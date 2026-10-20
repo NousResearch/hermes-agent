@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { frDesktopCommands } from './fr_desktop_commands'
 import { frSessionCommands } from './fr_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into fr.ts.
@@ -27,12 +28,24 @@ export const frNotices = {
     compactedTurnUnavailable:
       'Ce message a été résumé lors de la compression de la conversation : il ne peut plus être restauré ni modifié.',
     staleTurnUnavailable: 'Ce message ne fait plus partie de l’historique de cette discussion.',
-    sessionCommands: frSessionCommands
+    sessionCommands: frSessionCommands,
+    desktopCommands: frDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Votre ordinateur s’est mis en veille pendant que Hermes travaillait',
     message:
       'Hermes peut empêcher la mise en veille pendant qu’une tâche s’exécute. L’écran s’éteint toujours, et sur batterie l’ordinateur peut quand même se mettre en veille.',
     action: 'Empêcher la veille pendant le travail'
+  },
+  billingBlock: {
+    titleNous: 'Plus de crédits Nous',
+    titleProvider: provider => `Plus de crédits — ${provider}`,
+    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
+    openBilling: 'Ouvrir la facturation',
+    addCredits: 'Ajouter des crédits',
+    dismiss: 'Fermer'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

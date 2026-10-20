@@ -252,16 +252,18 @@ def test_footer_controls_and_monitor_tails_never_wait_for_the_gateway(monkeypatc
     from hermes_cli.cli_subagent_monitor import subagent_tail
     from tests.waiting import wait_until
 
-    release = threading.Event()
-    view = SimpleNamespace(subagent_tail=lambda sid: release.wait(5) and 'child output')
+    release, fetches = threading.Event(), []
+
+    def tail(sid, *, fetch=False):
+        fetches.append(fetch)
+        return (release.wait(5) and 'child output') if fetch else None
+    view = SimpleNamespace(subagent_tail=tail)
     monkeypatch.setattr(gateway_tools, 'process_view', lambda: view)
-    repaints, cache = [], {}
+    repaints = []
     row = dict(subagent_id='sa-9', live_transcript='')
-    assert subagent_tail(row, cache, on_update=lambda: repaints.append(1)) != 'child output'
-    assert subagent_tail(row, cache) != 'child output'  # still fetching: no second RPC, no wait
-    release.set()
-    wait_until(lambda: repaints, what='tail fetched')
-    assert subagent_tail(row, cache) == 'child output'
+    # The detail view paints from the backend's cache; only the monitor's tick fetches.
+    assert subagent_tail(SimpleNamespace(subagents=lambda: view), row) == t('cli.subagents.transcript_unavailable')
+    assert fetches == [False] and not release.is_set()
 
     cli, monitor = _monitor_with_rows()
     cli._invalidate = lambda *a, **k: repaints.append('footer')

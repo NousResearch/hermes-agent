@@ -539,14 +539,14 @@ class CLIStatusBarMixin:
 
     def _agent_spacer_height(self, width: Optional[int] = None) -> int:
         """Spacer height above the status bar while the agent runs."""
-        if not getattr(self, "_agent_running", False):
+        if not getattr(self, "_agent_running", False) or getattr(self, "_modern_layout", False):
             return 0
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Visible height of the spinner/status line above the status bar."""
         spinner_line = self._render_spinner_text()
-        if not spinner_line or self._use_minimal_tui_chrome(width=width):
+        if not spinner_line or self._use_minimal_tui_chrome(width=width) or getattr(self, "_modern_layout", False):
             return 0
         width = width or self._get_tui_terminal_width()
         if width and width > 10:
@@ -606,7 +606,9 @@ class CLIStatusBarMixin:
         if getattr(self, "tool_progress_mode", "all") == "off":
             return False
         agent = getattr(self, "agent", None)
-        if agent is not None and getattr(agent, "quiet_mode", False):
+        # The interactive agent itself runs quiet unless --verbose, so in the classic layout this
+        # line only shows under --verbose; the glyph layout closes every interactive turn with it.
+        if agent is not None and getattr(agent, "quiet_mode", False) and not getattr(self, "_modern_layout", False):
             return False
         return bool(getattr(self, "_interactive_turn", False))
 
@@ -651,10 +653,17 @@ class CLIStatusBarMixin:
             from agent.turn_summary import format_turn_summary
             from hermes_cli.cli_transcript import receipt_extras
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
+            elapsed = max(0.0, time.monotonic() - started) if started else 0.0
+            if getattr(self, "_modern_layout", False):
+                line = collector.render(elapsed)
+                if line:
+                    from hermes_cli.cli_modern_layout import turn_footer
+                    _cprint(turn_footer(line))
+                return
+            # Classic layout: the turn receipt, with this turn's tokens and estimated cost.
             extras = receipt_extras(getattr(self, "agent", None), getattr(self, "_turn_token_baseline", 0),
                                     getattr(self, "_turn_cost_baseline", None))
-            line = format_turn_summary(max(0.0, time.monotonic() - started) if started else 0.0,
-                                       collector.tally, extras=extras)
+            line = format_turn_summary(elapsed, collector.tally, extras=extras)
             if line:
                 _cprint(f"  {_D}{line}{_RST}")
         except Exception:
@@ -1152,6 +1161,9 @@ class CLIStatusBarMixin:
             or getattr(self, "_model_picker_state", None)
             or getattr(self, "_command_palette_state", None)):
             return []
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import status_line_fragments
+            return status_line_fragments(self)
         try:
             snapshot = self._get_status_bar_snapshot()
             # prompt_toolkit's own width: shutil's can be stale (esp. over SSH) and an overflow

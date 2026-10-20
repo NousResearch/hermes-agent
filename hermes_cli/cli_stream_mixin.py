@@ -185,8 +185,42 @@ class CLIStreamMixin:
             self._emit_reasoning_preview(flush_text)
 
     def _format_submitted_user_message_preview(self, user_input: str, colors: dict | None = None):
-        """The submitted user message as a Rich ``Text``: ``❯`` (skin prompt symbol) + the text,
-        multi-line input elided to its first/last lines; continuation lines hang under the text."""
+        """The submitted user message for scrollback. Glyph layout: Rich markup ``❯ text``; classic
+        layout: the full-width band's Rich ``Text`` (``_format_user_band``)."""
+        from hermes_cli.cli_modern_layout import is_modern, prompt_glyph
+        if not is_modern(self):
+            return self._format_user_band(user_input, colors)
+        from cli import _accent_hex, datetime
+        ts_suffix = (
+            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
+            if getattr(self, "show_timestamps", False) else "")
+        lines = user_input.split("\n")
+        mark = _escape(prompt_glyph())
+        if len(lines) <= 1:
+            return f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+
+        first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
+        last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
+        head = lines[:first_lines]
+        tail_count = min(last_lines, max(0, len(lines) - len(head)))
+        tail = lines[-tail_count:] if tail_count else []
+        hidden_middle_count = len(lines) - len(head) - len(tail)
+        if hidden_middle_count < 0:
+            hidden_middle_count = 0
+            tail = []
+
+        preview_lines = [f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+        if hidden_middle_count > 0:
+            key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
+            preview_lines.append(f"[dim]{_escape(t(key, count=hidden_middle_count))}[/]")
+        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        return "\n".join(preview_lines)
+
+    def _format_user_band(self, user_input: str, colors: dict | None = None):
+        """Classic layout: the submitted user message as a Rich ``Text``: ``❯`` (skin prompt symbol)
+        + the text, multi-line input elided to its first/last lines; continuation lines hang under
+        the text."""
         from rich.text import Text
         from cli import datetime
         from hermes_cli.cli_transcript import active_band_colors, preview_lines
@@ -233,19 +267,31 @@ class CLIStreamMixin:
         return paste_ref_re.sub(_expand_ref, text)
 
     def _print_user_message_preview(self, user_input: str) -> None:
-        """Echo a submitted user message as a full-width, skin-tinted band (``❯ text``)."""
-        from rich.padding import Padding
-        from cli import ChatConsole
-        from hermes_cli.cli_transcript import active_band_colors
+        """Echo a submitted user message: ``❯ text`` between bars in the glyph layout, a
+        full-width, skin-tinted band in the classic one."""
+        from cli import ChatConsole, _accent_hex, _cprint
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from gateway.warning_notifications import render_notification
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
-        colors = active_band_colors()
-        body = self._format_submitted_user_message_preview(str(user_input or ""), colors)
-        ChatConsole().print(Padding(body, (0, 1, 0, 0), style=f"on {colors['bg']}", expand=True))
+        text = str(user_input or "")
+        if not getattr(self, "_modern_layout", False):
+            from rich.padding import Padding
+            from hermes_cli.cli_transcript import active_band_colors
+            colors = active_band_colors()
+            body = self._format_user_band(text, colors)
+            ChatConsole().print(Padding(body, (0, 1, 0, 0), style=f"on {colors['bg']}", expand=True))
+            return
+        from hermes_cli.cli_modern_layout import closing_separator, separator, user_echo_markup
+        _cprint("\n" + separator(True))
+        if "\n" in text:
+            # soft_wrap in the glyph layout: the terminal wraps a long prompt, so a resize re-flows it.
+            ChatConsole().print(self._format_submitted_user_message_preview(text), soft_wrap=True)
+        else:
+            ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
+        _cprint(closing_separator(True))
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
@@ -260,7 +306,23 @@ class CLIStreamMixin:
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
-        self._capture_reasoning(text)
+        self._capture_reasoning(text)  # the Ctrl+O transcript keeps the full text in either layout
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import reasoning_text_line, separator
+            if not getattr(self, "_reasoning_box_opened", False):
+                self._reasoning_box_opened, self._reasoning_started_at = True, time.monotonic()
+                self._reasoning_buf, self._reasoning_full_text = "", ""
+                _cprint("\n" + separator(False))
+            self._reasoning_full_text = getattr(self, "_reasoning_full_text", "") + text
+            self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+            # Live, as classic: complete lines now, long partial lines force-flushed.
+            while "\n" in self._reasoning_buf:
+                line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+                _cprint(reasoning_text_line(line))
+            if len(self._reasoning_buf) > 80:
+                _cprint(reasoning_text_line(self._reasoning_buf))
+                self._reasoning_buf = ""
+            return
         if self._reasoning_collapsed():
             return  # display.cli_reasoning_style: collapsed -> one "✻ Thought" line when the block ends
         if not getattr(self, "_reasoning_box_opened", False):
@@ -305,6 +367,18 @@ class CLIStreamMixin:
         from cli import _DIM, _RST, _cprint
         self._finish_reasoning_capture()
         if not getattr(self, "_reasoning_box_opened", False):
+            return
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import closing_separator, reasoning_text_line, thought_line
+            if getattr(self, "_reasoning_buf", ""):
+                _cprint(reasoning_text_line(self._reasoning_buf))
+            started = getattr(self, "_reasoning_started_at", 0.0)
+            _cprint(thought_line(time.monotonic() - started if started else None,
+                                 getattr(self, "_reasoning_full_text", "")))
+            _cprint(closing_separator(False))
+            self._reasoning_buf, self._reasoning_full_text, self._reasoning_box_opened = "", "", False
+            if not getattr(self, "_stream_box_live", False):
+                self._release_held_status_lines()
             return
         buf = getattr(self, "_reasoning_buf", "")
         if buf:
@@ -465,7 +539,11 @@ class CLIStreamMixin:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            if getattr(self, "_reply_frame_open", False):
+            if getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import answer_label
+                _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
+                                     if self.show_timestamps else ""))
+            elif getattr(self, "_reply_frame_open", False):
                 _cprint("")
             else:
                 self._reply_frame_open = True
@@ -542,7 +620,7 @@ class CLIStreamMixin:
         lines print here between segments (next to the tool rows), or after the frame's bottom
         rule when the caller closes it (``release_held=False``)."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
-        from cli import _strip_markdown_syntax
+        from cli import _cprint, _strip_markdown_syntax
         self._flush_explore_group()
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
@@ -565,6 +643,11 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
+        # The glyph layout closes each answer segment with its bar; the classic reply frame stays
+        # open until the turn ends (_close_reply_frame).
+        if self._stream_box_opened and getattr(self, "_stream_box_live", False) and getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import closing_separator
+            _cprint(closing_separator(True))
         self._stream_box_live = False
         if release_held:
             self._release_held_status_lines()
@@ -708,7 +791,12 @@ class CLIStreamMixin:
         announced.add(tool_name)
         from agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
-        line = t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)
+        emoji = get_tool_emoji(tool_name, default='⚡')
+        if getattr(self, "_modern_layout", False):  # the composer rule shows it; scrollback stays quiet
+            self._spinner_text = f"{emoji} {t('cli.modern.preparing', what=what)}"
+            self._invalidate()
+            return
+        line = t('cli.stream.tool_preparing', emoji=emoji, what=what)
         if getattr(self, "_app", None) is not None:
             self._spinner_text = line
             self._invalidate()
@@ -760,6 +848,7 @@ class CLIStreamMixin:
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            self._forget_tool_label(function_name)
             self._note_tool_finished(function_name)
             self._turn_summary_record(
                 function_name, kwargs.get("result"), kwargs.get("is_error", False))
@@ -801,7 +890,7 @@ class CLIStreamMixin:
             self._invalidate()
             return
         if event_type != "tool.started":
-            return
+            return self._show_tool_progress(event_type, function_name, preview, kwargs.get("percent"))
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_preview_max_len
             from hermes_cli.cli_tool_render import running_tool_label
@@ -810,13 +899,36 @@ class CLIStreamMixin:
             width = min(_pl, 80) if _pl > 0 else max(20, _terminal_columns() - 30)
             label = (running_tool_label(function_name, function_args, width=width) if function_args
                      else (preview or function_name)[:width])
+            if getattr(self, "_modern_layout", False):  # the glyph layout's status leads with the tool emoji
+                from agent.display import tool_row_emoji
+                label = f"{tool_row_emoji(function_name, function_args)} {label}"
             self._spinner_text = label
+            # MCP tool.progress reads these per-tool labels (_show_tool_progress).
+            self.__dict__.setdefault("_running_tool_labels", {}).setdefault(function_name, []).append(label)
             self._tool_start_time = time.monotonic()
             with _RUNNING_TOOLS_LOCK:
                 self.__dict__.setdefault("_running_tools", []).append((function_name, label, self._tool_start_time))
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {})
+            self._invalidate()
+
+    def _forget_tool_label(self, function_name) -> None:
+        labels = self.__dict__.get("_running_tool_labels", {})
+        if labels.get(function_name):
+            labels[function_name].pop(0)
+            if not labels[function_name]:
+                del labels[function_name]
+
+    def _show_tool_progress(self, event_type, function_name, message, percent) -> None:
+        """Live MCP progress rides the spinner line: ``<tool label> · 42% · message``. The CLI has one
+        spinner, so progress shows only while exactly one call of that tool runs and nothing else does:
+        with parallel calls the label could belong to another call (tool.started carries no call id)."""
+        labels = self.__dict__.get("_running_tool_labels", {})
+        running = labels.get(function_name) or []
+        if event_type == "tool.progress" and len(running) == 1 and sum(map(len, labels.values())) == 1:
+            parts = [running[0]] + ([f"{percent}%"] if percent is not None else []) + ([message] if message else [])
+            self._spinner_text = " · ".join(parts)
             self._invalidate()
 
     def _note_tool_finished(self, function_name: str | None) -> None:
@@ -838,7 +950,9 @@ class CLIStreamMixin:
             return None
         if len(running) == 1:
             _, label, started = running[0]
-            return label, started
+            # _show_tool_progress extends this label on the spinner text (``label · 42% · message``).
+            text = str(getattr(self, "_spinner_text", "") or "")
+            return (text if text.startswith(label) else label), started
         return t("cli.tool_render.tools_running", count=len(running)), min(r[2] for r in running)
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):

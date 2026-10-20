@@ -43,7 +43,7 @@ When a user says "delegate is capped at N":
 hermes config get delegation.max_concurrent_children
 
 # 2. Did Hermes' truncator or rejector actually fire?
-grep -E "Truncated.*delegate_task|Too many tasks" ~/.hermes/logs/agent.log | tail
+grep -E "Truncated.*delegate_task|Too many tasks" ${HERMES_HOME:-~/.hermes}/logs/agent.log | tail
 # If neither line appears, neither cap path executed.
 
 # 3. Confirm the resolver returns what config says (in venv with hermes on path)

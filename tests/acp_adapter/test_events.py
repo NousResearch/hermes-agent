@@ -152,6 +152,23 @@ class TestStepCallback:
         assert [entry.status for entry in plan.entries] == ["completed", "in_progress", "completed"]
         assert [entry.priority for entry in plan.entries] == ["medium", "medium", "medium"]
 
+    def test_todo_list_through_tool_call_bridge_sends_one_plan(self, mock_conn, event_loop_fixture):
+        """With tool_search the model calls ``tool_call``; only tool.completed sees ``todo_list``."""
+        loop, tool_call_ids, tool_call_meta, turn_state = event_loop_fixture, {}, {}, {}
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta,
+                                            turn_state=turn_state)
+        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta, turn_state)
+        todo_result = '{"todos":[{"id":"a","content":"Step A","status":"in_progress"}]}'
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            progress_cb("tool.started", "todo_list", None, {"todos": [{"id": "a", "content": "Step A"}]})
+            progress_cb("tool.completed", "todo_list", None, None, result=todo_result)
+            step_cb(2, [{"name": "tool_call", "result": todo_result}])
+
+        plans = [c.args[3] for c in mock_send.call_args_list if getattr(c.args[3], "session_update", None) == "plan"]
+        assert len(plans) == 1
+        assert [(e.content, e.status) for e in plans[0].entries] == [("Step A", "in_progress")]
+
 
 
 

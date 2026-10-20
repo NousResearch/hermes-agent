@@ -15,6 +15,8 @@ from typing import Any, Callable, Deque, Dict
 import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
 
+from tools.todo_tool import is_todo_tool_name
+
 from .tools import (
     _json_loads_maybe, build_tool_abandoned, build_tool_complete, build_tool_start, coerce_tool_args,
     make_tool_call_id,
@@ -85,13 +87,26 @@ def close_tool_call(
         return None
     tc_id = queue.popleft()
     meta = tool_call_meta.pop(tc_id, {})
+    result_text = str(result) if result is not None else None
     _send_update(conn, session_id, loop, build_tool_complete(
-        tc_id, name, result=str(result) if result is not None else None,
+        tc_id, name, result=result_text,
         function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
     ))
     if not queue:
         tool_call_ids.pop(name, None)
+    # ``name`` is the executor's (unwrapped) tool name, so this also covers a todo call made
+    # through the ``tool_call`` bridge, which the step callback only sees as ``tool_call``.
+    if not is_error:
+        _send_plan_update(conn, session_id, loop, name, result_text)
     return tc_id
+
+
+def _send_plan_update(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_name: Any, result: Any
+) -> None:
+    """Mirror a todo result as ACP's native plan update (current name or a legacy alias)."""
+    if is_todo_tool_name(tool_name) and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
+        _send_update(conn, session_id, loop, plan_update)
 
 
 def flush_open_tool_calls(
@@ -291,7 +306,8 @@ def make_step_cb(
                 ))
                 if not queue:
                     tool_call_ids.pop(tool_name, None)
-            if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
-                _send_update(conn, session_id, loop, plan_update)
+                # Only where this callback closed the call: after ``tool.completed`` the plan
+                # was already sent by close_tool_call, under the unwrapped name.
+                _send_plan_update(conn, session_id, loop, tool_name, result)
 
     return _step

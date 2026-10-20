@@ -1,6 +1,6 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type OwnerScope, type ResolvedOwner } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
@@ -233,27 +233,27 @@ export function rememberMediaImageFailure(key: string): void {
 // remote URLs untouched and route filesystem paths through the Electron media
 // protocol. Its main-process handler reads local files directly or proxies a
 // remote gateway with the connection's bearer/cookie/token authentication.
-export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
+export async function resolveMediaPlaybackSrc(path: string, owner?: ResolvedOwner): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
 
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
+    return isRemoteMediaOwner(owner) ? mediaGatewayStreamUrl(path, owner) : mediaStreamUrl(path)
   }
 
-  return resolveMediaDisplaySrc(path)
+  return resolveMediaDisplaySrc(path, owner)
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
-export function mediaExternalUrl(path: string): string {
+export function mediaExternalUrl(path: string, owner?: ResolvedOwner): string {
   if (/^https?:/i.test(path)) {
     return path
   }
 
-  if (isRemoteGateway()) {
+  if (isRemoteMediaOwner(owner)) {
     const conn = $connection.get()
 
     if (conn?.baseUrl && conn.token) {
@@ -270,15 +270,17 @@ export function mediaExternalUrl(path: string): string {
 // connections intentionally expose no static token to the renderer, so a bare
 // HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
 // out of renderer URLs while forwarding Range requests to /api/files/stream.
-export function mediaGatewayStreamUrl(path: string): string {
+export function mediaGatewayStreamUrl(path: string, owner?: ResolvedOwner): string {
   const conn = $connection.get()
 
-  if (isRemoteGateway()) {
+  if (isRemoteMediaOwner(owner)) {
     const file = encodeURIComponent(filePathFromMediaPath(path))
+    const connectionId = owner ? owner.connectionId : conn?.connectionId
+    const profile = owner ? owner.profile : conn?.profile
 
     const scope = [
-      conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
-      conn?.profile ? `profile=${encodeURIComponent(conn.profile)}` : ''
+      connectionId ? `connectionId=${encodeURIComponent(connectionId)}` : '',
+      profile ? `profile=${encodeURIComponent(profile)}` : ''
     ]
       .filter(Boolean)
       .join('&')
@@ -324,6 +326,16 @@ export function filePathFromMediaPath(path: string): string {
 // then live on the gateway machine, not this disk, so we fetch them over the API.
 export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
+}
+
+/** Explicit registry owners are remote except the canonical local id. An
+ * untagged primary uses the mode sampled while its URL is built. */
+export function isRemoteMediaOwner(owner?: ResolvedOwner): boolean {
+  if (owner?.connectionId) {
+    return owner.connectionId !== LOCAL_CONNECTION_ID
+  }
+
+  return isRemoteGateway()
 }
 
 // Fetch gateway-local media as a data URL via the authenticated desktop FS

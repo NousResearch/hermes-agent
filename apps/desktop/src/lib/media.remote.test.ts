@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { $connection } from '@/store/session'
 
 import {
@@ -13,6 +14,7 @@ import {
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
+import { CONVERSATION_LEASE, resetTtsLeasesForTests, syncTtsLease } from './tts-lease'
 
 describe('filePathFromMediaPath', () => {
   it('passes through a plain path', () => {
@@ -172,6 +174,9 @@ describe('resolveMediaPlaybackSrc', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     $connection.set(null)
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    resetTtsLeasesForTests()
   })
 
   it('keeps a remote HTTPS video URL unchanged', async () => {
@@ -199,6 +204,54 @@ describe('resolveMediaPlaybackSrc', () => {
     await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
       'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
     )
+  })
+
+  it('pins A media delivery and synthesis leases through an A→B→A switch with colliding profile names', async () => {
+    const api = vi.fn(async (_request: unknown) => ({ ok: true }))
+    const ownerA = { connectionId: 'gateway-a', profile: 'shared' }
+    const ownerB = { connectionId: 'gateway-b', profile: 'shared' }
+
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    setApiRequestConnection(ownerA.connectionId)
+    setApiRequestProfile(ownerA.profile)
+    $connection.set({ ...ownerA, mode: 'remote' } as never)
+
+    await syncTtsLease(CONVERSATION_LEASE, true, ownerA)
+    await syncTtsLease(CONVERSATION_LEASE, true, ownerB)
+
+    setApiRequestConnection(ownerB.connectionId)
+    setApiRequestProfile(ownerB.profile)
+    $connection.set({ ...ownerB, mode: 'remote' } as never)
+
+    const first = await resolveMediaPlaybackSrc('/tmp/reply.mp3', ownerA)
+    await syncTtsLease(CONVERSATION_LEASE, false, ownerA)
+
+    setApiRequestConnection(ownerA.connectionId)
+    $connection.set({ ...ownerA, mode: 'remote' } as never)
+    const again = await resolveMediaPlaybackSrc('/tmp/reply.mp3', ownerA)
+    await syncTtsLease(CONVERSATION_LEASE, false, ownerB)
+
+    expect(first).toBe('hermes-media://remote/%2Ftmp%2Freply.mp3?connectionId=gateway-a&profile=shared')
+    expect(again).toBe(first)
+
+    const leaseCalls = api.mock.calls.map(
+      ([request]) =>
+        request as {
+          body: { active: boolean; lease: string }
+          connectionId?: string
+          profile?: string
+        }
+    )
+    expect(leaseCalls.map(({ body, connectionId, profile }) => [connectionId, profile, body.active])).toEqual([
+      ['gateway-a', 'shared', true],
+      ['gateway-b', 'shared', true],
+      ['gateway-a', 'shared', false],
+      ['gateway-b', 'shared', false]
+    ])
+    expect(leaseCalls[0].body.lease).toBe(leaseCalls[2].body.lease)
+    expect(leaseCalls[1].body.lease).toBe(leaseCalls[3].body.lease)
+    expect(leaseCalls[0].body.lease).not.toBe(leaseCalls[1].body.lease)
+    expect(leaseCalls[0].body.lease).not.toBe(CONVERSATION_LEASE)
   })
 })
 

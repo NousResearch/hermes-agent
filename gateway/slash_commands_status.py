@@ -48,7 +48,8 @@ def agents_plugin_status_lines(session_key: str) -> list:
     for provider in list(_agents_status_providers)[:AGENTS_PLUGIN_PROVIDER_CAP]:
         try:
             result = provider(session_key)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a broken status provider must not break /agents
+            logger.debug("agents status provider failed", exc_info=True)
             continue
         if isinstance(result, str):
             result = [result]

@@ -53,3 +53,25 @@ def test_hook_errors_do_not_break_close(monkeypatch):
     hooks.register_on_agent_close(lambda task_id: events.append("good"))
     _bare_mixin()._close_task_resources("task-2")
     assert "good" in events and "cleanup_vm" in events
+
+
+def test_second_agent_generation_fires_on_own_close():
+    events_a: list = []
+    events_b: list = []
+    hooks.register_on_agent_close(lambda task_id: events_a.append(task_id))
+    _bare_mixin()._close_task_resources("task-A")
+    hooks.register_on_agent_close(lambda task_id: events_b.append(task_id), task_id="task-B")
+    assert events_b == []
+    _bare_mixin()._close_task_resources("task-B")
+    assert events_a == ["task-A"]
+    assert events_b == ["task-B"]
+
+
+def test_stale_close_does_not_steal_new_generation():
+    events_b: list = []
+    _bare_mixin()._close_task_resources("task-A")
+    hooks.register_on_agent_close(lambda task_id: events_b.append(task_id), task_id="task-B")
+    _bare_mixin()._close_task_resources("task-A")
+    assert events_b == []
+    _bare_mixin()._close_task_resources("task-B")
+    assert events_b == ["task-B"]

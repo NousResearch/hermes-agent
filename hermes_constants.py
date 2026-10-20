@@ -33,13 +33,28 @@ def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.
 
     Deliberately does not mutate ``os.environ`` (shared by every thread in the process).
+
+    Legacy setter: new code binds a scope (``agent.runtime_scope.bind_profile_scope``). With a
+    runtime scope bound (``hermes_scope``), a call naming another profile (``None`` = the process
+    home) moves the whole scope, so home, secrets and terminal policy stay together; in a hosted
+    scope it raises ``ScopeSwitchRefused``. The matching reset undoes whichever happened.
     """
+    from hermes_scope import current_scope
+    if current_scope() is not None:
+        from agent.runtime_scope import legacy_switch
+        switched = legacy_switch(path)
+        if switched is not None:
+            return switched  # type: ignore[return-value]  # reset_hermes_home_override accepts it
     value: str | object = _UNSET if path is None else str(path)
     return _HERMES_HOME_OVERRIDE.set(value)
 
 
 def reset_hermes_home_override(token: Token) -> None:
-    """Restore the previous context-local Hermes home override."""
+    """Restore the previous context-local Hermes home override (or undo a whole-scope switch)."""
+    from hermes_scope import ScopeTokens
+    if isinstance(token, ScopeTokens):
+        token.reset()
+        return
     _HERMES_HOME_OVERRIDE.reset(token)
 
 

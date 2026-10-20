@@ -60,7 +60,9 @@ _GATE_OUTPUT_TAIL_CHARS = 3000
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
     "Goal: {goal}\n\n"
-    "Continue working toward this goal. Take the next concrete step. "
+    "Do not repeat a status update or a promise to act later. Use an available "
+    "tool to take one concrete step before replying. If that step was already "
+    "done, verify its current result instead of promising it again. "
     "If you believe the goal is complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly and stop."
 )

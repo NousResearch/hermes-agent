@@ -16,6 +16,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.error import HTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -104,16 +105,22 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     Returns ``{"gateway_reloaded": bool, "activation": summary | None, "restart_required": bool}``.
     ``activation.live_now`` lists what is usable in open chats now; ``activation.deferred`` what waits
     for the next session. ``restart_required`` is True only when no gateway answered (old gateway, not
-    running)."""
+    running). ``backend_error``, when present, reports a separate dashboard / Desktop activation
+    failure even if the gateway reloaded successfully."""
     from hermes_constants import get_hermes_home
     activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
+    backend = None
     if not in_process:
-        activation = (notify_serve_backend(name, Path(get_hermes_home())) or {}).get("activation")
+        backend = notify_serve_backend(name, Path(get_hermes_home()))
+        activation = (backend or {}).get("activation")
     answer = reload_running_gateway()
     reloaded = bool(answer and answer.get("reloaded"))
     if reloaded and activation is None:
         activation = find_activation((answer or {}).get("activations"), name)
-    return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
+    result = {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
+    if backend and backend.get("error"):
+        result["backend_error"] = backend["error"]
+    return result
 
 
 def reload_running_gateway() -> Optional[dict[str, Any]]:
@@ -208,7 +215,8 @@ def _serve_backend_record():
 
 def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
     """Ask the running dashboard / Desktop backend (``hermes serve``, found through its host record) to
-    run :func:`load_and_go_live` for ``name`` in ``home``. None when no backend answers. Never raises."""
+    run :func:`load_and_go_live` for ``name`` in ``home``. None when no backend is discovered;
+    ``{"ok": False, "error": ...}`` when the attempt fails. Never raises."""
     try:
         import json
         import urllib.request
@@ -224,10 +232,18 @@ def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
             data=json.dumps({"name": name, "home": str(home)}).encode("utf-8"), method="POST",
             headers={"Content-Type": "application/json", "X-Hermes-Session-Token": token})
         with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        logger.debug("serve backend activation for %r failed", name, exc_info=True)
-        return None
+            result = json.loads(response.read().decode("utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("Invalid backend activation response")
+            return result
+    except HTTPError as exc:
+        error = f"HTTP {exc.code}"
+        exc.close()
+    except Exception as exc:  # health: allow BLE001 -- best-effort boundary; tracebacks can expose credentials
+        error = type(exc).__name__
+    # Response bodies and exception messages can contain credentials or private URLs.
+    logger.warning("serve backend activation for %r failed: %s", name, error)
+    return {"ok": False, "error": error}
 
 
 def activation_hint(result: dict[str, Any]) -> str:
@@ -241,8 +257,12 @@ def activation_hint(result: dict[str, Any]) -> str:
         lines.append(f"Live in open chats now: {tools} MCP tools, {len(live.get('skills') or ())} skills.")
     lines.extend(f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
                  for s in live.get("mcp_servers") or () if not s.get("connected"))
+    has_activation_details = bool(lines)
+    if result.get("backend_error"):
+        lines.insert(0, f"Dashboard / Desktop backend activation failed: {result['backend_error']}. "
+                     "Restart that backend to load the plugin.")
     if not result.get("gateway_reloaded"):
-        if lines:  # live in open chats; a messaging gateway that starts later loads it at boot
+        if has_activation_details:  # a messaging gateway that starts later loads it at boot
             return "\n".join(lines)
         return "\n".join([*lines, "Restart the gateway for the plugin to take effect:\n  hermes gateway restart"])
     now, deferred = act.get("activated_now") or {}, act.get("deferred") or {}
@@ -254,5 +274,7 @@ def activation_hint(result: dict[str, Any]) -> str:
                                   "mcp_servers": "MCP servers (next session)"}
         parts.append("deferred: " + ", ".join(labels.get(k, k) for k in sorted(deferred)))
     if not parts:
+        if result.get("backend_error"):
+            return "\n".join([*lines, "Gateway reloaded plugins."])
         return "\n".join([*lines, "Gateway reloaded plugins; nothing of this plugin needs a session or restart."])
     return "\n".join([*lines, "Gateway reloaded plugins — " + "; ".join(parts) + "."])

@@ -2029,6 +2029,15 @@ Install surfaces report exactly this split: `hermes plugins install/enable` prin
 gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
 `gateway_reloaded` (`restart_required` is true only when no gateway answered).
 
+A CLI install also asks the running dashboard / Desktop backend to load the plugin for the requested
+profile. This activation POST accepts the backend's existing process credential even when dashboard
+login is required. That credential does not authorize other gated endpoints. Browser requests still
+use dashboard login, and activation still validates the plugin name and profile home.
+
+If the backend activation request fails, the activation result includes `backend_error` and the CLI
+reports the failure separately. A successful gateway reload does not mean that the dashboard / Desktop
+backend loaded the plugin. `restart_required` keeps its gateway-only meaning.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

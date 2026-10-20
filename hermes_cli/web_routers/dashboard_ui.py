@@ -286,7 +286,10 @@ async def post_agent_plugin_activate(request: Request):
         with _config_profile_scope(None if profile == "default" else profile):
             if hermes_home_key(get_hermes_home()) != hermes_home_key(home):
                 raise HTTPException(status_code=400, detail="Home is not served by this backend.")
-            return {"ok": True, "activation": load_and_go_live(name)}
+            activation = load_and_go_live(name)
+            if activation is None:
+                return {"ok": False, "error": "Plugin did not load in the backend"}
+            return {"ok": True, "activation": activation}
 
     return await asyncio.to_thread(_run)
 

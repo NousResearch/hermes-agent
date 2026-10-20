@@ -162,6 +162,9 @@ async def gated_auth_middleware(
     """Engaged only when ``app.state.auth_required is True``."""
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
+    from hermes_cli.dashboard_auth.plugin_activation import has_plugin_activation_token
+    if has_plugin_activation_token(request):
+        return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
     if (getattr(request.state, "token_authenticated", False)

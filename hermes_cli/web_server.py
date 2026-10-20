@@ -342,6 +342,9 @@ def _require_token(request: Request) -> None:
     Hosted plugins receive this guard's decision via private IPC and request-local
     state, not via a forwarded gateway credential or a process-wide bypass.
     """
+    from hermes_cli.dashboard_auth.plugin_activation import has_plugin_activation_token
+    if has_plugin_activation_token(request):
+        return
     if (getattr(request.state, "native_http_principal", None)
             or getattr(request.state, "hosted_http_authenticated", None) is True):
         return

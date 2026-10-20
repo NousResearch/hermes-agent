@@ -1,0 +1,5 @@
+name: custom-endpoint
+version: 1.0.0
+description: "Generic OpenAI-compatible image generation for user-configured Custom Endpoints. Reads capabilities.image_gen from the providers: section in config.yaml."
+author: SMF Works
+kind: backend

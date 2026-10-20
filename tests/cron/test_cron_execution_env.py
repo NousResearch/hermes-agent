@@ -72,7 +72,8 @@ def _tick_no_agent_job(tmp_path, monkeypatch, job: dict,
     env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     if parent_identity is not None:
         env.update(parent_identity)
-    result = subprocess.run([sys.executable, "-c", _TICK], env=env, stdin=subprocess.DEVNULL,
+    result = subprocess.run([sys.executable, "-c", _TICK], check=False, env=env,
+                            stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
     (execution,) = json.loads(result.stdout.strip().splitlines()[-1])

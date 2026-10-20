@@ -793,6 +793,7 @@ export interface ModelOptionProvider {
   is_user_defined?: boolean | null
   source?: string | null
   aliases?: string[] | null
+  model_aliases?: Record<string, string> | null
   api_url?: string | null
   auth_type?: string | null
   authenticated?: boolean | null

@@ -24262,6 +24262,21 @@
             "default": null,
             "title": "Aliases"
           },
+          "model_aliases": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Aliases"
+          },
           "api_url": {
             "anyOf": [
               {

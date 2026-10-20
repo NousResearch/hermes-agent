@@ -45,6 +45,8 @@ const FRAMES_BY_NAME: Record<SpinnerName, NormalisedSpinner> = (() => {
 interface GlyphSpinnerProps {
   ariaLabel?: string
   className?: string
+  /** Hide the glyph when nearby visible text already announces the same state. */
+  decorative?: boolean
   /** Freeze the animation while the spinner stays mounted — for a caller that
    *  keeps it in the tree through a fade-out and does not want it animating
    *  once it is no longer the thing being waited on. */
@@ -72,6 +74,7 @@ interface GlyphSpinnerProps {
 export function GlyphSpinner({
   ariaLabel = 'Loading',
   className,
+  decorative = false,
   paused = false,
   spinner = 'braille'
 }: GlyphSpinnerProps) {
@@ -94,9 +97,10 @@ export function GlyphSpinner({
 
   return (
     <span
-      aria-label={ariaLabel}
+      aria-hidden={decorative || undefined}
+      aria-label={decorative ? undefined : ariaLabel}
       className={cn('inline-flex items-center justify-center font-mono leading-none tabular-nums', className)}
-      role="status"
+      role={decorative ? undefined : 'status'}
     >
       {/* Hidden from assistive tech: the accessible name is the label above.
           The frames are decorative, and this is a live region — the old

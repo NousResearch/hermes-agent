@@ -572,8 +572,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('theme') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('crisp')
                     setMode(id)
@@ -581,7 +583,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={modeOptions}
                   value={mode}
                 />
-              }
+              )}
               below={
                 <>
                   {/* One search box: filters your installed themes (the grid)
@@ -671,8 +673,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('typography') && (
             <>
               <ListRow
-                action={
+                action={({ titleId, descriptionId }) => (
                   <SegmentedControl
+                    ariaDescribedBy={descriptionId}
+                    ariaLabelledBy={titleId}
                     onChange={id => {
                       triggerHaptic('selection')
                       setZoomPercent(Number(id))
@@ -680,15 +684,17 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                     options={uiScaleOptions}
                     value={matchedScalePreset ?? ('' as UiScalePreset)}
                   />
-                }
+                )}
                 description={a.uiScaleDesc(zoomPercent)}
                 id={settingElementId(ids.uiScale)}
                 title={a.uiScaleTitle}
               />
 
               <ListRow
-                action={
+                action={({ titleId, descriptionId }) => (
                   <SegmentedControl
+                    ariaDescribedBy={descriptionId}
+                    ariaLabelledBy={titleId}
                     onChange={value => {
                       triggerHaptic('selection')
                       setChatTextScale(Number(value))
@@ -696,7 +702,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                     options={CHAT_TEXT_SCALE_PRESETS.map(value => ({ id: String(value), label: `${value}%` }))}
                     value={String(chatTextScale)}
                   />
-                }
+                )}
                 description={a.chatTextScaleDesc}
                 id={settingElementId(ids.chatTextScale)}
                 title={a.chatTextScaleTitle}
@@ -714,8 +720,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('window-layout') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setInterfaceMode(id)
@@ -723,7 +731,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={interfaceModeOptions}
                   value={interfaceMode}
                 />
-              }
+              )}
               description={t.interfaceMode.hint}
               id={settingElementId(ids.interfaceMode)}
               title={t.interfaceMode.title}
@@ -732,8 +740,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('window-layout') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setSessionListDensity(id)
@@ -741,7 +751,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={sessionDensityOptions}
                   value={sessionListDensity}
                 />
-              }
+              )}
               description={a.sessionDensityDesc}
               id={settingElementId(ids.sessionDensity)}
               title={a.sessionDensityTitle}
@@ -750,8 +760,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('window-layout') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setTabStripDefault(id)
@@ -759,7 +771,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={tabStripOptions}
                   value={tabStripDefault}
                 />
-              }
+              )}
               description={a.tabStripDesc}
               id={settingElementId(ids.tabStrip)}
               title={a.tabStripTitle}
@@ -768,8 +780,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('window-layout') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setTitlebarAppActionsSide(id)
@@ -777,7 +791,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={appActionsOptions}
                   value={titlebarAppActionsSide}
                 />
-              }
+              )}
               description={a.appActionsDesc}
               id={settingElementId(ids.appActions)}
               title={a.appActionsTitle}
@@ -896,8 +910,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('chat-display') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setTextDirection(id)
@@ -905,7 +921,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={textDirectionOptions}
                   value={textDirection}
                 />
-              }
+              )}
               description={a.textDirectionDesc}
               id={settingElementId(ids.textDirection)}
               title={a.textDirectionTitle}
@@ -1024,8 +1040,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('chat-display') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setToolViewMode(id)
@@ -1033,7 +1051,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={toolOptions}
                   value={toolViewMode}
                 />
-              }
+              )}
               description={withModeNote(a.toolViewDesc, toolViewShadowed)}
               id={settingElementId(ids.toolView)}
               title={a.toolViewTitle}
@@ -1062,8 +1080,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {show('chat-display') && (
             <ListRow
-              action={
+              action={({ titleId, descriptionId }) => (
                 <SegmentedControl
+                  ariaDescribedBy={descriptionId}
+                  ariaLabelledBy={titleId}
                   onChange={id => {
                     triggerHaptic('selection')
                     setEmbedMode(id)
@@ -1071,7 +1091,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                   options={embedOptions}
                   value={embedMode}
                 />
-              }
+              )}
               below={
                 embedAllowed.length > 0 && (
                   <RowFootnoteAction onClick={clearEmbedAllowed}>

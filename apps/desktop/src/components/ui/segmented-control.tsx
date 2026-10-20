@@ -14,6 +14,8 @@ interface SegmentedControlProps<T extends string> {
   className?: string
   /** Dims the whole track and blocks selection (e.g. gated behind a prerequisite). */
   disabled?: boolean
+  ariaLabelledBy?: string
+  ariaDescribedBy?: string
 }
 
 /**
@@ -22,6 +24,8 @@ interface SegmentedControlProps<T extends string> {
  * no per-option borders, just a tinted track with a raised active pill.
  */
 export function SegmentedControl<T extends string>({
+  ariaDescribedBy,
+  ariaLabelledBy,
   className,
   disabled = false,
   onChange,
@@ -30,11 +34,14 @@ export function SegmentedControl<T extends string>({
 }: SegmentedControlProps<T>) {
   return (
     <div
+      aria-describedby={ariaDescribedBy}
+      aria-labelledby={ariaLabelledBy}
       className={cn(
         'inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5',
         disabled && 'opacity-50',
         className
       )}
+      role={ariaLabelledBy ? 'group' : undefined}
     >
       {options.map(({ id, label, icon: Icon }) => {
         const active = value === id

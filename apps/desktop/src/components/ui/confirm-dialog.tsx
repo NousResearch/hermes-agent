@@ -39,8 +39,8 @@ interface ConfirmSecondaryAction {
   onClick: () => void
 }
 
-// Shared confirmation dialog: opens focused on Confirm, Enter confirms (from
-// anywhere in the dialog), Esc/Cancel/backdrop dismiss. Owns the pending → done
+// Shared confirmation dialog: native buttons own Enter/Space, while
+// Esc/Cancel/backdrop dismiss. Owns the pending → done
 // → close beat and inline error, so callers pass only an async onConfirm that
 // does the work.
 export function ConfirmDialog({
@@ -60,6 +60,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
@@ -131,21 +132,16 @@ export function ConfirmDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent
         className="max-w-md"
-        onKeyDown={event => {
-          // Enter/Space confirm regardless of which button holds focus
-          // (preventDefault stops a focused Cancel from swallowing it).
-          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
-            event.preventDefault()
-            void run()
-          }
-        }}
         onOpenAutoFocus={event => {
-          // Focus must land inside the dialog or the handler above never sees
-          // the key: it stays on whatever opened the dialog (a menu item, a
-          // sidebar row) and Enter re-triggers that instead. Radix's default
-          // would take the X — confirm is the button Enter maps to.
+          // Land on a safe action for destructive dialogs; otherwise preserve
+          // the existing quick-confirm focus.
           event.preventDefault()
-          confirmRef.current?.focus()
+
+          if (destructive) {
+            cancelRef.current?.focus()
+          } else {
+            confirmRef.current?.focus()
+          }
         }}
       >
         <DialogHeader>
@@ -157,14 +153,17 @@ export function ConfirmDialog({
 
         {children}
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div
+            className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            role="alert"
+          >
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         <DialogFooter>
-          <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
+          <Button disabled={busy} onClick={onClose} ref={cancelRef} type="button" variant="ghost">
             {resolvedCancelLabel}
           </Button>
           {secondaryAction && (

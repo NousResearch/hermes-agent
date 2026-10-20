@@ -50,7 +50,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # the Nix devShell's editable venv and CI's minimal installer lanes provide
 # one on purpose. The import check matters: a wrapped `hermes` binary exports
 # HERMES_PYTHON pointing at a release venv without pytest.
-_has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/null; }
+#
+# Probe under the same hermetic conditions the per-file subprocess will
+# see (env -i below clears PYTHONPATH/PYTHONHOME). A parent-shell
+# PYTHONPATH pointing at another venv's site-packages would otherwise
+# make a pytest-less venv look usable, and every file would then die
+# with "No module named pytest" after env -i drops the crutch.
+_has_pytest() { [ -n "$1" ] && [ -x "$1" ] && env -u PYTHONPATH -u PYTHONHOME "$1" -c 'import pytest' 2>/dev/null; }
 # shellcheck source=scripts/_activation.sh
 . "$SCRIPT_DIR/_activation.sh"
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then

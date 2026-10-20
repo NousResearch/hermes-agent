@@ -95,7 +95,11 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
-    monkeypatch.setattr(_web_server_profiles, "_resolve_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(
+        _web_server_profiles,
+        "_resolve_profile_dir",
+        lambda _name, **_kwargs: profile_home,
+    )
 
     existing = DashboardOAuthFlow(
         flow_id="existing-default",

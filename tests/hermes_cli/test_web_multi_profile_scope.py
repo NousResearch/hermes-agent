@@ -40,7 +40,7 @@ def two_homes(tmp_path, monkeypatch):
     from agent import secret_scope
     from tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr(lpp, "_authority", None)
     from hermes_cli import config as cfg_mod
     for attr in ("_CONFIG_CACHE", "_config_cache"):
         if hasattr(cfg_mod, attr):

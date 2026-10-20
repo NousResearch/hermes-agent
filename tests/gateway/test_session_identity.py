@@ -107,6 +107,70 @@ def test_identity_is_one_frozen_value_that_every_reader_agrees_on(mux):
     assert hash(resolve_identity(again, runner=mux.runner)) == hash(identity)
 
 
+def test_explicit_primary_home_freezes_routed_runtime_after_live_root_change(
+    tmp_path, monkeypatch
+):
+    """A routed identity resolves its runtime and store under the captured primary home."""
+    frozen_home = tmp_path / "frozen"
+    frozen_ops = frozen_home / "profiles" / "ops"
+    frozen_ops.mkdir(parents=True)
+    (frozen_ops / "config.yaml").write_text("{}\n", encoding="utf-8")
+    late_home = tmp_path / "late"
+    (late_home / "profiles" / "ops").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(frozen_home))
+    rig = _runner(frozen_home, multiplex=True, routes=[
+        {"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
+    ])
+    served = [("default", frozen_home), ("ops", frozen_ops)]
+
+    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served):
+        source = rig.primary.build_source(
+            chat_id="72719239", chat_type="dm", user_id="72719239"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(late_home))
+        identity = resolve_identity(
+            source, runner=rig.runner, primary_home=frozen_home
+        )
+
+    assert identity.authorization_home == frozen_home
+    assert identity.runtime_home == frozen_ops
+    assert identity.store_path == frozen_ops / "state.db"
+
+
+def test_named_primary_routes_to_sibling_under_captured_root_after_live_root_change(
+    tmp_path, monkeypatch
+):
+    """A gateway launched as profile A routes its primary bot to sibling B, never A/profiles/B."""
+    root = tmp_path / "hh"
+    primary_home = root / "profiles" / "primary_a"
+    sibling_home = root / "profiles" / "team_b"
+    primary_home.mkdir(parents=True)
+    sibling_home.mkdir(parents=True)
+    (primary_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (sibling_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    late_home = tmp_path / "late"
+    (late_home / "profiles" / "team_b").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(primary_home))
+    rig = _runner(primary_home, multiplex=True, routes=[
+        {"name": "sibling", "platform": "telegram", "profile": "team_b", "chat_id": "72719239"},
+    ])
+    rig.runner._primary_profile_name = "primary_a"
+    served = [("primary_a", primary_home), ("team_b", sibling_home)]
+
+    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served):
+        source = rig.primary.build_source(
+            chat_id="72719239", chat_type="dm", user_id="72719239"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(late_home))
+        identity = resolve_identity(
+            source, runner=rig.runner, primary_home=primary_home
+        )
+
+    assert identity.authorization_home == primary_home
+    assert identity.runtime_home == sibling_home
+    assert identity.store_path == sibling_home / "state.db"
+
+
 def test_unresolved_under_multiplex_raises_and_never_means_default(mux, tmp_path, monkeypatch):
     """A route to an unserved profile raises ``IdentityUnresolved`` (the runner drops the event);
     outside multiplexing the same source resolves to an explicit default identity whose keys stay

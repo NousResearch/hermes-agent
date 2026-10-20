@@ -18,7 +18,7 @@ LATE_KEY = "LAUNCH_FREEZE_PROBE_TOKEN"
 
 def test_boot_time_credential_injection_is_inside_the_frozen_launch_env(tmp_path, monkeypatch):
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_authority", None)
     monkeypatch.delenv(LATE_KEY, raising=False)
     # A two-profile host, without touching the live install's profiles/.
     monkeypatch.setattr(launch_profile_policy, "_servable_profile_homes",

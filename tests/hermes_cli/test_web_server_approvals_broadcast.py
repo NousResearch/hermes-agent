@@ -118,7 +118,11 @@ class TestApprovalsSaveBroadcast:
 
         profile_dir = tmp_path / "profiles" / "other"
         profile_dir.mkdir(parents=True)
-        monkeypatch.setattr(_web_server_profiles, "_resolve_profile_dir", lambda name: profile_dir)
+        monkeypatch.setattr(
+            _web_server_profiles,
+            "_resolve_profile_dir",
+            lambda name, **_kwargs: profile_dir,
+        )
 
         resp = client.put(
             "/api/config",

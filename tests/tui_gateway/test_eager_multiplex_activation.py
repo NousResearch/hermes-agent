@@ -19,7 +19,7 @@ def two_profile_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_authority", None)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     from hermes_cli.profiles import _get_profiles_root
     assert str(_get_profiles_root()).startswith(str(tmp_path))

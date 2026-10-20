@@ -361,7 +361,7 @@ def execute(frame, channel):
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
     try:
-        with policy_scope(policy):
+        with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,

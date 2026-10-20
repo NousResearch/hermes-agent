@@ -146,9 +146,10 @@ The legacy setters (`set_hermes_home_override`, `set_secret_scope`,
 `set_terminal_scope`, `install_profile_terminal_scope`) keep working. Inside a
 bound scope, a call naming another profile moves the whole scope in a local
 install and raises `ScopeSwitchRefused` in a hosted one. Clearing one piece of a
-bound scope (`set_secret_scope(None)`, `set_terminal_scope(None)`) refuses, and
-a raw terminal mapping only narrows the bound scope's own policy (a session's
-frozen policy). The code-health rule HX014 blocks new direct calls, including
+bound scope (`set_secret_scope(None)`, `set_terminal_scope(None)`) refuses. A
+raw terminal policy (a session's frozen policy) goes through
+`bind_terminal_policy(policy, profile_home=...)`, which inside a bound scope
+accepts only a policy owned by the bound agent. The code-health rule HX014 blocks new direct calls, including
 through relative imports; existing ones migrate when their function is next
 edited.
 

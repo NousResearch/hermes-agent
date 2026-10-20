@@ -141,15 +141,17 @@ def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path
     try:
         from hermes_cli.config import get_hermes_home
         from tools.terminal_scope import (
-            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope, set_terminal_scope,
+            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope,
         )
+        from agent.runtime_scope import bind_terminal_policy
 
         candidate = Path(raw)
         with _agent_path_scope(profile_home):
             translated = _translate_agent_path(candidate)
             if translated is not None or get_terminal_scope() is not None:
                 return translated
-            token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
+            home = get_hermes_home()
+            token = bind_terminal_policy(build_profile_terminal_scope(home), profile_home=home)
             try:
                 return _translate_agent_path(candidate)
             finally:

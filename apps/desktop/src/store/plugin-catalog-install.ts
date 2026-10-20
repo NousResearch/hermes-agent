@@ -31,6 +31,7 @@ export function openCatalogPluginInstall(
     repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
     sha: entry.sha,
     summary: entry.summary,
+    title: entry.title,
     ...options
   })
 }

@@ -44,6 +44,22 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
     expect($notifications.get()).toEqual([])
   })
 
+  it('carries the catalog title into the dialog heading', async () => {
+    const lookup = lookupFor({
+      ok: true,
+      entry: {
+        name: 'aihubmix',
+        repo: 'https://github.com/AIhubmix/hermes-provider-aihubmix',
+        sha: 'b'.repeat(40),
+        title: 'AI Hub Mix'
+      }
+    })
+
+    await requestPluginCatalogInstallFromDeepLink('aihubmix', lookup)
+
+    expect($pluginInstallRequest.get()?.title).toBe('AI Hub Mix')
+  })
+
   it.each([
     ['unknown', 'not in the Hermes plugin catalog'],
     ['unavailable', 'Could not load the Hermes plugin catalog'],

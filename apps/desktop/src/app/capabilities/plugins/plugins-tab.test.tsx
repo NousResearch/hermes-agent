@@ -237,6 +237,7 @@ describe('PluginsTab', () => {
           sha: 'a'.repeat(40),
           subdir: '',
           tier: 'community',
+          title: 'Weather Plugin',
           type: 'hermes-plugin-pick'
         },
         origin: 'https://hermes-agent.nousresearch.com'
@@ -251,6 +252,7 @@ describe('PluginsTab', () => {
       expect(request?.repo).toBe('https://github.com/example/weather-plugin')
       expect(request?.profile).toBe('workbot')
       expect(request?.sha).toBe('a'.repeat(40))
+      expect(request?.title).toBe('Weather Plugin')
     })
   })
 

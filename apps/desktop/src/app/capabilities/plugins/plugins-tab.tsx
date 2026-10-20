@@ -82,6 +82,8 @@ interface PluginPickMessage {
   sha?: string
   subdir?: string
   tier?: string
+  /** Human name from the catalog card; heads the Install dialog. */
+  title?: string
   type?: string
 }
 
@@ -644,7 +646,8 @@ export const PluginsTab = memo(function PluginsTab({
           name: String(data.name),
           repo: String(data.repo),
           sha: data.sha ? String(data.sha) : undefined,
-          subdir: data.subdir ? String(data.subdir) : undefined
+          subdir: data.subdir ? String(data.subdir) : undefined,
+          title: data.title ? String(data.title) : undefined
         },
         scope
       )

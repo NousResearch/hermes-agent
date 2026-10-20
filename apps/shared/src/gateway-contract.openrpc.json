@@ -27186,7 +27186,7 @@
       },
       "PluginCatalogLookupEntry": {
         "additionalProperties": false,
-        "description": "The fields an install needs: the same ones the embedded catalog picker posts on a pick.",
+        "description": "The fields an install needs: the same ones the embedded catalog picker posts on a pick, plus the\nhuman name the dialog heads with (``None`` when the entry has no title).",
         "properties": {
           "name": {
             "title": "Name",
@@ -27203,6 +27203,18 @@
           "subdir": {
             "title": "Subdir",
             "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
           }
         },
         "required": [

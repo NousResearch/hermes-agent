@@ -4513,12 +4513,13 @@ export interface PluginCatalogLookupResult {
   entry?: PluginCatalogLookupEntry | null
 }
 export type PluginCatalogLookupStatus = 'found' | 'invalid_name' | 'unknown' | 'unavailable'
-/** The fields an install needs: the same ones the embedded catalog picker posts on a pick. */
+/** The fields an install needs: the same ones the embedded catalog picker posts on a pick, plus the human name the dialog heads with (``None`` when the entry has no title). */
 export interface PluginCatalogLookupEntry {
   name: string
   repo: string
   sha: string
   subdir: string
+  title?: string | null
 }
 export interface CanonicalShellExecParams {
   session_id: string

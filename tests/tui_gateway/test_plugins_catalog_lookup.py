@@ -8,9 +8,12 @@ from tui_gateway import server
 SHA = "a" * 40
 
 
-def _entry(name, repo=None, subdir=""):
-    return pc.entry_from_mapping({"name": name, "repo": repo or f"https://github.com/fx/{name}", "sha": SHA,
-                                  "description": "d.", "maintainer": "fx", "subdir": subdir}, name)
+def _entry(name, repo=None, subdir="", title=None):
+    mapping = {"name": name, "repo": repo or f"https://github.com/fx/{name}", "sha": SHA,
+               "description": "d.", "maintainer": "fx", "subdir": subdir}
+    if title:
+        mapping["title"] = title
+    return pc.entry_from_mapping(mapping, name)
 
 
 def _lookup(name, **extra):
@@ -21,7 +24,7 @@ def _lookup(name, **extra):
 
 @pytest.fixture
 def catalog(monkeypatch):
-    entries = [_entry("weather"), _entry("aihubmix", "https://github.com/AIhubmix/mono", subdir="aihubmix"),
+    entries = [_entry("weather", title="Weather"), _entry("aihubmix", "https://github.com/AIhubmix/mono", subdir="aihubmix"),
                _entry("pulled")]
     monkeypatch.setattr(pc, "load_catalog_live", lambda: entries)
     monkeypatch.setattr(pc, "load_removed_list", lambda catalog_dir=None: [pc.RemovedEntry(name="pulled")])
@@ -31,8 +34,13 @@ def catalog(monkeypatch):
 
 def test_a_listed_name_returns_what_the_install_dialog_needs(catalog):
     assert _lookup("aihubmix") == {"status": "found", "entry": {
-        "name": "aihubmix", "repo": "https://github.com/AIhubmix/mono", "sha": SHA, "subdir": "aihubmix"}}
+        "name": "aihubmix", "repo": "https://github.com/AIhubmix/mono", "sha": SHA, "subdir": "aihubmix",
+        "title": None}}
     assert _lookup(" weather ")["entry"]["subdir"] == ""
+
+
+def test_the_entry_carries_the_catalog_title_for_the_dialog_heading(catalog):
+    assert _lookup("weather")["entry"]["title"] == "Weather"
 
 
 def test_an_unlisted_or_removed_name_is_unknown_never_a_guess(catalog):

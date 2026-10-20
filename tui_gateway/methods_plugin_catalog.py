@@ -38,7 +38,7 @@ def _(rid, params: dict) -> dict:
     if entry is None or match_removed(entry.name, removed) or match_removed(entry.repo, removed):
         return _ok(rid, {"status": "unknown"})
     return _ok(rid, {"status": "found", "entry": {"name": entry.name, "repo": entry.repo, "sha": entry.sha,
-                                                  "subdir": entry.subdir}})
+                                                  "subdir": entry.subdir, "title": entry.title or None}})
 
 
 def register(server) -> None:

@@ -855,12 +855,14 @@ class PluginCatalogLookupParams(ProfileParams):
 
 
 class PluginCatalogLookupEntry(Result):
-    """The fields an install needs: the same ones the embedded catalog picker posts on a pick."""
+    """The fields an install needs: the same ones the embedded catalog picker posts on a pick, plus the
+    human name the dialog heads with (``None`` when the entry has no title)."""
 
     name: str
     repo: str
     sha: str
     subdir: str
+    title: str | None = None
 
 
 class PluginCatalogLookupResult(Result):

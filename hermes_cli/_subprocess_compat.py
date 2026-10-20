@@ -284,6 +284,66 @@ NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
+# Transport settings that never change what a probe *does* — they only decide whether the network
+# can be reached at all (proxy, TLS backend/CA, network quirks). A host whose only route to
+# github.com is its user git config loses it when that config is isolated, and every probe then
+# fails with rc 128 (or a hung handshake) before it can ask git anything (#141301).
+_TRANSPORT_CONFIG_KEY = re.compile(
+    r"^(?:https?|core)\.(?:proxy|sslbackend|sslverify|sslcainfo|sslcert(?:password|type)?|sslfipsmode"
+    r"|timeout|version|followredirects|emptyauth|extraheader|schannelcheckrevoke|schannelplatformstore"
+    r"|lowSpeed.*|minversion|maxversion|pinnedpubkey|proxyauthmethod)$",
+    re.IGNORECASE,
+)
+
+
+def _transport_overrides(env: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Transport keys the user's git config sets, in git's own precedence order.
+
+    Read-only and non-widening: only the keys above, values verbatim, system before global so the
+    user's own global setting wins exactly as their interactive git resolves it. Proxy and CA
+    values can carry credentials, so they are only ever handed to git, never logged.
+    """
+    overrides: list[tuple[str, str]] = []
+    probe_env = dict(env)
+    for key in list(probe_env):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            probe_env.pop(key, None)
+    probe_env.pop("GIT_CONFIG_COUNT", None)
+    for scope in ("--system", "--global"):
+        try:
+            proc = subprocess.run(
+                # git's own regexp flavor: no (?:...) grouping, so name the alternatives out.
+                ["git", "config", scope, "-z", "--get-regexp", r"^(http|https|core)\."],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, stdin=subprocess.DEVNULL, env=probe_env, check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        for record in proc.stdout.split("\0"):
+            name, _, value = record.partition("\n")
+            key = name.lower()
+            if not name or not _TRANSPORT_CONFIG_KEY.fullmatch(key):
+                continue
+            overrides = [item for item in overrides if item[0] != key]
+            overrides.append((key, value))
+    return overrides
+
+
+_transport_cache: dict[tuple, list[tuple[str, str]]] = {}
+
+
+def _user_transport_overrides(base_env: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Memoised ``_transport_overrides`` on the inputs that select the config files."""
+    cache_key = _safe_directory_cache_key(base_env)
+    cached = _transport_cache.get(cache_key)
+    if cached is None:
+        cached = _transport_cache[cache_key] = _transport_overrides(base_env)
+    return list(cached)
+
+
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 _GIT_CONFIG_OVERRIDES = {
     "credential.helper": "",
@@ -482,6 +542,10 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
     # does for the user's interactive git. Appended last, but the hardening overrides above are
     # distinct keys, so they are unaffected by ordering within safe.directory.
     overrides.extend(("safe.directory", value) for value in safe_directories)
+    # Transport keys (proxy, TLS backend/CA) never change *what* a probe asks, only whether the
+    # host can reach the remote at all; a machine that needs its user config for that can no
+    # longer resolve GitHub at all (#141301). Replay them through the same channel.
+    overrides.extend(_user_transport_overrides(base if base is not None else os.environ))
     env["GIT_CONFIG_COUNT"] = str(len(overrides))
     for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key

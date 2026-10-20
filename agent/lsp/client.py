@@ -16,7 +16,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote, unquote
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -45,7 +45,7 @@ def _register_process_group_with_parent_death_supervisor(pgid: int) -> bool:
 
         _update_death_supervisor("register", [pgid])
         return True
-    except Exception:  # noqa: BLE001 — diagnostics must never break a spawn
+    except Exception:  # diagnostics must never break a spawn
         logger.debug("LSP: parent-death supervisor registration failed", exc_info=True)
         return False
 
@@ -56,7 +56,7 @@ def _unregister_process_group_with_parent_death_supervisor(pgid: int) -> None:
         from tools.mcp_tool import _update_death_supervisor
 
         _update_death_supervisor("unregister", [pgid])
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("LSP: parent-death supervisor unregistration failed", exc_info=True)
 
 
@@ -218,7 +218,7 @@ class LSPClient:
         # the pgid is retained here so a later spawn or teardown can notice it has since
         # emptied and release it.  See
         # _register_process_group_with_parent_death_supervisor.
-        self._supervised_pgids: Set[int] = set()
+        self._supervised_pgids: set[int] = set()
         self._stderr_task: Optional[asyncio.Task] = None
         # Ring buffer of the most recent server stderr lines, surfaced when spawn/initialize fails.
         self._stderr_tail: list[str] = []

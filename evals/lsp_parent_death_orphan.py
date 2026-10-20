@@ -92,7 +92,7 @@ def main() -> int:
             p for p in (str(REPO_ROOT), env.get("PYTHONPATH", "")) if p)
         proc = subprocess.run(
             [sys.executable, str(parent_file)],
-            cwd=workdir, env=env, capture_output=True, text=True, timeout=60,
+            cwd=workdir, env=env, capture_output=True, text=True, timeout=60, check=False,
         )
         if proc.returncode != 0:
             print("parent failed to run the spawn path")

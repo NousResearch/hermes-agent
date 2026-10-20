@@ -223,7 +223,7 @@ def test_supervisor_reaps_the_group_when_the_owner_dies_ungracefully(tmp_path: P
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(Path(__file__).resolve().parents[3]), env.get("PYTHONPATH", "")) if p)
     proc = subprocess.run([sys.executable, "-c", program], cwd=tmp_path, env=env,
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]
 
     pid_text, registered = proc.stdout.split()[-2:]
@@ -296,7 +296,7 @@ async def test_escaped_descendant_stays_covered_until_its_group_empties(tmp_path
             os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test module
         deadline = time.monotonic() + 10.0
         while client_module._process_group_alive(pgid) and time.monotonic() < deadline:
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
         assert not client_module._process_group_alive(pgid)
 
         await client._cleanup_process()

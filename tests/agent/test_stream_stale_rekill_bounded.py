@@ -28,6 +28,7 @@ import run_agent
 from agent import chat_completion_helpers as helpers
 from agent import chat_completion_stream_monitor as stream_monitor
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.status_output import StatusOutputMixin
 
 # The contract is "bounded", not any particular number of kills: the window lives in
 # agent/chat_completion_stream_monitor.py. On the unfixed tree the loop never ends.
@@ -47,15 +48,26 @@ class _Clock:
         pass
 
 
+class _RecordingAgent(StatusOutputMixin):
+    """The real status emitter, with activity touches and wait notices captured."""
+
+    def __init__(self, touches: list, waits: list):
+        self.base_url = ""
+        self._interrupt_requested = False
+        self._consecutive_stale_streams = 0
+        self.provider = "custom"
+        self.thinking_callback = waits.append
+        self._touches = touches
+
+    def _touch_activity(self, text: str) -> None:
+        self._touches.append(text)
+
+
 def _wedged_call(patience: float = 0.25):
     """A ``_StreamingCall`` whose worker never unwinds: ``_call_done`` is never set."""
     touches: list = []
     waits: list = []
-    agent = SimpleNamespace(
-        base_url="", _interrupt_requested=False, _consecutive_stale_streams=0, provider="custom",
-        _touch_activity=touches.append, _emit_diagnostic_wait=waits.append,
-        _buffer_diagnostic_status=lambda *_a: None,
-    )
+    agent = _RecordingAgent(touches, waits)
     call = helpers._StreamingCall.__new__(helpers._StreamingCall)
     call.agent = agent
     call.api_kwargs = {"model": "m", "messages": []}
@@ -109,8 +121,16 @@ def _agent(base_url: str):
 def test_monitor_abandons_an_attempt_its_kills_cannot_unblock():
     call, touches, _waits = _wedged_call()
     kills: list = []
+    touch_counts: list[int] = []
     real_kill = call._kill_stale_stream
+    real_note = call._note_stale_kill
     call._kill_stale_stream = lambda elapsed: (kills.append(elapsed), real_kill(elapsed))[1]
+
+    def note_stale_kill(counted, elapsed):
+        real_note(counted, elapsed)
+        touch_counts.append(len(touches))
+
+    call._note_stale_kill = note_stale_kill
 
     monitor = threading.Thread(target=call._monitor_loop, daemon=True)
     monitor.start()
@@ -121,10 +141,12 @@ def test_monitor_abandons_an_attempt_its_kills_cannot_unblock():
         f"({len(kills)} kills in 10s and still running)")
     assert 1 < len(kills) <= _MAX_KILLS, f"kills are not bounded: {len(kills)}"
     assert call._attempt_is_wedged(), "the attempt was never abandoned"
-    # Every re-kill used to refresh the activity heartbeat; only the first kill may.
-    assert len(touches) == 1, (
-        f"a re-kill refreshed the activity heartbeat {len(touches)} times; the kanban "
-        "wedge reclaim reads that heartbeat as liveness")
+    # The first kill may claim liveness (status notice + activity); every re-kill and the
+    # terminal abandonment must not. Real emitter: a `waits.append` stub hid the touch.
+    assert touch_counts[0] >= 1, "the first kill stopped claiming liveness"
+    assert set(touch_counts[1:]) == {touch_counts[0]}, (
+        f"a re-kill or abandonment refreshed the activity heartbeat: {touch_counts}; "
+        "the kanban wedge reclaim reads that heartbeat as liveness")
 
 
 def test_the_patience_window_is_per_attempt(monkeypatch):
@@ -180,12 +202,15 @@ def test_a_wedged_attempt_claims_no_liveness_from_the_heartbeat():
     assert len(touches) == 1, "the heartbeat must claim liveness while the attempt is alive"
 
     call._note_stale_kill(True, 5.0)  # first kill: counted, reconnect notice
+    before_abandon = len(touches)
     call._note_stale_kill(False, 5.0)  # abandoned on the re-kill
     assert call._attempt_is_wedged()
+    assert len(touches) == before_abandon, (
+        "the terminal abandoning diagnostic refreshed the activity heartbeat")
 
-    before = len(touches)
+    before_heartbeat = len(touches)
     call._heartbeat(5)
-    assert len(touches) == before, "a wedged attempt still refreshed the activity heartbeat"
+    assert len(touches) == before_heartbeat, "a wedged attempt still refreshed the activity heartbeat"
     assert "reconnecting" in waits[0], "the first kill must still show the reconnect notice"
     assert "abandoning" in waits[-1], "the abandonment must replace the reconnect notice"
 

@@ -89,7 +89,9 @@ class StreamingWaitMonitor:
         )
         self._stale_wedged = True
         self.agent._emit_diagnostic_wait(
-            f"⚠ no output from provider for {int(elapsed)}s — abandoning this attempt")
+            f"⚠ no output from provider for {int(elapsed)}s — abandoning this attempt",
+            touch_activity=False,
+        )
 
     def _attempt_is_wedged(self) -> bool:
         return bool(getattr(self, "_stale_wedged", False))

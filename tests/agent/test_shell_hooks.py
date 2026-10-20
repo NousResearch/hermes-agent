@@ -199,7 +199,7 @@ class TestCallbackSubprocess:
         # Only the terminal call wrote to the log
         assert calls.read_text().count("pre_tool_call") == 1
 
-    def test_payload_schema_delivered(self, tmp_path):
+    def test_payload_schema_delivered(self, tmp_path, monkeypatch):
         capture = tmp_path / "payload.json"
         script = _write_script(
             tmp_path, "capture.sh",
@@ -208,6 +208,11 @@ class TestCallbackSubprocess:
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
         )
+        # Production hooks receive AIAgent.session_id, while the terminal writer uses the
+        # tool task id when no routing key is bound.  Keep the identifiers intentionally
+        # different so this catches the real key-namespace mismatch.
+        monkeypatch.setattr("tools.approval_context.get_current_session_key", lambda default="default": "")
+        monkeypatch.setattr("tools.terminal_tool.get_session_cwd", lambda session_key: "/workspace/project" if session_key == "task-77" else None)
         cb = shell_hooks._make_callback(spec)
         cb(
             tool_name="terminal",
@@ -221,7 +226,38 @@ class TestCallbackSubprocess:
         assert payload["tool_input"] == {"command": "echo hi"}
         assert payload["session_id"] == "sess-77"
         assert "cwd" in payload
+        assert payload["terminal_cwd"] == "/workspace/project"
         assert payload["extra"]["task_id"] == "task-77"
+
+    @pytest.mark.parametrize(
+        ("routing_key", "task_id", "session_id"),
+        [
+            ("agent:main:telegram:dm:4242", "20260903_120000_deadbeef", "20260903_120000_deadbeef"),
+            ("", "cron:job-1:execution-1", "20260903_120000_deadbeef"),
+        ],
+    )
+    def test_terminal_cwd_uses_terminal_writer_key_for_gateway_and_cron(
+        self, monkeypatch, routing_key, task_id, session_id
+    ):
+        seen = {}
+
+        monkeypatch.setattr(
+            "tools.approval_context.get_current_session_key",
+            lambda default="default": routing_key,
+        )
+        def get_cwd(key):
+            seen["key"] = key
+            return "/srv/kanban/workspace"
+
+        monkeypatch.setattr("tools.terminal_tool.get_session_cwd", get_cwd)
+
+        payload = json.loads(shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {"session_id": session_id, "task_id": task_id},
+        ))
+
+        assert seen["key"] == (routing_key or task_id)
+        assert payload["terminal_cwd"] == "/srv/kanban/workspace"
 
 
     def test_modify_canonical_parsing(self, tmp_path):

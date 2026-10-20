@@ -331,3 +331,28 @@ def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
     workspace._copy_core_inputs(core, destination)
 
     assert (destination / "agent/chromium-1208/kept.txt").read_text(encoding="utf-8") == "KEPT\n"
+
+
+def test_git_ignored_member_files_are_not_build_inputs(tmp_path):
+    """#122349: a member checkout's ignored output must not re-stale the environment each launch."""
+    plugin = tmp_path / "plugin"
+    (plugin / "src").mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="dev-plugin"\nversion="1"\nrequires-python=">=3.11"\ndependencies=["packaging"]\n',
+        encoding="utf-8",
+    )
+    (plugin / ".gitignore").write_text("build/\nstate.json\n", encoding="utf-8")
+    (plugin / "src" / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=plugin, check=True, capture_output=True)
+    stamp = workspace.members_stamp([plugin])
+
+    (plugin / "build" / "nested").mkdir(parents=True)
+    (plugin / "build" / "nested" / "out.js").write_text("built\n", encoding="utf-8")
+    (plugin / "state.json").write_text("{}\n", encoding="utf-8")
+    assert workspace.members_stamp([plugin]) == stamp
+    member = workspace._workspace_member(plugin, tmp_path / "stage", identity=plugin)
+    assert (member / "src" / "core.py").is_file()
+    assert not (member / "build").exists() and not (member / "state.json").exists()
+
+    (plugin / "src" / "new.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert workspace.members_stamp([plugin]) != stamp, "untracked, unignored source is still an input"

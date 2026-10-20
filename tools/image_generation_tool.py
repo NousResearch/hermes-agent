@@ -890,12 +890,20 @@ _IMAGE_URL_PARAM = {
     ),
 }
 
-# Creative-control vocabulary (Krea 2 today); a provider advertises the names it honors via
-# ``capabilities()["creative_controls"]`` and only those reach the schema and its ``generate()``.
+# Creative-control vocabulary (Krea 2 and Krea 3 today); a provider advertises the names it honors
+# via ``capabilities()["creative_controls"]`` and only those reach the schema and its ``generate()``.
 _CREATIVE_CONTROL_PARAMS = {
     "creativity": {
         "type": "string", "enum": ["raw", "low", "medium", "high"],
         "description": "Prompt expansion: raw (none), low, medium or high.",
+    },
+    "thinking": {
+        "type": "string", "enum": ["fast", "high"],
+        "description": "How much the model plans before generating: fast (default) or high for complex multi-step edits.",
+    },
+    "resolution": {
+        "type": "string", "enum": ["1K", "2K"],
+        "description": "Output size: 1K (default) or 2K when small text or fine detail matters.",
     },
     "intensity": {
         "type": "integer", "minimum": -100, "maximum": 100,

@@ -13,8 +13,42 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
 # ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
 LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
-# Legacy labels that are not creation sources of their own (session_policy.SURFACES).
-LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+# Importer labels (hermes_cli/foreign_sessions.py ``_SOURCE_DB_NAMES``, shared by the Desktop
+# foreign-session browser's ``import_foreign_history``). A transcript imported from another tool is
+# local history on this machine, but its row carries no route and no authority receipt: the only
+# thing that says where it came from is ``origin_json.imported_from`` (#142091).
+IMPORTED_LOCAL_SOURCES = frozenset({'claude-code', 'codex-cli'})
+# Legacy labels that are not creation sources of their own (session_policy.SURFACES). An imported
+# row resumes on the surface that imported it: the CLI command / `hermes -r` pick, and the Desktop
+# browser's import, both write it from a CLI-driven store.
+LEGACY_CREATION_SOURCES = {'desktop': 'gui', 'claude-code': 'cli', 'codex-cli': 'cli'}
+
+
+def imported_provenance(row):
+    """The ``imported_from`` record an importer stamped on this row, or None.
+
+    ``origin_json`` is a route on a canonical row and provenance on an imported one, so the
+    importing tool has to name itself there: both importers stamp ``imported_from.tool``.
+    """
+    if row.get('source') not in IMPORTED_LOCAL_SOURCES or not row.get('origin_json'):
+        return None
+    try:
+        origin = json.loads(row['origin_json'])
+    except (TypeError, ValueError):
+        return None
+    imported = origin.get('imported_from') if isinstance(origin, dict) else None
+    return imported if isinstance(imported, dict) and imported.get('tool') else None
+
+
+def unrouted_import(row):
+    """Whether *row* carries only an importer's own stamps: provenance, and no route.
+
+    ``session_key``/``chat_id`` name a route a canonical writer minted (``bind_legacy_target``
+    writes both on adoption), and no importer writes either, so their presence means some other
+    authority already routed this row.
+    """
+    return bool(imported_provenance(row) and not row.get('session_key')
+                and row.get('chat_id') in (None, '', row['id']))
 
 
 def legacy_account_label(row):
@@ -48,8 +82,12 @@ def validate_legacy_row(db, row, *, subject=None):
     # stamp equal to ``subject`` itself names that principal: it is already its history by
     # ``authorize_history``'s rule, so it adopts like an unstamped row.
     user_id = row.get('user_id')
-    if (row['source'] not in LEGACY_LOCAL_SOURCES
-            or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
+    # An imported transcript is unrouted by construction: its label is no surface and its
+    # ``origin_json`` is provenance, not a route, so it adopts under the same owner and profile
+    # rules as a pre-authority local row (#142091). Everything else keeps the routed-stamp veto.
+    local = row['source'] in LEGACY_LOCAL_SOURCES
+    if ((not local and not unrouted_import(row))
+            or (local and any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json')))
             or (user_id and user_id != subject and not legacy_account_label(row)
                 and not login_owned_by(row, subject))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):

@@ -43,6 +43,19 @@ def require_history_claim(authority, conn, actor, sid):
         raise RuntimeStoreError('permission_denied')
 
 
+def adoptable_local_row(row):
+    """Whether the canonical resume path hands *row* to local adoption.
+
+    Pre-authority local transcripts and the canonical ``local`` label keep their previous route.
+    An imported foreign transcript joins them: its label is no surface, so without this it fell
+    through to the messaging resolution and answered ``not_found`` for a transcript the legacy TUI
+    opened fine (#142091). A wider gate adopts nothing by itself — adoption still authorizes the
+    row (``validate_legacy_row``) and an already-adopted row is read through its receipt.
+    """
+    from hermes_state_local_migration import IMPORTED_LOCAL_SOURCES, LEGACY_LOCAL_SOURCES
+    return row['source'] in LEGACY_LOCAL_SOURCES | IMPORTED_LOCAL_SOURCES | {Platform.LOCAL.value}
+
+
 def resolve_local_target(authority, actor, sid):
     """Resolve physical history IDs without silently adopting canonical corruption."""
     db = authority.db

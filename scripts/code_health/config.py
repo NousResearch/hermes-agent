@@ -77,7 +77,19 @@ RULES: tuple[Rule, ...] = (
          " KeyboardInterrupt/SystemExit)", "ruff"),
     # Correctness basics.
     # tui_gateway method modules get the server's names injected (`bind_module(globals(), ...)`).
+    # That exclude is for *bodies*. Annotations still evaluate in the split module at def time
+    # when the file has no `from __future__ import annotations` (HX014).
     Rule("F821", "undefined name", "import or define it", "ruff", exclude=("tui_gateway/*",)),
+    Rule(
+        "HX014",
+        "eager split-module annotation name",
+        "import or define it in the split module; bind_module rebinds function bodies onto "
+        "server.py, not def-time annotations. A name used at runtime (`Path(...)`) needs a "
+        "real import — `from __future__ import annotations` only postpones the NameError",
+        "ast",
+        include=("tui_gateway/*",),
+        exclude=(),
+    ),
     Rule("F823", "local used before assignment", "assign before use or declare global",
          "ruff", exclude=()),
     Rule("F811", "redefinition of unused name", "remove the shadowed definition", "ruff",

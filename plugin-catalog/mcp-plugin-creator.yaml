@@ -1,6 +1,6 @@
 name: mcp-plugin-creator
 repo: https://github.com/tonbistudio/hermes-mcp-plugin-creator
-sha: dcc2071eea7d80184735a221d22babe5f2f2f5e7
+sha: 0bcd7023ce9764a01551753a3b6800c4fe695047
 description: 'Turn any MCP server into a portable Agent Plugin (mcp.json + workflow skill) built from
   evidence: the server''s self-description, your past sessions with it, its docs and a read-only probe.
   Validates and installs the package in linked mode, and checks a built plugin for server drift and new
@@ -12,7 +12,7 @@ tier: community
 category: tools
 title: MCP Plugin Creator
 requires_hermes: ">=0.22.0"
-version: "0.2.0"
+version: "0.2.1"
 docs_url: https://github.com/tonbistudio/hermes-mcp-plugin-creator#readme
 platforms: []
 capabilities:

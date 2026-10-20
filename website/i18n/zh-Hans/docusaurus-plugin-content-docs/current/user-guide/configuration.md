@@ -722,7 +722,7 @@ agent:
 
 当迭代预算完全耗尽时，CLI 向用户显示通知：`⚠ Iteration budget reached (500/500) — response may be incomplete`。
 
-`agent.api_max_retries` 控制 Hermes 在回退 provider 切换启动**之前**对瞬时错误（速率限制、连接断开、5xx）重试 provider API 调用的次数。默认为 `3` —— 总共四次尝试。如果您配置了[回退 providers](./features/fallback-providers.md) 并希望更快地故障转移，请将其降至 `0`，这样主 provider 上的第一个瞬时错误会立即切换到回退，而不是对不稳定的端点进行重试。
+`agent.api_max_retries` 是 Hermes 在一次 provider API 调用遇到瞬时错误（速率限制、连接断开、5xx）时、在回退 provider 切换启动**之前**总共尝试的次数，首次调用计为一次。默认为 `3`，即总共尝试三次。如果您配置了[回退 providers](./features/fallback-providers.md) 并希望更快地故障转移，请将其降至 `0`，这样主 provider 上的第一个瞬时错误会立即切换到回退，而不是对不稳定的端点进行重试。
 
 ### API 超时
 

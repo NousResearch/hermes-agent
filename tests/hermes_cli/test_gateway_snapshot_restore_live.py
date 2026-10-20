@@ -119,18 +119,38 @@ def _default_profile_state(home):
                 db.execute("SELECT session_id,role,content FROM messages ORDER BY id").fetchall())
 
 
+def _legacy_row(home):
+    """A pre-authority CLI row the gateway has not imported yet, as the old in-process CLI wrote it."""
+    from hermes_state import SessionDB
+    db = SessionDB(home / "state.db")
+    try:
+        db.create_session("legacy-cli", source="cli", model="fixture")
+        db.append_message("legacy-cli", role="user", content="BEFORE_SNAPSHOT")
+        db.append_message("legacy-cli", role="assistant", content="BEFORE_SNAPSHOT answer")
+        db.end_session("legacy-cli", "cli_exit")
+    finally:
+        db.close()
+    return "legacy-cli"
+
+
 @pytest.mark.platforms("posix")  # The fixture exercises the POSIX default/named profile layout.
-@pytest.mark.parametrize("multiplex, retained", [(False, True), (True, False)],
-                         ids=["standalone-resume-restored", "satellite-create-missing"])
-def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiplex, retained, capsys):
+@pytest.mark.parametrize("multiplex, mode", [(False, "retained"), (True, "missing"), (False, "legacy-leased")],
+                         ids=["standalone-resume-restored", "satellite-create-missing", "legacy-reimport-leased"])
+def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiplex, mode, capsys):
+    from cli import HermesCLI
+    from types import MethodType
     home = local_gateway(multiplex)
+    legacy = _legacy_row(home) if mode == "legacy-leased" else None
+    # A legacy snapshot predates the gateway's import, so the rejoin must import the row again.
+    snapshot = create_quick_snapshot(hermes_home=home) if legacy else None
     connection = GatewayConnection.shared()
     store = GatewaySessionStore(connection)
-    sid = store.create({"toolsets": []})
-    _turn(store, sid, "BEFORE_SNAPSHOT")
-    snapshot = create_quick_snapshot(hermes_home=home)
+    sid = store.attach(legacy)["stored_session_id"] if legacy else store.create({"toolsets": []})
+    if not legacy:
+        _turn(store, sid, "BEFORE_SNAPSHOT")
+        snapshot = create_quick_snapshot(hermes_home=home)
     assert snapshot
-    if not retained:
+    if mode == "missing":
         store.end_session(sid)
         sid = store.create({"toolsets": []})
     _turn(store, sid, "AFTER_SNAPSHOT")
@@ -146,15 +166,24 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     assert before is not None
     before_epoch = _epoch(store)
     default_before = _default_profile_state(home) if multiplex else None
-    cli = SimpleNamespace(_session_db=store, _gateway_session_open=True, session_id=sid,
+    cli = SimpleNamespace(_session_db=store, _gateway_session_open=True, session_id=sid, config={},
                           conversation_history=[{"role": "user", "content": "AFTER_SNAPSHOT"}],
-                          agent=object(), model="fixture")
+                          agent=object(), model="fixture", _active_session_lease=None)
+    for name in ("_claim_active_session", "_release_active_session"):
+        setattr(cli, name, MethodType(getattr(HermesCLI, name), cli))
+    # The interactive CLI holds its real active-session lease for the whole chat.
+    assert cli._claim_active_session("cli", stderr=True)
+    retained = mode != "missing"
+    try:
+        CLICommandsMixin._snapshot_restore(cli, ["/snapshot", "restore", snapshot])
 
-    CLICommandsMixin._snapshot_restore(cli, ["/snapshot", "restore", snapshot])
-
-    out = capsys.readouterr().out
-    assert connection.final, out
-    assert "Restored state from" in out and "failed" not in out and "not served again" not in out, out
+        out = capsys.readouterr().out
+        assert connection.final, out
+        assert "Restored state from" in out and "failed" not in out and "not served again" not in out, out
+        assert cli._active_session_lease is not None
+        assert cli._active_session_lease.session_id == cli.session_id
+    finally:
+        cli._release_active_session()
     assert store.connection is not connection and not store.connection.final
     assert old_reader._wrapped._conn is None and shared_reader._conn is None
     assert cli.agent is None

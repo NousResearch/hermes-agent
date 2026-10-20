@@ -128,29 +128,25 @@ def _restore_gateway_snapshot(cli, store, snap_id):
 
 
 def _rejoin_cli(cli, store):
-    from hermes_cli.cli_init_mixin import _ROUTE_FLAGS, _gateway_launch
+    from hermes_cli.cli_init_mixin import _ROUTE_FLAGS, _gateway_launch, lease_handed_over
     from hermes_cli.gateway_tools import bind_session
     # Same-id restores still replace the connection and invalidate the cached proxies.
     cli.agent = None
     for attr in ("_goal_manager", "_loop_manager", "_heartbeat_manager"):
         setattr(cli, attr, None)
-    try:
-        snapshot = store.attach(cli.session_id)
-    except GatewayClientError as exc:
-        if str(exc) != "not_found":
-            raise
-        # The snapshot predates this session: only the owner may mint its replacement.
-        launch = {key: value for key, value in _gateway_launch(cli).items() if key not in _ROUTE_FLAGS}
-        store.create(launch, record_cwd=False)
-        snapshot = store.current
-    sid = snapshot["stored_session_id"]
-    held = sid != cli.session_id and getattr(cli, "_active_session_lease", None) is not None
-    if held:
-        cli._release_active_session()
-    cli.session_id = sid
-    cli.conversation_history = [{key: value for key, value in message.items() if key != "row_id"}
-                                for message in snapshot.get("messages") or []]
-    bind_session(cli, store.connection)
-    if held and not cli._claim_active_session("cli", stderr=True):
-        raise GatewayClientError("session_already_owned")
+    # A snapshot older than the gateway's import of a legacy row makes this attach import it again.
+    with lease_handed_over(cli, getattr(cli, "_active_session_lease", None) is not None):
+        try:
+            snapshot = store.attach(cli.session_id)
+        except GatewayClientError as exc:
+            if str(exc) != "not_found":
+                raise
+            # The snapshot predates this session: only the owner may mint its replacement.
+            launch = {key: value for key, value in _gateway_launch(cli).items() if key not in _ROUTE_FLAGS}
+            store.create(launch, record_cwd=False)
+            snapshot = store.current
+        cli.session_id = snapshot["stored_session_id"]
+        cli.conversation_history = [{key: value for key, value in message.items() if key != "row_id"}
+                                    for message in snapshot.get("messages") or []]
+        bind_session(cli, store.connection)
     getattr(cli, "_write_terminal_breadcrumb", lambda: None)()

@@ -192,6 +192,29 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
     assert workspace.members_stamp([plugin]) != stamp
 
 
+def test_gitignored_plugin_runtime_state_does_not_change_member_inputs(tmp_path):
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="stateful-plugin"\nversion="1"\nrequires-python=">=3.11"\n')
+    (plugin / ".gitignore").write_text("*.db*\nwatermark.json\npending.jsonl\n")
+    (plugin / "package.py").write_text("VERSION = 1\n")
+    original = workspace.members_stamp([plugin])
+    for name in ("facts.db", "facts.db-wal", "watermark.json", "pending.jsonl"):
+        (plugin / name).write_text("first")
+    assert workspace.members_stamp([plugin]) == original
+
+    root = tmp_path / "snapshot"
+    member = workspace._workspace_member(plugin, root, identity=plugin)
+    assert (member / "package.py").is_file()
+    assert all(not (member / name).exists() for name in
+               ("facts.db", "facts.db-wal", "watermark.json", "pending.jsonl"))
+    (plugin / "watermark.json").write_text("second")
+    assert workspace.members_stamp([plugin]) == original
+    (plugin / "package.py").write_text("VERSION = 2\n")
+    assert workspace.members_stamp([plugin]) != original
+
+
 @pytest.mark.parametrize("exact", [False, True])
 def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_path, monkeypatch, exact):
     import os

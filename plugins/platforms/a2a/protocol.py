@@ -343,6 +343,11 @@ class TaskStore:
             self._tasks[task_id] = rec
         return dict(rec)
 
+    def forwarded(self) -> list[dict]:
+        """Records that carry an owner admission (forwarded work). Caller holds no lock."""
+        with self._lock:
+            return [dict(rec) for rec in self._tasks.values() if rec.get("input_id")]
+
     def set_state(self, task_id: str, state: str) -> None:
         with self._lock:
             if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
@@ -511,6 +516,7 @@ def list_conversations() -> list[str]:
 # keyed on the task id, so writing it is an upsert: repeating it replaces one record, never adds one.
 _MAX_TASK_IDENTITIES = 500
 _TASK_IDENTITY_FIELDS = ("task_id", "context_id", "peer", "agent_slug", "tenant", "input_id")
+_LIVE_TASK_IDS: set[str] = set()
 
 
 def _task_identity_path(task_id: str) -> Path:
@@ -526,9 +532,24 @@ def persist_task_identity(rec: dict) -> None:
         entry = {k: rec.get(k) or "" for k in _TASK_IDENTITY_FIELDS}
         entry["created_iso"] = rec.get("created_iso", "")
         path.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+        _LIVE_TASK_IDS.add(rec["task_id"])
         _prune_task_identities()
     except Exception:
         pass
+
+
+def keep_task_identity(task_id: str) -> None:
+    """Exempt a live task's identity from the dir size cap: a file on disk is live work until dropped."""
+    _LIVE_TASK_IDS.add(task_id)
+
+
+def drop_task_identity(task_id: str) -> None:
+    """Remove a task's identity (the task is terminal, or the owner refused it). Never raises."""
+    try:
+        _task_identity_path(task_id).unlink(missing_ok=True)
+    except Exception:
+        pass
+    _LIVE_TASK_IDS.discard(task_id)
 
 
 def load_task_identity(task_id: str) -> Optional[dict]:
@@ -548,6 +569,8 @@ def _prune_task_identities() -> None:
     except Exception:
         return
     for stale in files[_MAX_TASK_IDENTITIES:]:
+        if stale.stem in _LIVE_TASK_IDS:
+            continue  # live work is exempt: pruning it would strand an in-flight forward
         try:
             stale.unlink()
         except Exception:

@@ -148,6 +148,26 @@ which is why the non-blocking path is the rule and this is the safety net.
    the exception to the restart half: its identity is persisted, so `tasks/get` reads the owner's
    admission back after a restart instead of answering "not found".
 
+### How a forwarded task actually ends
+
+A **forwarded** route is driven by the owner's admission ledger, not by anything on the sending side,
+so three things follow — and all three are decided by the owner:
+
+- **Nothing here times it out.** The orphan grace and the job budget both exclude owner-backed tasks,
+  because the owner — possibly minutes or hours away — is the only thing that knows when the work is
+  done. A restarted process rebuilds the task from the identity it persisted and carries on; it is
+  never swept as an orphan.
+- **A background reader ends it, not a clock.** A poller learns the state from `tasks/get`, but a
+  registered push notification never fired and `tasks/subscribe` stayed open. A reader also walks the
+  ledger and records the terminal outcome, which is what wakes a push config and any subscriber.
+- **Deleting the owner's session does not lose the answer.** When the session is deleted after the
+  turn finished, its admission is retired into a tombstone rather than dropped, so `tasks/get` still
+  reports the real result instead of `missing`.
+
+The identity tuple that addresses the owner's admission is written only once the owner has accepted,
+and removed when the task becomes terminal — so a refused or rejected task leaves nothing behind that
+a restart could mistake for work still in flight.
+
 ## Security model
 
 Secure by default; every widening step is explicit:

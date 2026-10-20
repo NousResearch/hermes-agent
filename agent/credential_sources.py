@@ -9,8 +9,9 @@ branch skips the upsert. Adding a source: wire a reader branch in
 ``_seed_from_*``, gate it behind ``is_source_suppressed``, register a step here.
 
 Also home to the one policy switch over *borrowed* CLI logins (Codex CLI's
-``~/.codex/auth.json``, Claude Code's ``~/.claude/.credentials.json``):
-``auth.adopt_external_logins`` in config.yaml.
+``~/.codex/auth.json``, Claude Code's ``~/.claude/.credentials.json``, and the
+host ``gh`` CLI login Copilot falls back to): ``auth.adopt_external_logins``
+in config.yaml.
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from typing import Callable, List, Optional
 logger = logging.getLogger(__name__)
 
 EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE = (
-    "External CLI logins (Codex CLI, Claude Code) are not adopted: auth.adopt_external_logins is false. "
-    "Hermes uses only its own logins; run `hermes auth add <provider>` to add one."
+    "External CLI logins (Codex CLI, Claude Code, gh CLI for Copilot) are not adopted: "
+    "auth.adopt_external_logins is false. Hermes uses only its own logins; run "
+    "`hermes auth add <provider>` to add one."
 )
 _notice_logged = False
 
@@ -34,8 +36,9 @@ def adopt_external_logins_enabled() -> bool:
 
     Codex and Claude OAuth refresh tokens are single-use and rotate, so once Hermes borrows a CLI's
     token pair the two programs hold one token family and whichever refreshes first logs the other
-    out. When the user opts out, Hermes never reads or refreshes those files and says so once per
-    process (INFO) the first time it would have."""
+    out. When the user opts out, Hermes never reads or refreshes those files, never falls back to
+    the host ``gh`` login for Copilot, and says so once per process (INFO) the first time it would
+    have."""
     global _notice_logged
     try:
         from hermes_cli.config import load_config_readonly

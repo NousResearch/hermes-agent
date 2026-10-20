@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.prompt_cache_scope import conversation_id
+from agent.runtime_session_store import RuntimeSessionStore
 from hermes_state import SessionDB
+from hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 from run_agent import AIAgent
 
 PLUGIN = '''
@@ -87,6 +89,15 @@ def test_conversation_id_survives_compression_rotation(path, source, tmp_path, p
         assert sorted({kind for kind, _, _ in probe}) == [
             "handler", "post_tool_call", "pre_tool_call", "tool_execution", "tool_request"]
         assert {cid for kind, _, cid in probe if kind in _GETS_CONVERSATION_ID} == {root}
+        # A managed worker reads the same rows through its RuntimeSessionStore and must agree.
+        scope = dict(epoch=begin_runtime_epoch(db, instance_id="fixture"), execution_id="w",
+                     session_id=agent.session_id, generation=0)
+        register_worker_execution(db, **scope, kind="compute", adoption_secret="secret")
+        store = RuntimeSessionStore(lambda method, **p: mutate_worker_execution(db, **p), scope, tmp_path / "outbox")
+        try:
+            assert conversation_id(SimpleNamespace(session_id=agent.session_id, _session_db=store)) == root
+        finally:
+            store.close()
         # A tool-source fork of another source's compacted session is its own conversation.
         db.create_session("cli-parent", source="cli")
         db.end_session("cli-parent", "compression")

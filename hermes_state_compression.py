@@ -942,3 +942,18 @@ class SessionCompressionMixin:
             current = next_child
         # Later tips are included only when the requested session itself was compacted.
         return lineage if session_id in lineage else [session_id]
+
+    def get_tool_rotation_root(self, session_id: str) -> str:
+        """Root of a ``--source tool`` run's compression chain. ``get_compression_lineage`` treats every
+        ``tool`` row as a fork, but rotation copies the parent's source onto its continuation, so climb only
+        hops where both rows are ``tool`` and the child is an unmarked continuation of a compression-ended
+        parent. A ``tool`` fork of another source's session keeps its own id."""
+        row, seen = self.get_session(session_id), {session_id}
+        while row and row.get("source") == "tool" and (parent_id := row.get("parent_session_id")) not in seen:
+            parent = self.get_session(parent_id) if parent_id else None
+            if not parent or parent.get("source") != "tool" or not self._is_compression_child_row(
+                    {**row, "source": None}):
+                break
+            seen.add(parent_id)
+            row = parent
+        return row["id"] if row else session_id

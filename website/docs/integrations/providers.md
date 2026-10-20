@@ -617,7 +617,7 @@ model:
 
 ### Oracle Cloud (OCI Generative AI)
 
-OCI Generative AI serves OpenAI gpt-oss, xAI Grok and Google Gemini models through an OpenAI-compatible endpoint. Hermes authenticates with an OCI Generative AI API key, which is scoped to a compartment, so no compartment ID or OCI config file is needed.
+OCI Generative AI serves OpenAI (GPT and gpt-oss), xAI Grok and Google Gemini models through an OpenAI-compatible endpoint. Hermes authenticates with an OCI Generative AI API key, which is scoped to a compartment, so no compartment ID or OCI config file is needed.
 
 Create the key in the OCI Console (Generative AI service, API keys) or with `oci generative-ai api-key create`. The key only works once an IAM policy allows API-key principals to use the service, for example:
 
@@ -637,13 +637,25 @@ hermes chat --provider oci --model openai.gpt-oss-120b
 
 The default endpoint is us-chicago-1. For another region, set `OCI_GENAI_BASE_URL`, e.g. `https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/openai/v1`.
 
-OCI does not serve `GET /models` on this endpoint, so `hermes model` offers a short list (`openai.gpt-oss-120b`, `openai.gpt-oss-20b`, `xai.grok-4.3`, `google.gemini-2.5-pro`, `google.gemini-2.5-flash`). Any other model ID your region and tenancy serve can be passed with `--model`. Meta Llama models are left out of the list because OCI rejects Llama tool calls unless the first message is from the user, and Hermes always starts with a system prompt.
+OCI does not serve `GET /models` on this endpoint, so `hermes model` offers a short list (`openai.gpt-oss-120b`, `openai.gpt-oss-20b`, `openai.gpt-5.5`, `openai.gpt-6-sol`, `xai.grok-4.7`, `xai.grok-4.3`, `google.gemini-2.5-pro`, `google.gemini-2.5-flash`). Any other model ID your region and tenancy serve can be passed with `--model`. Meta Llama models are left out of the list because OCI rejects Llama tool calls unless the first message is from the user, and Hermes always starts with a system prompt.
 
 ```yaml
 model:
   provider: "oci"
   default: "openai.gpt-oss-120b"
 ```
+
+On this endpoint the newest OpenAI models only accept tools with reasoning turned off. Hermes sends `reasoning_effort: "none"` for `openai.gpt-5.6-*`, `openai.gpt-6-sol` and `openai.gpt-6-luna`. `openai.gpt-6.1-sol` and `openai.gpt-6-astra` can't call tools here at all. For those models, or to keep reasoning on while calling tools, use OCI's Responses API, which is served under `/v1` rather than `/openai/v1`:
+
+```yaml
+model:
+  provider: "oci"
+  default: "openai.gpt-6.1-sol"
+  base_url: "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/v1"
+  api_mode: "codex_responses"
+```
+
+The Responses route serves the OpenAI models (gpt-oss included) and Grok, but not Gemini.
 
 ### GMI Cloud
 

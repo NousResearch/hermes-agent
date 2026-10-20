@@ -56,3 +56,55 @@ class TestOCIProfile:
             "agent.models_dev.fetch_models_dev", lambda *a, **k: catalog
         )
         assert lookup_models_dev_context("oci", "openai.gpt-oss-120b") == 128000
+
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+        },
+    }
+]
+
+
+def _main_loop_kwargs(model: str, reasoning_config: dict | None = None) -> dict:
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    return ChatCompletionsTransport().build_kwargs(
+        model=model,
+        messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
+        tools=_TOOLS,
+        provider_profile=_profile(),
+        reasoning_config=reasoning_config,
+    )
+
+
+class TestOCIReasoningWire:
+    @pytest.mark.parametrize("model", ["openai.gpt-6-sol", "openai.gpt-6-luna", "openai.gpt-5.6-sol"])
+    def test_tool_turns_turn_reasoning_off_where_oci_requires_it(self, model: str) -> None:
+        """OCI 400s tools on these models unless reasoning_effort is "none" (the default is not)."""
+        assert _main_loop_kwargs(model)["reasoning_effort"] == "none"
+        assert _main_loop_kwargs(model, {"enabled": True, "effort": "high"})["reasoning_effort"] == "none"
+
+    @pytest.mark.parametrize("model", ["openai.gpt-5.5", "openai.gpt-5", "openai.o3", "openai.gpt-oss-120b"])
+    def test_other_models_keep_their_default(self, model: str) -> None:
+        """gpt-5, o3 and o4-mini reject "none"; models that take tools as-is get no reasoning field."""
+        kw = _main_loop_kwargs(model, {"enabled": True, "effort": "high"})
+        assert "reasoning_effort" not in kw
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    def test_auxiliary_calls_skip_generic_reasoning_body(self) -> None:
+        """OpenAI models on OCI 400 the generic extra_body.reasoning fallback ("Unknown parameter")."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kw = _build_call_kwargs(
+            "oci",
+            "openai.gpt-5.5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url=_profile().base_url,
+        )
+        assert "reasoning" not in kw.get("extra_body", {})

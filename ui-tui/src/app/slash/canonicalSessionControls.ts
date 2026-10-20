@@ -206,8 +206,10 @@ function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: Slas
     throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
   }
 
-  openModelConfirmation(refusal.confirm_message, refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '', () =>
-    void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
+  openModelConfirmation(
+    refusal.confirm_message,
+    refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '',
+    () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
   )
 }
 
@@ -298,7 +300,9 @@ type CompressSummary = { headline?: string; noop?: boolean; note?: string; token
 
 /** The authority's report (headline, token line, note), as the native /compress prints it. */
 function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
-  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
+  ctx.transcript.sys(
+    summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed')
+  )
 
   for (const line of [summary?.token_line, summary?.note]) {
     if (line) {

@@ -188,3 +188,61 @@ async def test_activation_rechecks_shutdown_after_the_preflight(standalone_host,
     _mkprofile(home, "daily-news-bot")
     await runner.reconcile_served_profiles(reason="control-socket")
     assert not is_multiplex_active(), "stop() began during the preflight, yet fail-closed secrets were armed"
+
+
+async def _native_turn_across_activation(tmp_path, profile_home):
+    """Drive a Desktop/TUI ``prompt.submit`` through ``AuthorityConnection.dispatch`` on a standalone
+    owner and switch the process to multi-profile hosting while the turn is running."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionSource, SessionStore
+    from gateway.session_authority import LiveSession, initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+
+    started, release, seen = asyncio.Event(), asyncio.Event(), []
+
+    async def answer(event):
+        seen.append(_read())
+        started.set()
+        await release.wait()
+        seen.append(_read())
+        return "ok"
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    runner = types.SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+                                   config=GatewayConfig(multiplex_profiles=False),
+                                   _handle_message=answer, _adapter_for_source=lambda source: None)
+    authority = await initialize_session_authority(runner, profile_id=str(profile_home), instance_id="owner")
+    store._db.create_session("s", source="telegram")
+    authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c"), "s")
+    connection = AuthorityConnection(authority, object(), {"user_id": "owner"})
+    try:
+        await connection.dispatch({"id": 1, "method": "session.resume", "params": {"session_id": "s"}})
+        reply = await connection.dispatch({"id": 2, "method": "prompt.submit", "params": {
+            "session_id": "s", "submission_id": "x", "text": "hi"}})
+        assert reply.get("result", {}).get("status") == "queued", reply
+        await asyncio.wait_for(started.wait(), 10)
+        activate_multi_profile_hosting()            # a second profile switched the gateway mid-turn
+        release.set()
+        await authority.sessions["s"].task
+    finally:
+        await connection.close()
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_native_launch_turn_in_flight_across_activation_keeps_its_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "launch-env-key")
+    seen = await _native_turn_across_activation(tmp_path, tmp_path)
+    assert seen == ["launch-env-key", "launch-env-key"], seen
+
+
+@pytest.mark.asyncio
+async def test_native_named_profile_turn_never_reads_the_launch_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "launch-env-key")
+    bot = tmp_path / "profiles" / "bot"
+    bot.mkdir(parents=True)
+    seen = await _native_turn_across_activation(tmp_path, bot)
+    assert seen[1] == "UnscopedSecretError", seen

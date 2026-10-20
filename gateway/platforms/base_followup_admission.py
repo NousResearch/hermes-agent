@@ -288,8 +288,8 @@ class FollowupAdmissionMixin:
         lifetime and every later automatic review on the session would be refused as
         ``live_turn_active``. Completed unconfirmed (the turn was interrupted or its reply
         never went out), with the usual owner-tagged skip line. Never done from the generic
-        guard release: an outer task legitimately drops a guard that still carries a nested
-        turn's completion which the inline dispatch holds and will take."""
+        guard release, which runs on every task unwind: the task that owns a guard takes its
+        own completion off it the moment its handler returns."""
         stranded = self._take_review_delivery_callback(None, command_guard)
         if callable(stranded):
             await self._complete_review_delivery(stranded, delivery_succeeded=False)
@@ -302,7 +302,8 @@ class FollowupAdmissionMixin:
         """Detach THIS turn's review-ownership completion from both carriers (Event first). Taken
         the moment the handler returns: a drain handoff re-uses the session Event, and the
         follow-up turn attaches its own callback there while this turn is still unwinding. An
-        inline dispatch passes the Event only when a completion appeared during its own call."""
+        inline dispatch passes no Event: what its handler nests re-homes onto the command event,
+        and a completion appearing on the guard mid-call is the outgoing turn's own late park."""
         callback = None
         for carrier in (interrupt_event, event):
             if carrier is None:

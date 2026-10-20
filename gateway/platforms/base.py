@@ -3561,18 +3561,21 @@ class BasePlatformAdapter(FollowupAdmissionMixin, ABC):
         while the outgoing reply is on the wire): the nesting handler parks that turn's completion
         on its own synthetic event and re-homes it onto this command event
         (``rehome_review_delivery_completion``) — never on the session guard, which the outgoing
-        task's unwind and a drain task may swap between the guard read below and the nested turn's
-        carrier lookup. Only a completion that appeared during this handler call is taken (the
-        outgoing turn's own, still parked while its handler runs, is never touched), and it
-        completes with this send's outcome, so the nested turn's token never outlives its delivery.
-        Its candidate goes to the outgoing turn (still the session's delivery owner), which spawns
-        it once its own token is released: a spawn here would be refused against that token.
+        task's unwind and a drain task may swap between a guard read here and the nested turn's
+        carrier lookup. Only this event is read once the handler returns. The guard is never read
+        for a completion: one that appears there DURING the call is the outgoing turn's own late
+        park (``begin_gateway_review_admission`` runs behind the ingress awaits and the previous
+        review's cancel wait, so a bypass command typed in that window sees it land), which that
+        turn's task takes the moment its handler returns; taking it here would release the live
+        turn's token with this command's send. A nested completion completes with this send's
+        outcome, so the nested turn's token never outlives its delivery. Its candidate goes to the
+        outgoing turn (still the session's delivery owner), which spawns it once its own token is
+        released: a spawn here would be refused against that token.
         """
         thread_meta = _thread_metadata_for_event(event)
         if session_key is None:
             session_key = self._event_session_key(event)
         guard = self._active_sessions.get(session_key)
-        parked = getattr(guard, "_gateway_review_delivery_complete", None)
         outgoing = getattr(guard, "_gateway_review_delivery_outgoing", None)
         review_delivery_complete = None
         delivery_succeeded = False
@@ -3580,9 +3583,7 @@ class BasePlatformAdapter(FollowupAdmissionMixin, ABC):
             try:
                 response = await self._message_handler(event)
             finally:
-                nested = getattr(guard, "_gateway_review_delivery_complete", None)
-                review_delivery_complete = self._take_review_delivery_callback(
-                    event, guard if nested is not parked else None)
+                review_delivery_complete = self._take_review_delivery_callback(event, None)
             text, eph_ttl = self._unwrap_ephemeral(response)
             if not text:
                 delivery_succeeded = True  # nothing to deliver: the reply went out on its own

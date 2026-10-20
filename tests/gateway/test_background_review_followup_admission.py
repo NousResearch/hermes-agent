@@ -1309,11 +1309,11 @@ async def test_inline_dispatched_nested_turn_completes_its_review_ownership(
 ):
     """/retry typed while the outgoing turn's reply is on the wire is dispatched inline (every
     recognised command bypasses the active-session guard) and nests a second agent turn through
-    the runner's idle path. That turn parks its review-ownership completion on the live session
-    Event — which the outgoing task already read once, the moment its own handler returned — so
-    the inline dispatcher must complete it with its send outcome. Otherwise the session's
-    live-turn token leaks for the process lifetime and every later automatic review is refused
-    as ``live_turn_active``.
+    the runner's idle path. That turn is a direct-call ingress of the ``/retry`` handler: its
+    review-ownership completion rides its own synthetic event and is re-homed onto the command
+    event once it returns, where the inline dispatcher completes it with its send outcome.
+    Otherwise the session's live-turn token leaks for the process lifetime and every later
+    automatic review is refused as ``live_turn_active``.
     """
     from gateway.run_turn_review import _GatewayReviewAdmission
 
@@ -1349,14 +1349,22 @@ async def test_inline_dispatched_nested_turn_completes_its_review_ownership(
     monkeypatch.setattr(_GatewayReviewAdmission, "finish", _finish)
 
     async def _handler(event):
-        turn = (
-            _event(text="retried prompt")
-            if (event.text or "").startswith("/retry")
-            else event
-        )
-        return await runner._handle_message_with_agent(
-            turn, turn.source, session_key, run_generation=len(sends) + 1
-        )
+        if not (event.text or "").startswith("/retry"):
+            return await runner._handle_message_with_agent(
+                event, event.source, session_key, run_generation=len(sends) + 1
+            )
+        # The /retry handler's contract: the nested turn is a direct-call ingress whose
+        # completion rides its synthetic event, re-homed onto the command event on return.
+        from gateway.slash_commands_session import rehome_review_delivery_completion
+
+        turn = _event(text="retried prompt")
+        turn._gateway_review_completes_on_event = True
+        try:
+            return await runner._handle_message_with_agent(
+                turn, turn.source, session_key, run_generation=len(sends) + 1
+            )
+        finally:
+            rehome_review_delivery_completion(turn, event)
 
     async def _send(chat_id, content, reply_to=None, metadata=None):
         sends.append(content)
@@ -1529,8 +1537,12 @@ async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
 
     async def _prepare(event, *_args):
         # The turn ran: its terminal candidate is frozen on this turn's delivery owner, which
-        # the runner parked on the live session Event before preparing the turn.
-        admission = guard._gateway_review_delivery_complete.__self__
+        # the runner parked on the live session Event before preparing the turn -- or, for the
+        # turn /retry nests, on that turn's own synthetic event.
+        carrier = (
+            event if getattr(event, "_gateway_review_completes_on_event", False) else guard
+        )
+        admission = carrier._gateway_review_delivery_complete.__self__
         admission.bind_agent(agent)
         admission.capture_candidate(
             agent,
@@ -1545,14 +1557,22 @@ async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
     runner._delivery_adapter_for = lambda _source: adapter
 
     async def _handler(event):
-        turn = (
-            _event(text="retried prompt")
-            if (event.text or "").startswith("/retry")
-            else event
-        )
-        return await runner._handle_message_with_agent(
-            turn, turn.source, session_key, run_generation=len(sends) + 1
-        )
+        if not (event.text or "").startswith("/retry"):
+            return await runner._handle_message_with_agent(
+                event, event.source, session_key, run_generation=len(sends) + 1
+            )
+        # The /retry handler's contract: the nested turn is a direct-call ingress whose
+        # completion rides its synthetic event, re-homed onto the command event on return.
+        from gateway.slash_commands_session import rehome_review_delivery_completion
+
+        turn = _event(text="retried prompt")
+        turn._gateway_review_completes_on_event = True
+        try:
+            return await runner._handle_message_with_agent(
+                turn, turn.source, session_key, run_generation=len(sends) + 1
+            )
+        finally:
+            rehome_review_delivery_completion(turn, event)
 
     async def _send(chat_id, content, reply_to=None, metadata=None):
         sends.append(content)

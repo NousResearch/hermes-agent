@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 import httpx
 
@@ -202,9 +202,13 @@ def is_native_gemini_base_url(base_url: str) -> bool:
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
     """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
-    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
-    unknown proxies get the legacy ``parameters`` subset."""
-    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
+    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto) and in the Vertex AI
+    Express ``v1beta1`` publishers/google surface it mirrors; other versions (including Vertex's
+    own ``v1``) and unknown proxies get the legacy ``parameters`` subset."""
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    if normalized.endswith("/v1beta"):
+        return True
+    return is_vertex_express_base_url(normalized) and "/v1beta1/" in normalized and normalized.endswith("/publishers/google")
 
 
 def probe_gemini_tier(
@@ -555,8 +559,9 @@ def _translate_response_format(response_format: Any, *, json_schema: bool = Fals
     """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
 
     Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
-    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
-    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    surface and the Vertex AI Express ``v1beta1`` publishers/google surface it mirrors (same gate
+    as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex's own ``v1`` and unknown proxies
+    take the OpenAPI-subset ``responseSchema`` path.
     """
     if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
         return {}
@@ -890,10 +895,13 @@ class GeminiNativeClient:
     MISSING_KEY_ERROR = _MISSING_KEY_ERROR
 
     def __init__(
-        self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
-        timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
+        self, *, api_key: Union[str, Callable[[], str]], base_url: Optional[str] = None,
+        default_headers: Optional[dict[str, str]] = None, timeout: Any = None,
+        http_client: Optional[httpx.Client] = None, **_: Any,
     ) -> None:
-        if not (api_key or "").strip():
+        # A callable key is a token provider (Vertex under ``deferred_token_mint``, ``key_cmd``), as the
+        # OpenAI SDK accepts: it is resolved per request, never here, so building a client never mints.
+        if not callable(api_key) and not (api_key or "").strip():
             raise RuntimeError(self.MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = normalize_gemini_base_url(base_url)
@@ -915,18 +923,30 @@ class GeminiNativeClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def _api_key_value(self) -> str:
+        """The credential for this request: a callable key is invoked (it caches and refreshes itself)."""
+        key = self.api_key() if callable(self.api_key) else self.api_key
+        key = str(key or "").strip()
+        if not key:
+            raise RuntimeError(self.MISSING_KEY_ERROR)
+        self._last_api_key = key
+        return key
+
     def _auth_headers(self) -> dict[str, str]:
-        if uses_vertex_oauth_bearer(self.base_url, self.api_key):
-            return {"Authorization": f"Bearer {self.api_key}"}
-        return {"x-goog-api-key": self.api_key}
+        key = self._api_key_value()
+        if uses_vertex_oauth_bearer(self.base_url, key):
+            return {"Authorization": f"Bearer {key}"}
+        return {"x-goog-api-key": key}
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_api_client()} (gemini-native)", "X-Goog-Api-Client": _api_client(), **self._default_headers}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
-        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url,
-                                 key_guidance=not uses_vertex_oauth_bearer(self.base_url, self.api_key))
+        # The key the failed request was signed with; re-invoking a callable here could mint again.
+        key = getattr(self, "_last_api_key", "") if callable(self.api_key) else str(self.api_key or "")
+        return gemini_http_error(response, body_text=body_text, api_key=key, base_url=self.base_url,
+                                 key_guidance=not uses_vertex_oauth_bearer(self.base_url, key))
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

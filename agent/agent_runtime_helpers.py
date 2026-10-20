@@ -2033,6 +2033,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return provider_client
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    if agent.provider == "vertex":
+        # A model override (Gemini vs. a non-Gemini Model Garden slug) can disagree with the
+        # base_url this client_kwargs snapshot was built with (e.g. switch_model, fallback
+        # restore). Re-derive the base_url for the CURRENT model so the native-vs-OpenAI-compat
+        # dispatch just below, and the resulting client class, always match what will actually
+        # serve the request.
+        from agent.vertex_adapter import vertex_base_url_for_model
+        client_kwargs["base_url"] = vertex_base_url_for_model(
+            str(client_kwargs.get("base_url", "") or ""), getattr(agent, "model", None)
+        )
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES or agent.provider == "vertex":
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:

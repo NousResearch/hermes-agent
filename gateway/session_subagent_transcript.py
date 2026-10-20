@@ -36,7 +36,7 @@ def _read(db, session_id, after):
     """``(messages, cursor, reset)``: the rows appended after a still-valid cursor, else the whole transcript."""
     held = _held(after, session_id)
     if held is not None and db.transcript_cursor_state(session_id, held[0]) == held[1]:
-        tail = db.get_messages_as_conversation(session_id, include_row_ids=True, after_id=held[0])
+        tail = db.conversation_tail(session_id, held[0])
         # Re-checked after the read: a compaction landing in between must not pass its copies as new rows.
         if db.transcript_cursor_state(session_id, held[0]) == held[1]:
             rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']} for row in tail]

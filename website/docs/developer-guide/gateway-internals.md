@@ -77,7 +77,7 @@ none). When `reset` is true the messages are the whole transcript and replace wh
 caller holds: on the first read (no `after`), and whenever the rows the cursor covered
 changed (the child compacted in place, rotated to a new `child_session_id`, rewound or
 rewrote a row). A cursored poll costs a count and a keyset read of the new rows
-(`transcript_cursor_state`, `get_messages_as_conversation(after_id=...)`), not a transcript
+(`transcript_cursor_state`, `conversation_tail`), not a transcript
 rebuild. A running child is
 the one the parent's roster names (the `subagent.list` rule, nested children included).
 A finished child is found through the `_subagent_id` stamped on its row at spawn, and

@@ -51,6 +51,11 @@ def _configured_trusted_peers() -> frozenset[str]:
     return frozenset()
 
 
+def _unbracket(host: str) -> str:
+    """``[::1]`` is the URL spelling of ``::1``; sockets and the loopback check need the bare literal."""
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
 @dataclass(frozen=True)
 class A2ASecurityContext:
     """Immutable, profile-scoped security settings captured at adapter startup. HTTP request
@@ -69,7 +74,7 @@ class A2ASecurityContext:
         return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
-                   requested_host=_startup_env("A2A_HOST") or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
+                   requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
 
     def localhost_only(self) -> bool:
         return not (self.bearer_token or self.peer_tokens)

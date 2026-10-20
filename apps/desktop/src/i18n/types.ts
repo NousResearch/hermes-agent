@@ -20,6 +20,7 @@ import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
+import type { ProfileRemovalTranslations } from './types_profile_removal'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
@@ -2534,11 +2535,7 @@ export interface Translations extends NoticeTranslations {
     emptySoul: string
     saving: string
     saveSoul: string
-    deleteTitle: string
-    deleteDescPrefix: string
-    deleteDescMid: string
-    deleteDescSuffix: string
-    deleting: string
+    removal: ProfileRemovalTranslations
     createDesc: string
     nameLabel: string
     cloneFrom: string

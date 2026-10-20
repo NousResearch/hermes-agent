@@ -10,6 +10,7 @@ import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
+import { deProfileRemoval } from './de_profile_removal'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
@@ -3341,11 +3342,7 @@ export const deOverrides = {
     emptySoul: 'Leere SOUL.md — beginnen Sie, die Persona zu schreiben…',
     saving: 'Wird gespeichert...',
     saveSoul: 'SOUL.md speichern',
-    deleteTitle: 'Profil löschen?',
-    deleteDescPrefix: 'Das löscht ',
-    deleteDescMid: ' und entfernt sein ',
-    deleteDescSuffix: ' Verzeichnis. Das kann nicht rückgängig gemacht werden.',
-    deleting: 'Wird gelöscht...',
+    removal: deProfileRemoval,
     createDesc: 'Profile sind unabhängige Hermes-Umgebungen: eigene Config, eigene Skills und eigene SOUL.md.',
     nameLabel: 'Name',
     cloneFrom: 'Klonen von',

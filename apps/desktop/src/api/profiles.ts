@@ -16,7 +16,9 @@ export function getProfiles(scope?: ProfileScope): Promise<ProfilesResponse> {
   })
 }
 
-export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
+export function createProfile(
+  body: ProfileCreatePayload
+): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
   return hermesApi<{ name: string; ok: boolean; path: string; soul_set?: boolean }>({
     path: '/api/profiles',
     method: 'POST',
@@ -46,6 +48,10 @@ export function renameProfile(
   })
 }
 
+/** The DELETE verb never reaches the default profile: its home is the Hermes install and holds
+ *  every other profile. Removing it means resetting it (`resetProfile`). */
+export const DEFAULT_PROFILE_DELETE_ERROR = 'The default profile cannot be deleted; reset it instead.'
+
 export function deleteProfile(name: string, scope?: ProfileScope): Promise<{ ok: boolean; path: string }> {
   const normalized = name.trim()
   const scopedProfile = scope && typeof scope === 'object' ? scope.profile?.trim() : undefined
@@ -55,13 +61,42 @@ export function deleteProfile(name: string, scope?: ProfileScope): Promise<{ ok:
   }
 
   if (normalized.toLowerCase() === 'default' || scopedProfile?.toLowerCase() === 'default') {
-    return Promise.reject(new Error('The default profile cannot be deleted.'))
+    return Promise.reject(new Error(DEFAULT_PROFILE_DELETE_ERROR))
   }
 
   return hermesApi<{ ok: boolean; path: string }>({
     ...profileOwnerScoped(scope),
     path: `/api/profiles/${encodeURIComponent(normalized)}`,
     method: 'DELETE'
+  })
+}
+
+export interface ProfileResetResult {
+  cron_jobs_removed: number
+  failures: string[]
+  ok: boolean
+  path: string
+  profile: string
+  removed: string[]
+  sessions_deleted: number
+  sessions_skipped: string[]
+}
+
+/** Reset a profile in place (`POST /api/profiles/<name>/reset`): memories, skills, settings,
+ *  persona, its chats and cron jobs are wiped; credentials, other profiles and the install stay.
+ *  The profile's backend keeps running — for the default profile it is the gateway serving every
+ *  other profile — so callers must not retire it the way a delete does. */
+export function resetProfile(name: string, scope?: ProfileScope): Promise<ProfileResetResult> {
+  const normalized = name.trim()
+
+  if (!normalized) {
+    return Promise.reject(new Error('Profile name required'))
+  }
+
+  return hermesApi<ProfileResetResult>({
+    ...profileOwnerScoped(scope),
+    path: `/api/profiles/${encodeURIComponent(normalized)}/reset`,
+    method: 'POST'
   })
 }
 

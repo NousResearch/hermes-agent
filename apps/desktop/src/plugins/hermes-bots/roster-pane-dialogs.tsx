@@ -2,7 +2,7 @@ import { ConfirmDialog, host } from '@hermes/plugin-sdk'
 import type { useI18n } from '@hermes/plugin-sdk'
 
 import { CreateAgentDialog, CreateGroupChatDialog, GroupDialog } from './create-dialog'
-import type { useRoster } from './data'
+import { isDefaultBot, type useRoster } from './data'
 import { EditProfileDialog } from './edit-profile-dialog'
 import { disbandGroupChat, openGroupChat } from './group-chat-view'
 import type { useBots } from './i18n'
@@ -31,6 +31,63 @@ interface renderRosterDialogsProps {
   roster: RosterRow[]
   activeSourceRoster: RosterRow[]
   refetch: ReturnType<typeof useRoster>['refetch']
+}
+
+/** "Delete" on the default bot resets it (its profile is the install and holds every other bot),
+ *  so its confirmation names exactly what is wiped and what is kept. */
+function DeleteBotDialog({
+  b,
+  deleting,
+  onClose,
+  refetch,
+  t
+}: {
+  b: ReturnType<typeof useBots>
+  deleting: (RosterRow & { path?: string }) | null
+  onClose: () => void
+  refetch: ReturnType<typeof useRoster>['refetch']
+  t: ReturnType<typeof useI18n>['t']
+}) {
+  const resets = Boolean(deleting && isDefaultBot(deleting))
+
+  return (
+    <ConfirmDialog
+      busyLabel={resets ? b.bot.resetting : 'Deleting…'}
+      confirmLabel={resets ? b.bot.resetAction : t.common.delete}
+      description={
+        deleting ? (
+          resets ? (
+            <span>{b.bot.resetDescription}</span>
+          ) : (
+            <span>
+              {'This will permanently delete the bot '}
+              <span className="font-medium text-foreground">{deleting.name}</span>
+              {' and its associated Hermes profile at '}
+              <span className="font-mono text-xs">{deleting.path}</span>. This cannot be undone.
+            </span>
+          )
+        ) : null
+      }
+      destructive
+      doneLabel={resets ? b.bot.resetDone : 'Deleted'}
+      onClose={onClose}
+      onConfirm={async () => {
+        if (!deleting) {
+          return
+        }
+
+        const name = deleting.name
+        await deleteBot(deleting)
+        await refetch()
+        host.notify({
+          kind: 'success',
+          message: resets ? b.bot.resetToast(name) : `Deleted profile ${name}`
+        })
+      }}
+      open={Boolean(deleting)}
+      title={resets ? b.bot.resetTitle : b.bot.deleteTitle}
+    />
+  )
 }
 
 export function renderRosterDialogs({
@@ -102,38 +159,7 @@ export function renderRosterDialogs({
         open={Boolean(editing)}
       />
       {grouping ? <GroupDialog bot={grouping} onClose={() => setGrouping(null)} /> : null}
-      <ConfirmDialog
-        busyLabel="Deleting…"
-        confirmLabel={t.common.delete}
-        description={
-          deleting ? (
-            <span>
-              {'This will permanently delete the bot '}
-              <span className="font-medium text-foreground">{deleting.name}</span>
-              {' and its associated Hermes profile at '}
-              <span className="font-mono text-xs">{deleting.path}</span>. This cannot be undone.
-            </span>
-          ) : null
-        }
-        destructive
-        doneLabel="Deleted"
-        onClose={() => setDeleting(null)}
-        onConfirm={async () => {
-          if (!deleting) {
-            return
-          }
-
-          const name = deleting.name
-          await deleteBot(deleting)
-          await refetch()
-          host.notify({
-            kind: 'success',
-            message: `Deleted profile ${name}`
-          })
-        }}
-        open={Boolean(deleting)}
-        title={b.bot.deleteTitle}
-      />
+      <DeleteBotDialog b={b} deleting={deleting} onClose={() => setDeleting(null)} refetch={refetch} t={t} />
       <ConfirmDialog
         busyLabel="Deleting…"
         confirmLabel={b.group.deleteAction}

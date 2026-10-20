@@ -280,7 +280,7 @@ test('connection-scoped default DELETE rejects before gate, preparation, teardow
         }
       }
     ),
-    /default profile cannot be deleted/i
+    /default profile cannot be deleted; reset it instead/i
   )
 
   assert.deepEqual(events, [])

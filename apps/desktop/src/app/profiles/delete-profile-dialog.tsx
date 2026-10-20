@@ -1,6 +1,6 @@
 import type { ProfileScope } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { deleteProfile } from '@/hermes'
+import { deleteProfile, resetProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
@@ -8,7 +8,9 @@ import { dropTilesForProfile } from '@/store/session-states'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
 // Enter-to-confirm + busy/done/error from the shared dialog. The single choke
-// point for every delete entry point (rail + Profiles view).
+// point for every delete entry point (rail + Profiles view). The default
+// profile cannot be removed (its home is the install and holds every other
+// profile), so for it the dialog confirms and runs a RESET instead.
 export function DeleteProfileDialog({
   gatewayLabel,
   profile,
@@ -30,20 +32,49 @@ export function DeleteProfileDialog({
 }) {
   const { t } = useI18n()
   const p = t.profiles
+  const r = p.removal
+  const resets = profile !== null && normalizeProfileKey(profile.name) === 'default'
+
+  if (resets) {
+    return (
+      <ConfirmDialog
+        busyLabel={r.resetting}
+        confirmLabel={r.resetAction}
+        description={r.resetDesc}
+        destructive
+        doneLabel={r.resetDone}
+        onClose={onClose}
+        onConfirm={async () => {
+          if (!profile) {
+            return
+          }
+
+          // The default profile's backend serves every other profile and stays up: nothing is
+          // retired and the app is not re-homed. Its chats are gone, so its tiles go too.
+          const remote = scope !== undefined && scope !== null
+          await (remote ? resetProfile(profile.name, scope) : resetProfile(profile.name))
+          dropTilesForProfile(profile.name)
+          await onDeleted?.()
+        }}
+        open={open}
+        title={r.resetTitle}
+      />
+    )
+  }
 
   return (
     <ConfirmDialog
-      busyLabel={p.deleting}
+      busyLabel={r.deleting}
       confirmLabel={t.common.delete}
       description={
         profile ? (
           <>
-            {p.deleteDescPrefix}
+            {r.deleteDescPrefix}
             <span className="font-medium text-foreground">{profile.name}</span>
             {gatewayLabel ? p.fleet.deleteOn(gatewayLabel) : null}
-            {p.deleteDescMid}
+            {r.deleteDescMid}
             <span className="font-mono text-xs">{profile.path}</span>
-            {p.deleteDescSuffix}
+            {r.deleteDescSuffix}
           </>
         ) : null
       }
@@ -85,7 +116,7 @@ export function DeleteProfileDialog({
         }
       }}
       open={open}
-      title={p.deleteTitle}
+      title={r.deleteTitle}
     />
   )
 }

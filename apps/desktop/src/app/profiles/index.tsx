@@ -131,21 +131,17 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                 <ProfileRow
                   active={selected?.name === profile.name}
                   key={profile.name}
-                  menuItems={
-                    profile.is_default
-                      ? // Renaming the default profile sets a presentation-only
-                        // display name (the canonical id stays "default").
-                        [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
-                      : [
-                          { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
-                          {
-                            icon: 'trash',
-                            label: t.common.delete,
-                            onSelect: () => setPendingDelete(profile),
-                            tone: 'danger'
-                          }
-                        ]
-                  }
+                  menuItems={[
+                    // Renaming the default profile sets a presentation-only display name (the
+                    // canonical id stays "default"); deleting it resets it (the dialog says so).
+                    { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
+                    {
+                      icon: 'trash',
+                      label: t.common.delete,
+                      onSelect: () => setPendingDelete(profile),
+                      tone: 'danger'
+                    }
+                  ]}
                   onSelect={() => setSelectedName(profile.name)}
                   profile={profile}
                 />

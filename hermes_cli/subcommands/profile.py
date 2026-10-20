@@ -53,6 +53,17 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_delete.add_argument("profile_name", help="Profile to delete")
     profile_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
+    profile_reset = profile_subparsers.add_parser(
+        "reset", help="Reset a profile: wipe memories, skills, settings, chats and cron jobs",
+        description="Reset a profile to a fresh state: erase its memories, remove its skills (the bundled "
+            "skills are installed again), return config.yaml, SOUL.md, display name and appearance to "
+            "defaults, delete its sessions, and remove its cron jobs. API keys and logins (.env, auth.json), "
+            "the model choice, other profiles and the Hermes install are kept. `hermes profile delete "
+            "default` does the same, since the default profile cannot be removed.")
+    profile_reset.add_argument("profile_name", nargs="?", default="default",
+                               help="Profile to reset (default: the default profile)")
+    profile_reset.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+
     profile_describe = profile_subparsers.add_parser(
         "describe", help="Read or set a profile's description (used by the kanban orchestrator)")
     profile_describe.add_argument(

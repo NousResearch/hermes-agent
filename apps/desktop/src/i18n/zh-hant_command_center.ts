@@ -405,11 +405,21 @@ export const zhHantCommandCenter = {
     emptySoul: '空的 SOUL.md — 開始撰寫角色設定…',
     saving: '儲存中…',
     saveSoul: '儲存 SOUL.md',
-    deleteTitle: '刪除設定檔？',
-    deleteDescPrefix: '這將刪除 ',
-    deleteDescMid: ' 並移除其 ',
-    deleteDescSuffix: ' 目錄。此操作無法復原。',
-    deleting: '刪除中…',
+    removal: {
+      deleteTitle: '刪除設定檔？',
+      deleteDescPrefix: '這將刪除 ',
+      deleteDescMid: ' 並移除其 ',
+      deleteDescSuffix: ' 目錄。此操作無法復原。',
+      deleting: '刪除中…',
+      resetTitle: '重設預設設定檔？',
+      resetDesc:
+        '預設設定檔無法刪除：它的目錄包含 Hermes 安裝與你的其他設定檔。' +
+        '重設會清除它的記憶、技能、設定、SOUL.md 和聊天，並移除它的排程工作。' +
+        '你的其他設定檔、Hermes 安裝以及 API 金鑰和登入資訊都會保留。此操作無法復原。',
+      resetAction: '重設',
+      resetting: '正在重設...',
+      resetDone: '設定檔已重設'
+    },
     createDesc: '設定檔是獨立的 Hermes 環境：各自擁有獨立的設定、技能和 SOUL.md。',
     nameLabel: '名稱',
     cloneFrom: '複製來源',

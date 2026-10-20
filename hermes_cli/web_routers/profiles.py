@@ -997,6 +997,18 @@ async def delete_profile_endpoint(name: str):
     return {"ok": True, "path": str(path)}
 
 
+@router.post("/api/profiles/{name}/reset")
+async def reset_profile_endpoint(name: str):
+    """Reset a profile in place: memories, skills, settings, persona, its sessions and cron jobs are
+    wiped; credentials, other profiles and the install are kept. The only removal the default
+    profile supports (``DELETE`` refuses it). The dashboard confirms in its own dialog, so
+    ``yes=True``; a partial reset answers 500 naming every step that failed."""
+    from hermes_cli.profiles_reset import reset_profile
+    with _profile_errors("POST /api/profiles/%s/reset failed", name):
+        result = await run_in_threadpool(reset_profile, name, yes=True)
+    return {"ok": True, **result.to_dict()}
+
+
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"

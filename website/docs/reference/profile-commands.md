@@ -20,7 +20,8 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `use` | Set the active (default) profile. |
 | `create` | Create a new profile. |
 | `describe` | Read or set a profile's description (used by the kanban orchestrator for routing). |
-| `delete` | Delete a profile. |
+| `delete` | Delete a profile (the `default` profile is reset instead). |
+| `reset` | Reset a profile: wipe its memories, skills, settings, chats and cron jobs, keep credentials. |
 | `show` | Show details about a profile. |
 | `alias` | Regenerate the shell alias for a profile. |
 | `rename` | Rename a profile. |
@@ -163,8 +164,42 @@ hermes profile delete mybot --yes
 ```
 
 :::warning
-This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. The `default` profile (`~/.hermes`) cannot be deleted — use `hermes uninstall` to remove everything.
+This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. The `default` profile cannot be removed — its directory holds the Hermes install and every other profile — so `hermes profile delete default` runs [`hermes profile reset default`](#hermes-profile-reset) instead (same confirmation). Use `hermes uninstall` to remove everything.
 :::
+
+## `hermes profile reset`
+
+```bash
+hermes profile reset [<name>] [options]
+```
+
+Resets a profile to a fresh state in place. Built for the `default` profile, which cannot be deleted, but works for any profile. You are shown what will be wiped and asked to type the profile name to confirm.
+
+| Argument / Option | Description |
+|-------------------|-------------|
+| `<name>` | Profile to reset. Defaults to `default`. |
+| `--yes`, `-y` | Skip confirmation prompt. |
+
+| Reset (wiped) | Kept |
+|---------------|------|
+| Memories: `memories/` (`MEMORY.md`, `USER.md`) and the local `memory_store.db` | API keys and logins: `.env`, `auth.json`, OAuth/MCP tokens, platform pairing, browser logins, and every other credential store |
+| Skills: `skills/` is emptied and the bundled skills are installed again (a `.no-bundled-skills` opt-out is cleared) | The model choice (`model` block and its provider entry) and an explicit `gateway.multiplex_profiles` |
+| Settings: every other key in `config.yaml` returns to its default | Every other profile (`profiles/`) and their sessions — including rows of theirs that sit in the default `state.db` |
+| Persona and look: `SOUL.md` is rewritten to the stock persona; `profile.yaml` (display name, description, Bot appearance) and `desktop.json` are removed | The Hermes install: the `hermes-agent/` checkout, managed runtimes, `bin/`, `node_modules/` |
+| Conversations: this profile's sessions and their transcripts, `response_store.db`, `.hermes_history` | `logs/`, caches, `workspace/`, `plugins/`, `skins/`, kanban boards, `backups/` |
+| Cron jobs: every job (and its output) is removed | |
+
+The reset runs while the profile's gateway keeps running (on the default profile that gateway also serves every other profile, so it is never stopped). A session with a turn in progress is kept and reported. Memory held by an external provider service (Honcho, Mem0, …) is not erased on that service: `memory.provider` returns to its default with the rest of `config.yaml`, and the provider's credential files (`honcho.json`, `mem0.json`) are kept. If a file cannot be removed (on Windows: another process holds it open), every other step still runs and the command exits with an error naming what was left.
+
+**Example:**
+
+```bash
+hermes profile reset            # the default profile
+hermes profile reset --yes
+hermes profile reset mybot
+```
+
+The dashboard and the desktop app expose the same operation as `POST /api/profiles/{name}/reset`; deleting the default profile or the default Bot in the desktop app calls it.
 
 ## `hermes profile show`
 

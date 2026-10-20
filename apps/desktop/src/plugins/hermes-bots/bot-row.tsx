@@ -52,7 +52,6 @@ import {
   botRosterKey,
   botSelectionKey,
   botSourceStatus,
-  isDefaultBot,
   newBotChat,
   ROSTER_KEY,
   saveBotMeta
@@ -483,12 +482,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             ) : null}
           </ContextMenuSubContent>
         </ContextMenuSub>
-        {isDefaultBot(bot) ? null : <ContextMenuSeparator />}
-        {isDefaultBot(bot) ? null : (
-          <ContextMenuItem onSelect={() => onDelete(bot)} variant="destructive">
-            {t.common.delete}
-          </ContextMenuItem>
-        )}
+        <ContextMenuSeparator />
+        {/* The default bot is reset, not removed: the confirmation says so. */}
+        <ContextMenuItem onSelect={() => onDelete(bot)} variant="destructive">
+          {t.common.delete}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )

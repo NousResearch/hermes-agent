@@ -11,6 +11,7 @@ import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
+import { frProfileRemoval } from './fr_profile_removal'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
@@ -3345,11 +3346,7 @@ export const frOverrides = {
     emptySoul: 'SOUL.md vide — commencez à écrire le persona...',
     saving: 'Enregistrement...',
     saveSoul: 'Enregistrer SOUL.md',
-    deleteTitle: 'Supprimer le profil ?',
-    deleteDescPrefix: 'Cela supprimera ',
-    deleteDescMid: ' et supprimera son ',
-    deleteDescSuffix: ' répertoire. Cela ne peut pas être annulé.',
-    deleting: 'Suppression...',
+    removal: frProfileRemoval,
     createDesc: 'Les profils sont des environnements Hermes indépendants : configuration, skills et SOUL.md séparés.',
     nameLabel: 'Nom',
     cloneFrom: 'Cloner depuis',

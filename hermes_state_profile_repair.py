@@ -112,6 +112,20 @@ class SessionProfileRepairMixin:
                     "parent_session_id": row["parent_session_id"], "parent_profile": parent_profile})
         return found
 
+    def owned_session_ids(self, owner: str) -> list[str]:
+        """Ids of the rows *owner* owns in this store: neither the stored label nor the key's
+        profile names anyone else. Unlabelled, keyless rows belong to the store's own profile.
+        A crossed row (another profile's key or label) is left out: it is that profile's history
+        sitting in the wrong store, and ``repair-profiles`` is what settles it."""
+        rows = self._read_all("SELECT id, session_key, profile_name FROM sessions")
+        owned: list[str] = []
+        for row in rows:
+            label = _stored_profile(row["profile_name"])
+            key_profile = session_key_profile(row["session_key"])
+            if label in (None, owner) and key_profile in (None, owner):
+                owned.append(row["id"])
+        return owned
+
     def _ledgered_session_ids(self) -> set[str]:
         """Sessions the gateway's durable ledger references (``session_admissions`` /
         ``worker_executions``, both ``ON DELETE RESTRICT``). A move copies only the transcript, so

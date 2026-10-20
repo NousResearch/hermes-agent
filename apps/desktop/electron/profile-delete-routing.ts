@@ -97,7 +97,7 @@ export async function dispatchConnectionScopedProfileDelete<T>(
   }
 
   if (deps.isDefaultProfile(targetProfile)) {
-    throw new Error('The default profile cannot be deleted.')
+    throw new Error('The default profile cannot be deleted; reset it instead.')
   }
 
   if (!deps.isValidProfileName(targetProfile)) {

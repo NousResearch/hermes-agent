@@ -171,6 +171,12 @@ export type BotsMessages = {
     duplicate: string
     duplicateFailed: string
     deleteTitle: string
+    resetTitle: string
+    resetDescription: string
+    resetAction: string
+    resetting: string
+    resetDone: string
+    resetToast: (name: string) => string
     removeFromAllGroups: string
     createFirstHint: string
     createFailed: string

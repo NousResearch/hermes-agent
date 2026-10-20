@@ -426,13 +426,15 @@ interface CliExecResult {
  * roster's hover pre-warm just woke (right-click hovers the row!) holds the
  * profile dir open — the CLI's rmtree races the live backend and the
  * renderer's socket reconnect respawns it mid-delete, resurrecting the
- * directory (hermes-agent#52279). That is the "can't delete a bot" error. */
+ * directory (hermes-agent#52279). That is the "can't delete a bot" error.
+ *
+ * The default bot cannot be removed — its profile is the Hermes install and
+ * holds every other bot — so "deleting" it RESETS it: `host.deleteProfile`
+ * routes the default profile to the reset endpoint, and the plugin-local
+ * appearance below is dropped like any deleted bot's. */
 export async function deleteBot(bot: RosterRow) {
   const route = botConnectionRoute(bot)
-
-  if (isDefaultBot(bot) || String(route?.targetProfile || '').toLowerCase() === 'default') {
-    throw new Error('The default profile cannot be deleted.')
-  }
+  const resetsDefault = isDefaultBot(bot) || String(route?.targetProfile || '').toLowerCase() === 'default'
 
   if (typeof host.deleteProfile === 'function') {
     if (route) {
@@ -447,7 +449,7 @@ export async function deleteBot(bot: RosterRow) {
     }
 
     const result: CliExecResult = await host.request('cli.exec', {
-      argv: ['profile', 'delete', bot.name, '--yes']
+      argv: resetsDefault ? ['profile', 'reset', 'default', '--yes'] : ['profile', 'delete', bot.name, '--yes']
     })
 
     if (result?.blocked || result?.code !== 0) {

@@ -272,6 +272,8 @@ def cmd_check_updates(args: Any | None = None) -> None:
     from hermes_cli.plugins_updates import run_checks
 
     results = run_checks(plugins_dir)
+    from hermes_cli.plugins_cadence import record_check_results
+    record_check_results(results)
 
     if getattr(args, "json", False):
         print(json.dumps([r.to_json() for r in results], indent=2))
@@ -302,11 +304,16 @@ def cmd_check_updates(args: Any | None = None) -> None:
                   "hermes plugins update to update them all[/dim]")
 
 
-def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``; catalog installs re-pin instead. A re-pin that
-    widens the plugin returns ``{"ok": False, "consent_required": True, "delta": {...}}`` with nothing
-    changed — the surface shows the delta and retries with *accept_capabilities*."""
+def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False, force: bool = False) -> dict[str, Any]:
+    """The one non-interactive update for the dashboard and Desktop: ``git pull`` inside
+    ``~/.hermes/plugins/<name>``; catalog installs re-pin instead. Nothing changes on a refusal:
+    a re-pin that widens the plugin returns ``{"ok": False, "consent_required": True, "delta": {...}}``
+    (retry with *accept_capabilities*), and a git update the security scan blocks returns
+    ``{"ok": False, "scan_blocked": True, "scan_verdict", "scan_findings"}`` (retry a caution verdict
+    with *force* after the user saw the findings; a dangerous verdict never updates)."""
     from hermes_cli import plugins_cmd_catalog as catalog
+    from hermes_cli.plugins_activation import activate_plugin_now
+    from hermes_cli.plugins_cmd_install import scan_blocked_result
     target = _pc()._user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_pc()._plugins_dir()}."}
@@ -318,7 +325,6 @@ def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False
             warnings = list(result.warnings)
             new_target = target.parent / result.installed_name
             deps = _pc()._python_dependency_summary(new_target, warnings) if result.changed else []
-            from hermes_cli.plugins_activation import activate_plugin_now
             activated = activate_plugin_now(result.installed_name) if result.changed else {}
             return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
                     "python_dependencies": deps, "warnings": warnings, **activated}
@@ -328,14 +334,19 @@ def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False
                 f"Plugin '{name}' is pinned to {rec.get('revision')}; "
                 f"run `hermes plugins install {rec.get('source', '<source>')} --force "
                 "--ref <40-character commit SHA>` to move it."),
-            lambda: f"Plugin '{name}' is not a git checkout; cannot pull updates.")
+            lambda: f"Plugin '{name}' is not a git checkout; cannot pull updates.",
+            force=force)
     except catalog.RepinConsentRequired as exc:
         return {"ok": False, "consent_required": True, "error": str(exc), "name": exc.name, "sha": exc.sha,
                 "delta": exc.delta, "delta_lines": catalog.surface_delta_lines(exc.delta)}
+    except _pc().PluginScanBlocked as exc:
+        return {**scan_blocked_result(exc), "name": name}
     except _pc().PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
     _post_pull_housekeeping(target, _pc()._console())
-    return {"ok": True, "name": name, "output": msg, "unchanged": "Already up to date" in msg}
+    unchanged = "Already up to date" in msg
+    activated = {} if unchanged else activate_plugin_now(target.name)
+    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged, **activated}
 
 
 def _clear_plugin_bytecode(target: Path) -> int:

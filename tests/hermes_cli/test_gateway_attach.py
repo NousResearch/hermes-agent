@@ -34,8 +34,7 @@ def home(request):
 
 
 def _attach(home, *flags):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
-    env.update(HERMES_HOME=str(home), PYTHONPATH=str(REPO))
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(REPO)}
     return subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "attach", "--json", *flags],
                           cwd=REPO, env=env, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
                           check=False)
@@ -86,7 +85,6 @@ def _check_attached(run, home, tickets):
         tickets.redeem(ticket, profile_id=str(home), purpose="interactive")
 
 
-@pytest.mark.platforms("linux", "macos")
 def test_attach_without_an_owner_reports_the_bootstrap_verdict(home):
     run = _attach(home)
     assert run.returncode == 5, run.stderr

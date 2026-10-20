@@ -55,8 +55,8 @@ def cmd_gateway_attach(args) -> None:
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
     from hermes_cli.gateway_runtime import GatewayDiscovery
-    from hermes_cli.gateway_runtime_attach import GatewayAttach, attach_gateway, failure_message
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,
+                                                   failure_message, scrub_client_launch_env)
 
     try:
         timeout = float(args.timeout)
@@ -64,16 +64,14 @@ def cmd_gateway_attach(args) -> None:
         timeout = math.nan
     if not math.isfinite(timeout) or timeout <= 0:
         _emit(INVALID_INVOCATION, 2)
+    scrub_client_launch_env()
     with redirect_stdout(sys.stderr):
         try:
             attached = attach_gateway(get_hermes_home(), start=args.start, recover=args.recover, timeout=timeout)
-        except DiscoveryError as exc:
-            attached = GatewayAttach(GatewayDiscovery("inaccessible", reason_code=exc.reason,
-                                                      detail=exc.bounded_detail(500)))
-        except (OSError, ValueError):
-            # The owner went away or refused the grant between discovery and the mint; a retry
-            # (with --recover) answers it. Raw socket errors are not echoed (paths, peer data).
-            attached = GatewayAttach(GatewayDiscovery("inaccessible", reason_code="ticket_unavailable"))
+        except TicketUnavailable as exc:
+            # Attachable at discovery, then no ticket (the owner went away or refused the grant).
+            attached = GatewayAttach(GatewayDiscovery("inaccessible", reason_code="ticket_unavailable",
+                                                      detail=exc.detail or exc.reason))
         payload = _verdict_payload(attached.receipt)
     if attached.ticket is None:
         message = failure_message(attached.receipt)

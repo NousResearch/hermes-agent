@@ -27,6 +27,23 @@ CLIENT_LAUNCH_ENV = (
 DISCOVER_TIMEOUT = 5.0
 
 
+def scrub_client_launch_env() -> None:
+    """Drop ``CLIENT_LAUNCH_ENV`` from this process before an attach that may start a daemon (it
+    inherits ``os.environ``). Only for a process that exists to attach: the CLI command and Ink's
+    bootstrap."""
+    for key in CLIENT_LAUNCH_ENV:
+        os.environ.pop(key, None)
+
+
+class TicketUnavailable(RuntimeError):
+    """The owner was attachable but no ticket was minted (it went away, or refused the grant).
+    ``reason`` is bounded; ``detail`` is a local repair hint when there is one."""
+
+    def __init__(self, reason: str, detail: str | None = None):
+        super().__init__(f"ticket_unavailable: {reason}")
+        self.reason, self.detail = reason, detail
+
+
 @dataclass(frozen=True)
 class GatewayAttach:
     """``receipt`` is the discovery/ensure verdict; ``ticket`` is set only when it was attachable."""
@@ -39,7 +56,7 @@ def failure_message(receipt: GatewayDiscovery) -> str:
     then its detail (a refusal's remedy, or a start that died's own redacted output), each line
     still a verdict so a client that echoes verdict lines shows all of them."""
     head = f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}"
-    detail = getattr(receipt, "detail", None)
+    detail = receipt.detail
     if not detail:
         return head
     if receipt.reason_code == "runtime_exited":
@@ -56,22 +73,25 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
     stopped with ``hermes gateway stop``, or an older Hermes's gateway (ensure replaces that one). A
     restart's after-turn wait is attachable as it is (#139041). ``timeout`` bounds an ensure; a
     discovery waits at most ``DISCOVER_TIMEOUT`` of it. A daemon this starts ends itself once idle.
-    Mint failures (control socket I/O, a refused or changed grant) raise.
-
-    Clears ``CLIENT_LAUNCH_ENV`` from ``os.environ`` first, so call it from a process of its own.
+    A failed mint (control socket I/O, a refused or changed grant) raises ``TicketUnavailable``.
     """
     from hermes_cli.gateway_client import _session_ticket
     from hermes_cli.gateway_runtime import (attachable, discover_gateway_endpoint, ensure_gateway_runtime,
                                            gateway_profile_home)
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
 
     home = gateway_profile_home(home)
-    for key in CLIENT_LAUNCH_ENV:
-        os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=timeout, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=min(timeout, DISCOVER_TIMEOUT)))
     if not start and recover and not attachable(receipt):
         receipt = ensure_gateway_runtime(home, timeout=timeout, idle_exit=True)
     if not attachable(receipt):
         return GatewayAttach(receipt)
-    # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
-    return GatewayAttach(receipt, _session_ticket(home, receipt.endpoint))
+    try:
+        # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
+        return GatewayAttach(receipt, _session_ticket(home, receipt.endpoint))
+    except DiscoveryError as exc:
+        raise TicketUnavailable(exc.reason, exc.bounded_detail(500)) from exc
+    except (OSError, ValueError) as exc:
+        # Raw socket errors and replies are not echoed (paths, peer data): a bounded class name only.
+        raise TicketUnavailable(type(exc).__name__) from exc

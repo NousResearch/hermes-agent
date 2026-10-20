@@ -55,7 +55,7 @@ def attachable(result: GatewayDiscovery) -> bool:
 
     ``ready`` owners, plus a restart's after-turn wait (``draining``/``restart_wait``): that owner
     still owns its turns and must stay reachable to answer a parked approval/clarify (#139041).
-    Shared by every client bootstrap (``connect_gateway`` and Ink's ``gateway_bootstrap.py``)."""
+    Shared by every client bootstrap (``connect_gateway`` and ``gateway_runtime_attach.attach_gateway``)."""
     if result.endpoint is None:
         return False
     from gateway.drain_control import RESTART_WAIT_REASON

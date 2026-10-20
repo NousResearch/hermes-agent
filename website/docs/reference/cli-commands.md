@@ -372,8 +372,9 @@ local client that dials the gateway itself (a third-party chat UI, for example).
 `ticket`. The ticket is single-use, bound to the active profile, and expires 30 seconds after it
 is minted; it goes to stdout for the calling process only and is never logged. A plain call only
 discovers the gateway; `--start` starts it when none serves the profile; `--recover` discovers
-first and starts (or replaces an older Hermes's gateway) only when it is not ready. A gateway
-that `attach` starts stops itself once it has been idle for a while. With no gateway to attach,
+first and starts (or replaces an older Hermes's gateway) only when it is not ready. An unmanaged
+gateway that `attach` starts (no service installed) stops itself once it has been idle for a while.
+With no gateway to attach,
 the JSON carries `message` (the `gateway <state>: <reason>` lines, with the remedy when there is
 one), the same text goes to stderr, and the exit code is `ensure`'s for that verdict. The Ink TUI
 attaches through the same code. Details and the dial rules:

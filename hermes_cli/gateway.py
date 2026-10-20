@@ -1253,6 +1253,62 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
     return _hermes_home_pinned_by_unit(get_systemd_unit_path(system=system))
 
 
+def _account_default_hermes_home() -> Path | None:
+    """``<account home>/.hermes`` from the passwd database — NOT ``$HOME``, which test harnesses and
+    profile isolation repoint. None where the account is unknown."""
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".hermes"
+    except (ImportError, KeyError, OSError):
+        return None
+
+
+def _foreign_systemd_unit_home(system: bool) -> str | None:
+    """``HERMES_HOME`` of the unit at this scope when it belongs to ANOTHER install, else None.
+
+    The service name only encodes the home relative to the process's own ``$HOME``, so a process whose
+    ``HERMES_HOME`` is ``$HOME/.hermes`` under a throwaway ``HOME`` (test harnesses, CI sandboxes,
+    scripted installs) resolves the bare ``hermes-gateway`` name — and a system unit is global, so it
+    resolves the PRODUCTION unit. ``_sync_hermes_home_from_systemd_unit`` would then adopt that unit's
+    home and ``stop``/``restart`` would take the live gateway down. Must be evaluated BEFORE that sync.
+
+    Foreign means: the unit pins a home, it differs from this process's home, and this process's home
+    is not the account's own default root. The last clause keeps the ``sudo`` remap (#108674): root's
+    default home operating a unit that pins the invoking user's home is the operator, not a stranger.
+    """
+    unit_home = _hermes_home_pinned_by_unit(get_systemd_unit_path(system=system))
+    if not unit_home:
+        return None
+    try:
+        unit = Path(unit_home).expanduser().resolve()
+        mine = get_hermes_home().resolve()
+    except OSError:
+        return None
+    if unit == mine:
+        return None
+    account_default = _account_default_hermes_home()
+    if account_default is not None:
+        try:
+            if mine == account_default.resolve():
+                return None
+        except OSError:
+            pass
+    return unit_home
+
+
+def _refuse_foreign_systemd_unit(action: str, system: bool) -> None:
+    """Exit non-zero instead of operating another install's unit (see ``_foreign_systemd_unit_home``)."""
+    unit_home = _foreign_systemd_unit_home(system)
+    if unit_home is None:
+        return
+    print_error(
+        f"Refusing to {action} {get_service_name()}: that {_service_scope_label(system)} unit runs "
+        f"HERMES_HOME={unit_home}, but this process has HERMES_HOME={get_hermes_home()}.\n"
+        f"It belongs to another Hermes install. Run this from that install's HERMES_HOME."
+    )
+    sys.exit(1)
+
+
 def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
     """Adopt a system-scope unit's ``HERMES_HOME``: under ``sudo`` it is stripped and HOME=/root, so
     get_hermes_home() would pick the wrong profile for runtime-status/PID reads."""
@@ -3661,6 +3717,13 @@ def _systemd_scope_preamble(
 def _systemd_unit_belongs_to_current_home(system: bool = False) -> bool:
     """False (with a warning) when the installed unit pins a HERMES_HOME other than this process's: the
     service name then resolved to ANOTHER install's gateway, and stop/disable/unlink would take it down."""
+    foreign = _foreign_systemd_unit_home(system)  # before the sync below rewrites this process's home
+    if foreign is not None:
+        print_warning(
+            f"Refusing to remove {get_systemd_unit_path(system=system)}: it runs HERMES_HOME={foreign}, "
+            f"but this process has HERMES_HOME={get_hermes_home()}"
+        )
+        return False
     _sync_hermes_home_from_systemd_unit(system=system)  # sudo strips HERMES_HOME; adopt the unit's first
     unit_home = _hermes_home_from_systemd_unit_file(system=system)
     if unit_home is None or Path(unit_home).expanduser().resolve() == get_hermes_home().resolve():
@@ -3702,6 +3765,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
 
 def systemd_start(system: bool = False):
     system = _systemd_scope_preamble("start", system, preflight_user=True)
+    _refuse_foreign_systemd_unit("start", system)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; the unit is guaranteed to exist here.
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
@@ -3710,6 +3774,7 @@ def systemd_start(system: bool = False):
 
 def systemd_stop(system: bool = False):
     system = _systemd_scope_preamble("stop", system)
+    _refuse_foreign_systemd_unit("stop", system)
     _sync_hermes_home_from_systemd_unit(system=system)
     _mark_planned_stop()
     try:
@@ -3725,6 +3790,7 @@ def systemd_stop(system: bool = False):
 
 def systemd_restart(system: bool = False):
     system = _systemd_scope_preamble("restart", system, preflight_user=True)
+    _refuse_foreign_systemd_unit("restart", system)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; its os.environ mutation
     # persists for the get_running_pid / drain-timeout reads below.
     refresh_systemd_unit_if_needed(system=system)
@@ -4759,9 +4825,13 @@ def _running_under_s6() -> bool:
 
 
 def _systemd_unit_installed() -> bool:
-    return supports_systemd_services() and (
-        get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()
-    )
+    """A unit at either scope that serves THIS home. A unit pinned to another install's home is not
+    ours, so stop/restart/start fall through to this home's own gateway (PID path) instead of
+    operating the other install's service."""
+    if not supports_systemd_services():
+        return False
+    return any(get_systemd_unit_path(system=s).exists() and _foreign_systemd_unit_home(s) is None
+               for s in (False, True))
 
 
 def _is_service_installed() -> bool:

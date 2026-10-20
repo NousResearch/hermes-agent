@@ -3,6 +3,8 @@
 // Owned namespace: `canonical`. Function leaves take positional args; packs use `{0}`, `{1}`.
 // Status-bar phrases here are free text (nothing compares against them).
 
+import { gatewayTextEn } from '@hermes/shared/gateway-text'
+
 export const canonicalEn = {
   canonical: {
     // app/slash/canonicalSessionControls.ts + canonicalSessionCommands.ts
@@ -62,8 +64,7 @@ export const canonicalEn = {
     },
     // @hermes/shared/gateway-canonical (given Ink's `t`) and launchOptions.ts — launch-contract refusals.
     launch: {
-      noTuiPolicy: 'gateway does not support tui session policy; update/restart the gateway',
-      unsupportedOptions: (options: string) => `gateway does not support TUI launch options: ${options}`,
+      ...gatewayTextEn.canonical.launch,
       invalidToolProgress: (value: string) => `invalid HERMES_TUI_TOOL_PROGRESS: ${value}`
     }
   }

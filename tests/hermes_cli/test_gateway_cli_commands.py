@@ -2,6 +2,7 @@
 CLI-8, CLI-17, CLI-21): ``/diff session`` (the gateway tools' checkpoint baseline), ``/reload``
 (the gateway's ``.env``) and ``/handoff`` (no gateway verb yet: refused, never silent). Driven
 through ``HermesCLI.process_command`` with a scripted gateway connection."""
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,7 @@ from cli import HermesCLI
 
 
 class _Conn:
-    closed = False
+    closed = final = False
 
     def __init__(self, replies):
         self.replies = replies
@@ -18,7 +19,10 @@ class _Conn:
 
     def call(self, method, **params):
         self.calls.append((method, params))
-        return self.replies.get(method, {})
+        reply = self.replies.get(method, {})
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
 
 def _observed(name, arg):
@@ -98,3 +102,58 @@ def test_handoff_is_refused_with_a_message_on_the_gateway(gateway_cli, capsys):
     assert cli.process_command("/handoff telegram") is True  # the session stays
     assert "/handoff is not available on the shared gateway yet" in capsys.readouterr().out
     assert conn.calls == []  # a named refusal runs nothing: no command.observe (pre_command) either
+
+
+
+def _save_cli(conn, tmp_path, monkeypatch):
+    """A gateway-backed CLI with one said line in its mirror, run from ``tmp_path/work``."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id, cli.conversation_history = "local-s", [{"role": "user", "content": "in-memory only"}]
+    cli.model, cli.session_start = "fake-model", datetime(2026, 10, 18)
+    cli._session_db = GatewaySessionStore(conn)
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    return cli
+
+
+def test_save_writes_the_gateway_owners_export_on_this_machine(tmp_path, monkeypatch, capsys):
+    """CLI-19: ``/save`` asks the owner (``session.export``) for its canonical export, never writes the
+    in-memory fallback (no title, no metadata, no archived rows) that ``import_sessions`` can't restore.
+    The CLI writes the content itself, so a remote owner's disk is never taken for this one."""
+    from hermes_constants import get_hermes_home
+    conn = _Conn({"session.export": {"format": "md", "filename": "hermes_session_s.md", "content": "# owner export"}})
+    cli = _save_cli(conn, tmp_path, monkeypatch)
+    work = tmp_path / "work"
+    cli.save_conversation("/save markdown notes.md redact")
+    assert conn.calls == [("session.export", {"session_id": "local-s", "format": "md", "redact": True})]
+    assert (work / "notes.md").read_text(encoding="utf-8") == "# owner export"
+    assert str(work / "notes.md") in capsys.readouterr().out
+    cli.save_conversation("/save md")  # no name: main's local folder and name, under this CLI's home
+    [default] = (get_hermes_home() / "sessions" / "saved").glob("hermes_conversation_*.md")
+    assert default.read_text(encoding="utf-8") == "# owner export" and str(default) in capsys.readouterr().out
+    conn.replies["session.export"] = {}  # an owner answer without content is reported, nothing written
+    cli.save_conversation("/save json x.json")
+    assert "Failed to save" in capsys.readouterr().out
+    cli.conversation_history = []  # nothing said yet: nothing asked of the owner, nothing written
+    cli.save_conversation("/save json")
+    assert "No conversation to save" in capsys.readouterr().out and len(conn.calls) == 3
+    assert [p.name for p in work.iterdir()] == ["notes.md"]
+
+
+def test_save_on_an_older_gateway_falls_back_only_for_a_plain_json_save(tmp_path, monkeypatch, capsys):
+    """An owner without ``session.export`` (-32601): its ``session.save`` writes default-named, unredacted
+    JSON on the gateway host, so only ``/save json`` uses it, reported as on the gateway host; a
+    format, name or ``redact`` is refused with a message, never silently dropped."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    conn = _Conn({"session.export": GatewayRPCError("unknown_method", code=-32601),
+                  "session.save": {"file": "/srv/gw/sessions/saved/hermes_conversation_x.json"}})
+    cli = _save_cli(conn, tmp_path, monkeypatch)
+    for cmd in ("/save md", "/save json mine.json", "/save json redact"):
+        cli.save_conversation(cmd)
+        assert "predates this CLI" in capsys.readouterr().out, cmd
+    assert [m for m, _ in conn.calls] == ["session.export"] * 3
+    cli.save_conversation("/save json")
+    assert conn.calls[-1] == ("session.save", {"session_id": "local-s"})
+    assert "saved on the gateway host: /srv/gw/sessions/saved/hermes_conversation_x.json" in capsys.readouterr().out
+    assert not any((tmp_path / "work").iterdir())

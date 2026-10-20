@@ -92,7 +92,9 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | Bots that chat, run routines, or message each other; the Bots tab | docs: `/user-guide/bot-mode` |
 | CLI commands, subcommands, flags, "how do I run X" | `references/cli-reference.md` |
 | In-session slash commands | `references/slash-commands.md` |
+| Provider setup, API keys, OAuth | `references/providers-and-models.md` |
 | Make a model or provider the default (config write + end-to-end check) | `references/model-provider-switching.md` |
+| config.yaml sections, toolsets, voice/STT/TTS | `references/configuration.md` |
 | A toolset won't enable on a platform; free TTS/STT backends | `references/toolsets-and-voice-backends.md` |
 | AGENTS.md / .hermes.md / CLAUDE.md project rules | `references/project-context-files.md` |
 | Secret redaction, PII, approval modes, "reset permissions" | `references/security-privacy.md` |

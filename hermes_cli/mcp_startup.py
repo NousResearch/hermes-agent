@@ -18,6 +18,18 @@ _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started: set[str] = set()
 _mcp_discovery_thread: dict[str, threading.Thread] = {}
 _mcp_discovery_deferred: Optional[threading.Timer] = None
+# Timed re-run of a background pass that ended with configured servers still unconnected. The
+# agent-build re-entry (#66981) only fires when SOMETHING builds an agent next; an idle Desktop
+# whose cold-start pass was cancelled (GIL pressure stalls the loop, the pass budget aborts every
+# in-flight connect) never re-runs discovery, so the day's first session stays tool-less until a
+# manual restart. The ladder is bounded: delay doubles per attempt (30s -> 600s, 10 attempts
+# ~= 45 min), a pass that leaves nothing pending resets it, and per-server connect cooldowns
+# still gate the actual connection attempts inside each retry pass.
+_DISCOVERY_RETRY_BASE_DELAY_S = 30.0
+_DISCOVERY_RETRY_MAX_DELAY_S = 600.0
+_DISCOVERY_RETRY_MAX_ATTEMPTS = 10
+_mcp_discovery_retry_attempts: dict[str, int] = {}
+_mcp_discovery_retry_timer: dict[str, threading.Timer] = {}
 # Process-wide MCP server-name allowlist derived from ``-t/--toolsets``.
 # ``None`` = no filter (spawn every configured server). Set once at CLI
 # startup by ``set_mcp_server_filter`` and honored by every discovery path
@@ -90,6 +102,55 @@ def _servers_awaiting_connect() -> list[str]:
     return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
 
 
+def _arm_discovery_retry(home_key: str, *, logger, thread_name: str) -> None:
+    """Schedule one timed re-run of :func:`start_background_mcp_discovery` for ``home_key``.
+
+    Idempotent per home while a retry is pending; the attempt counter caps the ladder so a
+    permanently broken config cannot keep a retry loop alive forever (the next agent build
+    still revives discovery on demand)."""
+    with _mcp_discovery_lock:
+        if home_key in _mcp_discovery_retry_timer:
+            return
+        attempts = _mcp_discovery_retry_attempts.get(home_key, 0)
+        if attempts >= _DISCOVERY_RETRY_MAX_ATTEMPTS:
+            logger.debug("Background MCP discovery retry ladder exhausted for this home; "
+                         "leaving revival to the next agent build")
+            return
+        _mcp_discovery_retry_attempts[home_key] = attempts + 1
+        delay = min(_DISCOVERY_RETRY_BASE_DELAY_S * 2 ** attempts, _DISCOVERY_RETRY_MAX_DELAY_S)
+        # The Timer thread starts from an empty context: replay the arming thread's context so a
+        # multi-profile backend's HERMES_HOME override resolves to the same profile home (#67605).
+        ctx = copy_context()
+
+        def _fire() -> None:
+            with _mcp_discovery_lock:
+                _mcp_discovery_retry_timer.pop(home_key, None)
+            ctx.run(start_background_mcp_discovery, logger=logger, thread_name=thread_name)
+
+        timer = threading.Timer(delay, _fire)
+        timer.daemon = True
+        timer.name = f"{thread_name}-retry"
+        _mcp_discovery_retry_timer[home_key] = timer
+        timer.start()
+
+
+def _maybe_arm_discovery_retry(home_key: str, *, logger, thread_name: str) -> None:
+    """After a background pass finished: arm a timed retry while configured servers are still
+    unconnected; reset the ladder once a pass leaves nothing pending. Status inspection failing
+    is not fatal — revival simply falls back to the next agent build."""
+    try:
+        pending = _servers_awaiting_connect()
+    except Exception:
+        return
+    if not pending:
+        with _mcp_discovery_lock:
+            _mcp_discovery_retry_attempts.pop(home_key, None)
+        return
+    logger.info("Background MCP discovery finished with %d configured server(s) still unconnected; "
+                "a timed retry will re-run discovery", len(pending))
+    _arm_discovery_retry(home_key, logger=logger, thread_name=thread_name)
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one background MCP discovery thread per profile home.
 
@@ -145,6 +206,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             finally:
                 with _mcp_discovery_lock:
                     _mcp_discovery_thread.pop(home_key, None)
+                _maybe_arm_discovery_retry(home_key, logger=logger, thread_name=thread_name)
 
         thread = threading.Thread(target=copy_context().run, args=(_discover,), name=thread_name, daemon=True)
         _mcp_discovery_thread[home_key] = thread

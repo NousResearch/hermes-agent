@@ -18,7 +18,9 @@ let
   python = pythonLock.interpreter;
   pythonPackages = python.pkgs;
 
-  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
+  # Read from unfiltered repo root at eval time; the hermes-agent package
+  # override re-binds its build-time src back to filtered pythonSrc below.
+  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./..; };
   hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
@@ -161,8 +163,9 @@ let
       editableOverlay
       (final: prev: {
         hermes-agent = prev.hermes-agent.overrideAttrs (old: {
-          # point straight at the real source instead of the filtered nix store copy
-          src = workspaceRoot;
+          # Re-bind build-time src to filtered pythonSrc; the rebuild-scope
+          # behavior is unchanged.
+          src = pythonSrc;
           nativeBuildInputs = old.nativeBuildInputs ++ final.resolveBuildSystem { editables = [ ]; };
         });
       })

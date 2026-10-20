@@ -206,6 +206,10 @@ let
     fileset = npmWorkspaceFiles;
   };
 
+  # Parse the package-lock.json from repo root at eval time (not filtered).
+  # This is separate from npmRoot which stays filtered for build-time use.
+  packageLock = builtins.fromJSON (builtins.readFile (repoRoot + "/package-lock.json"));
+
   # npm dependencies for the workspace, shared by all members. importNpmLock
   # resolves each package from the lockfile's own `integrity` hashes, so the
   # lockfile is the single source of truth — no separate dependency hash to

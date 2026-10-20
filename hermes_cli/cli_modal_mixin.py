@@ -594,30 +594,11 @@ class CLIModalMixin:
         self._paint_now()
 
     # --- Connection setup --------------------------------------------------
-    def _connection_operation(self, payload):
-        from tools.connectors import live
-
-        session_key = getattr(self, "session_id", "") or ""
-        op_id = str(payload.get("op_id") or "")
-        return live.get(session_key, op_id) or live.current(session_key)
-
-    def _connection_install_hook(self) -> bool:
-        from tools.connectors.operation import ConnectionOperation
-
-        if ConnectionOperation.on_change is not None:
-            return False
-        ConnectionOperation.on_change = self._connection_on_change
-        return True
-
-    def _connection_restore_hook(self) -> None:
-        from tools.connectors.operation import ConnectionOperation
-
-        if ConnectionOperation.on_change == self._connection_on_change:
-            ConnectionOperation.on_change = None
-
+    # The gateway runs the manage_connections operation; this card renders its connection.request /
+    # connection.update events (delivered on the agent thread) and answers through the agent's
+    # connection.respond / connectors.connect calls, never an in-process operation.
     def _connection_close(self) -> None:
         self._connection_state = None
-        self._connection_restore_hook()
         self._restore_modal_input_snapshot()
         self._paint_now()
 
@@ -714,76 +695,66 @@ class CLIModalMixin:
         if not isinstance(payload, dict):
             return
         self._capture_modal_input_snapshot()
-        installed = self._connection_install_hook()
         self._connection_show_target(payload, 0)
         state = self._connection_state
-        if state is None:
-            return
-        state["owns_hook"] = installed
-        state["tool_thread_id"] = threading.current_thread().ident
-        if state["phase"] != "waiting":
+        if state is not None and state["phase"] != "waiting":
             self._ring_bell(prompt=True, context=t("cli.connect.bell_context"))
-        return
+
+    def _connection_send(self, call, *args) -> None:
+        """One card answer to the gateway, off the UI thread; its outcome arrives as connection.update."""
+        state = self._connection_state
+        agent = getattr(self, "agent", None)
+        if not state or agent is None:
+            self._connection_close()
+            return
+        op_id = state["payload"].get("op_id")
+
+        def _run() -> None:
+            from hermes_cli.gateway_client import GatewayClientError
+            try:
+                getattr(agent, call)(*args)
+            except GatewayClientError as exc:  # the gateway refused or was unreachable: say so on the card
+                current = self._connection_state
+                if current and current["payload"].get("op_id") == op_id:
+                    current["target"] = {**current["target"], "detail": str(exc) or t("cli.connect.cannot_restart")}
+                    current["phase"] = "failed"
+                    self._paint_now()
+
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(_run, name="hermes-connection-answer").start()
 
     def _connection_answer(self, *, approve: bool) -> None:
         state = self._connection_state
         if not state:
             return
         target = state["target"]
-        operation = self._connection_operation(state["payload"])
-        if operation is None:
-            self._connection_close()
-            return
         name = str(target.get("name") or "")
         answer = {"name": name, "status": "approved" if approve else "skipped"}
         if approve:
             answer["env"] = dict(state.get("drafts", {}).get(name, {}))
-        from tools.connectors.mcp import apply_answer
-
-        # The backend applies the answer on this thread, and its change hook sets the next phase
-        # (the URL step, the form again for a missing field) before apply_answer returns. Set the
-        # waiting phase first so it cannot overwrite that.
         state["phase"] = "waiting"
-        apply_answer(operation, json.dumps({"targets": [answer]}))
         self._paint_now()
+        self._connection_send("connection_respond", state["payload"].get("op_id"), {"targets": [answer]})
 
     def _connection_retry(self) -> None:
         state = self._connection_state
         if not state:
             return
-        operation = self._connection_operation(state["payload"])
-        if operation is None:
-            self._connection_close()
-            return
         target = state["target"]
-        if target.get("kind") == "connector" and target.get("state") in {"failed", "expired"}:
-            from tools.connectors.run import reissue
-
-            state["phase"] = "waiting"
-            if reissue(operation, [str(target.get("name") or "")]) is not None:
-                target["detail"] = t("cli.connect.cannot_restart")
-                state["phase"] = "failed"
-            self._paint_now()
-            return
-        if target.get("state") in {"pending", "failed", "expired"}:
-            # Connect on a failed row is the same attempt with the values now in the draft.
+        if not (target.get("kind") == "connector" and target.get("state") in {"failed", "expired"}) \
+                and target.get("state") in {"pending", "failed", "expired"}:
+            # Connect on a pending or failed install row is the same attempt with the draft's values.
             self._connection_answer(approve=True)
             return
-        from tools.connectors.mcp import retry
-
+        # A dead sign-in link (or any other re-run): the gateway re-mints it on the open operation.
         state["phase"] = "waiting"
-        retry(operation, [str(target.get("name") or "")])
         self._paint_now()
+        self._connection_send("connection_retry", str(target.get("name") or ""))
 
     def _connection_continue(self) -> None:
         state = self._connection_state
-        if not state:
-            return
-        operation = self._connection_operation(state["payload"])
-        if operation is not None:
-            from tools.connectors.mcp import apply_answer
-
-            apply_answer(operation, json.dumps({"settled_by": "continue"}))
+        if state:
+            self._connection_send("connection_respond", state["payload"].get("op_id"), {"settled_by": "continue"})
         self._connection_close()
 
     def _connection_open_url(self) -> None:
@@ -795,21 +766,16 @@ class CLIModalMixin:
         self._connection_answer(approve=False)
 
     def _connection_interrupt(self) -> None:
-        state = self._connection_state
-        if state:
-            from tools.interrupt import set_interrupt
-
-            operation = self._connection_operation(state["payload"])
-            set_interrupt(True, thread_id=state.get("tool_thread_id"))
-            if operation is not None:
-                operation.wake.set()
+        # The turn's interrupt reaches the gateway, which ends the operation; only the card is ours.
         self._connection_close()
 
-    def _connection_on_change(self, operation, _change, snapshot) -> None:
+    def _connection_on_change(self, snapshot) -> None:
         state = self._connection_state
-        if not state or operation.op_id != state["payload"].get("op_id"):
+        if not state or not isinstance(snapshot, dict) or snapshot.get("op_id") != state["payload"].get("op_id"):
             return
-        if snapshot.get("settled_at") is not None:
+        if int(snapshot.get("seq") or 0) < int(state["payload"].get("seq") or 0):
+            return  # an older frame than the one the card holds
+        if snapshot.get("settled") or snapshot.get("settled_at") is not None:
             self._connection_close()
             return
         active_name = state["target"].get("name")

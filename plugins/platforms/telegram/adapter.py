@@ -4971,7 +4971,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         "accept": ("accept.sh", "✅ Accepted"),
         "reject": ("reject.sh", "❌ Rejected")}
 
-    async def _handle_dreaming_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+    async def _handle_dreaming_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """Dispatch a dreaming-engine inline-button callback (dr:verb:rec_id)."""
         if not await self._callback_authorized(query, cb, _unauthorized()):
             return
@@ -4999,7 +4999,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         success = False
         try:
             proc = await asyncio.create_subprocess_exec(
-                str(script_path), rec_id, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                str(script_path), rec_id, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             _stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
             if proc.returncode == 0:
                 label = success_label
@@ -5012,7 +5013,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 logger.error(
                     "[%s] dreaming-engine callback failed: verb=%s rec_id=%s rc=%s stderr=%s",
                     self.name, verb, rec_id, proc.returncode, stderr_text)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             label = f"❌ {verb} timed out"
             logger.error("[%s] dreaming-engine callback timed out: verb=%s rec_id=%s", self.name, verb, rec_id)
         except Exception as exc:

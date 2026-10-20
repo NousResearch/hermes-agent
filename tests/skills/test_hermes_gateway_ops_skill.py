@@ -47,6 +47,18 @@ def _repo_text(relative: str) -> str:
     return (REPO / relative).read_text(encoding="utf-8-sig")
 
 
+def _gateway_source_text() -> str:
+    """Every gateway module, concatenated.
+
+    The operator-visible markers are pinned by what is emitted, not by which file emits it: the
+    shutdown ladder that owns the ``--replace`` takeover and the SIGKILL escalation has already
+    moved between ``gateway/run.py`` and ``gateway/run_bootstrap.py`` once.
+    """
+    return "\n".join(
+        path.read_text(encoding="utf-8-sig") for path in sorted((REPO / "gateway").glob("*.py"))
+    )
+
+
 def test_skill_files_present():
     assert SKILL_MD.is_file()
     assert REFERENCE.is_file(), "the skill links this reference by name"
@@ -121,9 +133,9 @@ def test_gateway_state_fields_and_lifecycle_states_exist():
 
 def test_log_markers_are_still_emitted():
     """The skill teaches operators to search for these exact strings."""
-    run = _repo_text("gateway/run.py")
-    assert "as a planned --replace takeover" in run
-    assert "did not exit after SIGTERM, sending SIGKILL" in run
+    gateway = _gateway_source_text()
+    assert "as a planned --replace takeover" in gateway
+    assert "did not exit after SIGTERM, sending SIGKILL" in gateway
 
     turn_recovery = _repo_text("agent/turn_recovery.py")
     assert "API failed after" in turn_recovery

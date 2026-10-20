@@ -14,7 +14,7 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_file_path
-from tests.hermes_cli.test_anon_upgrade import (  # noqa: F401  (fixtures used by name)
+from tests.hermes_cli.test_anon_upgrade import (
     EMAIL, FREE_PICK, PORTAL, WELCOME, _shared_store, _write_model_config, free_account, portal)
 
 __all__ = ["free_account", "portal"]
@@ -219,8 +219,12 @@ def test_already_signed_in_short_circuits_before_any_network(portal):
     assert states[0].precondition is True
     assert portal.calls == []
 
-def test_free_tier_off_yields_unavailable(portal, monkeypatch):
-    monkeypatch.setattr(anon_auth, "guest_enabled", lambda: False)
+def test_guests_switched_off_yields_unavailable(portal):
+    _seed_free_tier()
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    config["nous"] = {"guest": False}
+    save_config(config)
     portal.calls.clear()
 
     states = _drain()
@@ -231,7 +235,7 @@ def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     assert portal.calls == []
 
 def test_no_identity_on_disk_yields_unavailable_without_touching_the_portal(portal, monkeypatch):
-    """A sign-in never creates the identity it signs in from: the boot bootstrap is the only creator.
+    """A sign-in never creates the identity it signs in from (the trial claim and connector use do).
     With nothing on disk the flow yields ``Unavailable`` and makes no portal call and no mint attempt."""
     monkeypatch.setattr(anon_auth, "ensure_portal_identity",
                         lambda **kwargs: (_ for _ in ()).throw(AssertionError("run_sign_in must not mint")))

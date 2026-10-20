@@ -48,6 +48,7 @@ import {
   setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
+import { noteLiveSessionSource } from '@/store/session-unread'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
   clearActiveSessionTodos,
@@ -79,6 +80,19 @@ export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession
   }
 
   return stored.profile
+}
+
+/** Dedupe key for one active transcript's last published page signature. */
+function transcriptSignatureKey(stored: ActiveTranscriptSession, storedSessionId: string): string {
+  return stored.ownerRoute
+    ? JSON.stringify([
+        stored.ownerRoute.connectionId,
+        stored.ownerRoute.profile,
+        stored.ownerRoute.targetProfile ?? '',
+        stored.ownerRoute.mode ?? '',
+        storedSessionId
+      ])
+    : `${stored.profile ?? 'default'}:${storedSessionId}`
 }
 
 /** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
@@ -522,7 +536,24 @@ export async function reconcileActiveTranscript({
   const storedSessionId = selectedStoredSessionIdRef.current
   const runtimeSessionId = activeSessionIdRef.current
 
-  if (!storedSessionId || !runtimeSessionId || busyRef.current || tileRuntimeOwnsLiveState(runtimeSessionId)) {
+  // The two refs move separately on a switch (resumeSession names the new
+  // stored id before the active runtime changes). A runtime already hosting a
+  // different stored session is mid-switch: writing under the selected id
+  // would re-key it, and its next session.info would read as a compression
+  // rotation that drags the route back.
+  const hostsOtherSession = () => {
+    const hosted = runtimeSessionId ? $sessionStates.get()[runtimeSessionId]?.storedSessionId : null
+
+    return Boolean(hosted && hosted !== storedSessionId)
+  }
+
+  if (
+    !storedSessionId ||
+    !runtimeSessionId ||
+    busyRef.current ||
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    hostsOtherSession()
+  ) {
     return
   }
 
@@ -578,7 +609,8 @@ export async function reconcileActiveTranscript({
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
       transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
-      activeSessionIdRef.current !== runtimeSessionId
+      activeSessionIdRef.current !== runtimeSessionId ||
+      hostsOtherSession()
 
     const current = $sessionStates.get()[runtimeSessionId]
 
@@ -586,15 +618,7 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = stored.ownerRoute
-      ? JSON.stringify([
-          stored.ownerRoute.connectionId,
-          stored.ownerRoute.profile,
-          stored.ownerRoute.targetProfile ?? '',
-          stored.ownerRoute.mode ?? '',
-          storedSessionId
-        ])
-      : `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = transcriptSignatureKey(stored, storedSessionId)
 
     // Same rule as the warm-activation guard (use-session-actions/index.ts):
     // publishing the page would blank the thread and trip the routed loading
@@ -693,6 +717,7 @@ interface LiveSessionStatusItem {
   id?: string
   last_active?: number
   session_key?: string
+  source?: null | string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
@@ -765,6 +790,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+    noteLiveSessionSource(storedSessionId, session.source, profileKey)
 
     if (working) {
       workingStoredIds.add(storedSessionId)
@@ -1159,8 +1185,7 @@ export function useBackgroundSync({
   // Wake/return backstop (#125532): a socket that zombie-survives laptop sleep
   // never transitions gatewayState, so the reconnect backstop above cannot
   // fire, and replies that completed while the machine slept leave the open
-  // transcript behind — the first send after wake then bounces off the
-  // stale-send guard (#65047) once. Catch up when the window is viewed again;
+  // transcript behind. Catch up when the window is viewed again;
   // the reconcile is signature-gated, so an unchanged transcript costs one
   // cheap tail read. Messaging transcripts keep their own visible poll below.
   useEffect(() => {

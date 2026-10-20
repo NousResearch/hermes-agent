@@ -23,8 +23,8 @@ from gateway.session_identity import replace_source
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -164,6 +164,14 @@ class GatewayTopicThreadsMixin:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
     def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
+        """Adapter-ingress recovery hook (sync, called off-loop before session keying): lobby recovery,
+        except when ``dm_topic_auto_transfer`` is on — then the root-DM source is left alone so
+        ``_transfer_telegram_root_dm`` can open a fresh topic (and fall back to this recovery itself)."""
+        if self._telegram_topic_auto_transfer_enabled(source):
+            return None
+        return self._recover_telegram_lobby_thread_id(source)
+
+    def _recover_telegram_lobby_thread_id(self, source: SessionSource) -> Optional[str]:
         """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
         user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
         topic is also "unknown" until its first message is recorded. None = leave the source alone."""
@@ -190,6 +198,42 @@ class GatewayTopicThreadsMixin:
                 recovered = str(b.get("thread_id") or "")
                 return recovered if recovered and recovered != inbound else None
         return None
+
+    def _telegram_dm_topic_auto_transfer_configured(self, source: SessionSource) -> bool:
+        """The RECEIVING bot's ``extra.dm_topic_auto_transfer`` (default False): under multiplexing each
+        bot owns its opt-in. Off keeps the v0.22 lobby recovery (#136567). No state.db read."""
+        adapter = self._delivery_adapter_for(source)
+        platform_cfg = getattr(adapter, "config", None) if adapter is not None else None
+        return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("dm_topic_auto_transfer"))
+
+    def _telegram_topic_auto_transfer_enabled(self, source: SessionSource) -> bool:
+        """The key is on and ``source`` is a ``/topic``-mode root DM (reads state.db: call off-loop)."""
+        return self._telegram_dm_topic_auto_transfer_configured(source) and self._is_telegram_topic_root_lobby(source)
+
+    async def _transfer_telegram_root_dm(self, source: SessionSource) -> Optional[tuple[str, bool]]:
+        """Adapter-ingress transfer hook for an opted-in root-DM message (#139136).
+
+        ``(thread_id, True)``: a fresh topic was created and the turn runs there. ``(thread_id, False)``:
+        creating it failed, so the message falls back to lobby recovery (the last bound topic).
+        ``None``: not applicable (key off, not a topic-mode root DM) or nothing to recover to.
+        """
+        if (not source.chat_id or not self._telegram_dm_topic_auto_transfer_configured(source)
+                or not await asyncio.to_thread(self._is_telegram_topic_root_lobby, source)):
+            return None
+        adapter = self._delivery_adapter_for(source)
+        create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None else None
+        thread_id = None
+        if callable(create_topic):
+            try:
+                thread_id = await create_topic(int(source.chat_id), t("gateway.topic.default_title"))
+            except Exception:
+                logger.debug("Failed to auto-transfer Telegram root DM into a new topic", exc_info=True)
+        if thread_id:
+            logger.info("telegram topic auto-transfer: chat=%s user=%s root -> new topic %s",
+                        source.chat_id, source.user_id, thread_id)
+            return str(thread_id), True
+        recovered = await asyncio.to_thread(self._recover_telegram_lobby_thread_id, source)
+        return (recovered, False) if recovered else None
 
     # ── Telegram topic mode: /topic activation helpers ──────────────────────────────────────
 
@@ -329,7 +373,7 @@ class GatewayTopicThreadsMixin:
             and getattr(source, "delivered_via_upstream_relay", False) is True
         )
 
-    def _relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
+    def _relay_auto_thread_info(self, source: SessionSource) -> Optional[tuple[str, str]]:
         """(thread_id, initial_name) when the RELAY connector auto-threaded our reply — the title-turn
         sibling of _is_discord_auto_thread_lane (whose markers only exist from turn 2 on; the title
         turn's source is the PARENT channel event).
@@ -357,7 +401,7 @@ class GatewayTopicThreadsMixin:
             return _as_thread_info(info_fn(str(source.chat_id)))
         return None
 
-    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
+    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[tuple[str, str]]:
         """``_relay_auto_thread_info``, waited out until this turn delivers (the legacy send-result
         path can only answer once the reply is sent; the caller asks at title time, one turn early).
         The timeout is only a backstop for a turn that never sends: the turn's own inactivity limit."""
@@ -377,7 +421,7 @@ class GatewayTopicThreadsMixin:
 
     async def _rename_discord_auto_thread_for_session_title(
         self, source: SessionSource, session_id: str, title: str,
-        relay_info: Optional[Tuple[str, str]] = None,
+        relay_info: Optional[tuple[str, str]] = None,
     ) -> None:
         """Best-effort semantic rename of a newly auto-created Discord thread. ``relay_info`` is the
         connector's (thread_id, initial_name) feedback, supplied on the title turn where the source

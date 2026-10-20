@@ -30,21 +30,44 @@ class CLITuiRuntimeMixin:
 
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
+        held = None
         while not self._should_exit:
             try:
+                if held is not None:
+                    held, user_input = self._tui_hold_step(held)
+                    if user_input is not None:
+                        self._tui_process_one_input(user_input)
+                    continue
                 try:
                     user_input = self._pending_input.get(timeout=0.1)
                 except queue.Empty:
                     if not self._agent_running:
                         self._tui_idle_tick()
                     continue
-                self._tui_process_one_input(user_input)
+                from hermes_cli.gateway_queue import OwnQueueHold
+                held = OwnQueueHold.begin(self, user_input)
+                if held is None:
+                    self._tui_process_one_input(user_input)
             except Exception as e:
                 if isinstance(e, OSError) and e.errno == errno.EIO:
                     self._mark_terminal_io_broken("process_loop")
                     logger.warning("process_loop EIO — freezing UI paints (#81521): %s", e)
                     continue
                 logger.warning("process_loop unhandled error (msg may be lost): %s", e)
+
+    def _tui_hold_step(self, hold):
+        """One step of holding a local input behind this viewer's own ``/queue`` admission (#134889 N5):
+        ``(hold or None, input to run now or None)``. A turn the owner runs now goes first; the held
+        input runs once that admission was taken, left the queue, or the bounded wait ran out."""
+        with suppress(Exception):
+            self._drain_process_notifications("cli-idle")  # adopts the admission on its message.start
+        item = hold.take_gateway_turn(self._pending_input)
+        if item is not None:
+            return hold, item
+        if hold.done():
+            return None, hold.item
+        time.sleep(0.05)
+        return hold, None
 
     def _tui_idle_tick(self):
         """Idle housekeeping between inputs (agent not running)."""
@@ -59,10 +82,24 @@ class CLITuiRuntimeMixin:
             with suppress(Exception):
                 step()
 
+    def _tui_dock_drop_dequeued(self):
+        """Re-read the live-work dock once an input has left ``_pending_input``.
+
+        The spinner thread polls the dock once a second, so without this the prompt a turn just took
+        (a seeded ``-q`` prompt above all) stays listed as queued while the turn starts. If the reply
+        prints in that window the dock shrinks only after it, leaving blank rows under the prompt.
+        The turn's own invalidate repaints the refreshed rows.
+        """
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is not None:
+            with suppress(Exception):
+                monitor.refresh()
+
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
+        self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -229,6 +266,18 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
+    def _show_startup_browser_notice(self):
+        """Main's ``_show_browser_backend_notice``; on a gateway session the gateway computed the notice
+        (and its once-per-24h stamp) with the session's tools, so it is printed from the snapshot."""
+        inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
+        if inventory is None or "browser_backend_notice" not in inventory:
+            self._show_browser_backend_notice()
+            return
+        notice = inventory.get("browser_backend_notice")
+        if notice:
+            from gateway.warning_notifications import render_notification
+            render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
+
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
@@ -240,9 +289,16 @@ class CLITuiRuntimeMixin:
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
+        from hermes_cli.gateway_client import GatewayClientError
+        try:
+            self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except GatewayClientError as exc:
+            # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
         self.show_banner()
         self._show_security_advisories()
-        self._show_browser_backend_notice()
+        self._show_startup_browser_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
@@ -260,6 +316,13 @@ class CLITuiRuntimeMixin:
                 offer_interactive(cprint=_cprint)
             except Exception:
                 logger.debug("sandbox image switch offer failed", exc_info=True)
+            # Low disk + auto-prune never decided: ask once (either answer ends it for good).
+            try:
+                from hermes_cli.prune_advisor import offer_interactive as _offer_auto_prune
+                from cli import _cprint
+                _offer_auto_prune(cprint=_cprint)
+            except Exception:
+                logger.debug("auto-prune offer failed", exc_info=True)
 
         if self._resumed and self._preload_resumed_session():
             self._display_resumed_history()
@@ -301,8 +364,8 @@ class CLITuiRuntimeMixin:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             def _prewarm_agent_runtime() -> None:
                 try:
-                    import run_agent  # noqa: F401  (imports model_tools + tool registry)
-                    import openai  # noqa: F401
+                    import run_agent
+                    import openai
                 except Exception:
                     logger.debug("agent runtime pre-import failed", exc_info=True)
 
@@ -354,19 +417,6 @@ class CLITuiRuntimeMixin:
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
             )
-
-        # Skill sync (personal, then org-shared): inert unless the access gate is open
-        # and a sync base URL is configured. The org pull is gated on a real org role on
-        # the token (only issued for multi-member orgs), so a solo account never hits
-        # the network here. Both fail-quiet.
-        try:
-            from tools.skills_sync_client import maybe_pull_skills
-            from tools.skills_sync_client_org import maybe_pull_org_skills
-        except Exception:
-            return
-        for pull in (maybe_pull_skills, maybe_pull_org_skills):
-            with suppress(Exception):
-                pull()
 
     def _tui_build_application(self, layout, kb, style):
         """Construct the prompt_toolkit Application for the REPL."""
@@ -450,6 +500,13 @@ class CLITuiRuntimeMixin:
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
         return True
 
+    def _closing_session_id(self):
+        """The session quit closes: the agent's, or (gateway) the session opened at the banner before
+        any agent was built. Main created its row lazily at the first turn, so with no agent it had none."""
+        if self.agent:
+            return self.agent.session_id
+        return self.session_id if getattr(self, "_gateway_session_open", False) else None
+
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
@@ -458,7 +515,11 @@ class CLITuiRuntimeMixin:
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
             print(f"{_DIM}{t('cli.tui.shutting_down')}{_RST}", flush=True)
-        if self.agent and self._agent_running:
+        from hermes_cli.cli_shutdown import _gateway_owns_session_end
+        if self.agent and self._agent_running and not (
+                self._detach_on_exit and _gateway_owns_session_end(self.agent)):
+            # A gateway turn left by Ctrl+D is not interrupted: ``end_session`` below detaches this
+            # viewer and the owner closes the row once the turn settles (gateway/session_viewer_close).
             with suppress(Exception):
                 request_hard_interrupt(self.agent)
         if self._voice_recorder:
@@ -477,30 +538,40 @@ class CLITuiRuntimeMixin:
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
         self._persist_active_session_before_close()
 
-        if self._session_db and self.agent:
+        _closing_sid = self._closing_session_id()
+        if self._session_db and _closing_sid:
             try:
-                self._session_db.end_session(self.agent.session_id, "cli_close")
+                self._session_db.end_session(_closing_sid, "cli_close")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Could not close session in DB: %s", e)
             if not self._delete_session_on_exit:
                 # Drop the empty row of a start-and-quit session so /resume stays clean.
                 try:
-                    self._discard_session_if_empty(self.agent.session_id)
+                    self._discard_session_if_empty(_closing_sid)
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not prune empty session: %s", e)
             else:
                 # /exit --delete: remove transcripts + SQLite history.
                 try:
-                    _sid = self.agent.session_id
+                    _sid = _closing_sid
                     if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions"):
                         _cprint(f"  {_DIM}{t('cli.tui.session_deleted', session_id=_escape(_sid))}{_RST}")
                     else:
                         _cprint(f"  {_DIM}{t('cli.tui.session_delete_missing', session_id=_escape(_sid))}{_RST}")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not delete session on exit: %s", e)
-        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn.
-        if self.agent and self._agent_running:
+        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn. A gateway
+        # turn fires it in the gateway when the interrupted turn finalizes.
+        if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
+        # Ask AND apply before _run_cleanup arms the exit watchdog, so a large archive is never cut
+        # short; a signal-driven exit never asks.
+        import cli as _cli_mod
+        if not _cli_mod._signal_watchdog_armed and _cli_mod._active_worktree:
+            from hermes_cli.worktree_exit import apply_exit_choice, ask_exit_choice
+            with suppress(Exception, KeyboardInterrupt):
+                ask_exit_choice(_cli_mod._active_worktree)
+                apply_exit_choice(_cli_mod._active_worktree, _cprint)
         _run_cleanup()
         self._print_exit_summary()
         self._release_active_session()

@@ -52,6 +52,8 @@ export interface BrowserManageResponse {
   connected?: boolean
   url?: string
   messages?: string[]
+  /** `status` / `use`: new chats on this profile get browser_exec (Browser Use mode). */
+  browser_use?: boolean
 }
 
 /** Response from the `session.compress` RPC. `messages` is the post-compress
@@ -93,6 +95,8 @@ export interface SessionSteerResponse {
 export interface SessionRedirectResponse {
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
+  /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
+  voice_stopped?: boolean
 }
 
 export interface SessionTitleResponse {

@@ -81,7 +81,11 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        # A bare pick resolves against the live provider at turn start; guard on that same provider
+        # here, or a provider-keyed price check passes now and drops the queued pick later.
+        agent = session.get("agent")
+        guard_provider = pending_provider or (getattr(agent, "provider", "") or "").strip()
+        pending_warning = _pending_switch_selection_warning(pending_model, guard_provider, agent)
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.
@@ -164,7 +168,7 @@ def _set_model(rid, params, key, value, session):
 
 
 _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal",
-               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast"}
+               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _set_fast(rid, params, key, value, session):
@@ -195,6 +199,12 @@ def _set_fast(rid, params, key, value, session):
         overrides = resolve_fast_mode_overrides(target_model, provider=getattr(agent, "provider", None),
                                                 base_url=getattr(agent, "base_url", None),
                                                 tier="ultrafast" if nv == "ultrafast" else None)
+        if overrides is not None and nv == "ultrafast":
+            from agent.codex_service_tiers import ultrafast_offered
+            if not ultrafast_offered(target_model, provider=getattr(agent, "provider", None),
+                                     base_url=getattr(agent, "base_url", None),
+                                     access_token=getattr(agent, "api_key", None)):
+                overrides = None
         if overrides is None:
             return _err(rid, 4002, f"{nv} mode is not available for this model")
     if session is not None:
@@ -272,7 +282,6 @@ def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
     scope = _word(params.get("scope") or "session")
-    from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     raw = _word(value)
     if scope == "global":
         from tools.approval_context import _normalize_approval_mode
@@ -282,9 +291,15 @@ def _set_yolo(rid, params, key, value, session):
         _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
-        skey = session["session_key"]
-        enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
-        (enable_session_yolo if enable else disable_session_yolo)(skey)
+        from tools.approval_yolo import toggle_session_yolo
+        # Row id prefers the agent's session_id: after compression the key can still name the ended parent (#20001).
+        row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
+
+        def persist(on):
+            with _session_db(session) as db:
+                if db is not None:
+                    db.set_session_yolo(row_id, on)
+        enable = toggle_session_yolo(session["session_key"], _BOOL_WORDS.get(raw), persist=persist)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))
@@ -396,6 +411,9 @@ def _toggle_setters() -> dict:
         "battery": (_word, "display.battery",
                     {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
                     lambda: not bool(_display_cfg().get("battery", False)), on_off),
+        # Ink's /timestamps: the classic CLI's display.timestamps (the shared owner's setter too).
+        "timestamps": (_word, "display.timestamps", _BOOL_WORDS,
+                       lambda: not bool(_display_cfg().get("timestamps", False)), on_off),
         "statusbar": (_word, "display.tui_statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES}},
                       lambda: "top" if _coerce_statusbar(_display_cfg().get("tui_statusbar", "top")) == "off" else "off",
                       lambda v: v),
@@ -474,7 +492,7 @@ _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
-    "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}

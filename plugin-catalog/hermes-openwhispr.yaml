@@ -1,0 +1,15 @@
+name: hermes-openwhispr
+repo: https://github.com/mooserini/hermes-openwhispr
+sha: 636314f33376616d3a39815eb63b8a0f06900f3b
+description: "Local-first OpenWhispr dictation history and shared notes for Hermes agents: find what the user said, search notes, transcribe local audio. Free local desktop bridge by default, paid cloud opt-in only. Skill-carrier plugin, no tools or hooks registered. Disclosure — skill only: the agent runs the external OpenWhispr CLI (installed with an unpinned `npm install -g @openwhispr/cli`) through the terminal tool to read your dictation history and notes over the OpenWhispr desktop app's authenticated loopback bridge, and, with your consent each time, to create, update or delete notes, transcriptions and dictionary entries and to transcribe local audio files; OpenWhispr Cloud (api.openwhispr.com, including an email-code sign-in that mints an API key kept in the CLI's own config) is used only when you opt in; the agent never opens credential files itself."
+maintainer: mooserini
+tier: community
+category: voice
+docs_url: https://github.com/mooserini/hermes-openwhispr#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

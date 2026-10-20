@@ -538,6 +538,11 @@ def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def scoped_tool_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
+    """All tool names directly available in a session's raw tool definitions."""
+    return frozenset(n for n in _tool_def_names(tool_defs) if n)
+
+
 def out_of_scope_reason(name: str) -> Optional[str]:
     """Fail-fast reason for a registered session-gated GUI tool outside this session's
     scope (#120413). The generic scope block ("not available ... Use tool_search") sends
@@ -581,6 +586,11 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+        # Directly-listed tools are already available to the model. Unwrap one
+        # here so it crosses the same normal dispatch path (hooks, approvals,
+        # and session scope) instead of spending another model iteration.
+        if name in _core_tool_names() or _registry_entry(name) is not None:
+            return name, raw_args, None
         return None, {}, not_deferrable_error(name)
     return name, raw_args, None
 
@@ -611,6 +621,7 @@ __all__ = [
     "out_of_scope_reason",
     "resolve_underlying_call",
     "scoped_deferrable_names",
+    "scoped_tool_names",
     "search_catalog",
     "should_activate",
     "validate_deferred_call_args",

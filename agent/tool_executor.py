@@ -356,9 +356,12 @@ def _append_skipped_tool_results(
 
 
 def _tool_search_scoped_names(agent) -> frozenset:
-    """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
-    the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
-    validate against this set. Cached on the agent, keyed by registry scope/generation."""
+    """Raw tool names the session may invoke through ``tool_call``.
+
+    The unwrap bypasses ``model_tools.handle_function_call``'s scope check, so restricted
+    sessions validate both deferred and directly-listed tools against this set. Cached on the
+    agent, keyed by registry scope/generation.
+    """
     try:
         import model_tools
         from tools import tool_search as _ts
@@ -378,7 +381,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
     if cached is not None and cached[0] == cache_key:
         return cached[1]
     try:
-        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
+        names = _ts.scoped_tool_names(model_tools.get_tool_definitions(
             enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
         ) or [])
     except Exception:
@@ -427,9 +430,13 @@ def _unwrap_tool_search_call(
                 _ts.out_of_scope_reason(underlying)
                 or f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
             )
-        # Validate before unwrapping: the generic bridge hides the concrete
-        # parameter schema from provider-native tool-call validation.
-        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
+        # Validate deferred calls before unwrapping: the generic bridge hides
+        # their concrete parameter schema from provider-native validation.
+        scope_block = (
+            _ts.validate_deferred_call_args(underlying, underlying_args)
+            if _ts.is_deferrable_tool_name(underlying, _ts.load_config_readonly().effective_defer_tools)
+            else None
+        )
         if scope_block is None:
             return underlying, underlying_args, None
         if flatten_probe:

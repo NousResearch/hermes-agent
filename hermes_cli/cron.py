@@ -253,13 +253,20 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
         ("Execution", f"{latest_execution.get('status', '?')}  {latest_execution.get('id', '?')}"
          if latest_execution else "")]
-    return [
+    rows = [
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
         _next_run_row(job),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
-    ] + [(label, value) for label, value in optional if value]
+    ]
+    # Per-job failure-notice override: honored at fire time but otherwise only visible by
+    # opening jobs.json — show it next to its parent Deliver row so the listing answers
+    # "where do failure alerts actually go" (#134228). `local` here is the structural opt-out.
+    failure_deliver = job.get("failure_deliver")
+    if failure_deliver:
+        rows.append(("On failure", failure_deliver))
+    return rows + [(label, value) for label, value in optional if value]
 
 
 def _short_reason(text: Any, limit: int = 120) -> str:

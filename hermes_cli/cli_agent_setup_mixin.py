@@ -716,6 +716,7 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
+                connection_update_callback=None if single_query_mode else self._connection_on_change,
                 # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
                 model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
                 # Another viewer answering the gateway's clarify/sudo/secret request closes this modal.

@@ -60,7 +60,7 @@ def main():
                     opened = fn()
                     if opened is not None:
                         release_or_close(opened)
-                    return name, 'unexpected_success'
+                    return name, 'opened:' + type(opened).__name__
                 except Exception as exc:
                     return name, str(exc)
             with ThreadPoolExecutor(max_workers=1) as pool:

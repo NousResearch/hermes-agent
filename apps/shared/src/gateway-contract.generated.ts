@@ -1491,6 +1491,7 @@ export interface GroupsCapabilitiesResult {
   features: string[]
   methods: string[]
   max_log_limit: number
+  seatable_profiles?: string[] | null
 }
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */
 export interface RoomLinkStatus {
@@ -4973,6 +4974,7 @@ export interface CanonicalSnapshot {
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
+  todo_state?: TodoState | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -5102,6 +5104,7 @@ export interface CanonicalCorrectionAck {
   text: string
   execution_generation: number
   authority_epoch: number
+  delivered?: false | null
 }
 /** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
 export interface CanonicalVoiceStopped {
@@ -5777,6 +5780,15 @@ export interface ToolOutputRiskPayload {
   risk: string
   findings: string[]
   redacted: boolean
+}
+/** ``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's ``notifications/progress`` for a running call, throttled to one per 500 ms per call. */
+export interface ToolProgressPayload {
+  tool_id: string
+  name: string
+  progress: number
+  total?: number | null
+  percent?: number | null
+  message?: string | null
 }
 /** ``tool_progress._normalize_todo_state`` — full task snapshot. */
 export interface TodoUpdatedPayload {
@@ -7117,6 +7129,8 @@ export interface BackendGatewayEventMap {
   'tool.generating': ToolGeneratingPayload
   /** Tool output was classified as risky (prompt-injection / secret findings). */
   'tool.output_risk': ToolOutputRiskPayload
+  /** Live progress of a running tool call (MCP notifications/progress). */
+  'tool.progress': ToolProgressPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
@@ -7205,6 +7219,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.complete',
   'tool.generating',
   'tool.output_risk',
+  'tool.progress',
   'tool.start',
   'voice.interrupted',
   'voice.partial',

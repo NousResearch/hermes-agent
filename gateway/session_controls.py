@@ -539,30 +539,20 @@ class AuthorityConnection:
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        from gateway.session_live_listing import live_entries
         sessions = []
-        for sid in tuple(self.authority.sessions):
-            candidate = SessionRef(self.actor.profile_id, sid)
-            try:
-                handle = await self.authority.resolve(self.actor, candidate)
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
-                    raise
-                continue
-            row = self.authority.db.get_session(sid)
+        for entry in await live_entries(self.authority, self.actor):
+            row = entry.row
             # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
-            # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES or (
+            # finite one-shot runs are not conversations, as on every other picker. Closed by its last
+            # viewer and idle: main lists it as resumable (the stored feed), not as a live session.
+            if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
-            from gateway.session_local_close import closed_and_unviewed
-            if closed_and_unviewed(self.authority, sid, handle):
-                # Closed by its last viewer and idle: main lists it as resumable (the stored
-                # feed), not as a live session.
-                continue
-            sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
+            sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
-                             'running': handle.execution_state == 'running'})
+                             'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
 
@@ -633,13 +623,15 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
-        display = {}
+        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+        from tui_gateway.tool_progress import _todo_state_from_history
+        history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
-                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
+                [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
+                'messages': history, **display, 'message_count': len(history),
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -647,7 +639,10 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info,
-                'pending_connection': pending_connection(self.authority, ref.session_id)}
+                'pending_connection': pending_connection(self.authority, ref.session_id),
+                # The newest todo result in the transcript, the snapshot the session's agent hydrates
+                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
+                'todo_state': _todo_state_from_history(history)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

@@ -664,7 +664,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -704,7 +704,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         with _kb.write_txn(conn):
             # Again under the write lock, after the kill wait: an interpreter that bound
             # meanwhile is invisible to the pid/claim CAS below.
-            if owner_reclaim_blocked(conn, tid):
+            if owner_reclaim_blocked_after_kill(conn, tid):
                 continue
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -779,7 +779,7 @@ def detect_stale_running(
         "WHERE t.status = 'running'"
     ).fetchall()
 
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -812,7 +812,7 @@ def detect_stale_running(
 
         with _kb.write_txn(conn):
             # Again under the write lock, after the termination wait (see enforce_max_runtime).
-            if owner_reclaim_blocked(conn, tid):
+            if owner_reclaim_blocked_after_kill(conn, tid):
                 continue
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(

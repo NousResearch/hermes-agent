@@ -162,6 +162,18 @@ def owner_reclaim_blocked(conn, task_id, *, crash_sweep=False) -> bool:
     return not owner_attempt_provably_over(conn, task_id)
 
 
+def owner_reclaim_blocked_after_kill(conn, task_id) -> bool:
+    """The under-lock re-check for a reclaim path that has just signalled the run's worker.
+
+    Killing the worker takes its bound interpreter down with it (``_watch_submitter``), and the
+    owner then settles the admission ``unknown``: a pause this path caused itself, which would
+    leave a timed-out run for the crash sweep to misbook ``crashed``. Only an interpreter that is
+    still LIVE (one that bound after the first look) keeps the claim; a dead bound interpreter is
+    the one this path just stopped.
+    """
+    return owner_reclaim_blocked(conn, task_id, crash_sweep=True)
+
+
 def managed_run_exit_code(conn, task_id, worker_pid, claim_lock):
     """The exit code a managed run's authority recorded for the task's CURRENT run, else None.
 

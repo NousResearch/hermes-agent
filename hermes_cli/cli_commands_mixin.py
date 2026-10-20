@@ -80,16 +80,6 @@ def _ellipsize(text: str, limit: int) -> str:
 
 # Small data tables.
 
-# /cron flag tables: flag -> opts key. Order-sensitive in _parse_cron_flags: bool flags never
-# consume a value; --repeat is int-validated separately.
-_CRON_BOOL_FLAGS = {"--clear-skills": "clear_skills", "--all": "all"}
-_CRON_LIST_FLAGS = {"--skill": "skills", "--add-skill": "add_skills", "--remove-skill": "remove_skills"}
-_CRON_VALUE_FLAGS = {"--name": "name", "--deliver": "deliver", "--prompt": "prompt", "--schedule": "schedule"}
-# /cron subcommand -> CLICommandsMixin method name.
-_CRON_SUBCOMMANDS = {
-    "list": "_cron_list", "add": "_cron_add", "create": "_cron_add", "edit": "_cron_edit",
-    **{k: "_cron_job_action" for k in ("pause", "resume", "run", "remove", "rm", "delete")}}
-
 _ON_WORDS = {"on", "enable", "true", "1"}
 _OFF_WORDS = {"off", "disable", "false", "0"}
 
@@ -183,47 +173,6 @@ def _cron_api(**kwargs) -> dict:
     """Call the cronjob model tool and decode its JSON reply."""
     from tools.cronjob_tools import cronjob as cronjob_tool
     return json.loads(cronjob_tool(**kwargs))
-
-
-def _normalize_skills(values) -> list:
-    """Strip, drop empties, and dedupe (order-preserving)."""
-    normalized = []
-    for value in values:
-        text = str(value or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
-
-
-def _parse_cron_flags(tokens):
-    """Parse /cron flags into an opts dict (None after printing an error for a bad --repeat)."""
-    opts = {
-        "name": None, "deliver": None, "repeat": None, "prompt": None, "schedule": None,
-        "skills": [], "add_skills": [], "remove_skills": [],
-        "clear_skills": False, "all": False, "positionals": []}
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        has_value = i + 1 < len(tokens)
-        if token in _CRON_BOOL_FLAGS:
-            opts[_CRON_BOOL_FLAGS[token]] = True
-            i += 1
-        elif token in _CRON_LIST_FLAGS and has_value:
-            opts[_CRON_LIST_FLAGS[token]].append(tokens[i + 1])
-            i += 2
-        elif token == "--repeat" and has_value:
-            try:
-                opts["repeat"] = int(tokens[i + 1])
-            except ValueError:
-                return print(_t("cron.repeat_must_be_integer"))
-            i += 2
-        elif token in _CRON_VALUE_FLAGS and has_value:
-            opts[_CRON_VALUE_FLAGS[token]] = tokens[i + 1]
-            i += 2
-        else:
-            opts["positionals"].append(token)
-            i += 1
-    return opts
 
 
 # Session-switch plumbing shared by /resume and /branch.
@@ -641,9 +590,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Print a diff, capped at ``limit`` lines (of ``total`` when its sender cut it) with a pointer to the --stat form."""
         print()
         diff_lines = diff.splitlines()
-        if (total := max(total, len(diff_lines))) > limit:
-            self._print_diff_text("\n".join(diff_lines[:limit]))
-            print(f"\n  {_t('diff.more_lines', count=total - limit, hint=stat_hint)}")
+        if (total := max(total, len(diff_lines))) > len(shown := diff_lines[:limit]):
+            self._print_diff_text("\n".join(shown))
+            print(f"\n  {_t('diff.more_lines', count=total - len(shown), hint=stat_hint)}")
         else:
             self._print_diff_text(diff)
 
@@ -1334,106 +1283,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /cron ----------------------------------------------------------------------------
     def _handle_cron_command(self, cmd: str):
-        """Handle the /cron command to manage scheduled tasks."""
-        tokens = shlex.split(cmd)
-        if len(tokens) == 1:
-            return self._cron_overview()
-        subcommand = tokens[1].lower()
-        opts = _parse_cron_flags(tokens[2:])
-        if opts is None:
-            return
-        handler = _CRON_SUBCOMMANDS.get(subcommand)
-        if handler is None:
-            return _pr(_t("cron.unknown_command", subcommand=subcommand), f"  {_t('cron.available')}")
-        getattr(self, handler)(subcommand, opts)
-
-    def _cron_overview(self) -> None:
-        from hermes_cli.cli_cron_lines import cron_overview_lines
-        _pr(*cron_overview_lines())
-
-    def _cron_list(self, subcommand: str, opts: dict) -> None:
-        from hermes_cli.cli_cron_lines import cron_list_lines
-        _pr(*cron_list_lines(include_disabled=opts["all"]))
-
-    def _cron_add(self, subcommand: str, opts: dict) -> None:
-        positionals = opts["positionals"]
-        if not positionals:
-            return print(_t("cron.usage_add"))
-        schedule = opts["schedule"] or positionals[0]
-        prompt = opts["prompt"] or " ".join(positionals[1:])
-        skills = _normalize_skills(opts["skills"])
-        if not prompt and not skills:
-            return print(_t("cron.need_prompt_or_skill"))
-        result = _cron_api(
-            action="create", schedule=schedule, prompt=prompt or None, name=opts["name"],
-            deliver=opts["deliver"], repeat=opts["repeat"], skills=skills or None)
-        if not result.get("success"):
-            return print(_t("cron.create_failed", error=result.get("error")))
-        _pr(_t("cron.created", job_id=result["job_id"]),
-            f"  {_t('cron.schedule', schedule=result['schedule'])}")
-        if result.get("skills"):
-            print(f"  {_t('cron.skills', skills=', '.join(result['skills']))}")
-        print(f"  {_t('cron.next_run', value=result['next_run_at'])}")
-
-    def _cron_edit(self, subcommand: str, opts: dict) -> None:
-        from cron import get_job
-        positionals = opts["positionals"]
-        if not positionals:
-            return print(_t("cron.usage_edit"))
-        job_id = positionals[0]
-        existing = get_job(job_id)
-        if not existing:
-            return print(_t("cron.job_not_found", job_id=job_id))
-        # Skill edit precedence: --clear-skills > --skill (replace) > --add/--remove (merge) > untouched.
-        final_skills = None
-        replacement_skills = _normalize_skills(opts["skills"])
-        add_skills = _normalize_skills(opts["add_skills"])
-        remove_skills = set(_normalize_skills(opts["remove_skills"]))
-        if opts["clear_skills"]:
-            final_skills = []
-        elif replacement_skills:
-            final_skills = replacement_skills
-        elif add_skills or remove_skills:
-            existing_skills = list(
-                existing.get("skills") or ([existing["skill"]] if existing.get("skill") else []))
-            final_skills = [skill for skill in existing_skills if skill not in remove_skills]
-            final_skills += [skill for skill in add_skills if skill not in final_skills]
-        result = _cron_api(
-            action="update", job_id=job_id, schedule=opts["schedule"], prompt=opts["prompt"],
-            name=opts["name"], deliver=opts["deliver"], repeat=opts["repeat"], skills=final_skills)
-        if not result.get("success"):
-            return print(_t("cron.update_failed", error=result.get("error")))
-        job = result["job"]
-        _pr(_t("cron.updated", job_id=job["job_id"]), f"  {_t('cron.schedule', schedule=job['schedule'])}",
-            f"  {_t('cron.skills', skills=', '.join(job['skills']))}" if job.get("skills")
-            else f"  {_t('cron.skills_none')}")
-
-    def _cron_job_action(self, subcommand: str, opts: dict) -> None:
-        """pause / resume / run / remove (aliases rm, delete) on one job id."""
-        positionals = opts["positionals"]
-        if not positionals:
-            return print(_t("cron.usage_action", subcommand=subcommand))
-        job_id = positionals[0]
-        action = "remove" if subcommand in {"remove", "rm", "delete"} else subcommand
-        result = _cron_api(action=action, job_id=job_id,
-                           reason="paused from /cron" if action == "pause" else None)
-        if not result.get("success"):
-            return print(_t(f"cron.{action}_failed", error=result.get("error")))
-        if action == "remove":
-            removed = result.get("removed_job", {})
-            return print(_t("cron.removed", name=removed.get("name", job_id), job_id=job_id))
-        job = result["job"]
-        if action == "run" and job.get("execution_skipped"):
-            # A refused run-now (claim lost, paused, gone) must not read as accepted.
-            return print(_t("cron.did_not_run", name=job["name"], job_id=job_id, reason=job["execution_skipped"]))
-        # One full template per action verb (cron.paused / cron.resumed / cron.triggered).
-        print(_t({"pause": "cron.paused", "resume": "cron.resumed", "run": "cron.triggered"}[action],
-                 name=job["name"], job_id=job_id))
-        if action == "resume":
-            print(f"  {_t('cron.next_run', value=job.get('next_run_at'))}")
-        elif action == "run":
-            from hermes_cli.cron import _run_outcome
-            print(f"  {_run_outcome(job)}")
+        """Handle the /cron command to manage scheduled tasks. Only without a gateway session: on the shared
+        gateway every /cron form runs there (hermes_cli/gateway_setting_commands.py)."""
+        from hermes_cli.cli_cron_lines import cron_command_lines
+        _pr(*cron_command_lines(_command_arg(cmd)))
 
     # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):

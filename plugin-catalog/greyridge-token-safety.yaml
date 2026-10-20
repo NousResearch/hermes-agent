@@ -1,0 +1,20 @@
+name: greyridge-token-safety
+repo: https://github.com/rezearcher/greyridge-token-safety-skill
+sha: d3586eb2488f14a69a41a394ab185d24bdab273d
+description: >-
+  Skill that runs a pre-trade safety check on Base ERC-20 tokens (honeypot/sellability,
+  measured transfer tax, owner/mint/pause flags, liquidity, SAFE/CAUTION/AVOID verdict)
+  by curling the Grey Ridge x402 API's free preview endpoint. Skill-only: no tools, hooks or env vars.
+maintainer: rezearcher
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/rezearcher/greyridge-token-safety-skill
+version: "0.1.0"
+known_issues:
+  - Base chain only; DEX buy/sell tax is not measured (only transferTaxBps). Free preview is rate-limited; unattended use needs the paid x402 route ($0.01/call).
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

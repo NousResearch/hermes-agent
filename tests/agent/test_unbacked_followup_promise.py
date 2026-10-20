@@ -18,6 +18,13 @@ import pytest
 from agent.turn_followup_promise import has_armed_wake_source, unbacked_promise_phrase
 
 
+@pytest.fixture(autouse=True)
+def empty_schedule_store():
+    """No /loop or /heartbeat rows by default; a missing store would read as unknown (armed)."""
+    with patch("hermes_cli.goals._get_session_db", return_value=SimpleNamespace(get_meta=lambda _key: None)):
+        yield
+
+
 class TestPromiseDetector:
     @pytest.mark.parametrize("text", [
         # Real reply tails that were never followed up.
@@ -28,6 +35,10 @@ class TestPromiseDetector:
         "A background watcher is following CI and the review bot; I'll report back when it finishes.",
         "Both reviews are running. I will report back with the merged, verified findings once both reviews return.",
         "Kicked off the build. I'll let you know when it's done.",
+        "I will check again tomorrow.",
+        "I will report back in ten minutes.",
+        # "if you" that does not make the follow-up wait on the user.
+        "I will report back when it finishes, if you are busy.",
     ])
     def test_flags_deferred_followups(self, text):
         assert unbacked_promise_phrase(text)
@@ -47,6 +58,13 @@ class TestPromiseDetector:
         "changed in the build, the cache behaviour and the lint baseline, with no further action needed from you. "
         "The release notes are attached, the changelog is updated, and the tag is pushed to the remote. Nothing "
         "else is pending on this branch and the worktree has been removed. Everything is green across all lanes.",
+        # ...and the same shape when the result is short.
+        "I will check again when it finishes. It finished: exit 0, all tests passed.",
+        "I will report back when it finishes. Result: the build passed; nothing remains.",
+        # Quoted, fenced or introduced text is not the model speaking.
+        'The log contains the text: "I will report back when it finishes."',
+        "```text\nI will report back when it finishes.\n```",
+        "The example reply is: I will report back when it finishes.",
         "",
     ])
     def test_ignores_non_promises(self, text):
@@ -90,23 +108,68 @@ class TestWakeSources:
     def test_live_background_delegation_counts(self, registry):
         with patch("tools.async_delegation.has_live_for_session", return_value=True) as live:
             assert has_armed_wake_source(_agent(), [])
-        live.assert_called_once_with(parent_session_id="sess-1")
+        live.assert_any_call(parent_session_id="sess-1")
 
-    def test_cron_scheduled_this_turn_counts(self, registry):
-        call = {"function": {"name": "tool_call", "arguments": json.dumps(
-            {"calls": [{"name": "cronjob_manage", "arguments": {"action": "create"}}]})}}
-        messages = [{"role": "user", "content": "x"}, {"role": "assistant", "tool_calls": [call]},
-                    {"role": "tool", "content": "ok"}]
-        assert has_armed_wake_source(_agent(), messages)
+    def test_delegation_dispatched_before_compression_rotation_counts(self, registry):
+        """The record keeps the pre-rotation id; the agent's id has moved on to the continuation."""
+        from tools import async_delegation as d
+        db = SimpleNamespace(get_compression_lineage=lambda sid: ["sess-0", "sess-1"])
+        saved = dict(d._records)
+        d._records["deleg_probe"] = {"status": "running", "parent_session_id": "sess-0"}
+        try:
+            assert has_armed_wake_source(_agent(_session_db=db), [])
+            # Without the lineage the same record is invisible: the guard would nag a correct promise.
+            assert not has_armed_wake_source(_agent(), [])
+        finally:
+            d._records.clear()
+            d._records.update(saved)
+
+    @staticmethod
+    def _cron_turn(action, result, *, bridged=False):
+        args = {"action": action, **({"schedule": "every 10m", "prompt": "check"} if action == "create" else {})}
+        if bridged:
+            fn = {"name": "tool_call", "arguments": json.dumps({"calls": [{"name": "cronjob_manage", "arguments": args}]})}
+        else:
+            fn = {"name": "cronjob", "arguments": json.dumps(args)}
+        return [{"role": "user", "content": "x"}, {"role": "assistant", "tool_calls": [{"id": "c1", "function": fn}]},
+                {"role": "tool", "tool_call_id": "c1", "content": json.dumps(result)}]
+
+    @pytest.mark.parametrize("bridged", [False, True])
+    def test_successful_cron_create_this_turn_counts(self, registry, bridged):
+        assert has_armed_wake_source(_agent(), self._cron_turn("create", {"success": True, "job_id": "j1"},
+                                                               bridged=bridged))
+
+    @pytest.mark.parametrize("action,result", [
+        ("list", {"success": True, "count": 0, "jobs": []}),
+        ("remove", {"success": True, "removed_job": {"id": "j1"}}),
+        ("create", {"error": "schedule is required for create", "success": False}),
+    ])
+    @pytest.mark.parametrize("bridged", [False, True])
+    def test_cron_call_that_arms_nothing_does_not_count(self, registry, action, result, bridged):
+        assert not has_armed_wake_source(_agent(), self._cron_turn(action, result, bridged=bridged))
 
     def test_cron_from_an_earlier_turn_does_not_count(self, registry):
-        call = {"function": {"name": "cronjob_manage", "arguments": "{}"}}
-        messages = [{"role": "assistant", "tool_calls": [call]}, {"role": "tool", "content": "ok"},
-                    {"role": "user", "content": "now what"}]
+        messages = [*self._cron_turn("create", {"success": True})[1:], {"role": "user", "content": "now what"}]
         assert not has_armed_wake_source(_agent(), messages)
 
     def test_unreadable_source_fails_open(self, registry):
         with patch("tools.async_delegation.has_live_for_session", side_effect=RuntimeError("registry down")):
+            assert has_armed_wake_source(_agent(), [])
+
+    def test_active_loop_counts_and_an_unreadable_schedule_store_fails_open(self, registry):
+        rows = {"loop:sess-1": json.dumps({"status": "active", "prompt": "check"})}
+        db = SimpleNamespace(get_meta=rows.get)
+        with patch("hermes_cli.goals._get_session_db", return_value=db):
+            assert has_armed_wake_source(_agent(), [])
+            rows["loop:sess-1"] = json.dumps({"status": "cleared"})
+            assert not has_armed_wake_source(_agent(), [])
+
+        def unavailable(_key):
+            raise RuntimeError("DB unavailable")
+
+        with patch("hermes_cli.goals._get_session_db", return_value=SimpleNamespace(get_meta=unavailable)):
+            assert has_armed_wake_source(_agent(), [])
+        with patch("hermes_cli.goals._get_session_db", return_value=None):
             assert has_armed_wake_source(_agent(), [])
 
 

@@ -43,7 +43,9 @@ async def _build_profile_authority(runner, name, home, *, register):
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = getattr(runner._session_db, '_db', runner._session_db)
-        if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        if db is None:
+            raise RuntimeError(await asyncio.to_thread(_store_open_failure, home))
+        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
         try:
@@ -54,6 +56,20 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise
     registry.replace(home, authority)
     return authority
+
+
+def _store_open_failure(home):
+    """Why *home*'s ``state.db`` has no handle: the scoped handle cache answers None for a failed open
+    (and while it backs off), so the park reason named an ownership mismatch over the real cause, a
+    legacy store that crashed its migration on every open (#141467)."""
+    from hermes_state_registry import acquire, release
+    path = home / 'state.db'
+    try:
+        release(acquire(path))
+    except Exception as exc:  # any open failure is the reason; the traceback goes to the log
+        logger.warning("Session store %s did not open", path, exc_info=True)
+        return f'{path} did not open: {type(exc).__name__}: {exc}'
+    return f'{path} is unavailable (its last open failed; retry pending)'
 
 
 def _park_reserved_profile(runner, name, home, exc):

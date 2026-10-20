@@ -429,6 +429,118 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert name == "please help"
 
 
+_ARCHIVE_ENV = "DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION"
+
+
+def _auto_thread_message(*, direct_fails=False):
+    thread = SimpleNamespace(id=999, name="help")
+    seed_msg = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+    message = SimpleNamespace(
+        content="please help",
+        create_thread=AsyncMock(
+            side_effect=RuntimeError("boom") if direct_fails else None,
+            return_value=thread,
+        ),
+        channel=SimpleNamespace(send=AsyncMock(return_value=seed_msg)),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+    return message, seed_msg
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_archive_duration_defaults_to_1440(adapter, monkeypatch):
+    monkeypatch.delenv(_ARCHIVE_ENV, raising=False)
+    message, _ = _auto_thread_message()
+
+    await adapter._auto_create_thread(message)
+
+    assert message.create_thread.await_args[1]["auto_archive_duration"] == 1440
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["10080", "60", "4320"])
+async def test_auto_create_thread_archive_duration_honours_valid_env(adapter, monkeypatch, value):
+    monkeypatch.setenv(_ARCHIVE_ENV, value)
+    message, _ = _auto_thread_message()
+
+    await adapter._auto_create_thread(message)
+
+    assert message.create_thread.await_args[1]["auto_archive_duration"] == int(value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["abc", "", "1.5", "30", "0", "-60", "99999"])
+async def test_auto_create_thread_archive_duration_invalid_falls_back(
+    adapter, monkeypatch, caplog, value
+):
+    monkeypatch.setenv(_ARCHIVE_ENV, value)
+    message, _ = _auto_thread_message()
+
+    with caplog.at_level("WARNING"):
+        await adapter._auto_create_thread(message)  # must not raise
+
+    assert message.create_thread.await_args[1]["auto_archive_duration"] == 1440
+    assert any(_ARCHIVE_ENV in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_seed_fallback_uses_same_archive_duration(adapter, monkeypatch):
+    monkeypatch.setenv(_ARCHIVE_ENV, "4320")
+    message, seed_msg = _auto_thread_message(direct_fails=True)
+
+    await adapter._auto_create_thread(message)
+
+    assert message.create_thread.await_args[1]["auto_archive_duration"] == 4320
+    seed_msg.create_thread.assert_awaited_once()
+    assert seed_msg.create_thread.await_args[1]["auto_archive_duration"] == 4320
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_seed_fallback_invalid_env_uses_1440(adapter, monkeypatch):
+    monkeypatch.setenv(_ARCHIVE_ENV, "not-a-number")
+    message, seed_msg = _auto_thread_message(direct_fails=True)
+
+    await adapter._auto_create_thread(message)
+
+    assert seed_msg.create_thread.await_args[1]["auto_archive_duration"] == 1440
+
+
+def test_apply_yaml_config_bridges_auto_thread_archive_duration(monkeypatch):
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+
+    monkeypatch.delenv(_ARCHIVE_ENV, raising=False)
+    _apply_yaml_config({}, {"auto_thread_auto_archive_duration": 10080})
+
+    import os
+    assert os.environ[_ARCHIVE_ENV] == "10080"
+    monkeypatch.delenv(_ARCHIVE_ENV, raising=False)
+
+
+def test_apply_yaml_config_env_wins_over_yaml_archive_duration(monkeypatch):
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+
+    monkeypatch.setenv(_ARCHIVE_ENV, "60")
+    _apply_yaml_config({}, {"auto_thread_auto_archive_duration": 10080})
+
+    import os
+    assert os.environ[_ARCHIVE_ENV] == "60"
+
+
+@pytest.mark.asyncio
+async def test_yaml_archive_duration_reaches_both_thread_paths(adapter, monkeypatch):
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+
+    monkeypatch.delenv(_ARCHIVE_ENV, raising=False)
+    _apply_yaml_config({}, {"auto_thread_auto_archive_duration": 4320})
+    try:
+        message, seed_msg = _auto_thread_message(direct_fails=True)
+        await adapter._auto_create_thread(message)
+        assert message.create_thread.await_args[1]["auto_archive_duration"] == 4320
+        assert seed_msg.create_thread.await_args[1]["auto_archive_duration"] == 4320
+    finally:
+        monkeypatch.delenv(_ARCHIVE_ENV, raising=False)
+
+
 @pytest.mark.asyncio
 async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     thread = SimpleNamespace(

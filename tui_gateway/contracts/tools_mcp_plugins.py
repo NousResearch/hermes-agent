@@ -626,7 +626,8 @@ class PluginsAction(WireEnum):
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
-    that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
+    that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose
+    security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
     ``presence``: ``names`` (catalog names, answered in that order)."""
 
@@ -707,6 +708,9 @@ class AgentPluginRow(Result):
     catalog_sha: str | None = None
     catalog_version: str | None = None
     update_available: bool | None = None
+    # git installs: what the last update check found to move to, a commit or a feed version
+    # (``update_available`` is then True).
+    update_target: str | None = None
     pinned_sha: str | None = None
     settings_schema: list[PluginSettingField] | None = None
 
@@ -775,6 +779,17 @@ class CatalogPluginPresence(Result):
     disclosure: str
 
 
+class PluginScanFinding(Result):
+    """One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked."""
+
+    pattern_id: str
+    severity: str
+    category: str
+    file: str
+    line: int
+    description: str
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
@@ -782,7 +797,8 @@ class PluginsManageResult(Result):
     running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
     live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
     ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the
-    client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus
+    client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /
+    ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus
     ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``."""
 
     plugins: list[AgentPluginRow] | None = None
@@ -809,6 +825,11 @@ class PluginsManageResult(Result):
     consent_required: bool | None = None
     delta: dict[str, list[str]] | None = None
     delta_lines: list[str] | None = None
+    # ``update`` of a git install whose new code the security scan blocked: nothing changed. A ``caution``
+    # verdict can be retried with ``force`` once the user saw ``scan_findings``; ``dangerous`` cannot.
+    scan_blocked: bool | None = None
+    scan_verdict: str | None = None
+    scan_findings: list[PluginScanFinding] | None = None
     error: str | None = None
     written: list[str] | None = None
     # ``onboarding`` → the curated catalog plugins for the onboarding card.

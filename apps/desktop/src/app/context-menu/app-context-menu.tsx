@@ -8,6 +8,8 @@ import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
+import { playSpeechText } from '@/lib/voice-playback'
+import { requestComposerInsert } from '@/app/chat/composer/focus'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -182,6 +184,36 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     withEditableFocus(() => void window.hermesDesktop?.contextMenuSpellcheck?.(action))
   }
 
+  // Speak the selected text using the existing TTS infrastructure. The menu
+  // closes first so the radix focus trap unmounts; speech is fire-and-forget
+  // and does not need focus restored.
+  const speakSelection = (text: string) => {
+    closeContextMenu()
+    void playSpeechText(text, { source: 'read-aloud' })
+  }
+
+  // Search the web for the selected text in the in-app preview pane.
+  const searchWeb = (query: string) => {
+    closeContextMenu()
+    const url = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`
+    openPreview({ kind: 'url', label: hostPathLabel(url), source: url, url })
+  }
+
+  // Define the selected word via DuckDuckGo's define endpoint in the in-app
+  // preview pane. On macOS a future enhancement could open the native
+  // Dictionary popup by allowing the x-apple:// scheme in external-open.ts.
+  const defineWord = (word: string) => {
+    closeContextMenu()
+    const url = `https://duckduckgo.com/?q=define+${encodeURIComponent(word)}`
+    openPreview({ kind: 'url', label: hostPathLabel(url), source: url, url })
+  }
+
+  // Insert the selected text into the composer draft.
+  const addToChat = (text: string) => {
+    closeContextMenu()
+    requestComposerInsert(text, { mode: 'inline' })
+  }
+
   if (linkUrl) {
     sections.push(
       [
@@ -346,15 +378,67 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         shortcut={EDIT_SHORTCUTS.selectAll}
       />
     ])
+    if (canCutCopy) {
+      const isSingleWord = !/\s/.test(target.selectionText.trim())
+      sections.push([
+        <Item
+          icon="unmute"
+          key="edit-speak"
+          label={copy.edit.speakSelection}
+          onSelect={() => speakSelection(target.selectionText)}
+        />,
+        <Item
+          icon="search"
+          key="edit-search-web"
+          label={copy.edit.searchWeb(target.selectionText.trim())}
+          onSelect={() => searchWeb(target.selectionText.trim())}
+        />,
+        isSingleWord ? (
+          <Item
+            icon="book"
+            key="edit-define"
+            label={copy.edit.define}
+            onSelect={() => defineWord(target.selectionText.trim())}
+          />
+        ) : null
+      ].filter(Boolean))
+    }
   } else if (target.selectionText) {
+    const isSingleWord = !/\s/.test(target.selectionText.trim())
     sections.push([
       <Item
         icon="copy"
         key="selection-copy"
         label={t.common.copy}
         onSelect={() => void writeClipboardText(target.selectionText)}
+      />,
+      <Item
+        icon="unmute"
+        key="selection-speak"
+        label={copy.edit.speakSelection}
+        onSelect={() => speakSelection(target.selectionText)}
+      />,
+      <Item
+        icon="search"
+        key="selection-search-web"
+        label={copy.edit.searchWeb(target.selectionText.trim())}
+        onSelect={() => searchWeb(target.selectionText.trim())}
+      />,
+      isSingleWord ? (
+        <Item
+          icon="book"
+          key="selection-define"
+          label={copy.edit.define}
+          onSelect={() => defineWord(target.selectionText.trim())}
+        />
+      ) : null,
+      <Item
+        icon="comment"
+        key="selection-add-to-chat"
+        label={copy.edit.addToChat}
+        onSelect={() => addToChat(target.selectionText.trim())}
       />
-    ])
+    ].filter(Boolean))
   }
 
   return sections

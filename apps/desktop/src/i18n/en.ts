@@ -3486,6 +3486,7 @@ export const en: Translations = {
     removeAttachment: label => `Remove ${label}`,
     dictating: 'Dictating',
     preparingAudio: 'Preparing audio',
+    paused: 'Paused',
     speakingResponse: 'Speaking response',
     readingAloud: 'Reading aloud',
     themeSuggestions: 'Desktop theme suggestions',
@@ -4470,7 +4471,11 @@ export const en: Translations = {
       cut: 'Cut',
       paste: 'Paste',
       selectAll: 'Select all',
-      addToDictionary: 'Add to dictionary'
+      addToDictionary: 'Add to dictionary',
+      speakSelection: 'Speak',
+      searchWeb: query => `Search the web for "${query}"`,
+      define: 'Define',
+      addToChat: 'Add to chat'
     },
     page: {
       copyPageUrl: 'Copy page URL',
@@ -4691,6 +4696,8 @@ export const en: Translations = {
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',
       stopReading: 'Stop reading',
+      pauseReading: 'Pause',
+      resumeReading: 'Resume',
       readAloud: 'Read aloud',
       copyFullResponse: 'Copy full response',
       readAloudFullResponseHint: 'Shift-click: read the full response',

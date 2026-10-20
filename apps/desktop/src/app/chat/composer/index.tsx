@@ -1161,7 +1161,9 @@ export function ChatBar({
         aria-label={t.composer.message}
         autoCapitalize="off"
         // Chromium's macOS text-replacement path shares the autocorrect gate.
-        // Keeping spellcheck off below still excludes smart quotes and dashes.
+        // spellCheck is now ON for accessibility (red squiggles + context-menu
+        // suggestions), while autoCorrect stays gated to keep smart quotes and
+        // dashes out of code input. The two are independent in Chromium.
         autoCorrect={isMacPlatform() ? 'on' : 'off'}
         className={cn(
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
@@ -1226,7 +1228,7 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck={false}
+        spellCheck
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />

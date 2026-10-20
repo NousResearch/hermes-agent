@@ -140,11 +140,12 @@ def build_gateway_parser(
         epilog="Exit codes: 0 attached; 2 invalid invocation; otherwise the exit code "
                "`hermes gateway ensure` gives the same verdict.")
     _flag(gateway_attach, "--json", help="Emit one JSON result (default)")
-    _flag(gateway_attach, "--start", help="Start the gateway when none serves this profile")
-    _flag(gateway_attach, "--recover",
+    attach_mode = gateway_attach.add_mutually_exclusive_group()
+    _flag(attach_mode, "--start", help="Start the gateway when none serves this profile")
+    _flag(attach_mode, "--recover",
         help="Discover first; start (or replace an older Hermes's) gateway only when it is not ready")
     gateway_attach.add_argument("--timeout", default="60",
-                                help="Total startup deadline in seconds for --start/--recover (default: 60)")
+                                help="Start deadline in seconds for --start/--recover (default: 60)")
     gateway_attach.set_defaults(func=cmd_gateway_attach)
 
     gateway_start = gateway_subparsers.add_parser(

@@ -10,6 +10,11 @@ too.
 ``tui`` is the one deliberate exception: the gateway never holds a ``tui``
 adapter because the TUI polls its own board's subscriptions
 (``tui_gateway/session_notifications.py``), so that skip is the designed path.
+
+The same silence has a second layer: ``_Collector.collect()`` returns before the
+per-subscription loop at all when the gateway holds no adapter, so on a box that
+lost every adapter the whole tick used to sit below DEBUG and no per-row warning
+could ever run. That stall is reported once per outage (never once per tick).
 """
 
 import logging
@@ -36,8 +41,12 @@ class RecordingAdapter:
         event._gateway_accepted = True
 
 
-def _runner(tmp_path, monkeypatch):
-    """A gateway that hosts exactly one platform (discord) for profile ``yuki``."""
+def _runner(tmp_path, monkeypatch, *, adapters=None):
+    """A gateway that hosts exactly one platform (discord) for profile ``yuki``.
+
+    ``adapters`` overrides the hosted set; pass ``{}`` for a gateway that has lost
+    every adapter (``_Collector.active_platforms`` then stays empty).
+    """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -46,7 +55,7 @@ def _runner(tmp_path, monkeypatch):
     profile.mkdir(parents=True)
     (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner.adapters = {Platform.DISCORD: RecordingAdapter()}
+    runner.adapters = {Platform.DISCORD: RecordingAdapter()} if adapters is None else adapters
     runner._profile_adapters = {"yuki": {}}
     runner._primary_profile_name = "default"
     runner._kanban_notifier_profile = "default"
@@ -118,3 +127,68 @@ def test_tui_subscription_skip_is_not_reported_as_unserved(tmp_path, monkeypatch
 
     assert rows == []
     assert not _warnings(caplog, tui_task)
+
+
+# --- Whole-tick stall: the gateway has lost every adapter ---------------------
+# ``_Collector.collect()`` returns before the per-subscription loop when
+# ``active_platforms`` is empty, so no ``_claim_for_sub`` warning above can run.
+# That skip must be visible at WARNING too — once per outage, never per tick.
+
+
+def _stalled(caplog):
+    return [r for r in caplog.records if r.levelno >= logging.WARNING and "skipping tick" in r.getMessage()]
+
+
+def test_gateway_with_no_connected_adapter_reports_the_stalled_tick(tmp_path, monkeypatch, caplog):
+    """Zero connected adapters used to leave the whole tick below DEBUG."""
+    monkeypatch.setattr(notifier, "_NO_ADAPTER_WARNED", False, raising=False)
+    runner = _runner(tmp_path, monkeypatch, adapters={})
+    waiting = _subscribe(platform="webui", chat="webui-session-1")
+
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        rows = _collect(runner)
+
+    # Delivery semantics unchanged: with no adapter nothing is claimed or delivered.
+    assert rows == []
+    stalled = _stalled(caplog)
+    assert len(stalled) == 1, f"a zero-adapter tick must not be silent: {[r.getMessage() for r in caplog.records]}"
+    message = stalled[0].getMessage()
+    assert "no connected adapter" in message
+    assert "reconnect" in message
+
+    # Cursors stay unclaimed: the row keeps its backlog for the reconnect.
+    with kbc.connect() as conn:
+        _cursor, events = kbn.unseen_events_for_sub(
+            conn, task_id=waiting, platform="webui", chat_id="webui-session-1", kinds=["completed"])
+        assert events, "the stalled row's terminal event is still unseen"
+
+    # Warn-once: repeated stalled ticks stay quiet instead of logging every 5s.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        _collect(runner)
+    assert _stalled(caplog) == []
+
+
+def test_stalled_tick_warning_tracks_the_outage_not_a_one_shot(tmp_path, monkeypatch, caplog):
+    """Once-per-outage, not once-per-process: a reconnect re-arms the warning."""
+    monkeypatch.setattr(notifier, "_NO_ADAPTER_WARNED", False, raising=False)
+    runner = _runner(tmp_path, monkeypatch, adapters={})
+    _subscribe(platform="webui", chat="webui-session-1")
+
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        _collect(runner)
+    assert len(_stalled(caplog)) == 1
+
+    # An adapter reconnects: the tick runs again and the stall is over.
+    caplog.clear()
+    runner.adapters = {Platform.DISCORD: RecordingAdapter()}
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        _collect(runner)
+    assert _stalled(caplog) == []
+
+    # A later outage is a NEW stall and is reported again.
+    caplog.clear()
+    runner.adapters = {}
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        _collect(runner)
+    assert len(_stalled(caplog)) == 1

@@ -162,6 +162,33 @@ _NON_ADAPTER_PLATFORMS = frozenset({"tui"})
 # One dead-route report per (task, platform, chat, thread) row.
 _UNSERVED_PLATFORM_WARNED: set[tuple] = set()
 
+# One whole-tick stall report per outage episode (re-armed once an adapter is back).
+_NO_ADAPTER_WARNED = False
+
+
+def _warn_no_adapters_once() -> None:
+    """A gateway holding no adapter at all skips the entire tick — ``collect()`` returns before the
+    per-subscription loop, so no ``_claim_for_sub`` dead-route warning can ever run and the stall
+    used to stay below DEBUG (#140268). Report it ONCE per outage, not once per 5s tick (the flag
+    clears on the first tick that has an adapter), and say what is NOT at risk: nothing is claimed
+    and no cursor moves, so every row keeps its backlog and delivers on reconnect.
+    """
+    global _NO_ADAPTER_WARNED
+    if _NO_ADAPTER_WARNED:
+        return
+    _NO_ADAPTER_WARNED = True
+    logger.warning(
+        "kanban notifier: no connected adapters on this gateway; skipping tick. Notify+wake "
+        "subscriptions cannot be claimed or delivered until an adapter reconnects; cursors stay "
+        "unclaimed, so their backlog is preserved and delivered on reconnect.",
+    )
+
+
+def _clear_no_adapter_warning() -> None:
+    """Re-arm ``_warn_no_adapters_once`` after the outage: a later total adapter loss is a NEW stall."""
+    global _NO_ADAPTER_WARNED
+    _NO_ADAPTER_WARNED = False
+
 
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
@@ -260,8 +287,14 @@ class _Collector:
 
     def collect(self) -> list[dict]:
         if not self.active_platforms:
+            # Nothing is served on this gateway, so the per-subscription loop below (and its
+            # dead-route warning) never runs: escalate the skip from DEBUG to a once-per-outage
+            # WARNING rather than leaving the tick silent (#140268). Unchanged semantics: no
+            # claim, no cursor movement — the backlog is kept and delivered on reconnect.
             logger.debug("kanban notifier: no connected adapters; skipping tick")
+            _warn_no_adapters_once()
             return self.deliveries
+        _clear_no_adapter_warning()
         # Poll each resolved DB path once: several slugs can map to one DB when
         # HERMES_KANBAN_DB pins the board path. The whole tick resolves pin-first:
         # on a dispatcher-pinned box each enumerated slug must map to the pinned

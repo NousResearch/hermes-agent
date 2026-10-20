@@ -2512,11 +2512,6 @@ export const frOverrides = {
         unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
-      catalogTitle: 'Catalogue de plugins',
-      catalogBrowse: 'Parcourir',
-      catalogHide: 'Masquer le catalogue',
-      catalogHint:
-        'Utilisez « + Ajouter à cet agent » sur un plugin : les entrées vérifiées sont installées depuis leur commit épinglé dans le profil sélectionné.',
       alreadyInstalled: (name: string) => `${name} est déjà installé dans ce profil.`,
       catalogProvenance: (sha: string) =>
         `Installé depuis le catalogue Hermes${sha ? ` au commit épinglé ${sha}` : ''}.`,

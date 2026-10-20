@@ -2500,11 +2500,6 @@ export const esOverrides = {
         unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
-      catalogTitle: 'Catálogo de plugins',
-      catalogBrowse: 'Explorar',
-      catalogHide: 'Ocultar el explorador del catálogo',
-      catalogHint:
-        'Pulsa "+ Añadir a este agente" en cualquier plugin: las entradas revisadas se instalan en su commit fijado en el perfil seleccionado. Los plugins agente+escritorio incluidos ofrecen ambas mitades.',
       alreadyInstalled: (name: string) => `${name} ya está instalado en este perfil.`,
       catalogProvenance: (sha: string) =>
         `Instalado desde el catálogo de Hermes${sha ? ` en el commit fijado ${sha}` : ''}.`,

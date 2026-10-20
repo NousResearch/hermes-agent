@@ -1644,17 +1644,17 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-    # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
-    # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
+    # Telegram raw_response["partial_overflow"] tells the stream consumer to send the missing tail.
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
-    # Extra ids (send order) when a payload was split; ``message_id`` is then the LAST id so
-    # later edits target the newest chunk.
+    # Split payload ids in send order; message_id is LAST, so edits target the newest chunk.
     continuation_message_ids: tuple = ()
-    # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
-    # branch without substring-matching ``error``.
+    # SEND_ERROR_KINDS (failures only), via classify_send_error; no error substring matching.
     error_kind: Optional[str] = None
+    # Strict whole-call guarantee: NO part of the payload was accepted by the provider,
+    # including earlier chunks/attempts; retryability/partial sends imply no such guarantee. Appended for compatibility.
+    known_unsent: bool = False
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the

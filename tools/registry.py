@@ -6,6 +6,7 @@ tools/*.py import it at module level; model_tools.py imports both; run_agent/cli
 model_tools."""
 
 import ast
+import copy
 import functools
 import importlib
 import inspect
@@ -477,6 +478,9 @@ class ToolRegistry:
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
         self._generation: int = 0
+        # Tool name -> [(profile scope, extender)]; keyed by name so a tool registering later still gets it.
+        self._schema_extenders: dict[str, list[tuple[Optional[str], Callable]]] = {}
+        self._schema_extender_warned: set[Callable] = set()
 
     @staticmethod
     def current_scope_key() -> str:
@@ -883,6 +887,52 @@ class ToolRegistry:
 
     # ---- Schema retrieval --------------------------------------------
 
+    def add_schema_extender(
+        self, name: str, extender: Callable[[dict], Optional[dict]], *, scope: Optional[str] = None,
+    ) -> Callable[[], None]:
+        """Attach *extender* to tool *name* for profile *scope* (``None``: every profile) and return
+        its remover. :meth:`get_definitions` hands it a deep copy of the resolved function schema
+        (after ``dynamic_schema_overrides`` and earlier extenders) and uses the dict it returns
+        (``None`` = unchanged). Adding or removing one bumps ``_generation``, which invalidates the
+        ``model_tools.get_tool_definitions`` memo; otherwise the memo recomputes only on another
+        registry change, a config.yaml stat change or a profile/toolset switch, so an extender whose
+        output depends on other state goes stale until then. Argument coercion
+        (``tools/arg_coercion.py``) still reads the static schema."""
+        item = (normalize_scope(scope), extender)
+        with self._lock:
+            self._schema_extenders.setdefault(name, []).append(item)
+            self._generation += 1
+
+        def remove() -> None:
+            with self._lock:
+                items = self._schema_extenders.get(name, [])
+                if item in items:
+                    items.remove(item)
+                    if not items:
+                        del self._schema_extenders[name]
+                    self._generation += 1
+        return remove
+
+    def _extend_schema(self, name: str, schema: dict) -> dict:
+        """Run *name*'s extenders for the active profile in order; one that raises, renames the tool
+        or returns a non-dict is skipped (warned once) and the schema stays as it was."""
+        scope = self.current_scope_key()
+        with self._lock:
+            extenders = [fn for s, fn in self._schema_extenders.get(name, ()) if s in (None, scope)]
+        for extender in extenders:
+            try:
+                extended = extender(copy.deepcopy(schema))
+                if extended is not None and (not isinstance(extended, dict) or extended.get("name") != name):
+                    raise ValueError("extender must return the schema dict with an unchanged 'name'")
+            except Exception:  # health: allow BLE001 -- plugin code; a broken extender must not drop the tool
+                if extender not in self._schema_extender_warned:
+                    self._schema_extender_warned.add(extender)
+                    logger.warning("schema extender for tool %s failed; skipping it", name, exc_info=True)
+                continue
+            if extended is not None:
+                schema = extended
+        return schema
+
     def get_definitions(self, tool_names: set[str], quiet: bool = False) -> list[dict]:
         """OpenAI-format schemas for the requested tools whose ``check_fn`` passes (or is
         absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
@@ -910,6 +960,8 @@ class ToolRegistry:
                         name, exc)
                 if isinstance(overrides, dict):
                     schema_with_name.update(overrides)
+            if name in self._schema_extenders:
+                schema_with_name = self._extend_schema(name, schema_with_name)
             result.append({"type": "function", "function": schema_with_name})
         return result
 

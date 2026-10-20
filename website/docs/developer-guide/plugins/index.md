@@ -889,6 +889,33 @@ def register(ctx):
 `dynamic_schema_overrides`, a zero-argument callback returning schema fields to merge when tool
 definitions are requested. Both use the same behavior as the built-in tool registry.
 
+**Extending another tool's schema.** `ctx.extend_tool_schema(tool_name, extender)` changes what the
+model sees for a tool you don't own, built-in or from another plugin, so you don't need to register a
+second tool that does the same job. Each time tool definitions are built, `extender` gets a copy
+of the tool's full function schema (`{name, description, parameters}`, after the tool's own dynamic
+overrides). It returns the new schema, or `None` to leave it unchanged:
+
+```python
+def register(ctx):
+    def add_model_role(schema):
+        task = schema["parameters"]["properties"]["tasks"]["items"]
+        task["properties"]["model_role"] = {"type": "string", "enum": ["fast", "smart"]}
+        return schema
+
+    ctx.extend_tool_schema("delegate_task", add_model_role)
+```
+
+- Extenders run in registration order. One that raises, returns something that isn't a dict, or
+  changes `name` is logged once and skipped; the schema stays as it was.
+- The extender is attached to the tool name, not to a registered tool, so it still applies if the
+  tool registers after your plugin. Unloading the plugin removes it.
+- Tool definitions are cached. They are rebuilt when any tool or extender is added or removed, when
+  `config.yaml` changes, or when the profile or toolset selection changes. If your extender reads
+  other state, its output can stay stale until one of those things happens.
+- Only the advertised schema changes. Argument type coercion still uses the tool's registered
+  schema, so a field you add arrives exactly as the model sent it. The tool's handler, or your
+  `pre_tool_call` hook, has to read it.
+
 **`dispatch_tool` example — a slash command that runs a tool:**
 
 ```python

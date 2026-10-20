@@ -473,6 +473,8 @@ def cmd_fanout(args) -> None:
             f"result card; a public property/address record with no displayed personal NAME is "
             f"not_found, not found). Record each outcome via `pdd.py record {args.subject} <broker> "
             f"<found|not_found|indirect_exposure|blocked> --found <bool> --evidence '{{\"listing_urls\":[...]}}'`. "
+            f"Return the exact intended state/evidence and the `record` command result for every broker; "
+            f"the parent will independently read its own ledger with `pdd.py show`. "
             f"Mode: {mode}. Broker JSON files are READ-ONLY for you -- do NOT edit them; if you discover "
             f"a URL/quirk, put it in your report for the parent to fold in. Return a concise structured "
             f"per-broker report."
@@ -488,7 +490,11 @@ def cmd_fanout(args) -> None:
         "instruction": (
             "If should_fanout is true you MUST spawn ONE delegate_task subagent per batch IN PARALLEL, "
             "passing each batch's `brief`; do not scan all brokers yourself sequentially. Wait for every "
-            "report, consolidate, then proceed to opt-outs. If false, just scan the brokers inline."
+            f"report, then FROM THE PARENT PROCESS run `pdd.py show {args.subject} <broker>` for every "
+            "returned verdict and compare state, found, and evidence. A worker's own readback does not "
+            "prove it wrote the parent's PDD_DATA_DIR/HERMES_HOME. Treat a missing or mismatched parent "
+            "record as a failed write and do not proceed to opt-outs for that broker. If false, just "
+            "scan the brokers inline."
         ),
     })
 

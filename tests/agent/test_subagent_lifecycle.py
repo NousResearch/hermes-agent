@@ -15,6 +15,7 @@ from agent.subagent_lifecycle import (
     bind_subagent_parent,
     get_active_subagent_parent,
 )
+from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
 
 class FakeChild:
@@ -283,6 +284,18 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
     handle = service.launch(SubagentLaunchRequest(goal="route", model="request-model"))
     assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
     assert build.call_args.kwargs["model"] == "request-model"
+
+
+@pytest.mark.parametrize(
+    ("cfg", "expected"), [({"max_iterations": 7}, 7), ({}, DEFAULT_MAX_ITERATIONS)], ids=["configured", "unset-default"],
+)
+@pytest.mark.parametrize("request_provider", [None, "openrouter"])
+def test_launch_uses_delegation_max_iterations(routing_lifecycle, cfg, expected, request_provider):
+    service, build, config, _resolve = routing_lifecycle
+    config.return_value = cfg
+    handle = service.launch(SubagentLaunchRequest(goal="budget", provider=request_provider))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["max_iterations"] == expected
 
 
 @pytest.mark.parametrize("wire", [False, True])

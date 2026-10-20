@@ -398,7 +398,8 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, dict[str, Any]]:
 
 
 def _build_anthropic_client_with_bearer_hook(
-    token_provider, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False
+    token_provider, base_url: str | None = None, timeout: float | None = None, *,
+    drop_context_1m_beta: bool = False, follow_redirects: bool | None = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
@@ -408,6 +409,7 @@ def _build_anthropic_client_with_bearer_hook(
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
+    from agent.process_bootstrap import provider_redirect_hooks
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     # A key_cmd on the native host can print a Console API key, which (as in the static path's
     # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer. The
@@ -415,6 +417,8 @@ def _build_anthropic_client_with_bearer_hook(
     # between OAuth and a Console key mid-session needs a client rebuild.
     kwargs["http_client"] = build_bearer_http_client(
         token_provider, timeout=kwargs["timeout"],
+        **({"follow_redirects": follow_redirects} if follow_redirects is not None else {}),
+        event_hooks=provider_redirect_hooks(follow_redirects),
         sends_as_api_key=(lambda token: not _is_oauth_token(token)) if is_native_anthropic_host(base_url) else None,
     )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
@@ -487,20 +491,33 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
+def build_anthropic_client(
+    api_key, base_url: str | None = None, timeout: float | None = None, *,
+    drop_context_1m_beta: bool = False, follow_redirects: bool | None = None,
+):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
     (connect stays 10s). ``drop_context_1m_beta`` strips ``context-1m-2025-08-07`` from the
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
-    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
+    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability.
+    ``follow_redirects=None`` retains SDK defaults (True for static keys, False for
+    callable-key HTTPX clients); explicit True enables same-origin-only redirects."""
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
+            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta,
+            follow_redirects=follow_redirects,
         )
     normalize_proxy_env_vars()
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
+    if follow_redirects is not None:
+        from agent.process_bootstrap import provider_redirect_hooks
+        # Keep SDK pool/timeout defaults; a bare HTTPX client silently changes both.
+        kwargs["http_client"] = sdk.DefaultHttpxClient(
+            timeout=kwargs["timeout"], follow_redirects=follow_redirects,
+            event_hooks=provider_redirect_hooks(follow_redirects),
+        )
     if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
         kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)

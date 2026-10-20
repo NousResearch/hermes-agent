@@ -333,6 +333,7 @@ from plugins.platforms.telegram.telegram_markdown import (
     degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
+from plugins.platforms.telegram.rich_parts import send_rich_parts
 
 
 def _strip_mdv2(text: str) -> str:
@@ -1236,9 +1237,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""
         return bool(getattr(self, "_rich_messages_enabled", True))
 
-    def _rich_content_ok(self, content: str) -> bool:
+    def _rich_content_ok(self, content: str, *, check_size: bool = True) -> bool:
         """Shape checks shared by rich sends and rich drafts (non-blank, no Desktop crash/garble
-        shapes, under the cap, async-capable bot)."""
+        shapes, async-capable bot; ``check_size=False`` applies the cap per part — ``rich_parts``)."""
         return bool(
             content and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
@@ -1246,7 +1247,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 getattr(self, "_allow_cjk_rich_messages", False)
                 or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
             )
-            and self._content_fits_rich_limits(content)
+            and (not check_size or self._content_fits_rich_limits(content))
             and self._bot_supports_rich())
 
     def _rich_eligible(self, content: str) -> bool:
@@ -3446,12 +3447,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
-            if self._should_attempt_rich(content, metadata=metadata):
-                rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
-                if rich_result is not None:
-                    if rich_result.success:
-                        await self._retrigger_typing(chat_id, metadata)
-                    return rich_result
+            rich_result = await send_rich_parts(self, chat_id, content, reply_to, metadata)
+            if rich_result is not None:
+                if rich_result.success:
+                    await self._retrigger_typing(chat_id, metadata)
+                return rich_result
             # Entities cut by a split are closed and reopened; the (N/M) markers come back MarkdownV2-escaped.
             chunks = split_formatted_mdv2(self.format_message(content), self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len)
             return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)

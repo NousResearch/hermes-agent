@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 from hermes_state import SessionDB
-from gateway.config import Platform, GatewayConfig, PlatformConfig
+from gateway.config import Platform, GatewayConfig, PlatformConfig, HomeChannel
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionEntry,
@@ -56,7 +56,84 @@ class TestSessionSourceRoundtrip:
 
 
 class TestBuildSessionContextPrompt:
+    def test_telegram_prompt_contains_platform_and_chat(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="fake-token",
+                    home_channel=HomeChannel(
+                        platform=Platform.TELEGRAM,
+                        chat_id="111",
+                        name="Home Chat",
+                    ),
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="111",
+            chat_name="Home Chat",
+            chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
 
+        assert "Telegram" in prompt
+        assert "Home Chat" in prompt
+        assert "**Telegram Chat ID:** 111" in prompt
+        assert f"**Telegram Chat Type:** {json.dumps('dm')}" in prompt
+        assert "Telegram Thread ID" not in prompt
+
+    def test_telegram_prompt_includes_stable_chat_identity_not_message_id(self):
+        """Telegram routing keys must be in the cached prompt; message_id must not.
+
+        Display names are untrusted labels. Multi-group bots (one bot, several
+        rooms) need the numeric chat id to bind the turn. message_id changes
+        every turn and would bust the prompt cache, same as Discord.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token"),
+            },
+        )
+
+        def _prompt_for(msg_id, thread_id=None):
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="-1009998887776",
+                chat_name="Group Chat",
+                chat_type="group",
+                thread_id=thread_id,
+                message_id=msg_id,
+            )
+            ctx = build_session_context(source, config)
+            return build_session_context_prompt(ctx)
+
+        p1 = _prompt_for("1001", thread_id="99")
+        p2 = _prompt_for("2002", thread_id="99")
+        assert p1 == p2
+        assert "1001" not in p1 and "2002" not in p2
+        assert "**Telegram Chat ID:** -1009998887776" in p1
+        assert f"**Telegram Chat Type:** {json.dumps('group')}" in p1
+        assert "**Telegram Thread ID:** 99" in p1
+        assert "Group Chat" in p1
+
+    def test_discord_prompt_omits_telegram_chat_identity(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(enabled=True, token="fake-discord-token"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chan-1",
+            chat_name="Server",
+            chat_type="group",
+        )
+        prompt = build_session_context_prompt(build_session_context(source, config))
+        assert "Telegram Chat ID" not in prompt
+        assert "Telegram Chat Type" not in prompt
 
     def test_discord_prompt_stable_across_message_id(self):
         """The cached system prompt must NOT vary with the triggering message_id.

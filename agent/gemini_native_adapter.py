@@ -533,15 +533,18 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
 
 
-def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any) -> int:
+def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any, model: str = "") -> int:
     """Native ``maxOutputTokens``: an omitted/invalid cap becomes the published ceiling (Gemini
     truncates on its low internal default); an explicit cap is raised to the ceiling when
-    thinking is enabled so thoughts don't starve the answer."""
+    thinking is enabled so thoughts don't starve the answer. Gemini 3+ always thinks, so a
+    request with no thinking_config at all is treated as thinking: a small aux cap (100) is
+    otherwise spent entirely on thoughts and the answer comes back empty."""
     try:
         requested = int(max_tokens)
     except (TypeError, ValueError):
         requested = 0
-    if requested <= 0 or _thinking_requests_output_headroom(thinking_config):
+    always_thinks = not _normalize_thinking_config(thinking_config) and _gemini_version(model) >= (3, 0)
+    if requested <= 0 or always_thinks or _thinking_requests_output_headroom(thinking_config):
         return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
     return requested
 
@@ -579,7 +582,7 @@ def build_gemini_request(
     request: dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
-        ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
+        ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config, model)),
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )

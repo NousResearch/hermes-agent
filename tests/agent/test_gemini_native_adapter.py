@@ -1000,3 +1000,24 @@ def test_vertex_oauth_token_sent_as_bearer_but_api_keys_are_not(api_key, base_ur
     else:
         assert headers["x-goog-api-key"] == api_key
         assert "Authorization" not in headers
+
+
+@pytest.mark.parametrize(
+    ("model", "thinking_config", "expected"),
+    [
+        # Gemini 3+ always thinks: no thinking_config must not leave a small cap for thoughts to eat.
+        ("google/gemini-4-argon", None, "ceiling"),
+        ("gemini-3.8-flash", None, "ceiling"),
+        # Explicitly hidden thoughts keep the caller's small cap (title generation's budget).
+        ("gemini-4-argon", {"includeThoughts": False, "thinkingLevel": "low"}, 100),
+        # Pre-3 models without thinking_config keep the cap.
+        ("gemini-2.0-flash", None, 100),
+    ],
+)
+def test_small_cap_gets_thinking_headroom_on_always_thinking_models(model, thinking_config, expected):
+    from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, build_gemini_request
+
+    req = build_gemini_request(model=model, messages=[{"role": "user", "content": "hi"}],
+                               max_tokens=100, thinking_config=thinking_config)
+    want = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS if expected == "ceiling" else expected
+    assert req["generationConfig"]["maxOutputTokens"] == want

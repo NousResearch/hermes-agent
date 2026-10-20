@@ -46,6 +46,10 @@ def _clear_caches() -> None:
     config_mod._LOAD_CONFIG_CACHE.clear()
     config_mod._RAW_CONFIG_CACHE.clear()
     config_d.invalidate_config_d_cache()
+    # Report-once memos: a temp path is unique per test, but clearing keeps a test that reuses a
+    # path (or re-breaks it deliberately) honest about what the second call emits.
+    config_d._WARNED_DANGLING.clear()
+    config_d._WARNED_UNUSABLE_DIR.clear()
 
 
 def _drop_in_dir(home: Path) -> Path:
@@ -636,6 +640,44 @@ def test_unreadable_config_d_dir_is_reported_not_silent(home, caplog):
         assert str(d) in caplog.text  # the warning names the directory to fix
     finally:
         os.chmod(d, 0o755)  # pytest's tmp_path cleanup needs it back
+
+
+def test_config_d_that_is_a_regular_file_is_reported_not_silent(home, caplog, capsys):
+    """A regular FILE where the drop-in DIRECTORY belongs must be reported, not skipped silently.
+
+    `iterdir()` raises ENOTDIR for it, which is the same OSError the unlistable-directory branch
+    catches. Treating that as "absent" made a user's stray `config.d` file look like a normal
+    profile with no drop-ins — no override applied, and nothing said about it.
+    """
+    (home / "config.yaml").write_text("display:\n  skin: user_skin\n", encoding="utf-8")
+    (home / "config.d").write_text("display:\n  skin: i_am_a_file\n", encoding="utf-8")
+    with caplog.at_level(logging.ERROR, logger="hermes_cli.config_d"):
+        assert config_d.load_config_d() == {}  # no override can apply
+        assert config_d.load_config_d() == {}  # hot path runs again (signature probe)
+    assert str(home / "config.d") in caplog.text  # the report names the path to fix
+    assert "regular file, not a directory" in caplog.text
+    err = capsys.readouterr().err
+    assert "regular file, not a directory" in err  # and reaches the terminal
+    # Reported ONCE, not once per signature probe: the hot path would otherwise spam stderr.
+    assert err.count("regular file, not a directory") == 1
+    # Fail-open: the rest of the config still loads; only the drop-in layer is dead.
+    assert config_mod.load_config()["display"]["skin"] == "user_skin"
+
+
+@pytest.mark.platforms("posix")
+def test_config_d_that_is_a_dangling_symlink_is_reported_not_silent(home, caplog):
+    """A config.d symlink whose target is gone is present-but-unusable, not absent.
+
+    `exists()` follows the link and says False, so this needs the `is_symlink()` arm; without it
+    the moved-directory case reads as a normal profile with no drop-ins.
+    """
+    (home / "config.yaml").write_text("display:\n  skin: user_skin\n", encoding="utf-8")
+    (home / "config.d").symlink_to(home / "gone-config-d")
+    with caplog.at_level(logging.ERROR, logger="hermes_cli.config_d"):
+        assert config_d.load_config_d() == {}
+    assert str(home / "config.d") in caplog.text
+    assert "target has moved" in caplog.text  # its own fix, not the permissions advice
+    assert "regular file" not in caplog.text
 
 
 def test_save_config_never_persists_drop_in_keys(home):

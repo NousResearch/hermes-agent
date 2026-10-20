@@ -52,12 +52,61 @@ _CONFIG_D_CACHE: dict[str, tuple] = {}
 # Dangling-symlink paths already warned about: a moved shared drop-in would otherwise log on
 # every signature probe (the hot path stats the dir once per cached load).
 _WARNED_DANGLING: set[str] = set()
+# Present-but-unusable config.d PATHS already reported. config_d_files() runs on the hot path
+# (every signature probe), so an unguarded report here would echo the same 3-line warning to
+# stderr several times per single config load. Keyed by path so a repair-then-rebreak re-reports.
+_WARNED_UNUSABLE_DIR: set[str] = set()
 
 
 def get_config_d_dir(config_path: Optional[Path] = None) -> Path:
     """``<config.yaml's parent>/config.d``."""
     from hermes_cli.config import get_config_path
     return (config_path or get_config_path()).parent / "config.d"
+
+
+def _report_unusable_config_d_dir(d: Path, exc: OSError) -> None:
+    """Report (once per path) why a present-but-unusable config.d applied NO override.
+
+    Three causes reach here and each needs the fix that actually applies to it — telling the user
+    to chmod a regular file, or to move a dangling symlink "aside", sends them nowhere. All three
+    are fatal to the OVERLAY, not to startup: the caller returns an empty overlay (fail-open, as
+    the managed layer does), because one malformed config.d must not brick the config hot path.
+
+    Reported ONCE per path: ``config_d_files`` runs on the hot path (every signature probe), so
+    without this the same three lines reached stderr several times per config load.
+    """
+    if str(d) in _WARNED_UNUSABLE_DIR:
+        return
+    _WARNED_UNUSABLE_DIR.add(str(d))
+    if d.is_dir():
+        logger.error(
+            "config.d: %s exists but could not be listed (%s) — IGNORING every drop-in in it, so "
+            "NO config.d override is being applied. Fix the directory's permissions (or rename it "
+            "aside) and restart.", d, exc, exc_info=True)
+        _warn_to_terminal(
+            f"hermes config.d: {d} exists but could not be listed — IGNORING every drop-in in it, "
+            "so NO config.d override is being applied. Fix the directory's permissions (or rename "
+            "it aside) and restart.")
+    elif d.is_symlink():
+        # No ``%s`` for the exception here: FileNotFoundError's own text repeats the path, which
+        # buried the sentence it was spliced into.
+        logger.error(
+            "config.d: %s is a symlink whose target has moved — IGNORING every drop-in, so NO "
+            "config.d override is being applied. Re-point it at the shared drop-in directory (or "
+            "remove it) and restart.", d, exc_info=True)
+        _warn_to_terminal(
+            f"hermes config.d: {d} is a symlink whose target has moved — IGNORING every drop-in, "
+            "so NO config.d override is being applied. Re-point it at the shared drop-in directory "
+            "(or remove it) and restart.")
+    else:
+        logger.error(
+            "config.d: %s exists but is a regular file, not a directory — IGNORING it, so NO "
+            "config.d override is being applied. Move it aside or make it a directory of *.yaml "
+            "files, then restart.", d, exc_info=True)
+        _warn_to_terminal(
+            f"hermes config.d: {d} exists but is a regular file, not a directory — IGNORING it, so "
+            "NO config.d override is being applied. Move it aside or make it a directory of *.yaml "
+            "files, then restart.")
 
 
 def config_d_files(d: Path) -> list[Path]:
@@ -67,17 +116,17 @@ def config_d_files(d: Path) -> list[Path]:
     files only — ``is_file()`` follows symlinks, the core use case (a shared drop-in symlinked
     from ``~/agents/``), and skips directories named ``*.yaml``. A DANGLING symlink is warned
     about once and skipped.
+
+    An ABSENT path is the common case and stays silent. A path that exists but cannot be used as a
+    directory (unreadable, or a regular file where the directory belongs) applies NO override, so
+    it is reported loudly — the same failure class, never skipped in silence.
     """
     try:
         entries = sorted(d.iterdir(), key=lambda p: p.name)
     except OSError as exc:
-        if not d.is_dir():
-            return []  # absent dir: an empty overlay, the common case
-        logger.error(
-            "config.d: %s exists but could not be listed (%s) — IGNORING every drop-in in it, so "
-            "NO config.d override is being applied. Fix the directory's permissions (or rename it "
-            "aside) and restart.", d, exc, exc_info=True)
-        return []
+        if d.exists() or d.is_symlink():
+            _report_unusable_config_d_dir(d, exc)
+        return []  # absent dir: an empty overlay, the common case
     files: list[Path] = []
     for p in entries:
         name = p.name

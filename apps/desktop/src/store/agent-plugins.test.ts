@@ -133,7 +133,12 @@ describe('saveAgentPluginSettings (#46600, #87934)', () => {
       writeSecret: vi.fn(async () => ({ ok: true }))
     })
 
-    expect(request).toHaveBeenCalledWith('plugins.manage', { action: 'settings', key: 'demo', profile: 'workbot', values: {} })
+    expect(request).toHaveBeenCalledWith('plugins.manage', {
+      action: 'settings',
+      key: 'demo',
+      profile: 'workbot',
+      values: {}
+    })
     expect(JSON.stringify(request.mock.calls)).not.toContain('sk-2')
   })
 

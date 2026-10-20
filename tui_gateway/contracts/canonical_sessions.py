@@ -268,6 +268,9 @@ class CanonicalCorrectionAck(Result):
     text: str
     execution_generation: int
     authority_epoch: int
+    # Only on a 'rejected' no agent ever saw (none was live): safe to admit as the next prompt. A plain
+    # 'rejected' may follow delivery (a Codex steer whose ACK timed out), so clients never re-send it.
+    delivered: Literal[False] | None = None
 
 
 class CanonicalCorrectionResult(RootModel):

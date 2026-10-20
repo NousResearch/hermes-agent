@@ -12,6 +12,7 @@ tests/gateway/test_ingress_observer.py.
 import asyncio
 import contextlib
 import hashlib
+import itertools
 import json
 import logging
 import re
@@ -79,7 +80,7 @@ class _Wire(_BotApi):
             return 200, self.batches.pop(0)
         if self.go.is_set():
             await asyncio.Event().wait()
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.01)  # health: allow HX013 -- paces the fake long poll, as a real server would
         return 200, _EMPTY
 
 
@@ -238,7 +239,7 @@ class _Recorder:
         if self.mode == "blocks":
             self.release.wait()
         if self.mode == "slow":
-            time.sleep(0.3)
+            time.sleep(0.3)  # health: allow HX013 -- the delay IS the behaviour under test (a slow observer)
 
     async def asynchronous(self, **event):
         self.events.append(event)
@@ -507,7 +508,7 @@ async def test_end_follows_the_stop_steps_and_only_a_normal_finish_is_clean(monk
         async def substitute(self):
             open_during.append(not epoch.closed)
             if failure == "abandoned":
-                await asyncio.sleep(60)
+                await asyncio.Event().wait()
             if failure == "raised":
                 raise RuntimeError(f"{step} failed")
             await original(self)
@@ -556,7 +557,7 @@ async def test_gateway_stop_returns_once_the_end_is_delivered(monkeypatch, tmp_p
 
     def slow_end(**event):
         if event["kind"] == "end":
-            time.sleep(0.5)
+            time.sleep(0.5)  # health: allow HX013 -- the delay IS the behaviour under test (a slow end delivery)
         recorder(**event)
 
     with _home(tmp_path):
@@ -581,7 +582,7 @@ async def test_a_stalled_observer_holds_gateway_stop_only_for_the_drain_limit(mo
     async def serve():
         while True:
             ticks.append(time.monotonic())
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01)  # health: allow HX013 -- an event-loop heartbeat: its tick gaps are measured
 
     with _home(tmp_path):
         gateway = _Gateway(monkeypatch, tmp_path, [], _stalling_end(recorder, stalled))
@@ -598,7 +599,7 @@ async def test_a_stalled_observer_holds_gateway_stop_only_for_the_drain_limit(mo
 
     assert "end" not in kinds and 0.3 <= returned - stalled[0] < 1.5
     draining = [tick for tick in ticks if tick >= stalled[0]]
-    assert max(later - earlier for earlier, later in zip(draining, draining[1:])) < 0.2
+    assert max(later - earlier for earlier, later in itertools.pairwise(draining)) < 0.2
     assert "gateway_ingress_observer delivery unfinished after a 0.30s shutdown wait" in caplog.text
 
 
@@ -616,6 +617,7 @@ async def test_the_drain_waits_only_for_what_the_shutdown_deadline_spares(
     with _home(tmp_path):
         gateway = _Gateway(monkeypatch, tmp_path, [], _stalling_end(recorder, stalled))
         await gateway.connect()
+        # health: allow HX013 -- the delay IS the behaviour under test (a disconnect step that spends over 1 s)
         monkeypatch.setattr(gateway.adapter, "_set_status_indicator", lambda online: asyncio.sleep(1.0))
         try:
             with caplog.at_level(logging.INFO):

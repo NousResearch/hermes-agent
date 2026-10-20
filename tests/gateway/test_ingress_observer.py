@@ -40,7 +40,7 @@ class Observer:
             self.hold.wait()
         key = event["event_no"]
         if key in self.slow:
-            time.sleep(0.2)
+            time.sleep(0.2)  # health: allow HX013 -- the delay IS the behaviour under test (a slow consumer)
         if key in self.fail_before:
             raise RuntimeError("consumer failed before its durable receipt")
         with self.changed:

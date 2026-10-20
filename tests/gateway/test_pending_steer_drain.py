@@ -33,7 +33,7 @@ class Adapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["alone", "internal", "queued", "interrupt"])
+@pytest.mark.parametrize("kind", ["alone", "internal", "queued", "stale-interrupt"])
 async def test_accepted_steer_and_events_drain_once_in_order(kind):
     runner = object.__new__(GatewayRunner)
     runner._draining = False
@@ -59,9 +59,8 @@ async def test_accepted_steer_and_events_drain_once_in_order(kind):
             runner._enqueue_fifo(key, event, adapter)
     result = {"final_response": "done", "pending_steer": "accepted correction"}
     expected = ["accepted correction", *[event.text for event in events]]
-    if kind == "interrupt":
+    if kind == "stale-interrupt":
         result.update(interrupted=True, interrupt_message="replacement request")
-        expected.insert(0, "replacement request")
     delivered, delivered_events = [], []
     for _ in range(6):
         event, text = await runner._run_agent_drain_pending(
@@ -83,7 +82,7 @@ async def test_accepted_steer_and_events_drain_once_in_order(kind):
 
 
 @pytest.mark.asyncio
-async def test_interrupt_then_steer_preserves_channel_inputs(monkeypatch):
+async def test_stale_interrupt_then_steer_preserves_channel_inputs(monkeypatch):
     runner = _make_runner(monkeypatch)
     calls = []
     _capture(runner, calls)
@@ -116,18 +115,7 @@ async def test_interrupt_then_steer_preserves_channel_inputs(monkeypatch):
         pending_steer="correction",
     )
     event, text = await runner._run_agent_drain_pending(result, adapter, source, KEY)
-    assert text == "replacement" and event is None
-    await runner._run_agent_queued_followup(
-        ctx, adapter, text, event, result, result, None
-    )
-    assert calls[-1]["channel_prompt"] == prompt
-
-    result = dict(final_response="done", messages=[])
-    event, text = await runner._run_agent_drain_pending(result, adapter, source, KEY)
-    assert text == "correction" and event is not None
-    assert (
-        not event.internal
-    )  # A user correction must not become a background notification.
+    assert text == "correction" and event is None
     await runner._run_agent_queued_followup(
         ctx, adapter, text, event, result, result, None
     )

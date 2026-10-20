@@ -8518,6 +8518,19 @@
           "authority_epoch": {
             "title": "Authority Epoch",
             "type": "integer"
+          },
+          "delivered": {
+            "anyOf": [
+              {
+                "const": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivered"
           }
         },
         "required": [
@@ -10653,6 +10666,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ConnectionRequestPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "todo_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TodoState"
               },
               {
                 "type": "null"

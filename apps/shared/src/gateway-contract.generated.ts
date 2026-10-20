@@ -4962,6 +4962,7 @@ export interface CanonicalSnapshot {
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
+  todo_state?: TodoState | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -5091,6 +5092,7 @@ export interface CanonicalCorrectionAck {
   text: string
   execution_generation: number
   authority_epoch: number
+  delivered?: false | null
 }
 /** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
 export interface CanonicalVoiceStopped {

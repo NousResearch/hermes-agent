@@ -11,6 +11,7 @@ import { esModelMenu } from './es_model_menu'
 import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
+import { esPluginUpdate } from './es_plugin_update'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
@@ -2518,14 +2519,7 @@ export const esOverrides = {
       pinnedProvenance: (sha: string) =>
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
-      updateToPin: (sha: string) => `Actualizar a ${sha}`,
-      updateFailed: (name: string) => `No se pudo actualizar ${name}`,
-      updated: (name: string) =>
-        `${name} se actualizó al commit fijado actual del catálogo. Reinicia el gateway para aplicarlo.`,
-      updateConsentTitle: (name: string) => `${name} pide más`,
-      updateConsentBody: (name: string, sha: string) =>
-        `El nuevo commit fijado de ${name} en el catálogo (${sha}) añade superficies que la versión instalada no tiene. Aplícalo solo si confías en ellas:`,
-      updateConsentConfirm: 'Aplicar actualización',
+      ...esPluginUpdate,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,

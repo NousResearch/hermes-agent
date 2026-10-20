@@ -76,4 +76,6 @@ export interface SidebarProjectsTranslations {
   toggle: (label: string, open: boolean) => string
   showAllCount: (count: number) => string
   back: string
+  alphabeticalTitle: string
+  alphabeticalDesc: string
 }

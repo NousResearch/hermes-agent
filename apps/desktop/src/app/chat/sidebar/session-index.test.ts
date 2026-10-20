@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions, sortSessionsByTitle } from './session-index'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -153,5 +153,35 @@ describe('resolvePinnedSessions', () => {
     const index = buildSessionByAnyId(sessions, [], [])
 
     expect(resolvePinnedSessions([], index, sessions, settled)).toEqual([])
+  })
+})
+
+describe('sortSessionsByTitle', () => {
+  it('orders rows A→Z by shown title, case-insensitive, numbers natural', () => {
+    const rows = [
+      row('z', { title: 'Zeta' }),
+      row('v10', { title: 'Release notes v10' }),
+      row('a', { title: 'alpha' }),
+      row('v2', { title: 'Release notes v2' }),
+      row('untitled', { preview: 'Brief note', title: '' })
+    ]
+
+    expect(sortSessionsByTitle(rows).map(r => r.id)).toEqual(['a', 'untitled', 'v2', 'v10', 'z'])
+  })
+
+  it('ignores the stored pin order and does not mutate it', () => {
+    const index = buildSessionByAnyId([row('b', { title: 'Bravo' }), row('a', { title: 'Alpha' })], [], [])
+    const resolved = resolvePinnedSessions(['b', 'a'], index, [], settled)
+
+    expect(sortSessionsByTitle(resolved).map(r => r.id)).toEqual(['a', 'b'])
+    expect(resolved.map(r => r.id)).toEqual(['b', 'a'])
+  })
+
+  it('is applied by resolvePinnedSessions only when asked, keeping the stored order otherwise', () => {
+    const rows = [row('b', { title: 'Bravo' }), row('a', { title: 'Alpha' })]
+    const index = buildSessionByAnyId(rows, [], [])
+
+    expect(resolvePinnedSessions(['b', 'a'], index, rows, settled).map(r => r.id)).toEqual(['b', 'a'])
+    expect(resolvePinnedSessions(['b', 'a'], index, rows, settled, true).map(r => r.id)).toEqual(['a', 'b'])
   })
 })

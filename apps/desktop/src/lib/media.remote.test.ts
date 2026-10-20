@@ -321,7 +321,6 @@ describe('downloadGatewayMediaFile', () => {
   })
 })
 
-
 describe('workspace-relative display resolution (#141628)', () => {
   beforeEach(() => {
     $connection.set(null)
@@ -355,6 +354,33 @@ describe('workspace-relative display resolution (#141628)', () => {
     const absoluteKey = mediaImageKey('/Users/me/Projects/demo/out/sheet.png', null)
 
     expect(key).toBe(absoluteKey)
+  })
+
+  it('leaves an inline source alone (was read as <cwd>/https://…)', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZHVtbXk=')
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(resolveMediaDisplaySrc('https://example.com/a.png')).resolves.toBe('https://example.com/a.png')
+    await expect(resolveMediaDisplaySrc('data:image/png;base64,ZHVtbXk=')).resolves.toBe(
+      'data:image/png;base64,ZHVtbXk='
+    )
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('opens a web image as its URL, not file:///<cwd>/https://…', () => {
+    // The Open-image fallback composes resolver → mediaExternalUrl
+    // (markdown-text.tsx:129). mediaExternalUrl's own ^https?: early return
+    // cannot save it once the resolver has glued a cwd onto the front.
+    expect(mediaExternalUrl(resolveMediaPathAgainstWorkspace('https://example.com/a.png'))).toBe(
+      'https://example.com/a.png'
+    )
+  })
+
+  it('keys inline geometry by the source itself, independent of the cwd', () => {
+    const withCwd = mediaImageKey('https://example.com/a.png', null)
+    $currentCwd.set('')
+
+    expect(mediaImageKey('https://example.com/a.png', null)).toBe(withCwd)
   })
 })
 
@@ -394,6 +420,20 @@ describe('resolveMediaPathAgainstWorkspace (#141628)', () => {
     expect(resolveMediaPathAgainstWorkspace('/tmp/a.png')).toBe('/tmp/a.png')
     expect(resolveMediaPathAgainstWorkspace('~/a.png')).toBe('~/a.png')
     expect(resolveMediaPathAgainstWorkspace('C:\\tmp\\a.png')).toBe('C:\\tmp\\a.png')
+  })
+
+  it('leaves inline and other-scheme sources untouched under an owned cwd', () => {
+    // A URL or a data/blob payload names its own target. Prefixing the cwd
+    // fabricates <cwd>/https://…, which then reads as a local file (#141647
+    // review): the inline branch misses it, the geometry key remembers a file
+    // that does not exist, and Open launches a bogus file:// path.
+    $currentCwd.set('/Users/me/Projects/demo')
+    $selectedStoredSessionId.set('s1')
+    $workspaceCwdOwner.set('s1')
+
+    expect(resolveMediaPathAgainstWorkspace('https://example.com/a.png')).toBe('https://example.com/a.png')
+    expect(resolveMediaPathAgainstWorkspace('data:image/png;base64,ZHVtbXk=')).toBe('data:image/png;base64,ZHVtbXk=')
+    expect(resolveMediaPathAgainstWorkspace('blob:https://example.com/1b2c')).toBe('blob:https://example.com/1b2c')
   })
 
   it('passes a relative path through when the workspace ownership is unknown', () => {

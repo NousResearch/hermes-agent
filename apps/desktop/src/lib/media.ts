@@ -109,6 +109,11 @@ export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
+// Any URI scheme, including the single-letter form Windows drive paths ride on
+// (`C:\…`, already covered by isFileMediaPath). A media value that carries one
+// names its own target and is never workspace-relative.
+const MEDIA_URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i
+
 /**
  * Resolve a workspace-relative media path against the live session workspace.
  *
@@ -120,9 +125,16 @@ export function isFileMediaPath(path: string): boolean {
  * conversation's cwd could resolve the name to a DIFFERENT existing file
  * (#141628). Only the cwd-mismatch caller decides what an unowned relative
  * path means; every other consumer keeps today's behavior.
+ *
+ * Only a BARE relative name is workspace-relative. A value carrying its own
+ * scheme — `https:`, `data:`, `blob:` — already names its target, and gluing a
+ * cwd in front of it fabricates a path (`<cwd>/https://…`) that reads as a
+ * local file: the inline branch below would then miss it, the geometry key
+ * would remember it under a file that does not exist, and the Open fallback
+ * would launch `file:///<cwd>/https://…` instead of the URL.
  */
 export function resolveMediaPathAgainstWorkspace(path: string): string {
-  if (isFileMediaPath(path) || !workspaceCwdBelongsToSelectedSession()) {
+  if (isFileMediaPath(path) || MEDIA_URL_SCHEME.test(path) || !workspaceCwdBelongsToSelectedSession()) {
     return path
   }
 

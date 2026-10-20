@@ -56,17 +56,18 @@ import {
   GitForkIcon,
   KeyRound,
   Loader2Icon,
+  Pause as PauseIcon,
+  Play as PlayIcon,
   RefreshCwIcon,
   SmilePlusIcon,
   Upload,
-  VolumeXIcon,
   XIcon
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { playSpeechText, stopVoicePlayback, pauseVoicePlayback, resumeVoicePlayback } from '@/lib/voice-playback'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -1167,16 +1168,23 @@ const ReadAloudButton: FC<{
 
   const isPreparing = readAloudStatus === 'preparing'
   const isSpeaking = readAloudStatus === 'speaking'
-  const anyPlaybackActive = voicePlayback.status !== 'idle'
-  const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : AudioLines
+  const isPaused = readAloudStatus === 'paused'
+  const isActive = isSpeaking || isPaused
+  const anyPlaybackActive = voicePlayback.status !== 'idle' && !isActive
+
+  // Icon cycle: preparing (spinner) → speaking (pause icon, click to pause)
+  // → paused (play icon, click to resume) → idle (audio icon, click to start).
+  const Icon = isPreparing ? Loader2Icon : isSpeaking ? PauseIcon : isPaused ? PlayIcon : AudioLines
 
   const tooltip = isPreparing
     ? copy.preparingAudio
     : isSpeaking
-      ? copy.stopReading
-      : fullResponseAvailable
-        ? `${copy.readAloud} (${copy.readAloudFullResponseHint})`
-        : copy.readAloud
+      ? copy.pauseReading
+      : isPaused
+        ? copy.resumeReading
+        : fullResponseAvailable
+          ? `${copy.readAloud} (${copy.readAloudFullResponseHint})`
+          : copy.readAloud
 
   // Default reads the current reply only; Shift-click reads the whole response
   // group — the read-aloud mirror of the two copy scopes (#118864).
@@ -1200,10 +1208,21 @@ const ReadAloudButton: FC<{
 
   return (
     <TooltipIconButton
-      disabled={isPreparing || (!isSpeaking && anyPlaybackActive)}
+      disabled={isPreparing || (!isActive && anyPlaybackActive)}
       onClick={event => {
         triggerHaptic('selection')
-        void (isSpeaking ? stopVoicePlayback() : read(event.shiftKey))
+        // Shift-click always stops completely (keyboard accessibility).
+        if (event.shiftKey && isActive) {
+          stopVoicePlayback()
+          return
+        }
+        if (isSpeaking) {
+          pauseVoicePlayback()
+        } else if (isPaused) {
+          resumeVoicePlayback()
+        } else {
+          void read(event.shiftKey)
+        }
       }}
       tooltip={tooltip}
     >

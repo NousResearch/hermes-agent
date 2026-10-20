@@ -3,9 +3,9 @@ import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
+import { iconSize, Loader2, Mic, Pause, Play, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { stopVoicePlayback } from '@/lib/voice-playback'
+import { pauseVoicePlayback, resumeVoicePlayback, stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
 
 import type { VoiceActivityState } from './types'
@@ -214,12 +214,16 @@ export function VoicePlaybackActivity() {
   }
 
   const preparing = playback.status === 'preparing'
+  const paused = playback.status === 'paused'
+  const speaking = playback.status === 'speaking'
 
   const title = preparing
     ? t.composer.preparingAudio
-    : playback.source === 'voice-conversation'
-      ? t.composer.speakingResponse
-      : t.composer.readingAloud
+    : paused
+      ? t.composer.paused
+      : playback.source === 'voice-conversation'
+        ? t.composer.speakingResponse
+        : t.composer.readingAloud
 
   return (
     <div
@@ -236,10 +240,38 @@ export function VoicePlaybackActivity() {
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate font-medium text-foreground/85">{title}</span>
-        {!preparing && <PlaybackWaveform audioElement={playback.audioElement} />}
+        {speaking && <PlaybackWaveform audioElement={playback.audioElement} />}
       </div>
 
+      {speaking && (
+        <Button
+          aria-label="Pause"
+          className="h-6 shrink-0 gap-1 rounded-full px-2 text-[0.6875rem]"
+          onClick={pauseVoicePlayback}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          <Pause className={iconSize.xs} />
+          Pause
+        </Button>
+      )}
+      {paused && (
+        <Button
+          aria-label="Resume"
+          className="h-6 shrink-0 gap-1 rounded-full px-2 text-[0.6875rem]"
+          onClick={resumeVoicePlayback}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          <Play className={iconSize.xs} />
+          Resume
+        </Button>
+      )}
+
       <Button
+        aria-label="Stop"
         className="h-6 shrink-0 gap-1 rounded-full px-2 text-[0.6875rem]"
         onClick={stopVoicePlayback}
         size="sm"

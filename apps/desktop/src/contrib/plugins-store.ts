@@ -10,6 +10,8 @@
 
 import { atom } from 'nanostores'
 
+import { syncJsonSetting } from '@/store/desktop-settings-sync'
+
 export type PluginKind = 'bundled' | 'disk' | 'runtime'
 export type PluginStatus = 'disabled' | 'error' | 'loaded'
 
@@ -59,6 +61,17 @@ function loadDecisions(): Record<string, boolean> {
 
 export const $pluginDecisions = atom<Record<string, boolean>>(loadDecisions())
 
+// Mirror explicit choices to the profile's gateway. Empty local choices may be
+// restored from a previously mirrored server copy after an origin change.
+// The Kanban opt-in default remains unchanged.
+syncJsonSetting<Record<string, boolean>>({
+  configKey: 'desktop.pluginDecisions',
+  get: () => $pluginDecisions.get(),
+  set: next => restoreDecisions(next),
+  isEmpty: value => Object.keys(value).length === 0,
+  onChange: listener => $pluginDecisions.listen(listener)
+})
+
 /** Whether a plugin should register: the user's explicit choice if any, else
  *  the plugin's own default (true for ordinary plugins, false for opt-in). */
 export function pluginActive(id: string, defaultEnabled = true): boolean {
@@ -87,6 +100,24 @@ interface PluginHandle {
 
 /** Loader-owned lifecycle handles, keyed by plugin id. */
 const handles = new Map<string, PluginHandle>()
+
+function restoreDecisions(next: Record<string, boolean>): void {
+  const previous = $pluginDecisions.get()
+  saveDecisions(next)
+  // A gateway may answer after plugin registration. Reconcile already-loaded
+  // handles as well as the atom used for future plugin registrations.
+  for (const [id, enabled] of Object.entries(next)) {
+    if (previous[id] === enabled) continue
+    const handle = handles.get(id)
+    if (!handle) continue
+    if (enabled) {
+      void Promise.resolve(handle.activate()).catch(() => {})
+    } else {
+      handle.deactivate()
+      patchPlugin(id, { status: 'disabled' })
+    }
+  }
+}
 
 /** Publish/refresh a plugin's record + its activate/deactivate handles. */
 export function publishPlugin(record: PluginRecord, handle?: PluginHandle): void {

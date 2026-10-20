@@ -15,8 +15,8 @@ from tools.microsoft_graph_client import (
 )
 
 
-def _make_provider() -> MicrosoftGraphTokenProvider:
-    provider = MicrosoftGraphTokenProvider(GraphCredentials("tenant", "client", "secret"))
+def _make_provider(**credential_kwargs) -> MicrosoftGraphTokenProvider:
+    provider = MicrosoftGraphTokenProvider(GraphCredentials("tenant", "client", "secret", **credential_kwargs))
     provider._cached_token = type(  # type: ignore[attr-defined]
         "Token",
         (),
@@ -116,3 +116,34 @@ class TestMicrosoftGraphClient:
 
         with pytest.raises(MicrosoftGraphClientError):
             await client.get_json("/me")
+
+    async def test_requests_go_to_the_national_cloud_the_scope_targets(self):
+        """A GCC High token (audience graph.microsoft.us) is rejected by graph.microsoft.com."""
+        requested: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested.append(str(request.url))
+            return httpx.Response(200, json={"ok": True})
+
+        client = MicrosoftGraphClient(
+            _make_provider(scope="https://graph.microsoft.us/.default", authority_url="https://login.microsoftonline.us"),
+            transport=httpx.MockTransport(handler),
+        )
+
+        await client.get_json("/subscriptions")
+
+        assert requested == ["https://graph.microsoft.us/v1.0/subscriptions"]
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_base_url"),
+    [
+        ("https://graph.microsoft.com/.default", "https://graph.microsoft.com/v1.0"),
+        ("https://dod-graph.microsoft.us/.default", "https://dod-graph.microsoft.us/v1.0"),
+        ("https://microsoftgraph.chinacloudapi.cn/.default", "https://microsoftgraph.chinacloudapi.cn/v1.0"),
+        ("00000003-0000-0000-c000-000000000000/.default", "https://graph.microsoft.com/v1.0"),
+        ("https://graph.example.com/.default", "https://graph.microsoft.com/v1.0"),
+    ],
+)
+def test_graph_base_url_follows_known_national_cloud_scopes_only(scope: str, expected_base_url: str):
+    assert GraphCredentials("tenant", "client", "secret", scope=scope).graph_base_url == expected_base_url

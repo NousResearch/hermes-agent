@@ -579,7 +579,7 @@ import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
-  backgroundMaterialFor,
+  applyWindowsBackdrop,
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
@@ -1582,21 +1582,16 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
     // Backing swap + material are scoped to registered chat windows (see
     // translucencyBackedWindows above).
     if (translucencyBackedWindows.has(win)) {
-      if (changed.backing && typeof win.setBackgroundColor === 'function') {
-        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
-      }
-
-      if (changed.material) {
-        // Glass frost level = the platform material. Animate the macOS hop so
-        // a deliberate frost switch feels continuous — which only works if we
-        // don't re-issue it on unrelated updates. Windows has no equivalent
-        // animation option; setBackgroundMaterial is instantaneous.
-        if (IS_MAC && typeof win.setVibrancy === 'function') {
-          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+      if (IS_WINDOWS && GLASS_SUPPORTED) {
+        applyWindowsBackdrop(win, translucencyState, changed, getWindowBackgroundColor())
+      } else {
+        if (changed.backing && typeof win.setBackgroundColor === 'function') {
+          win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
         }
 
-        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
-          win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
+        // Animate deliberate macOS frost changes, not unrelated tint updates.
+        if (changed.material && IS_MAC && typeof win.setVibrancy === 'function') {
+          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
         }
       }
     }

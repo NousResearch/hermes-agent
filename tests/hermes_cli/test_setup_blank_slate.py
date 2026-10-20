@@ -119,3 +119,54 @@ class TestBlankSlateFork:
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
+
+    def test_finish_now_removes_installer_seeded_skills(self, monkeypatch, tmp_path):
+        """Regression (#98027): the installer seeds the full bundled catalog BEFORE the
+        setup wizard runs. Blank Slate used to write only the .no-bundled-skills marker
+        (which blocks *future* seeding) and re-sync, leaving every installer-seeded skill
+        on disk. End to end on a real skills dir: after an installer-style sync, finishing
+        Blank Slate must leave only the essential skills, plus anything the user owns."""
+        import hermes_cli.setup as s
+        from unittest.mock import patch
+        from agent.skill_utils import ESSENTIAL_SKILLS
+        from tools.skills_sync import sync_skills
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)  # finish now
+
+        bundled = tmp_path / "bundled"
+        for n in ("alpha", "beta", *sorted(ESSENTIAL_SKILLS)):
+            (bundled / n).mkdir(parents=True)
+            (bundled / n / "SKILL.md").write_text(f"---\nname: {n}\n---\nbody {n}\n")
+        home = tmp_path / "home"
+        skills_dir = home / "skills"
+        home.mkdir()
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=tmp_path / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", skills_dir / ".bundled_manifest"), \
+             patch("tools.skills_sync.HERMES_HOME", home):
+            sync_skills(quiet=True)  # what the installer does before `hermes setup`
+            (skills_dir / "beta" / "SKILL.md").write_text("---\nname: beta\n---\nEDITED\n")
+            (skills_dir / "mine").mkdir()
+            (skills_dir / "mine" / "SKILL.md").write_text("---\nname: mine\n---\nlocal\n")
+
+            setup_quick._run_blank_slate_setup({}, home, is_existing=False)
+
+            assert (home / ".no-bundled-skills").exists()
+            assert not (skills_dir / "alpha").exists()            # pristine bundled: removed
+            assert "EDITED" in (skills_dir / "beta" / "SKILL.md").read_text()  # user-edited: kept
+            assert (skills_dir / "mine" / "SKILL.md").exists()    # hand-written: kept
+            for n in ESSENTIAL_SKILLS:                            # essential: kept
+                assert (skills_dir / n / "SKILL.md").exists()
+
+    def test_opt_in_path_does_not_remove_skills(self, monkeypatch):
+        """Seeding (opt_out=False) must never call the destructive removal."""
+        calls = []
+        monkeypatch.setattr("tools.skills_sync_bundled_ops.set_bundled_skills_opt_out", lambda e: None)
+        monkeypatch.setattr("tools.skills_sync_bundled_ops.remove_pristine_bundled_skills",
+                            lambda dry_run=False: calls.append(dry_run) or {"removed": []})
+        monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=False: {"copied": []})
+        seen = {}
+        setup_quick._set_bundled_skills_opt_out(False, "t", on_success=lambda r: seen.update(r))
+        assert calls == []
+        assert seen["removed"] == []

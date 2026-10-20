@@ -113,4 +113,20 @@ describe('system message timestamp text separation', () => {
 
     expectTimestampSeparated(container, 'rerun tests')
   })
+
+  it('gives multiline reports the full reading-column layout', () => {
+    const { container } = render(
+      <Harness
+        text={'slash:/memory pending\n  abc123 [auto]  staged memory entry\n      replaces entry: ' + 'x'.repeat(120)}
+      />
+    )
+    const row = container.querySelector('[data-role="system"]')
+
+    expect(row?.className).toContain('w-full')
+    expect(row?.className).toContain('max-w-full')
+    expect(row?.className).toContain('self-start')
+    expect(row?.className).toContain('pl-(--message-text-indent)')
+    expect(row?.className).toContain('text-sm')
+    expect(row?.className).not.toContain('w-[60%]')
+  })
 })

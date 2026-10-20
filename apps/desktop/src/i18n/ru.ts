@@ -1,12 +1,12 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { ruAuxTasks } from './ru_aux_tasks'
 import { ruBoot } from './ru_boot'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
+import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
@@ -1304,59 +1304,7 @@ export const ruOverrides = {
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
       deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
     },
-    model: {
-      moaPreset: 'Пресет',
-      moaDescription:
-        'Настройте именованные пресеты, которые появятся как модели провайдера Mixture of Agents. Модель-агрегатор выполняет каждый шаг цикла инструментов; почти вся стоимость запуска списывается у её провайдера. По умолчанию референсные модели дают совет один раз на сообщение пользователя.',
-      moaAggregator: 'Модель-агрегатор',
-      moaAggregatorBilled: 'исполняющая модель · на неё приходится стоимость запуска',
-      moaReferenceHint: 'по умолчанию советует один раз за ход',
-      setupProviderFallback: 'провайдер',
-      setUpProvider: name => `Настроить ${name}`,
-      staleAuxBefore: (count, names) => `Вспомогательные задачи (${count}: ${names}) по-прежнему используют `,
-      staleAuxAfter: ', а не основную модель.',
-      staleAuxOtherProviders: 'других провайдеров',
-      moaEnabled: 'Включено',
-      moaSetDefault: 'Сделать основным',
-      moaNewPresetPlaceholder: 'новый пресет',
-      moaAddPreset: 'Добавить пресет',
-      customModel: 'Своя модель…',
-      customModelPlaceholder: 'ID модели',
-      chooseFromList: 'Выбрать из списка',
-      moaDefault: 'По умолчанию:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Отключить' : 'Включить'} референс ${index}`,
-      moaReferenceTitle: index => `Референс ${index}`,
-      moaAddReference: 'Добавить референсную модель',
-      loading: 'Загрузка конфигурации модели…',
-      appliesDesc:
-        'Применяется к новым сеансам. Для горячей смены модели в активном чате используйте выборщик модели в композере.',
-      provider: 'Провайдер',
-      model: 'Модель',
-      applying: 'Применение…',
-      defaultsLabel: 'По умолчанию',
-      reasoning: 'Рассуждения',
-      reasoningOff: 'Выкл',
-      speed: 'Скорость',
-      speedStandard: 'Стандартная',
-      defaultsFailed: 'Не удалось сохранить модель по умолчанию',
-      auxiliaryTitle: 'Вспомогательные модели',
-      resetAllToMain: 'Сбросить всё на основную',
-      staleAuxDismiss: 'Больше не показывать',
-      auxiliaryDesc:
-        'Вспомогательные задачи по умолчанию выполняются основной моделью. Назначьте отдельную модель любой задаче, чтобы переопределить.',
-      setToMain: 'На основную',
-      change: 'Изменить',
-      autoUseMain: 'авто · использовать основную модель',
-      inheritMainEffort: 'наследовать · усилие основной модели',
-      inheritsFrom: task => `наследует ${task}`,
-      followTask: task => `Как ${task}`,
-      providerDefault: '(по умолчанию провайдера)',
-      fallbackAdd: 'Добавить запасную',
-      fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
-      notInCatalog: 'нет в списке моделей этого провайдера — вызовы могут уходить на запасную.',
-      moaTitle: 'Смесь агентов',
-      tasks: ruAuxTasks
-    },
+    model: ruModelSettings,
     providers: {
       connectAccount: 'Подключить аккаунт',
       haveApiKey: 'Ввести API-ключ вместо этого?',
@@ -2951,7 +2899,7 @@ export const ruOverrides = {
       heartbeatEveryHours: hours => `каждые ${hours}ч`,
       heartbeatEverySeconds: seconds => `каждые ${seconds}с`,
       heartbeatNext: time => `следующий ${time}`,
-      heartbeatDueWaitingForIdle: 'пора — ожидание простоя',
+      dueWaitingForIdle: 'пора — ожидание простоя',
       heartbeatActions: 'Действия пульса',
       pauseHeartbeat: 'Приостановить пульс',
       resumeHeartbeat: 'Возобновить пульс',
@@ -3708,7 +3656,7 @@ export const ruOverrides = {
       hideNames: 'скрыть имена',
       skill: name => `навык ${name}`,
       kind: { plugin: 'плагин', skill: 'навык' },
-      tier: { official: 'официальный', community: 'сообщество' },
+      tier: { official: 'официальный', verified: 'проверенный', community: 'сообщество' },
       targetProfile: profile => `Установка в ваш профиль ${profile}`,
       sendFailed: 'Не удалось отправить ответ. Попробуйте ещё раз.',
       commitLabel: 'Коммит',

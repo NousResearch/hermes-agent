@@ -1,6 +1,5 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
@@ -8,6 +7,7 @@ import { deConnectorCard } from './de_connector_card'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
+import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
@@ -1945,69 +1945,7 @@ export const deOverrides = {
       deepLinkErrorUrl: 'Nur http:// und https:// Server-URLs sind erlaubt.',
       deepLinkErrorTooLarge: 'Die Config-Payload überschreitet das 32-KB-Limit.'
     },
-    model: {
-      setupProviderFallback: 'Anbieter',
-      setUpProvider: name => `${name} einrichten`,
-      staleAuxBefore: (count, names) =>
-        `${count} Hilfsaufgabe${count === 1 ? '' : 'n'} (${names}) ${count === 1 ? 'läuft' : 'laufen'} noch auf `,
-      staleAuxAfter: ', nicht auf Ihrem Hauptmodell.',
-      staleAuxOtherProviders: 'anderen Anbietern',
-      moaEnabled: 'Aktiviert',
-      moaSetDefault: 'Als Standard festlegen',
-      moaNewPresetPlaceholder: 'neue Vorlage',
-      moaAddPreset: 'Vorlage hinzufügen',
-      customModel: 'Eigenes Modell…',
-      customModelPlaceholder: 'Modell-ID',
-      chooseFromList: 'Aus Liste wählen',
-      moaDefault: 'Standard:',
-      moaReferenceToggle: (enabled, index) => `Referenz ${index} ${enabled ? 'deaktivieren' : 'aktivieren'}`,
-      moaReferenceTitle: index => `Referenz ${index}`,
-      moaAddReference: 'Referenzmodell hinzufügen',
-      loading: 'Modellkonfiguration wird geladen…',
-      appliesDesc:
-        'Gilt für neue Sessions. Verwenden Sie die Modellauswahl im Composer, um im aktiven Chat schnell zu wechseln.',
-      provider: 'Anbieter',
-      model: 'Modell',
-      applying: 'Wird angewendet…',
-      mainAppliedTitle: 'Hauptmodell aktualisiert',
-      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
-      defaultsLabel: 'Voreinstellungen',
-      reasoning: 'Denken',
-      reasoningOff: 'Aus',
-      speed: 'Geschwindigkeit',
-      speedStandard: 'Standard',
-      defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
-      loadFailed: 'Modelle konnten nicht geladen werden',
-      restartRequired:
-        'Dieses Backend führt nach einem Update alten Code aus. Starten Sie es neu, um den neuen Code zu laden.',
-      restartBackend: 'Backend neu starten',
-      restartingBackend: 'Backend wird neu gestartet…',
-      restartFailed: 'Das Backend konnte nicht neu gestartet werden',
-      auxiliaryTitle: 'Hilfsmodelle',
-      resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
-      staleAuxDismiss: 'Nicht erneut anzeigen',
-      auxiliaryDesc:
-        'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
-      setToMain: 'Auf Hauptmodell setzen',
-      change: 'Ändern',
-      autoUseMain: 'automatisch · Hauptmodell verwenden',
-      inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
-      inheritsFrom: task => `erbt von ${task}`,
-      followTask: task => `${task} folgen`,
-      providerDefault: '(Anbietervorgabe)',
-      fallbackAdd: 'Fallback hinzufügen',
-      fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
-      notInCatalog:
-        'ist nicht in der Modellliste dieses Anbieters enthalten — Aufrufe können auf ein Backup ausweichen.',
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Voreinstellung',
-      moaDescription:
-        'Konfigurieren Sie benannte Vorlagen, die als Modelle unter dem Anbieter „Mixture of Agents“ erscheinen. Der Aggregator ist das handelnde Modell – er führt jeden Schritt der Tool-Schleife aus, und fast alle Kosten des Laufs werden seinem Anbieter berechnet. Referenzen beraten standardmäßig nur einmal pro Benutzer-Turn.',
-      moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'handelndes Modell · wird für den Lauf berechnet',
-      moaReferenceHint: 'berät standardmäßig einmal pro Turn',
-      tasks: deAuxTasks
-    },
+    model: deModelSettings,
     localModels: deLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/Monat`,
@@ -2588,8 +2526,6 @@ export const deOverrides = {
       pinnedProvenance: sha =>
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
-      tierOfficial: 'offiziell',
-      tierCommunity: 'Community',
       updateToPin: sha => `Auf ${sha} aktualisieren`,
       updateFailed: name => `${name} konnte nicht aktualisiert werden`,
       updated: name =>
@@ -4157,7 +4093,7 @@ export const deOverrides = {
       heartbeatEveryHours: hours => `alle ${hours}h`,
       heartbeatEverySeconds: seconds => `alle ${seconds}s`,
       heartbeatNext: time => `nächstes ${time}`,
-      heartbeatDueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
+      dueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
       heartbeatActions: 'Heartbeat-Aktionen',
       pauseHeartbeat: 'Heartbeat pausieren',
       resumeHeartbeat: 'Heartbeat fortsetzen',
@@ -5263,10 +5199,7 @@ export const deOverrides = {
         plugin: 'Plugin',
         skill: 'Skill'
       },
-      tier: {
-        official: 'offiziell',
-        community: 'Community'
-      },
+      tier: { official: 'offiziell', verified: 'verifiziert', community: 'Community' },
       targetProfile: (profile: string) => `Wird in Ihr Profil ${profile} installiert`,
       sendFailed: 'Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.',
       commitLabel: 'Commit',

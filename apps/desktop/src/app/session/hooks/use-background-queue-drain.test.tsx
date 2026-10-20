@@ -3,12 +3,14 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { rotateFreshDraftKey } from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  migrateQueuedPrompts,
   parkQueuedPrompts,
   resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
@@ -527,5 +529,69 @@ describe('useBackgroundQueueDrain', () => {
     expect(submitText).not.toHaveBeenCalled()
     expect(getQueuedPrompts('stored-session-a').map(e => e.id)).toEqual(['queued-restored'])
     expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('leaves a follow-up queued under a fresh draft key for the creation handoff', async () => {
+    vi.useFakeTimers()
+
+    // A follow-up queued while session.create is in flight sits under the
+    // fresh draft key. No session answers to it yet, so a rejecting drain
+    // used to exhaust the budget and drop it as a gone session.
+    setSessions([])
+    const fresh = rotateFreshDraftKey()
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt(fresh, { text: 'follow-up during pending create', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId={null} submitText={submitText} />)
+
+    for (let attempt = 0; attempt < MAX_AUTO_DRAIN_ATTEMPTS + 2; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(fresh)).toHaveLength(1)
+    expect($notifications.get()).toHaveLength(0)
+  })
+
+  it('sends a create-window follow-up under the stored id once the creation handoff moves it', async () => {
+    vi.useFakeTimers()
+
+    setSessions([])
+    const fresh = rotateFreshDraftKey()
+    const runtimeMap = { current: new Map([['stored-new-chat', 'rt-new-chat']]) }
+    const submitText = vi.fn(async () => true)
+
+    const entry = enqueueQueuedPrompt(fresh, { text: 'follow-up during pending create', attachments: [] })!
+
+    render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId={null} submitText={submitText} />)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 2)
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+
+    // The creation announcement's handoff (use-composer-draft) re-keys the
+    // fresh bucket onto the stored id; the drain then handles it normally.
+    await act(async () => {
+      setSessions([lineageSession({ id: 'stored-new-chat' })])
+      migrateQueuedPrompts(fresh, 'stored-new-chat')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(submitText).toHaveBeenCalledTimes(1)
+    expect(submitText).toHaveBeenCalledWith('follow-up during pending create', {
+      submission_id: entry.id,
+      attachments: [],
+      fromQueue: true,
+      sessionId: 'rt-new-chat',
+      storedSessionId: 'stored-new-chat'
+    })
+    expect(getQueuedPrompts(fresh)).toHaveLength(0)
+    expect(getQueuedPrompts('stored-new-chat')).toHaveLength(0)
   })
 })

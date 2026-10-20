@@ -55,7 +55,7 @@ def managed_policy(authority, ref):
 
 def _bootstrap(authority, ref, row, policy, scope, text=None):
     from gateway.session_ingress import row_turn_author
-    from gateway.session_policy import launch_key
+    from gateway.session_policy import route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
     terminal = json.loads(policy.terminal_json)
     if policy.config_secret_ref:
@@ -73,10 +73,11 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
-    hydrated = replace(policy, config_json=json.dumps(_worker_config(authority, policy)), request_json=json.dumps(request),
+    config = _worker_config(authority, policy)
+    hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
-            'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
+            'policy': asdict(hydrated), 'api_key': route_launch_key(authority, policy, config),
             'text': row['payload']['text'] if text is None else text, 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
@@ -157,6 +158,8 @@ class ManagedWorker:
         # Monotonic instant of the FIRST Stop: one acknowledgment budget runs from here, never
         # renewed by the child's later output or by a repeated Stop.
         self.stopped_at = None
+        # The gateway restart/shutdown reason when that stop (not a user's) signalled this worker.
+        self.stop_cause = None
         self.writer = threading.Thread(target=self._write_controls, name='managed-control-writer', daemon=True)
         # One dedicated reader thread per worker (never the loop's shared default executor, which
         # parked pipe reads would exhaust). It reads one frame per demand, so the pipe keeps its
@@ -290,7 +293,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            if proc.create_time() == self.worker[1]:
+            from hermes_cli.process_identity import process_birth
+            if process_birth(proc) == self.worker[1]:
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass
@@ -443,20 +447,109 @@ def _launch_env_only_credentials(home, env):
     return {k: v for k, v in missing.items() if k not in plain}
 
 
-def _interrupted_before_bootstrap(authority, row):
+def _interrupted_before_bootstrap(authority, row, cause=None):
     authority.pending_results[row['admission_id']] = {
-        'result': {'final_response': '', 'interrupted': True}, 'usage': {}}
+        'result': {'final_response': '', 'interrupted': True, **({'interrupt_message': cause} if cause else {})},
+        'usage': {}}
     return ''
 
 
-async def execute_managed(authority, ref, row, policy):
-    from gateway.run_turn_progress import publish_worker_tool_event
-    # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
-    from gateway.session_context_refs import managed_turn_text, refused_turn_result
-    text, refusal = await managed_turn_text(authority, row, policy)
-    if refusal is not None:
-        authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
-        return refusal
+def _latched_stop_cause(authority, session_id, generation):
+    """The gateway restart/shutdown cause latched for this generation before its worker existed
+    (``run_runtime._stop_spawning_managed``), consumed once; None for a user's Stop."""
+    latched = getattr(authority, 'pending_stop_causes', {}).pop(session_id, None)
+    return latched[1] if latched and latched[0] == generation else None
+
+
+def _with_stop_cause(accepted, worker):
+    """The wire result carries no interruption cause; the owner recorded which stop it sent."""
+    if accepted.get('interrupted') and worker.stop_cause:
+        return {**accepted, 'interrupt_message': worker.stop_cause}
+    return accepted
+
+
+def _settled_session_usage(authority, session_id, accepted, execution_id=None):
+    """A managed turn's ``message.complete.usage``: the worker exits with its turn, so the session-cumulative counters come from the rows its usage writes committed. A worker that compresses mid-turn ends on a child of this reservation's session; the owner's execution row records that tip (compression moves it in the same transaction), so the path from the tip back to the reservation plus the reservation's own compression ancestors is summed, and stale siblings or the conversation a branch came from never count."""
+    import sqlite3
+    db = authority.db
+    try:
+        tip = _execution_tip(db, execution_id)
+        path = _continuation_path(db, session_id, tip) if tip and tip != session_id else None
+        ids = list(dict.fromkeys([*_compression_ancestors(db, session_id), *(path or [session_id])]))
+        rows = [db.get_session(sid) or {} for sid in ids]
+    except sqlite3.Error:  # usage is display-only; settlement never waits on it
+        return {}
+    counts = {key: sum(int(row.get(key) or 0) for row in rows) for key in (
+        'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens')}
+    prompt = counts['input_tokens'] + counts['cache_read_tokens'] + counts['cache_write_tokens']
+    return {'session_usage': {**counts, 'prompt_tokens': prompt, 'completion_tokens': counts['output_tokens'],
+                              'total_tokens': prompt + counts['output_tokens'],
+                              'api_calls': sum(int(row.get('api_call_count') or 0) for row in rows),
+                              'model': str(accepted.get('model') or rows[-1].get('model') or '')}}
+
+
+def _execution_tip(db, execution_id):
+    """The session this worker execution last wrote to, as the owner's ledger records it."""
+    if not execution_id:
+        return None
+    with db._read_ctx() as conn:
+        row = conn.execute('SELECT session_id FROM worker_executions WHERE execution_id=?', (execution_id,)).fetchone()
+    return row[0] if row else None
+
+
+def _continuation_path(db, start, tip):
+    """Ids from *start* to *tip* when *tip* reaches *start* through compression continuations only, else None."""
+    path, current = [tip], tip
+    while current != start and len(path) <= 200:
+        row = db.get_session(current)
+        if not row or not db._is_compression_child_row(row):
+            return None
+        current = row['parent_session_id']
+        path.append(current)
+    return path[::-1] if current == start else None
+
+
+def _compression_ancestors(db, session_id):
+    """Root-first ids of the sessions *session_id* continues by compression, excluding itself."""
+    ancestors, current = [], db.get_session(session_id)
+    while current and db._is_compression_child_row(current) and len(ancestors) < 200:
+        parent = current['parent_session_id']
+        if parent in ancestors or parent == session_id:
+            break
+        ancestors.append(parent)
+        current = db.get_session(parent)
+    return ancestors[::-1]
+
+
+def _mark_spawning(authority, ref, row):
+    """Mark the generation pre-worker: until the worker registers, a gateway stop has nothing to
+    signal, so it latches for this generation instead (#134889 GW-22). Set before ``@`` expansion,
+    which may await the network, so a Stop there is never lost."""
+    spawning = getattr(authority, '_managed_spawning', None)
+    if spawning is None:
+        spawning = authority._managed_spawning = {}
+    spawning[ref.session_id] = row.get('generation')
+    return spawning
+
+
+def _stopped_before_spawn(authority, ref, row):
+    """A Stop latched for this generation while it had no worker (a gateway stop during ``@``
+    expansion, or a user's Stop): consume it and record the interrupted result, never spawning."""
+    generation = row.get('generation')
+    stops = getattr(authority, 'pending_stops', {})
+    if generation is None or stops.get(ref.session_id) != generation:
+        return False
+    del stops[ref.session_id]
+    authority._managed_spawning.pop(ref.session_id, None)
+    _interrupted_before_bootstrap(authority, row, _latched_stop_cause(authority, ref.session_id, generation))
+    return True
+
+
+async def _spawn_registered_worker(authority, ref, row):
+    """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
+    interrupted result is already recorded). The generation stays marked spawning until registration."""
+    spawning = _mark_spawning(authority, ref, row)
+    generation = row.get('generation')
     try:
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
@@ -468,7 +561,12 @@ async def execute_managed(authority, ref, row, policy):
             stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
     except asyncio.CancelledError:
         # acquire_process owns late-child cleanup; no bootstrap or reservation was sent.
-        return _interrupted_before_bootstrap(authority, row)
+        spawning.pop(ref.session_id, None)
+        _interrupted_before_bootstrap(authority, row, _latched_stop_cause(authority, ref.session_id, generation))
+        return None
+    except BaseException:
+        spawning.pop(ref.session_id, None)
+        raise
     worker = ManagedWorker(process)
     if log_path is not None:
         worker.drain_stderr(log_path)
@@ -476,6 +574,32 @@ async def execute_managed(authority, ref, row, policy):
     if workers is None:
         workers = authority._managed_workers = {}
     workers[ref.session_id] = worker
+    spawning.pop(ref.session_id, None)
+    worker.stop_cause = _latched_stop_cause(authority, ref.session_id, generation)
+    return worker, process
+
+
+async def execute_managed(authority, ref, row, policy):
+    from gateway.run_turn_progress import publish_worker_tool_event
+    # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
+    from gateway.session_context_refs import managed_turn_text, refused_turn_result
+    _mark_spawning(authority, ref, row)
+    try:
+        text, refusal = await managed_turn_text(authority, row, policy)
+    except BaseException:
+        authority._managed_spawning.pop(ref.session_id, None)
+        raise
+    if refusal is not None:
+        authority._managed_spawning.pop(ref.session_id, None)
+        authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
+        return refusal
+    if _stopped_before_spawn(authority, ref, row):
+        return ''
+    spawned = await _spawn_registered_worker(authority, ref, row)
+    if spawned is None:
+        return ''
+    worker, process = spawned
+    workers = authority._managed_workers
     # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
     # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
     authority.adopt_agent(ref.session_id, row['generation'], worker)
@@ -529,8 +653,11 @@ async def execute_managed(authority, ref, row, policy):
                 # A slow or non-zero interpreter exit after it is close()'s cleanup, not a loss.
                 with suppress(subprocess.TimeoutExpired):
                     await asyncio.to_thread(process.wait, 10)
+                accepted = _with_stop_cause(accepted, worker)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
-                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
+                authority.pending_results[row['admission_id']] = {
+                    'result': {**accepted, 'local_viewer': True}, 'usage': usage,
+                    **await asyncio.to_thread(_settled_session_usage, authority, scope['session_id'], accepted, scope['execution_id'])}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:
@@ -542,7 +669,7 @@ async def execute_managed(authority, ref, row, policy):
                     isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
-                return _interrupted_before_bootstrap(authority, row)
+                return _interrupted_before_bootstrap(authority, row, worker.stop_cause)
             raise
         from gateway.session_worker_reservation import lose_admission_worker
         from gateway.session_runtime_workers import tracked_write

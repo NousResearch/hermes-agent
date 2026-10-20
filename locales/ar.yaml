@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (للدور التالي فقط — يُستعاد بعد ردّ واحد)"
     switch_cancelled: "🟡 أُلغي تبديل النموذج. النموذج الحالي لم يتغيّر ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_بديل نصي: أرسل `{prefix}approve` للتبديل أو `{prefix}cancel` للإبقاء على النموذج الحالي._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **الوكلاء والمهام النشطة**"
     active_agents: "**الوكلاء النشطون:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."
@@ -443,6 +446,9 @@ gateway:
     state_no: "لا"
     queued: "**المتابعات في الطابور:** {count}"
     platforms: "**المنصّات المتصلة:** {platforms}"
+  discard:
+    nothing: "لا شيء لتجاهله: لا توجد في هذه المحادثة جولة فُقدت أثناء إعادة التشغيل."
+    done: "🗑️ تم تجاهل {count} جولة مفقودة؛ لم تُعد تشغيلها. سيتم الرد على رسائلك المحفوظة الآن."
   stop:
     stopped_pending: "⚡ تم الإيقاف. لم يكن الوكيل قد بدأ بعد — يمكنك متابعة هذه الجلسة."
     stopped: "⚡ تم الإيقاف. يمكنك متابعة هذه الجلسة."
@@ -1528,6 +1534,8 @@ slash:
     description: "استيراد أرشيف ملف تعريفي مشترك كملف تعريفي جديد"
   stop:
     description: "إنهاء كل العمليات قيد التشغيل في الخلفية"
+  discard:
+    description: "تجاهل جولة فُقدت عند إعادة تشغيل Hermes لتستأنف قائمة انتظار هذه المحادثة"
   pause:
     description: "إيقاف الأعمال الجديدة مؤقتًا على مستوى النظام (إيقاف طارئ)؛ '/pause off' يستأنفها"
   deny:
@@ -1681,6 +1689,21 @@ slash:
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:
+  modern:
+    thought_for: "فكّر لمدة {seconds} ث"
+    thought: "فكّر"
+    working: "يعمل…"
+    preparing: "جارٍ تحضير {what}…"
+    hint_steer: "توجيه"
+    hint_queue: "إضافة للطابور"
+    hint_interrupt: "مقاطعة"
+    hint_stop: "إيقاف"
+    hint_commands: "الأوامر"
+    hint_files: "الملفات"
+    hint_shell: "الطرفية"
+    placeholder_busy_steer: "اكتب لتوجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_interrupt: "اكتب لإعادة توجيه هذه الجولة · Tab يضيفها للطابور لما بعد"
+    placeholder_busy_queue: "اكتب لإضافة رسالة إلى الطابور بعد هذه الجولة"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "تعذّر تحميل الفوترة"
@@ -2224,6 +2247,7 @@ cli:
     queue_heading: "قائمة الانتظار · {count} في الانتظار · /queue list{controls}"
     more_queued: "+{count} أخرى"
     transcript_unavailable: "النص المباشر غير متاح بعد."
+    control_pending: "جارٍ الإرسال…"
     steer_prompt: "توجيه: "
     roster_empty: "لا وكلاء فرعيين نشطين ولا عمليات في الخلفية. تصل النتائج في المحادثة."
     entry_gone: "هذا العنصر لم يعد نشطًا."
@@ -2362,6 +2386,14 @@ cli:
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
     moved: "نُقل عنصر قائمة الانتظار من {source} إلى {destination}."
     usage_add: "الاستخدام: /queue add <prompt>"
+    gateway_refused: "لم تضعه البوابة في الطابور: {error}. لم يُضف شيء؛ أرسله مرة أخرى عند انتهاء الدور."
+    submit_unknown: "لم تُجب البوابة ({error})، لذا قد تكون الرسالة في الطابور بالفعل. راجع /queue list قبل إرسالها مجددًا."
+    move_gateway_fifo: "تشغّل البوابة المطالبات في الطابور بترتيب إرسالها؛ عدّل واحدة أو احذفها بدلاً من ذلك."
+    remove_refused: "تعذّرت إزالة عنصر الطابور {index}: {error}"
+    edit_refused: "تعذّر تعديل عنصر الطابور {index}: {error}"
+    already_started: "بدأ عنصر الطابور {index} بالفعل؛ سيُنفَّذ كما أُرسل."
+    started_stopped: "كان عنصر الطابور {index} قد بدأ بالفعل؛ أوقفته البوابة."
+    change_unknown: "لم تُجب البوابة بشأن عنصر الطابور {index} ({error})؛ راجع /queue list قبل المحاولة مجددًا."
   reload:
     env_reloaded: "أُعيد تحميل .env (تم تحديث {count} متغيّر)"
   steer:
@@ -3002,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   الرجوع إلى الواجهة الخلفية الافتراضية للمتصفح"
       usage_status: "status       عرض وضع المتصفح الحالي"
       usage_use: "use [off]    التبديل إلى وضع Browser Use (CLI 3.0) / الرجوع إلى الأدوات المضمّنة"
+      remote_gateway: "‏/browser connect و /browser disconnect يديران متصفحًا من عائلة Chromium على مضيف البوابة — متاح فقط عند الاتصال ببوابة محلية."
+      checking: "جارٍ التحقق من التصحيح عن بُعد لمتصفح Chromium على {url}..."
+      new_sessions_only: "ينطبق على الجلسات الجديدة — تحتفظ هذه الجلسة بأدواتها الحالية (‏/new لبدء جلسة)."
+      status_gateway_default: "🌐 المتصفح: الواجهة الافتراضية لمتصفح البوابة (لا يوجد اتصال CDP مباشر)"
     heartbeat:
       label: "النبضات"
       paused: "⏸ تم إيقاف النبض مؤقتًا: {prompt}"
@@ -3110,6 +3146,10 @@ cli:
     loaded: "(محمّل)"
     not_found: "(غير موجود)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "غير معيّن!"
     value_not_set: "غير معيّن"
     section_model: "النموذج"
@@ -3291,8 +3331,22 @@ cli:
     next_session_deepens: "جلسة `hermes -w` التالية تعمّق الاستنساخ وتحذف worktrees المدمجة تلقائيًا."
     unpushed_keeping: "⚠ يحتوي worktree على إيداعات غير مدفوعة، سيُحتفظ به: {path}"
     uncommitted_keeping: "⚠ يحتوي worktree على تغييرات غير مودعة، سيُحتفظ به: {path}"
+    kept_reason: "⚠ سيُحتفظ بالـ worktree ({reason}): {path}"
     clean_up_manually: "للتنظيف يدويًا: git worktree remove --force {path}"
     cleaned_up: "✓ تم تنظيف worktree: {path}"
+    exit_question_dirty: "يحتوي هذا الـ worktree على تغييرات غير مودعة: {path}"
+    exit_question_unpushed: "يحتوي هذا الـ worktree على إيداعات غير مدفوعة: {path}"
+    exit_choice_keep: "الاحتفاظ بالـ worktree (افتراضي)"
+    exit_choice_archive: "أرشفته وإزالته (قابل للاستعادة)"
+    exit_choice_discard: "إزالته وتجاهل التغييرات"
+    archiving: "جارٍ أرشفة {path} … (قد يستغرق ذلك بعض الوقت لشجرة كبيرة)"
+    archived: "✓ تمت أرشفة الـ worktree في {ref} وإزالته: {path}"
+    restore_hint: "لاستعادته: hermes worktree restore {name}"
+    archive_failed: "✗ تعذّرت أرشفة {path}، سيُحتفظ به: {error}"
+    archived_kept: "✓ تمت أرشفة الـ worktree في {ref} لكن احتُفظ به ({reason}): {path}"
+    sweep_archived_removed: "أُرشف + أُزيل → {ref}"
+    sweep_archived_kept: "أُرشف، واحتُفظ به ({reason}) → {ref}"
+    discarded: "تمت إزالة الـ worktree وتجاهل تغييراته: {path}"
 display:
   verb:
     web_search: "يبحث في الويب"
@@ -3721,7 +3775,7 @@ tips:
   t241: "تخزّن البوّابة مثيلات AIAgent مؤقتًا لكل جلسة — وتدمير هذه الذاكرة المؤقتة يعطّل تخزين مطالبات Anthropic المؤقت."
   t242: "يمكن لأي موقع ويب عرض مهارات عبر /.well-known/skills/index.json — ويكتشفها مركز المهارات تلقائيًا."
   t243: "يتتبّع سجل تدقيق المهارات في ~/.hermes/skills/.hub/audit.log كل عملية تثبيت وإزالة."
-  t244: "تُنظَّف worktrees القديمة في git تلقائيًا عند البدء: تُحذف الأشجار النظيفة المدمجة بالكامل؛ ويُحفظ دائمًا أي عمل غير مكتمل أو غير مدفوع."
+  t244: "تُنظَّف worktrees القديمة في git تلقائيًا: تُحذف الأشجار النظيفة المدمجة؛ أما الأشجار الخاملة التي تحتوي على تغييرات غير مودعة أو غير مدفوعة فتُؤرشف أولًا ويمكن استعادتها باستخدام hermes worktree restore."
   t245: "تحدّد الملفات التعريفية نطاق حالة Hermes عبر HERMES_HOME؛ وتحتفظ عمليات الأدوات الفرعية على المضيف بـ HOME الحقيقي ما لم يكن terminal.home_mode هو profile."
   t246: "يضبط متغير البيئة HERMES_HOME_MODE (ثماني، مثل 0701) صلاحيات مخصصة للمجلد لتمكين خادم الويب من عبوره."
   t247: "وضع الحاوية: ضع .container-mode في HERMES_HOME وسينفّذ سطر أوامر المضيف نفسه تلقائيًا داخل الحاوية."

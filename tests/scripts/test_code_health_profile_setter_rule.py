@@ -33,6 +33,7 @@ def _hits(src: str) -> list[int]:
     ("from . import terminal_scope\nterminal_scope.install_profile_terminal_scope('/h')\n", True),
     ("from .. import hermes_constants\nhermes_constants.set_hermes_home_override('/h')\n", True),
     ("from .other_secret_scope import set_secret_scope\nset_secret_scope({})\n", False),
+    ("from . import set_secret_scope\nset_secret_scope({})\n", False),  # names no module
     # a local object that merely shares the module's name is not the module
     ("hermes_constants = Fake()\nhermes_constants.set_hermes_home_override('/h')\n", False),
     ("def f(hermes_constants):\n    hermes_constants.set_hermes_home_override('/h')\n", False),

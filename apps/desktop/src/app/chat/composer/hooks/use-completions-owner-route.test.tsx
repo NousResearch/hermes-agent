@@ -112,6 +112,49 @@ describe('composer completions route to the session owner', () => {
     })
   })
 
+  it('does not replay an ambient answer once the session owner resolves', async () => {
+    // Before the owner hint lands the lookup rides the ambient socket (completions
+    // are advisory). That answer is the launch profile's catalog; it must not be
+    // served from cache for the same session once its real owner is known.
+    _resetSessionOwnerHintsForTests()
+
+    const gateway = {
+      request: vi.fn(async () => ({
+        categories: [{ name: 'Session', pairs: [['/launch-only', 'Launch profile command']] }],
+        pairs: [['/launch-only', 'Launch profile command']]
+      }))
+    } as unknown as HermesGateway & { request: ReturnType<typeof vi.fn> }
+
+    const api: { search?: Search } = {}
+
+    function Probe() {
+      api.search = useSlashCompletions({ gateway, sessionId: SESSION }).adapter.search
+
+      return null
+    }
+
+    const view = render(<Probe />)
+
+    const commands = (items: readonly Unstable_TriggerItem[]) =>
+      items.map(item => (item.metadata as { command?: string }).command)
+
+    expect(commands(await settle(api, ''))).toContain('/launch-only')
+
+    setSessionOwnerHint(SESSION, OWNER)
+    // A fresh composer (next popover open, a pane remount) asks the shared
+    // completion cache again; only the owner-scoped key keeps it honest.
+    view.unmount()
+    render(<Probe />)
+
+    const owned = commands(await settle(api, ''))
+
+    expect(owned).toContain('/new')
+    expect(owned).not.toContain('/launch-only')
+    expect(routed.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'commands.catalog', {
+      session_id: SESSION
+    })
+  })
+
   it('serves @ path completions from the owning profile, not the ambient socket', async () => {
     const gateway = ambientGateway()
     const api: { search?: Search } = {}

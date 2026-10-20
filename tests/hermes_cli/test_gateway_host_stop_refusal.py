@@ -66,3 +66,26 @@ def test_stop_from_the_hosts_own_home_still_stops_it(homes, monkeypatch):
 
     assert gw.stop_profile_gateway() is True
     assert killed == [host.pid]
+
+
+def test_cmd_stop_guard_names_the_host_when_the_lock_carries_its_pid(homes, monkeypatch, capsys):
+    """``_cmd_stop``'s own "the host serves this profile" refusal fires on the host pid too.
+
+    It only fired while ``find_gateway_pids()`` was empty, and a served profile's runtime record names
+    the host, so a stop that bypasses the park path (``--force``) fell through to the kill."""
+    from hermes_cli import gateway as gw
+    root, secondary = homes
+    host = _host_owner(root)
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [host.pid])
+    monkeypatch.setattr(gw, 'host_multiplexer_serving', lambda *a: host)
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: host)
+    monkeypatch.setattr(gw, 'stop_profile_gateway', lambda: pytest.fail('stop reached the host pid'))
+    monkeypatch.setattr(gw, '_stop_installed_service', lambda *a: pytest.fail('stop reached the service'))
+
+    with pytest.raises(SystemExit) as exc:
+        gw._cmd_stop(SimpleNamespace(force=True))
+    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert "The host gateway serves profile 'worker'" in capsys.readouterr().out

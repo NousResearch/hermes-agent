@@ -27,6 +27,22 @@ def mark_planned_stop(pid: int | None = None) -> None:
         pass
 
 
+def separate_gateway_pids(name=None):
+    """This profile's gateway pids, minus the host multiplexer that serves it.
+
+    While the host serves a profile it publishes its OWN pid into that profile's runtime record
+    (``profiles/<name>/gateway.lock``), so ``find_gateway_pids()`` under ``-p <name>`` reports the
+    shared host as "this profile's gateway". Every "is there a separate --force gateway?" check read
+    it that way, stood down, and ``gateway stop`` fell through to SIGTERM the host: every served
+    profile went offline instead of one being parked (#141133). Any other pid is still a separate
+    gateway and keeps its own lifecycle.
+    """
+    from hermes_cli import gateway as gw
+    host = gw.host_multiplexer_serving(name)
+    host_pid = getattr(host, "pid", None)
+    return [pid for pid in gw.find_gateway_pids() if pid != host_pid]
+
+
 def host_scope_for_all_verb(owner):
     """Home a ``--all`` verb acts as: the live host owner's, else the default root.
 
@@ -53,7 +69,7 @@ def profile_lifecycle(command: str, args) -> bool:
         # verbs keep addressing its own gateway process even while a stale host record lists it.
         return False
     marker = parked_marker_path(home)
-    if command == "restart" and profile_is_parked(home) and not gw.find_gateway_pids():
+    if command == "restart" and profile_is_parked(home) and not separate_gateway_pids(name):
         # `stop` parked the profile AND dropped it from the host's served set, so the unserve/serve
         # path below finds no host serving it and would fall through to a standalone restart.
         # Unpark like `start` does; a live --force gateway keeps its own restart (pids non-empty).
@@ -76,16 +92,8 @@ def profile_lifecycle(command: str, args) -> bool:
             print("The host retries on its next rescan (within 30s). Check gateway status.")
         return True
 
-    # A separate --force gateway still owns its normal process/service lifecycle — but the host
-    # multiplexer is not one of those. While it serves this profile it publishes its OWN pid into
-    # the profile's runtime record, so ``find_gateway_pids()`` reported the shared host as "this
-    # profile's gateway", the lifecycle stood down, and ``_cmd_stop`` fell through to
-    # ``stop_profile_gateway()``: ``hermes -p <name> gateway stop`` took every served profile
-    # offline instead of parking one (#141133). Exclude that pid; any other pid is still a
-    # separate gateway and keeps its own lifecycle.
-    host = gw.host_multiplexer_serving(name)
-    host_pid = getattr(host, "pid", None)
-    if [pid for pid in gw.find_gateway_pids() if pid != host_pid]:
+    # A separate --force gateway still owns its normal process/service lifecycle.
+    if separate_gateway_pids(name):
         return False
     owner = gw._served_by_another_host_gateway()
     if owner is None and not gw.named_profile_served_by_running_multiplexer():

@@ -5311,12 +5311,12 @@ def _cmd_start(args):
 
 def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
-    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle, separate_gateway_pids
     if profile_lifecycle("stop", args):
         return
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
-    if not stop_all and not find_gateway_pids() and (
+    if not stop_all and not separate_gateway_pids() and (
             _served_by_another_host_gateway() or named_profile_served_by_running_multiplexer()):
         # The launch/default-profile lifecycle still names the whole host.
         owner = _served_by_another_host_gateway()

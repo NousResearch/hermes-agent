@@ -37,33 +37,32 @@ _DEFERRAL_RE = re.compile(
     r"|after (?:the|it|that|this|each|both)|when\b|once\b|as soon as|whenever)",
     re.IGNORECASE,
 )
-# The follow-up waits on the USER, who will be writing anyway: "tell me when it's sent and I'll re-check".
+# Anything that could make the follow-up wait on the user, offer it as a choice, or ask the user for something. Broad on
+# purpose: a missed nudge costs nothing, a nudge on a correct reply is the harm this guard must not do.
 _USER_GATED_RE = re.compile(
-    r"\b(?:tell me|let me know when|ping me|say (?:the word|when|done|go)|once you(?:['\u2019]ve| have)?|when you"
-    r"(?:['\u2019]ve| have)?|after you|reply with|send me|paste (?:it|the|that|your|me)"
-    r"|if you (?:can|could|send|paste|share|run|try|restart|confirm|approve))\b",
+    r"\b(?:tell me|let me know|ping me|say (?:the word|when|done|go)|once you|when you|after you|reply with|send me"
+    r"|paste|if you|if that|should you|want me to|would you|do you want|shall i|unless you|first)\b",
     re.IGNORECASE,
 )
-# "you do not need to paste anything" asks nothing of the user.
-_NEGATED_ASK_RE = re.compile(r"\b(?:do not|don['\u2019]t|no) need to(?: \w+){1,3}", re.IGNORECASE)
-# Later text that reports the outcome resolves the promise ("It finished: exit 0"); a sign-off does not.
-_RESOLVED_RE = re.compile(
-    r"\b(?:finished|completed|passed|failed|succeeded|landed|merged|returned|exited|results?|exit (?:code )?\d"
-    r"|is done|was done|all green|went green)\b",
+# The only text allowed AFTER the promise: a short closing courtesy. Any other later sentence might report the outcome
+# or add a condition, so the promise is treated as resolved (no nudge).
+_SIGN_OFF_RE = re.compile(
+    r"^\W*(?:thanks?(?: you)?|cheers|ty|let me know if you (?:need|have) anything(?: else)?|hope (?:that|this) helps"
+    r"|more soon|talk soon|stay tuned|no action (?:is )?needed(?: from you)?(?: for now)?|nothing (?:else )?needed"
+    r"(?: from you)?)\W*$",
     re.IGNORECASE,
 )
 # A promise introduced as an example or a quotation: "The example reply is: I will report back ...".
 _EXAMPLE_INTRO_RE = re.compile(
-    r"\b(?:example|e\.g\.|reply|response|message|text|output|log|line|says|said|wrote|reads|like|template|quote)"
-    r"(?:\s+(?:is|was|would be|reads))?\s*:\s*$",
+    r"\b(?:example|e\.g\.|reply|response|message|text|output|log|line|says|said|wrote|reads|like|template|quote"
+    r"|commitment|say)(?:\s+(?:is|was|would be|reads))?\s*:?\s*$",
     re.IGNORECASE,
 )
 _FENCED_RE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
 _QUOTED_RE = re.compile(r"`([^`\n]*)`|\"([^\"\n]*)\"|\u201c([^\u201d\n]*)\u201d")
-# A clause break after the promise: what follows it (", if ...", ": it finished") is judged separately.
-_ASIDE_RE = re.compile(r"\s*(?:[:;]|\s[\u2014-]\s)\s*")
+_CLAUSE_BREAK_RE = re.compile(r"\s*([:;\u2014]|\s-\s)\s*")
+_FUTURE_SELF_RE = re.compile(r"\b(?:i(?:['\u2019]ll| will)|we(?:['\u2019]ll| will))\b", re.IGNORECASE)
 _TAIL_CHARS = 600
-_WINDOW_SENTENCES = 3
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
@@ -75,23 +74,30 @@ def _unquote(match: re.Match) -> str:
 
 
 def unbacked_promise_phrase(text: str) -> str:
-    """The promise phrase if ``text`` ENDS on an unconditional deferred follow-up, else ``""``. A promise in the last
-    few sentences counts unless later text reports the outcome; a sign-off after it ("Thanks!") does not resolve it.
-    Fenced code, quoted promises and promises introduced as an example are not the model speaking."""
+    """The promise phrase if ``text`` ENDS on an unconditional deferred follow-up, else ``""``.
+
+    Errs toward silence. The promise must be the reply's last statement: only closing courtesies ("Thanks!") may
+    follow it, and its own sentence must end with it (no ": it finished", "; thanks for ..."). Any hint that the
+    follow-up waits on the user, anywhere from the promise to the end, suppresses it. Fenced code, quoted promises
+    and promises introduced as an example are not the model speaking."""
     cleaned = _QUOTED_RE.sub(_unquote, _FENCED_RE.sub(" ", text or ""))
     sentences = [s for s in _SENTENCE_SPLIT_RE.split(cleaned.strip()[-_TAIL_CHARS:]) if s.strip()]
-    for index in range(max(0, len(sentences) - _WINDOW_SENTENCES), len(sentences)):
-        sentence = sentences[index]
-        match = _PROMISE_RE.search(sentence)
-        if not match or _EXAMPLE_INTRO_RE.search(sentence[:match.start()]):
-            continue
-        promise, *rest = _ASIDE_RE.split(sentence[match.start():], maxsplit=1)
-        if not _DEFERRAL_RE.search(promise) or _USER_GATED_RE.search(_NEGATED_ASK_RE.sub(" ", sentence)):
-            continue
-        if _RESOLVED_RE.search(" ".join([*rest, *sentences[index + 1:]])):
-            continue
-        return promise.strip()
-    return ""
+    while sentences and _SIGN_OFF_RE.match(sentences[-1]):
+        sentences.pop()
+    if not sentences:
+        return ""
+    sentence = sentences[-1]
+    match = _PROMISE_RE.search(sentence)
+    if not match or _EXAMPLE_INTRO_RE.search(sentence[:match.start()]):
+        return ""
+    promise, *aside = _CLAUSE_BREAK_RE.split(sentence[match.start():], maxsplit=1)
+    # A colon after the promise introduces its outcome ("...: it finished"). A semicolon or dash may only continue
+    # the plan ("; if it hasn't moved by then I'll steer it"); anything else there could be a result.
+    if aside and (aside[0].startswith(":") or not _FUTURE_SELF_RE.search(aside[-1])):
+        return ""
+    if not _DEFERRAL_RE.search(promise) or _USER_GATED_RE.search(sentence):
+        return ""
+    return promise.strip().rstrip(".!")
 
 
 # cronjob actions that can leave something scheduled to run; the tool result decides whether they did.
@@ -101,7 +107,7 @@ _CRON_ARMING_ACTIONS = frozenset({"create", "resume", "run"})
 def _cron_result_arms(result: Any) -> bool:
     """Whether a successful cronjob result leaves a future run that will reach this conversation: an enabled job
     with a next run, a background run (its outcome re-enters the conversation), or a run handed to the gateway.
-    A paused create or an inline run that already finished arms nothing."""
+    A paused create, or an inline one-shot that already finished, arms nothing."""
     if not isinstance(result, dict) or result.get("success") is not True:
         return False
     if result.get("forwarded_to_gateway"):
@@ -109,8 +115,8 @@ def _cron_result_arms(result: Any) -> bool:
     job = result.get("job") if isinstance(result.get("job"), dict) else {}
     if job.get("execution_mode") == "background":
         return True
-    if job.get("executed"):
-        return False  # an inline run: its outcome is already in this turn
+    # Otherwise (including after an inline run, whose own outcome is already in this turn) the job must still have a
+    # future run: an enabled, unpaused recurring job does; a finished one-shot or a paused job does not.
     return bool(job.get("enabled", True) and job.get("state") != "paused" and job.get("next_run_at"))
 
 

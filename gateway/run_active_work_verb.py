@@ -29,10 +29,25 @@ def _delegation_units(now: float) -> list[dict[str, Any]]:
     return units
 
 
+def _profile_units(runner, profile: str, units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What an ``unserve-profile`` of *profile* stops (``stop_authority_work``): its chat turns (session
+    keys in its namespace) plus its authority's managed turns and cron runs. Delegations survive it."""
+    from gateway.session import _session_key_namespace
+
+    prefix = _session_key_namespace(profile) + ":"
+    mine = [u for u in units if u.get("kind") == "chat" and str(u.get("session") or "").startswith(prefix)]
+    home = (getattr(runner, "_served_profile_homes", None) or {}).get(profile)
+    registry = getattr(runner, "session_authorities", None)
+    authority = registry.for_home(home) if registry is not None and home is not None else None
+    managed = sum(not w.closed.is_set() for w in getattr(authority, "_managed_workers", {}).values())
+    crons = len(getattr(authority, "_cron_cancellations", None) or {})
+    return mine + [{"kind": "managed", "pid": os.getpid()}] * managed + [{"kind": "cron", "job_id": "?", "pid": os.getpid()}] * crons
+
+
 def active_work_verb(runner, loop) -> Callable[[], dict[str, Any]]:
     """Handler for the control socket: runs on its executor thread, reads the runner on the loop."""
 
-    def _handler() -> dict[str, Any]:
+    def _handler(params: dict[str, Any]) -> dict[str, Any]:
         box: list[list] = []
         done = threading.Event()
 
@@ -46,6 +61,10 @@ def active_work_verb(runner, loop) -> Callable[[], dict[str, Any]]:
         done.wait(timeout=5.0)
         units = list(box[0]) if box else []
         units += _delegation_units(time.time())
+        profile = params.get("profile")
+        if isinstance(profile, str) and profile:
+            units = _profile_units(runner, profile, units)
+            return {"active_agents": len(units), "active_work": units, "pid": os.getpid(), "profile": profile}
         return {"active_agents": runner._active_work_count(), "active_work": units, "pid": os.getpid()}
 
     return _handler

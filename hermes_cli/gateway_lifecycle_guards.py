@@ -36,15 +36,16 @@ def _live_work_from_state(home: Path) -> Optional[dict[str, Any]]:
             "active_work": work if isinstance(work, list) else []}
 
 
-def live_work(home: Path) -> Optional[dict[str, Any]]:
+def live_work(home: Path, profile: Optional[str] = None) -> Optional[dict[str, Any]]:
     """What the gateway serving ``home`` is running now: ``{"active_agents", "active_work"}``, or None
-    when no gateway answers. The control socket answers live; the state file covers older gateways."""
+    when no gateway answers. The control socket answers live; the state file covers older gateways.
+    ``profile`` narrows the answer to one served profile's work (the state file cannot, so it is skipped)."""
     from gateway.control_socket import query_gateway_control
 
-    answer = query_gateway_control(home, "active-work")
+    answer = query_gateway_control(home, "active-work", params={"profile": profile} if profile else None)
     if isinstance(answer, dict) and isinstance(answer.get("active_work"), list):
         return answer
-    return _live_work_from_state(home)
+    return None if profile else _live_work_from_state(home)
 
 
 def _candidate_homes(system: bool = False) -> list[Path]:
@@ -66,12 +67,13 @@ def _candidate_homes(system: bool = False) -> list[Path]:
     return homes
 
 
-def refusal_lines(verb: str, homes: list[Path], *, flag_hint: str = f"hermes gateway {{verb}} {INTERRUPT_FLAG}") -> list[str]:
+def refusal_lines(verb: str, homes: list[Path], *, flag_hint: str = f"hermes gateway {{verb}} {INTERRUPT_FLAG}",
+                  profile: Optional[str] = None) -> list[str]:
     """Refusal text for ``verb`` while the first answering gateway among ``homes`` has live work, else []."""
     from hermes_cli.update_cmd_drain_report import describe_active_work_unit
 
     for home in homes:
-        work = live_work(home)
+        work = live_work(home, profile)
         if work is not None:
             break
     else:
@@ -89,9 +91,15 @@ def refusal_lines(verb: str, homes: list[Path], *, flag_hint: str = f"hermes gat
     return lines
 
 
-def refuse_while_sessions_live(verb: str, args) -> None:
-    """Exit 1 naming the live work unless ``--interrupt`` was passed; with it, say what is interrupted."""
-    lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
+def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = None, profile: Optional[str] = None) -> None:
+    """Exit 1 naming the live work unless ``--interrupt`` was passed; with it, say what is interrupted.
+    ``host_home``/``profile``: a served profile's stop/restart unserves only that profile in the host,
+    so only its work counts."""
+    if profile:
+        lines = refusal_lines(verb, [Path(host_home)], profile=profile,
+                              flag_hint=f"hermes -p {profile} gateway {{verb}} {INTERRUPT_FLAG}")
+    else:
+        lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
     if not lines:
         return
     from hermes_cli.gateway import print_error, print_warning

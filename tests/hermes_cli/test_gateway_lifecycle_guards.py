@@ -224,3 +224,58 @@ def test_sudo_system_stop_checks_the_units_home_not_roots(tmp_path, monkeypatch,
     assert "chat turn agent:main:telegram:dm:7" in capsys.readouterr().out
     assert "HERMES_HOME" not in os.environ  # the check never adopted the unit's home
 
+
+@pytest.mark.parametrize("verb", ["stop", "restart"])
+def test_host_served_profile_refuses_before_unserving_its_live_turns(tmp_path, monkeypatch, capsys, verb):
+    """``hermes -p coder gateway stop|restart`` on a profile the host serves unserves it in the host,
+    which Stops its executing turns: the live-work policy applies first, scoped to that profile."""
+    from gateway import control_socket
+    from hermes_cli import gateway_profile_lifecycle as gpl
+    profile_home, host_home = tmp_path / "profiles" / "coder", tmp_path / "root"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(gw, "_current_profile_name", lambda: "coder")
+    monkeypatch.setattr(gpl, "get_hermes_home", lambda: profile_home)
+    monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda: SimpleNamespace(home=host_home))
+    asked: list = []
+    coder_work = {"active_agents": 1, "active_work": [_WORK["active_work"][0] | {"session": "agent:coder:telegram:dm:7"}]}
+    monkeypatch.setattr(control_socket, "query_gateway_control",
+                        lambda home, verb, params=None, **kw: asked.append((home, params)) or (
+                            coder_work if (params or {}).get("profile") == "coder" else _WORK))
+    requests: list = []
+    monkeypatch.setattr(control_socket, "request_unserve_profile",
+                        lambda home, name: requests.append(("unserve", name)) or {"unserved": name})
+    monkeypatch.setattr(control_socket, "request_serve_profile_hot",
+                        lambda home, name: requests.append(("serve", name)) or {"served": name})
+    command = getattr(gw, f"_cmd_{verb}")
+
+    with pytest.raises(SystemExit) as exc:
+        command(SimpleNamespace(all=False, system=False, force=False, interrupt=False))
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1 and requests == []
+    assert asked == [(host_home, {"profile": "coder"})]
+    assert "1 live session(s)" in out and "agent:coder:telegram:dm:7" in out
+    assert f"hermes -p coder gateway {verb} --interrupt" in out
+    assert not (profile_home / "gateway.parked").exists()
+
+    command(SimpleNamespace(all=False, system=False, force=False, interrupt=True))
+    assert requests[0] == ("unserve", "coder")
+
+
+def test_active_work_verb_scoped_to_a_profile_names_only_its_turns(monkeypatch):
+    """The host's ``active-work`` verb with ``{"profile": "coder"}`` answers only what unserving coder stops."""
+    from gateway.run_active_work_verb import active_work_verb
+    from tools import async_delegation
+    monkeypatch.setattr(async_delegation, "list_async_delegations", list)
+    units = [{"kind": "chat", "session": "agent:coder:telegram:dm:7", "pid": 1},
+             {"kind": "chat", "session": "agent:main:telegram:dm:8", "pid": 1}]
+    runner = SimpleNamespace(_describe_active_work=lambda: units, _active_work_count=lambda: 2,
+                             _served_profile_homes={}, session_authorities=None)
+    loop = SimpleNamespace(call_soon_threadsafe=lambda fn: fn())
+    handler = active_work_verb(runner, loop)
+
+    assert handler({})["active_agents"] == 2
+    scoped = handler({"profile": "coder"})
+    assert scoped["active_agents"] == 1 and [u["session"] for u in scoped["active_work"]] == ["agent:coder:telegram:dm:7"]
+

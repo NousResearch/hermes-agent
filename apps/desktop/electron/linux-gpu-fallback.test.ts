@@ -131,7 +131,7 @@ describe('shouldRelaunchForLinuxGpuCrash', () => {
     expect(
       shouldRelaunchForLinuxGpuCrash({
         platform: 'linux',
-        details: { type: 'GPU', reason: 'launch-failure' },
+        details: { type: 'GPU', reason: 'launch-failed' },
         alreadySoftware: false,
         relaunchAttempted: false
       })
@@ -153,7 +153,7 @@ describe('shouldRelaunchForLinuxGpuCrash', () => {
     expect(
       shouldRelaunchForLinuxGpuCrash({
         platform: 'linux',
-        details: { type: 'GPU', reason: 'launch-failure' },
+        details: { type: 'GPU', reason: 'launch-failed' },
         alreadySoftware: false,
         relaunchAttempted: true
       })
@@ -238,7 +238,7 @@ describe('linuxGpuChildDeathPath', () => {
     expect(
       linuxGpuChildDeathPath({
         platform: 'linux',
-        details: { type: 'GPU', reason: 'launch-failure', exitCode: 1002 }
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 }
       })
     ).toBe('disable-gpu')
     expect(
@@ -260,6 +260,57 @@ describe('linuxGpuChildDeathPath', () => {
         platform: 'linux',
         details: { type: 'GPU', reason: 'crashed' },
         alreadySoftware: true
+      })
+    ).toBeNull()
+  })
+
+  // ─── the SwiftShader death rescue (#129174, #131321) ──────────────────────
+  //
+  // `--use-angle=swiftshader` still spawns a GPU child. On hosts where even
+  // SwiftShader cannot launch one (witnessed: error_code=1002 ×6 → "GPU
+  // process isn't usable" on a Kepler GTX 650 Ti + driver 470), `alreadySoftware`
+  // used to block the software ladder and the app died to the FATAL abort.
+
+  it('a GPU death under the NVIDIA SwiftShader fallback still reaches --disable-gpu', () => {
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 },
+        alreadySoftware: true,
+        nvidiaSwiftShaderActive: true
+      })
+    ).toBe('disable-gpu')
+  })
+
+  it('a crash (not just a launch failure) under SwiftShader also reaches --disable-gpu', () => {
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: { type: 'GPU', reason: 'crashed', exitCode: 139 },
+        alreadySoftware: true,
+        nvidiaSwiftShaderActive: true
+      })
+    ).toBe('disable-gpu')
+  })
+
+  it('plain already-software boots still decline (no SwiftShader involved)', () => {
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 },
+        alreadySoftware: true
+      })
+    ).toBeNull()
+  })
+
+  it('the rescue is bounded: one relaunch per process', () => {
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 },
+        alreadySoftware: true,
+        nvidiaSwiftShaderActive: true,
+        softwareRelaunchAttempted: true
       })
     ).toBeNull()
   })

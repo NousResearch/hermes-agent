@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
-from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
+from pm.filesystem import durable_write_bytes, file_digest, inherit_parent_acl, read_bytes_or_none
 from pm.workspace import enabled_plugin_dirs, _is_member_candidate
 
 
@@ -172,4 +172,7 @@ class StagedPlugin:
             if self.target.exists():
                 os.replace(self.target, backup)
             os.replace(self.staged, self.target)
+            # The staging folder's private Windows DACL must not travel with the plugin (#111804 is the
+            # unreadable-at-install sibling); the plugin takes plugins/'s entries like any new file.
+            inherit_parent_acl(self.target)
             durable_write_bytes(self.metadata, proposed)

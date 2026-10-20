@@ -78,6 +78,11 @@ Details (transport, tool discovery, catalog): `references/native-mcp.md`.
 hermes gateway run|install|start|stop|restart|status|setup
 ```
 
+Before a platform's first connect, install its declared extra explicitly:
+`hermes pm install --extra <platform>`. The lazy-install path is not a
+substitute in a process that is not the install's dependency environment;
+verify with the adapter's own `check_<platform>_requirements()` gate.
+
 20+ platforms: Telegram, Discord, Slack, WhatsApp (Baileys + Business Cloud API), iMessage (Photon — `hermes photon setup`), Signal, Email, SMS, Matrix, Mattermost, Teams, LINE, SimpleX, ntfy, Google Chat, Home Assistant, DingTalk, Feishu, WeCom, Weixin, API Server, Webhooks. Open WebUI connects via the API Server adapter. Most adapters ship under `plugins/platforms/`.
 Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
 

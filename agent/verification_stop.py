@@ -94,24 +94,43 @@ def _candidate_cwds(paths: Iterable[str]) -> list[Path]:
 def _verification_snapshot(
     *, session_id: str | None, changed_paths: list[str]
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """``(status, facts)`` for the first edited workspace needing proof, else the
-    first recognized workspace when every one is ``passed``."""
+    """``(status, facts)`` for the first edited workspace that still needs proof.
+
+    A workspace is *proof-complete* — and therefore skipped — when its status is
+    ``passed`` (verification ran and no edit followed) or ``unverified`` with an
+    empty ``changed_paths`` ledger.  The latter is the false-positive source:
+    ``verification_status`` reports ``unverified`` with ``changed_paths: []`` when
+    no edit was ever recorded for that root, so an empty list means "nothing
+    concrete to verify", not "verification is outstanding".
+
+    Returns ``None`` when no candidate needs proof: the caller emits no nudge.
+    """
     try:
         from agent.coding_context import project_facts_for
         from agent.verification_evidence import verification_status
     except Exception:
         return None
 
-    first_snapshot: tuple[dict[str, Any], dict[str, Any]] | None = None
     for cwd in _candidate_cwds(changed_paths):
         facts = project_facts_for(cwd)
         if not facts:
             continue
         status = verification_status(session_id=session_id, cwd=cwd)
-        first_snapshot = first_snapshot or (status, facts)
-        if str(status.get("status") or "unverified") != "passed":
-            return status, facts
-    return first_snapshot
+        state = str(status.get("status") or "unverified")
+
+        # Verified, with no edit recorded after the evidence — nothing to do.
+        if state == "passed":
+            continue
+
+        # Never edited (or the ledger was cleared): an empty changed_paths list
+        # means there is nothing concrete to re-verify.
+        if state == "unverified" and not (status.get("changed_paths") or []):
+            continue
+
+        # ``stale`` / ``failed`` / ``unverified`` with pending edits → needs proof.
+        return status, facts
+
+    return None
 
 
 def _format_changed_paths(paths: list[str]) -> str:

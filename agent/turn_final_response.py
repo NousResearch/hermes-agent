@@ -7,7 +7,7 @@ re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import Any, Callable, Dict, Optional
 
@@ -19,6 +19,7 @@ from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import (
     housekeeping_reply_line, recover_empty_response, take_housekeeping_reply_line,
 )
+from agent.turn_end_hooks import prepare_text_candidate, review_text_candidate
 from agent.turn_stop_gates import apply_stop_gates
 from agent.turn_truncation import partial_result, repetition_copy
 
@@ -54,6 +55,8 @@ class FinalResponseVerdict:
     _pending_verification_response_previewed: Any
     api_call_count: int
     result: Optional[dict[str, Any]] = None
+    failed: bool = False
+    interrupted: bool = False
 
 
 def _bare_marker_after_reply(agent: Any, final_response: Any, *, truncated_parts: Any = None,
@@ -372,23 +375,9 @@ def finish_text_response(
     ):
         messages.pop()
 
-    from agent.turn_end_hooks import before_turn_end, prepare_response
-    final_response = prepare_response(agent, final_response)
-    # Same row contract as the stock transform below: a promoted reasoning-only reply
-    # keeps ``content`` empty and carries the text in the ``api_content`` sidecar.
-    if _promoted:
-        final_msg["api_content"] = final_response
-    else:
-        final_msg["content"] = final_response
-    if before_turn_end(
-        agent, final_response, final_msg, messages, user_message=user_message,
-        can_continue=(api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0),
-    ):
-        _pending_verification_response = final_response
-        _pending_verification_response_previewed = False
-        final_response = None
-        return _verdict("continue")
-
+    final_response = prepare_text_candidate(agent, final_response, final_msg, _promoted)
+    if _gate := review_text_candidate(agent, final_response, final_msg, messages, user_message, api_call_count):
+        return replace(_verdict(_gate.pop("action")), **_gate)
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,
         conversation_history=conversation_history,
@@ -412,10 +401,7 @@ def finish_text_response(
             agent, final_response, turn_id=getattr(agent, "_current_turn_id", "") or "", logger=logger,
         )
     if _transformed:
-        if _promoted:
-            final_msg["api_content"] = final_response
-        else:
-            final_msg["content"] = final_response
+        final_msg["api_content" if _promoted else "content"] = final_response
     publish_held_final_row(agent, final_msg, final_response, _joined)
 
     append_message(messages, final_msg)

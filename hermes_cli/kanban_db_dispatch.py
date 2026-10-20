@@ -36,10 +36,6 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
-# Worker log files larger than this at spawn time are rotated.
-DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
-DEFAULT_LOG_BACKUP_COUNT = 1
-
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
 # before max_runtime_seconds kills it.
@@ -394,23 +390,49 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     return not _pid_recycled(pid, started_at)
 
 
+def _composed_fingerprints_match(recorded: str, current: str) -> bool:
+    """Same-worker check for the composed ``"<instantiation epoch>|<start time>"`` fingerprints written
+    by :func:`_process_fingerprint`. The epoch half is the reboot witness and compares exactly (both
+    sides read ``""`` on hosts without ``/proc``, which keeps that half disabled — never fail-closed).
+    The start half drifts by ~1 s between the spawn-time write and a later liveness read on the same
+    host (macOS ``kern.boottime`` adjustment, #117505), so it compares with the fleet-wide tolerance
+    (:func:`gateway.status.start_time_fingerprints_match`, ×100 on every platform): exact equality here
+    read a live worker as a recycled PID, released its still-valid claim and orphaned its run.
+    """
+    from gateway.status import start_time_fingerprints_match
+
+    recorded_epoch, _, recorded_start = recorded.partition("|")
+    current_epoch, _, current_start = current.partition("|")
+    if recorded_epoch != current_epoch:
+        return False
+    try:
+        return start_time_fingerprints_match(int(recorded_start), int(current_start))
+    except (TypeError, ValueError):
+        return False
+
+
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    boot witness was added) compares the start time only, with the same fleet-wide drift tolerance as
+    the composed form — a same-host reading drifts ~1 s between the spawn write and a later read
+    (#117505), so an exact comparison reconciled live workers to dead and orphaned their runs."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            return True
+        return not _composed_fingerprints_match(started_at, current)
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     current = get_process_start_time(int(pid))
     if current is None:
         return True
     try:
-        return not _start_times_agree(current, started_at)
+        return not start_time_fingerprints_match(current, started_at)
     except (TypeError, ValueError):
         return True
 
@@ -2452,66 +2474,6 @@ def _dispatch_once_locked(
     return result
 
 
-def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= minimum else default
-
-
-def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
-    """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
-    Defaults: rotate at 2 MiB, keep one backup (``.log.1``); both overridable
-    from ``config.yaml``.
-    """
-    if kanban_cfg is None:
-        try:
-            from hermes_cli.config import load_config
-
-            kanban_cfg = (load_config().get("kanban") or {})
-        except Exception:
-            kanban_cfg = {}
-    kanban_cfg = kanban_cfg or {}
-    max_bytes = _positive_int(kanban_cfg.get("worker_log_rotate_bytes"), DEFAULT_LOG_ROTATE_BYTES, minimum=1)
-    backup_count = _positive_int(kanban_cfg.get("worker_log_backup_count"), DEFAULT_LOG_BACKUP_COUNT, minimum=0)
-    return max_bytes, backup_count
-
-
-def _rotated_log_path(log_path: Path, generation: int) -> Path:
-    return log_path.with_suffix(log_path.suffix + f".{generation}")
-
-
-def _rotate_worker_log(
-    log_path: Path,
-    max_bytes: int,
-    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-) -> None:
-    """Rotate ``<log>`` when it exceeds ``max_bytes``: ``<log>`` → ``<log>.1``,
-    older generations shift up to ``backup_count``.
-    """
-    try:
-        if not log_path.exists() or log_path.stat().st_size <= max_bytes:
-            return
-        backup_count = _positive_int(backup_count, DEFAULT_LOG_BACKUP_COUNT, minimum=0)
-        if backup_count == 0:
-            log_path.unlink()
-            return
-        oldest = _rotated_log_path(log_path, backup_count)
-        with contextlib.suppress(OSError):
-            if oldest.exists():
-                oldest.unlink()
-        for generation in range(backup_count - 1, 0, -1):
-            src = _rotated_log_path(log_path, generation)
-            if not src.exists():
-                continue
-            with contextlib.suppress(OSError):
-                src.rename(_rotated_log_path(log_path, generation + 1))
-        log_path.rename(_rotated_log_path(log_path, 1))
-    except OSError:
-        pass
-
-
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
     console-script target — there is no top-level ``hermes`` package)."""
@@ -2756,8 +2718,8 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
-    rotate_bytes, backup_count = worker_log_rotation_config()
-    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    rotate_bytes, backup_count = _kbdw.worker_log_rotation_config()
+    _kbdw._rotate_worker_log(log_path, rotate_bytes, backup_count)
     return open(log_path, "ab")
 
 
@@ -3009,4 +2971,8 @@ def run_daemon(
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli import kanban_db_dispatch_worker_logs as _kbdw
+# Re-exported for hermes_cli.kanban_ops, which consumes ``kbd._positive_int``
+# for the dispatch CLI's config passthrough (max_in_progress/max_spawn coercion).
+_positive_int = _kbdw._positive_int
 from hermes_cli import kanban_db_workspace as _kbw

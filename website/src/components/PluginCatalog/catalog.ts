@@ -11,6 +11,8 @@ export interface PluginCapabilities {
 
 export interface CatalogPlugin {
   name: string;
+  /** Human name from the catalog entry's `title` ("NVIDIA App"); every surface falls back to `name`. */
+  title?: string;
   description: string;
   repo: string;
   sha: string;

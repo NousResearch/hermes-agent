@@ -144,6 +144,22 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
     assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
 
 
+def test_title_is_emitted_and_an_unusable_one_is_dropped_not_fatal(mod, tmp_path):
+    """`title` is the human name cards render ("NVIDIA App"); it is cosmetic like version/image — an
+    over-long or multi-line value is dropped and the entry still ships."""
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "titled", title="Titled Plugin")
+    _write_entry(catalog, "long-title", title="x" * (mod.TITLE_MAX + 1))
+    _write_entry(catalog, "multiline", title="two\nlines")
+    _write_entry(catalog, "untitled")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["titled"]["title"] == "Titled Plugin"
+    assert entries["long-title"]["title"] == "" and entries["multiline"]["title"] == ""
+    assert entries["untitled"]["title"] == ""
+
+
 def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
     resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) BY DEFAULT, is off for

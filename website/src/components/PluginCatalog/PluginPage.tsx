@@ -79,10 +79,12 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
     : null;
   const added = formatDate(plugin.addedAt);
   const updated = formatDate(plugin.updatedAt);
-  const metaDescription = (prose || plugin.description || `${plugin.name} — a Hermes Agent plugin`).slice(0, 160);
+  // Human name from the catalog entry; the slug stays the URL/route and the fallback heading.
+  const displayName = plugin.title || plugin.name;
+  const metaDescription = (prose || plugin.description || `${displayName} — a Hermes Agent plugin`).slice(0, 160);
 
   return (
-    <Layout title={`${plugin.name} · Plugin Catalog`} description={metaDescription}>
+    <Layout title={`${displayName} · Plugin Catalog`} description={metaDescription}>
       <Head>
         <meta property="og:type" content="website" />
         {plugin.image && <meta property="og:image" content={plugin.image} />}
@@ -93,7 +95,7 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
           <span aria-hidden="true">/</span>
           <span>{category.label}</span>
           <span aria-hidden="true">/</span>
-          <span className={styles.crumbCurrent}>{plugin.name}</span>
+          <span className={styles.crumbCurrent}>{displayName}</span>
         </nav>
 
         <header className={styles.hero}>
@@ -111,7 +113,7 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               <span className={styles.heroIcon} aria-hidden="true" title={category.label}>
                 {category.icon}
               </span>
-              <h1 className={styles.title}>{plugin.name}</h1>
+              <h1 className={styles.title}>{displayName}</h1>
               <span
                 className={styles.tierPill}
                 style={{ color: tier.color, background: tier.bg, borderColor: tier.border }}

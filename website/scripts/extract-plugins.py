@@ -77,6 +77,14 @@ def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
     return text
 
 
+#: A card title is rendered verbatim in a heading, so cap it rather than let one entry stretch a grid row.
+TITLE_MAX = 120
+
+
+def _is_valid_title(text: str) -> bool:
+    return len(text) <= TITLE_MAX and not any(ch in text for ch in "\r\n\t")
+
+
 def maintainer_slug(maintainer: str) -> str:
     """URL segment for the author page (/docs/plugins/by/<slug>); shared by every entry of one maintainer."""
     return _SLUG_RE.sub("-", maintainer.strip().lower()).strip("-") or "unknown"
@@ -246,6 +254,8 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
         subdir = str(raw.get("subdir") or "").strip()
         entries.append({
             "name": name,
+            # Human name ("NVIDIA App"); cards fall back to `name` when it is absent.
+            "title": _cosmetic(raw.get("title"), _is_valid_title, path.name, name, "title"),
             "description": str(raw.get("description") or "").strip(),
             "repo": repo,
             "sha": sha,

@@ -93,6 +93,8 @@ function PluginCard({
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const toolChips = capToolChips(caps.providesTools);
   const description = plugin.description || "No description available.";
+  // The catalog's human name wins; the slug is the fallback so entries without `title` read as before.
+  const title = plugin.title || plugin.name;
   // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
   // height (every card in a grid row shares one height; see .grid in styles.module.css).
   const [imageBroken, setImageBroken] = useState(false);
@@ -144,9 +146,9 @@ function PluginCard({
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle} title={plugin.name}>
+            <h3 className={styles.cardTitle} title={title}>
               <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
-                {highlightMatch(plugin.name, query)}
+                {highlightMatch(title, query)}
               </Link>
             </h3>
             {typeof plugin.stars === "number" && (
@@ -351,6 +353,7 @@ function PluginCard({
 function buildSearchHaystack(p: CatalogPlugin): string {
   return [
     p.name,
+    p.title,
     p.description,
     p.maintainer,
     p.tier,
@@ -389,6 +392,8 @@ export default function PluginCatalogPage() {
         sha: plugin.sha,
         subdir: plugin.subdir || "",
         tier: plugin.tier,
+        // The Install dialog heads with this; absent reads as the catalog name.
+        title: plugin.title || plugin.name,
         installCmd: plugin.installCommand || `hermes plugins install ${plugin.name}`,
       },
       "*"

@@ -581,8 +581,48 @@ class TestWriteFile:
         assert "escapes" in result["error"].lower()
         assert not (outside_dir / "owned.md").exists()
 
+    def test_write_file_to_skill_md_empty_content_rejected(self, tmp_path):
+        """#142069: write_file targeting SKILL.md must validate frontmatter and reject empty content."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", "")
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is False
+        assert "Content cannot be empty" in result["error"]
+        assert content == VALID_SKILL_CONTENT
+
+    def test_write_file_to_skill_md_invalid_frontmatter_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", "no frontmatter content")
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is False
+        assert "frontmatter" in result["error"].lower()
+        assert content == VALID_SKILL_CONTENT
+
+    def test_write_file_to_skill_md_valid_succeeds(self, tmp_path):
+        valid_update = VALID_SKILL_CONTENT.replace("A valid test skill.", "Updated description.")
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", valid_update)
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is True
+        assert content == valid_update
+
 
 class TestRemoveFile:
+    def test_remove_skill_md_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _remove_file("my-skill", "SKILL.md")
+
+        assert result["success"] is False
+        assert "Cannot remove SKILL.md" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
     def test_remove_existing_file(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

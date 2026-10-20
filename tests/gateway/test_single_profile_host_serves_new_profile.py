@@ -32,6 +32,7 @@ def standalone_host(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "_installed_services", lambda _home: [])
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda _home: None)
     monkeypatch.setattr(gm, "_host_supports_migration", lambda: None)
+    monkeypatch.setenv("OPENAI_API_KEY", "launch-key")
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=False))
     runner._running = True
     runner.session_runtime_descriptor = {"state": "ready", "served_profiles": [], "capabilities": []}
@@ -69,13 +70,23 @@ async def test_profile_created_after_a_single_profile_boot_is_served_without_a_r
         assert answer["multiplex"] is False and not is_multiplex_active()
 
         bot = _mkprofile(home, "daily-news-bot")
+        (bot / ".env").write_text("OPENAI_API_KEY=bot-own-key\n", encoding="utf-8")
         answer = await asyncio.to_thread(control_socket.rescan_gateway_profiles, home)
         assert answer["multiplex"] is True
         assert answer["added"] == ["daily-news-bot"]
         assert answer["served_profiles"] == ["default", "daily-news-bot"]
         assert restarts == [] and not runner._draining
-        # The new profile's credentials can never borrow the launch profile's process env.
+        # The new profile reads its own credentials and never borrows the launch profile's env.
         assert is_multiplex_active()
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        from gateway.run import _profile_runtime_scope
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        with _profile_runtime_scope(bot.resolve()):
+            assert get_secret("OPENAI_API_KEY") == "bot-own-key"
+        with launch_profile_scope_if_multiplexed():
+            assert get_secret("OPENAI_API_KEY") == "launch-key"
+        with pytest.raises(UnscopedSecretError):
+            get_secret("OPENAI_API_KEY")
 
         # Deleting it again unserves it in place; the host keeps running.
         shutil.rmtree(bot)
@@ -101,3 +112,19 @@ async def test_a_blocked_new_profile_is_served_once_the_blocker_clears(standalon
     own["coder"] = False
     result = await runner.reconcile_served_profiles(reason="watcher")
     assert result["added"] == ["coder"] and restarts == []
+
+
+def test_launch_profile_work_on_a_standalone_host_binds_its_scope_once_a_second_home_is_hosted(standalone_host):
+    """Desktop's ``profiles.create`` hosts the new home before any rescan: from then on unscoped
+    secret reads fail closed, so the launch profile's own ``session.create`` (owner dispatch on a
+    still-standalone gateway) must bind the launch scope, not crash with UnscopedSecretError."""
+    from types import SimpleNamespace
+
+    from agent.secret_scope import get_secret
+    from gateway.session_authorities import owner_scope
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+
+    runner, home, _restarts = standalone_host
+    activate_multi_profile_hosting()
+    with owner_scope(SimpleNamespace(runner=runner, profile_id=str(home))):
+        assert get_secret("XAI_API_KEY") is None

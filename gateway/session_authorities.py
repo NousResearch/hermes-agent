@@ -263,11 +263,16 @@ def owner_scope(authority, *, hydrate_secrets=False):
     would read the profile's config/.env for every handler, including bypass (--safe-mode)
     launches that must never touch the profile YAML. Test peers with symbolic ids ('fixture')
     likewise keep the ambient scope.
+
+    A standalone gateway that already hosts a second home (a profile created over the wire froze
+    the launch env and made unscoped secret reads fail closed) binds the launch profile's own scope
+    instead: unbound, every launch-profile session.create raised UnscopedSecretError (#141623).
     """
     from contextlib import nullcontext
     runner = getattr(authority, 'runner', None)
     if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False):
-        return nullcontext()
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        return launch_profile_scope_if_multiplexed()
     home = Path(str(authority.profile_id))
     if not home.is_absolute() or not home.is_dir():
         return nullcontext()

@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (다음 턴에만 적용 — 응답 한 번 후 복원돼요)"
     switch_cancelled: "🟡 모델 전환이 취소됐어요. 현재 모델은 그대로예요({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_텍스트로 답하려면: 전환은 `{prefix}approve`, 현재 모델 유지는 `{prefix}cancel`이라고 답해 주세요._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **활성 에이전트 및 작업**"
     active_agents: "**활성 에이전트:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
+    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug`를 보내세요."
   deny:
     stale: "❌ 명령이 거부되었습니다 (승인이 만료됨)."
     no_pending: "거부 대기 중인 명령이 없습니다."
@@ -443,6 +446,9 @@ gateway:
     state_no: "아니오"
     queued: "**대기 중인 후속 작업:** {count}"
     platforms: "**연결된 플랫폼:** {platforms}"
+  discard:
+    nothing: "버릴 것이 없습니다: 이 채팅에는 재시작으로 손실된 턴이 없습니다."
+    done: "🗑️ 손실된 턴 {count}개를 버렸습니다. 다시 실행하지 않았습니다. 저장된 메시지에 이제 응답합니다."
   stop:
     stopped_pending: "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
     stopped: "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
@@ -1528,6 +1534,8 @@ slash:
     description: "공유된 프로필 아카이브를 새 프로필로 가져오기"
   stop:
     description: "실행 중인 모든 백그라운드 프로세스 종료"
+  discard:
+    description: "Hermes 재시작 중 손실된 턴을 버리고 이 채팅의 대기열을 다시 실행합니다"
   pause:
     description: "새 작업을 전체 일시 중지 (긴급 정지); '/pause off'로 재개"
   deny:
@@ -1681,6 +1689,21 @@ slash:
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
+  modern:
+    thought_for: "{seconds}초 동안 생각함"
+    thought: "생각함"
+    working: "작업 중…"
+    preparing: "{what} 준비 중…"
+    hint_steer: "유도"
+    hint_queue: "대기열"
+    hint_interrupt: "중단"
+    hint_stop: "정지"
+    hint_commands: "명령어"
+    hint_files: "파일"
+    hint_shell: "셸"
+    placeholder_busy_steer: "입력해 이번 턴을 유도 · Tab 은 이후로 대기열에 추가"
+    placeholder_busy_interrupt: "입력해 이번 턴을 전환 · Tab 은 이후로 대기열에 추가"
+    placeholder_busy_queue: "입력해 이번 턴 이후 메시지를 대기열에 추가"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "결제 정보를 불러올 수 없어요"
@@ -1966,6 +1989,7 @@ cli:
     desc_switch_anyway: "현재 Hermes 세션에서 이 모델을 사용해요."
     choice_cancel: "취소"
     desc_keep_current_model: "현재 모델을 유지해요."
+    confirm_choice_prompt: "선택 [1/2]: "
     switch_cancelled: "모델 전환이 취소됐어요."
     selection_failed: "✗ 모델 선택 실패: {error}"
     switch_failed: "⚠ {model}(으)로 모델 전환 실패 ({error}); {old_model}을(를) 계속 사용해요."
@@ -2223,6 +2247,7 @@ cli:
     queue_heading: "대기열 · {count}개 대기 중 · /queue list{controls}"
     more_queued: "+{count}개 더"
     transcript_unavailable: "실시간 기록을 아직 볼 수 없어요."
+    control_pending: "보내는 중…"
     steer_prompt: "조정: "
     roster_empty: "진행 중인 서브에이전트나 백그라운드 프로세스가 없어요. 결과는 대화에 도착해요."
     entry_gone: "이 항목은 더 이상 진행 중이 아니에요."
@@ -2361,6 +2386,14 @@ cli:
     move_out_of_range: "대기열 이동 범위를 벗어났어요. 현재 크기: {size}"
     moved: "대기열 항목 {source}을(를) {destination}으로 이동했어요."
     usage_add: "사용법: /queue add <prompt>"
+    gateway_refused: "게이트웨이가 대기열에 넣지 않았습니다: {error}. 아무것도 대기열에 없습니다. 턴이 끝나면 다시 보내세요."
+    submit_unknown: "게이트웨이가 응답하지 않았습니다 ({error}). 프롬프트가 이미 대기열에 있을 수 있습니다. 다시 보내기 전에 /queue list를 확인하세요."
+    move_gateway_fifo: "게이트웨이는 대기 중인 프롬프트를 보낸 순서대로 실행합니다. 대신 편집하거나 삭제하세요."
+    remove_refused: "대기열 항목 {index}을(를) 제거할 수 없습니다: {error}"
+    edit_refused: "대기열 항목 {index}을(를) 편집할 수 없습니다: {error}"
+    already_started: "대기열 항목 {index}은(는) 이미 시작되었습니다. 보낸 그대로 실행됩니다."
+    started_stopped: "대기열 항목 {index}은(는) 이미 시작되어 게이트웨이가 중지했습니다."
+    change_unknown: "게이트웨이가 대기열 항목 {index}에 응답하지 않았습니다 ({error}). 다시 시도하기 전에 /queue list를 확인하세요."
   reload:
     env_reloaded: ".env를 다시 불러왔어요 (변수 {count}개 업데이트됨)"
   steer:
@@ -3001,6 +3034,10 @@ cli:
       usage_disconnect: "disconnect   기본 브라우저 백엔드로 되돌리기"
       usage_status: "status       현재 브라우저 모드 표시"
       usage_use: "use [off]    Browser Use 모드(CLI 3.0)로 전환 / 내장 도구로 복귀"
+      remote_gateway: "/browser connect 및 /browser disconnect는 게이트웨이 호스트의 Chromium 계열 브라우저를 관리합니다 — 로컬 게이트웨이에 연결된 경우에만 사용할 수 있습니다."
+      checking: "{url}에서 Chromium 계열 브라우저 원격 디버깅을 확인하는 중..."
+      new_sessions_only: "새 세션에 적용됩니다 — 이 세션은 현재 도구를 유지합니다 (/new로 새로 시작)."
+      status_gateway_default: "🌐 브라우저: 게이트웨이 기본 브라우저 백엔드 (실시간 CDP 연결 없음)"
     heartbeat:
       label: "하트비트"
       paused: "⏸ 하트비트 일시 중지됨: {prompt}"
@@ -3109,6 +3146,10 @@ cli:
     loaded: "(불러옴)"
     not_found: "(찾을 수 없음)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "설정되지 않음!"
     value_not_set: "설정되지 않음"
     section_model: "모델"
@@ -3290,8 +3331,22 @@ cli:
     next_session_deepens: "다음 `hermes -w` 세션에서 클론을 깊게 만들고 병합된 워크트리를 자동으로 정리해요."
     unpushed_keeping: "⚠ 워크트리에 푸시되지 않은 커밋이 있어 유지해요: {path}"
     uncommitted_keeping: "⚠ 워크트리에 커밋되지 않은 변경 사항이 있어 유지해요: {path}"
+    kept_reason: "⚠ 워크트리를 유지해요 ({reason}): {path}"
     clean_up_manually: "직접 정리하려면: git worktree remove --force {path}"
     cleaned_up: "✓ 워크트리를 정리했어요: {path}"
+    exit_question_dirty: "이 워크트리에 커밋되지 않은 변경 사항이 있어요: {path}"
+    exit_question_unpushed: "이 워크트리에 푸시되지 않은 커밋이 있어요: {path}"
+    exit_choice_keep: "워크트리 유지 (기본값)"
+    exit_choice_archive: "보관 후 제거 (복원 가능)"
+    exit_choice_discard: "제거하고 변경 사항 버리기"
+    archiving: "{path} 보관 중… (큰 트리는 시간이 걸릴 수 있습니다)"
+    archived: "✓ 워크트리를 {ref}에 보관하고 제거했어요: {path}"
+    restore_hint: "복원하려면: hermes worktree restore {name}"
+    archive_failed: "✗ {path}을(를) 보관하지 못해 유지해요: {error}"
+    archived_kept: "✓ 워크트리를 {ref}에 보관했지만 유지했어요 ({reason}): {path}"
+    sweep_archived_removed: "보관 후 제거 → {ref}"
+    sweep_archived_kept: "보관됨, 유지 ({reason}) → {ref}"
+    discarded: "워크트리를 제거하고 변경 사항을 버렸어요: {path}"
 display:
   verb:
     web_search: "웹 검색 중"
@@ -3720,7 +3775,7 @@ tips:
   t241: "게이트웨이는 세션별로 AIAgent 인스턴스를 캐시해요 — 이 캐시를 없애면 Anthropic 프롬프트 캐싱이 깨져요."
   t242: "어떤 웹사이트든 /.well-known/skills/index.json으로 스킬을 공개할 수 있어요 — 스킬 허브가 자동으로 찾아내요."
   t243: "~/.hermes/skills/.hub/audit.log의 스킬 감사 로그는 모든 설치와 제거 작업을 기록해요."
-  t244: "오래된 git 워크트리는 시작 시 자동 정리돼요: 깨끗하고 완전히 병합된 트리는 제거되고, 변경 중이거나 푸시되지 않은 작업은 항상 보존돼요."
+  t244: "오래된 git 워크트리는 자동으로 정리돼요: 깨끗하고 병합된 트리는 제거되고, 커밋되지 않았거나 푸시되지 않은 작업이 있는 유휴 트리는 먼저 보관되며 hermes worktree restore로 복원할 수 있어요."
   t245: "프로필은 HERMES_HOME으로 Hermes 상태를 분리해요; 호스트 도구의 하위 프로세스는 terminal.home_mode가 profile이 아닌 한 실제 HOME을 유지해요."
   t246: "HERMES_HOME_MODE 환경 변수(8진수, 예: 0701)는 웹 서버 접근을 위한 사용자 정의 디렉터리 권한을 설정해요."
   t247: "컨테이너 모드: HERMES_HOME에 .container-mode를 두면 호스트 CLI가 자동으로 컨테이너 안에서 실행돼요."

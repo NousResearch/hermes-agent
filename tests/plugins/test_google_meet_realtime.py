@@ -225,3 +225,53 @@ def test_speaker_run_until_stopped_processes_queue(tmp_path):
     assert queue.read_text().strip() == ""
 
 
+
+
+def test_speaker_drain_keeps_a_say_enqueued_during_the_rewrite(tmp_path, monkeypatch):
+    """A meet_say append landing between the speaker's post-speak re-read and its queue rewrite must
+    survive the rewrite and be spoken (it was reported "enqueued" to the agent)."""
+    import threading
+
+    from plugins.google_meet import process_manager as pm
+    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
+    from tests.lock_contention import watch_file_lock_contention
+    from tests.waiting import wait_until
+
+    contended = watch_file_lock_contention(monkeypatch)
+
+    queue = tmp_path / "say_queue.jsonl"
+    queue.write_text(json.dumps({"id": "a", "text": "first"}) + "\n")
+    pm._write_active({"pid": 0, "meeting_id": "abc-defg-hij", "out_dir": str(tmp_path), "mode": "realtime",
+                      "url": "https://meet.google.com/abc-defg-hij", "started_at": 0})
+    stub = _StubSession()
+    speaker = RealtimeSpeaker(stub, queue_path=queue)
+    real_read = speaker._read_queue
+    reads = {"n": 0}
+    appended = threading.Event()
+    peers: list[threading.Thread] = []
+
+    def read_then_peer_appends():
+        out = real_read()
+        reads["n"] += 1
+        if reads["n"] == 2:
+            # The post-speak re-read: the agent process enqueues right after it, before the rewrite.
+            peer = threading.Thread(target=lambda: (pm.enqueue_say("second"), appended.set()), daemon=True)
+            peer.start()
+            peers.append(peer)
+            # Unserialized, the append lands now; serialized, it is seen blocking on the queue lock.
+            wait_until(lambda: appended.is_set() or contended.is_set(),
+                       what="the append landed or blocked on the say-queue lock")
+        return out
+
+    speaker._read_queue = read_then_peer_appends
+
+    def _stop():
+        # Done once both are spoken, or once the peer's append has settled and nothing is left to speak.
+        if len(stub.spoken) >= 2:
+            return True
+        return bool(peers) and not peers[0].is_alive() and not real_read()
+
+    speaker.run_until_stopped(_stop, poll_interval=0.01)
+    for peer in peers:
+        peer.join(10)
+    assert stub.spoken == ["first", "second"]

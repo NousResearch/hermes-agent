@@ -110,7 +110,8 @@ export const pickersEn = {
       },
       errors: {
         couldNotLoadResumable: 'could not load resumable sessions',
-        alreadyClosed: 'session was already closed'
+        alreadyClosed: 'session was already closed',
+        notAttached: 'this view is not attached to that session — nothing was closed'
       },
       row: {
         new: 'new',

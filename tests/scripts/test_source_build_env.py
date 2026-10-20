@@ -137,8 +137,10 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
         print("powershell probe:", shell, file=sys.stderr)
     for sha in (old, new):
         git("checkout", "-q", "-B", "installed", sha)
+        # A liveness bound, not a speed assertion: a cold Windows PowerShell 5.1 plus its git and
+        # Python children exceeded 30 s on a loaded arm64 runner with the probe otherwise healthy.
         result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, stdin=subprocess.DEVNULL,
-                                text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
+                                text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         assert Path(env["PROBE_OUT"]).is_file(), (
             f"the build child wrote no stamp (shell={command[0]} rc={result.returncode})\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}")

@@ -123,3 +123,37 @@ def test_api_server_profile_callback_resolves_routed_profile_adapter_fail_closed
         _api_request_profile.reset(token)
     # No prefix: the primary map, unchanged.
     assert api._get_platform_callback_adapter(request, "google_chat") is default
+
+
+@pytest.mark.asyncio
+async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_homes):
+    from gateway.platforms.webhook_delivery import snapshot_destination
+
+    default, secondary = _target(), _target()
+    adapter = _webhook(_Runner({Platform.SLACK: default}, {"sec": {Platform.SLACK: secondary}}, profile_homes))
+    delivery = snapshot_destination(adapter, {"deliver": "slack", "deliver_extra": {}, "profile": "sec"})
+    assert delivery == {"deliver": "slack", "deliver_extra": {"chat_id": "SEC-HOME"}, "profile": "sec"}
+    adapter._delivery_info["retained"] = delivery
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
+    result = await adapter.send("retained", "answer")
+    assert result.success
+    assert secondary.send.await_args.args[0] == "SEC-HOME"
+    default.send.assert_not_awaited()
+    adapter.gateway_runner._profile_adapters["sec"].clear()
+    assert not (await adapter.send("retained", "answer")).success
+    default.send.assert_not_awaited()
+
+
+def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
+    from hermes_constants import get_hermes_home
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
+
+    (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
+    adapter = _webhook(_Runner({}, {}, profile_homes))
+    with pytest.raises(RuntimeStoreError):
+        snapshot_destination(adapter, {"deliver": "slack", "deliver_extra": {}, "profile": "sec"})
+    for profile in ([], {}, 1):
+        with pytest.raises(RuntimeStoreError):
+            validate_destination({"deliver": "log", "deliver_extra": {}, "profile": profile})

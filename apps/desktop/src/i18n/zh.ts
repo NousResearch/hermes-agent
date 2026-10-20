@@ -2,12 +2,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
-import { zhAuxTasks } from './zh_aux_tasks'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
+import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
@@ -1197,12 +1197,6 @@ export const zhOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '预热机器人后端',
-      warmBotBackendsTitle: '预热机器人后端',
-      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
-      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
-    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',
@@ -1633,62 +1627,7 @@ export const zhOverrides = {
       deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
       deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
-    model: {
-      setupProviderFallback: '提供方',
-      setUpProvider: name => `设置 ${name}`,
-      staleAuxBefore: (count, names) => `${count} 个辅助任务（${names}）仍由 `,
-      staleAuxAfter: ' 运行，而不是主模型。',
-      staleAuxOtherProviders: '其他提供方',
-      moaEnabled: '启用',
-      moaSetDefault: '设为默认',
-      moaNewPresetPlaceholder: '新预设',
-      moaAddPreset: '添加预设',
-      customModel: '自定义模型…',
-      customModelPlaceholder: '模型 ID',
-      chooseFromList: '从列表中选择',
-      moaDefault: '默认：',
-      moaReferenceToggle: (enabled, index) => `${enabled ? '禁用' : '启用'}参考 ${index}`,
-      moaReferenceTitle: index => `参考 ${index}`,
-      moaAddReference: '添加参考模型',
-      loading: '正在加载模型配置...',
-      appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
-      provider: '提供方',
-      model: '模型',
-      applying: '应用中...',
-      defaultsLabel: '默认值',
-      reasoning: '推理',
-      reasoningOff: '关闭',
-      speed: '速度',
-      speedStandard: '标准',
-      defaultsFailed: '保存模型默认值失败',
-      loadFailed: '无法加载模型',
-      restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
-      restartBackend: '重启后端',
-      restartingBackend: '正在重启后端...',
-      restartFailed: '无法重启后端',
-      auxiliaryTitle: '辅助模型',
-      resetAllToMain: '全部重置为主模型',
-      staleAuxDismiss: '不再显示',
-      auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
-      setToMain: '设为主模型',
-      change: '更改',
-      autoUseMain: '自动 · 使用主模型',
-      inheritMainEffort: '继承 · 主模型推理强度',
-      inheritsFrom: task => `继承 ${task}`,
-      followTask: task => `跟随 ${task}`,
-      providerDefault: '(提供方默认)',
-      fallbackAdd: '添加备用模型',
-      fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
-      notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
-      moaTitle: '混合智能体（Mixture of Agents）',
-      moaPreset: '预设',
-      moaDescription:
-        '配置以「混合智能体」提供商下模型形式出现的命名预设。聚合模型是执行模型——它运行工具循环的每一步，整个运行几乎全部费用都计入其提供商。参考模型默认每轮用户消息仅提供一次建议。',
-      moaAggregator: '聚合模型',
-      moaAggregatorBilled: '执行模型 · 整个运行在此计费',
-      moaReferenceHint: '默认每轮仅建议一次',
-      tasks: zhAuxTasks
-    },
+    model: zhModelSettings,
     localModels: zhLocalModels,
     billing: {
       perMonth: amount => `${amount}/月`,
@@ -2180,8 +2119,6 @@ export const zhOverrides = {
       catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      tierOfficial: '官方',
-      tierCommunity: '社区',
       updateToPin: (sha: string) => `更新到 ${sha}`,
       updateFailed: (name: string) => `无法更新 ${name}`,
       updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
@@ -3291,6 +3228,7 @@ export const zhOverrides = {
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
+    redirect: '重新定向当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -3432,6 +3370,11 @@ export const zhOverrides = {
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
+    queueLostNote: '重启期间该轮次已丢失',
+    restoreImageDraft: '恢复图片草稿',
+    queueCancelFailed: '无法移除排队的轮次',
+    queueLostDiscard: '丢弃',
+    queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
@@ -3609,7 +3552,7 @@ export const zhOverrides = {
       heartbeatEveryHours: hours => `每 ${hours} 小时`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期，等待会话空闲',
+      dueWaitingForIdle: '已到期，等待会话空闲',
       heartbeatActions: '心跳操作',
       pauseHeartbeat: '暂停心跳',
       resumeHeartbeat: '恢复心跳',
@@ -4544,7 +4487,7 @@ export const zhOverrides = {
       hideNames: '隐藏名称',
       skill: name => `技能 ${name}`,
       kind: { plugin: '插件', skill: '技能' },
-      tier: { official: '官方', community: '社区' },
+      tier: { official: '官方', verified: '已验证', community: '社区' },
       targetProfile: profile => `安装到你的 ${profile} 配置文件`,
       sendFailed: '无法发送你的回复，请重试。',
       commitLabel: '提交',

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -39,6 +40,43 @@ def is_guardrail_refusal(result: Any) -> bool:
         except Exception:
             return False
     return isinstance(data, dict) and data.get(GUARDRAIL_REFUSAL_KEY) is True
+
+
+# A quoted "error"/"failed" in a result's head marks it failed UNLESS it is a key whose value is
+# empty: success payloads routinely carry ``"error": null`` per item (web_extract) or a
+# ``"failed": 0`` count, and a bare substring test flagged every one of them.
+_FAILURE_MARKER_RE = re.compile(
+    r'"(?:error|failed)"(?!\s*:\s*(?:null|false|0|""|\[\]|\{\})\s*(?:[,}\]]|$))', re.IGNORECASE)
+
+
+def has_failure_marker(result: str) -> bool:
+    """Last-resort text test for a failed tool result: a non-empty ``"error"``/``"failed"``
+    STARTING in the first 500 chars, or a body starting with ``Error``. The value is read past
+    the cut, so an ``"error": null`` straddling char 500 is not mistaken for a truncated one."""
+    head = result[:600]
+    return any(m.start() < 500 for m in _FAILURE_MARKER_RE.finditer(head)) or result.startswith("Error")
+
+
+# ``timeout`` is deliberately absent: process(wait) returns it for a still-running job.
+_FAILED_STATUSES = frozenset({"failed", "error"})
+
+
+def shape_failure_error(data: dict) -> str | None:
+    """Error text when a JSON-object result failed by SHAPE rather than by its top-level
+    ``error``: a ``status`` of failed/error, or a ``results`` batch where EVERY item carries an
+    error (delegate_task with all children interrupted, a connector batch with every call
+    refused). None for a clean or partial result. Top-level JSON objects skip the substring
+    scan, so this is what keeps those failures counted."""
+    if str(data.get("status", "")).lower() in _FAILED_STATUSES:
+        return str(data.get("status"))
+    items = data.get("results")
+    if not isinstance(items, list) or not items or not all(isinstance(i, dict) for i in items):
+        return None
+    errors = [i.get("error") for i in items]
+    if not all(errors):
+        return None
+    first = errors[0]
+    return str(first.get("message") or first) if isinstance(first, dict) else str(first)
 
 
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:

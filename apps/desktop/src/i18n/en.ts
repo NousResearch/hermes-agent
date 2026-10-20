@@ -1,16 +1,17 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
-import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
+import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
@@ -1141,12 +1142,6 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
-    poolLimits: {
-      warmBotBackendsAria: 'Warm bot backends',
-      warmBotBackendsTitle: 'Warm Bot Backends',
-      backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
-      backendIdleTimeoutTitle: 'Backend Idle Timeout'
-    },
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1593,64 +1588,7 @@ export const en: Translations = {
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
-    model: {
-      setupProviderFallback: 'provider',
-      setUpProvider: name => `Set up ${name}`,
-      staleAuxBefore: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
-      staleAuxAfter: ', not your main model.',
-      staleAuxOtherProviders: 'other providers',
-      moaEnabled: 'Enabled',
-      moaSetDefault: 'Set default',
-      moaNewPresetPlaceholder: 'new preset',
-      moaAddPreset: 'Add preset',
-      customModel: 'Custom model…',
-      customModelPlaceholder: 'Model id',
-      chooseFromList: 'Choose from list',
-      moaDefault: 'Default:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
-      moaReferenceTitle: index => `Reference ${index}`,
-      moaAddReference: 'Add reference model',
-      loading: 'Loading model configuration...',
-      appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
-      provider: 'Provider',
-      model: 'Model',
-      applying: 'Applying...',
-      mainAppliedTitle: 'Main model updated',
-      mainAppliedMessage: model => `New sessions will use ${model}.`,
-      defaultsLabel: 'Defaults',
-      reasoning: 'Reasoning',
-      reasoningOff: 'Off',
-      speed: 'Speed',
-      speedStandard: 'Standard',
-      defaultsFailed: 'Failed to save model defaults',
-      loadFailed: 'Could not load models',
-      restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
-      restartBackend: 'Restart backend',
-      restartingBackend: 'Restarting backend...',
-      restartFailed: 'Could not restart the backend',
-      auxiliaryTitle: 'Auxiliary models',
-      resetAllToMain: 'Reset all to main',
-      staleAuxDismiss: "Don't show again",
-      auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
-      setToMain: 'Set to main',
-      change: 'Change',
-      autoUseMain: 'auto · use main model',
-      inheritMainEffort: 'inherit · main model effort',
-      inheritsFrom: task => `inherits ${task}`,
-      followTask: task => `Follow ${task}`,
-      providerDefault: '(provider default)',
-      fallbackAdd: 'Add fallback',
-      fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
-      notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preset',
-      moaDescription:
-        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
-      moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'acting model · billed for the run',
-      moaReferenceHint: 'advises once per turn by default',
-      tasks: enAuxTasks
-    },
+    model: enModelSettings,
     localModels: enLocalModels,
     billing: {
       perMonth: amount => `${amount}/mo`,
@@ -2107,17 +2045,7 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    source: 'Source'
-  },
+  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2230,8 +2158,6 @@ export const en: Translations = {
       pinnedProvenance: (sha: string) =>
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
-      tierOfficial: 'official',
-      tierCommunity: 'community',
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
       updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
@@ -2357,6 +2283,7 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
+  gatewayGroupOpen: enGatewayGroupOpen,
   agents: {
     extendedTranscript: 'Extended transcript',
     transcriptTruncated: 'Showing the latest 16 KiB',
@@ -3089,8 +3016,7 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
-    // Queued trigger feedback in Run History: the backend accepted the trigger
-    // but has not materialized the run session yet (#70826).
+    // Queued trigger feedback in Run History: the backend accepted the trigger but has not materialized the run session yet (#70826).
     queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
@@ -3396,6 +3322,7 @@ export const en: Translations = {
     openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
+    redirect: 'Redirect the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -3539,6 +3466,12 @@ export const en: Translations = {
     queueSteer: 'Steer — redirect the live turn now',
     queueSend: 'Send',
     queueDelete: 'Delete',
+    queueLostNote: 'Turn lost during restart',
+    restoreImageDraft: 'Restore image draft',
+    queueCancelFailed: "Couldn't remove the queued turn",
+    queueLostDiscard: 'Discard',
+    queueLostDiscardTip:
+      'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
@@ -3719,7 +3652,7 @@ export const en: Translations = {
       heartbeatEveryHours: hours => `every ${hours}h`,
       heartbeatEverySeconds: seconds => `every ${seconds}s`,
       heartbeatNext: time => `next ${time}`,
-      heartbeatDueWaitingForIdle: 'due — waiting for idle',
+      dueWaitingForIdle: 'due — waiting for idle',
       heartbeatActions: 'Heartbeat actions',
       pauseHeartbeat: 'Pause heartbeat',
       resumeHeartbeat: 'Resume heartbeat',
@@ -4695,6 +4628,14 @@ export const en: Translations = {
         loop_error: {
           title: 'Hermes got stuck in a loop',
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
+        },
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes is busy in this chat',
+          body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          title: 'Your message may already be queued',
+          body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
         },
         SESSION_NOT_OWNED: {
           title: 'This chat is open somewhere else',

@@ -8,6 +8,7 @@ not a generic "[error]".
 
 import json
 
+from agent.tool_guardrails import classify_tool_failure
 from agent.display import (
     _detect_tool_failure,
     _trim_error,
@@ -127,6 +128,57 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_empty_error_and_failed_values_are_not_failures(self):
+        """A successful web_extract carries ``"error": null`` per URL; batch results carry
+        ``"failed": 0``. Neither is a failure, in the CLI tag or the guardrail counter."""
+        ok = [
+            json.dumps({"results": [{"url": "https://example.com/", "content": "hi", "error": None}]}, indent=2),
+            json.dumps({"done": 3, "failed": 0}),
+            json.dumps({"items": [], "errors": [], "error": ""}),
+            # "error": null straddling the 500-char scan cut must not read as a truncated value
+            json.dumps({"results": [{"url": "https://example.com/", "content": "x" * 428, "error": None}]}),
+        ]
+        for result in ok:
+            assert _detect_tool_failure("web_extract", result) == (False, ""), result
+            assert classify_tool_failure("web_extract", result) == (False, ""), result
+
+    def test_real_error_and_failed_markers_still_flag(self):
+        bad = [
+            json.dumps({"results": [{"url": "https://x.test/", "content": "", "error": "HTTP 403"}]}),
+            json.dumps({"status": "failed"}),
+            "Error: connection refused",
+        ]
+        for result in bad:
+            assert _detect_tool_failure("web_extract", result)[0] is True, result
+            assert classify_tool_failure("web_extract", result)[0] is True, result
+
+
+
+    def test_json_object_is_judged_by_top_level_shape(self):
+        """An "error" nested inside a success payload is data the tool read (a page's own
+        validation message in browser_cdp's result), never a failure; a top-level error, an
+        all-failed batch, and plain-text failures still flag, in both classifiers."""
+        ok = [
+            json.dumps({"success": True, "method": "Runtime.evaluate",
+                        "result": {"result": {"type": "object", "value": {"error": ["Vul een geldig telefoonnummer in."]}}}}),
+            json.dumps({"success": True, "rows": [{"ok": False, "error": "matched 0 elements"}]}),
+            json.dumps({"results": [{"task_index": 0, "error": "interrupted"}, {"task_index": 1, "summary": "done", "error": None}]}),
+            # process(wait) returns "timeout" for a job that is still running: not a failure
+            json.dumps({"status": "timeout", "command": "sleep 60", "output": "", "process_running": True}),
+        ]
+        bad = [
+            json.dumps({"error": "CDP call timed out after 30.0s", "method": "Runtime.evaluate"}),
+            json.dumps({"results": [{"task_index": 0, "status": "interrupted", "error": "child did not finish"},
+                                    {"task_index": 1, "status": "interrupted", "error": "child did not finish"}]}),
+            json.dumps({"status": "error", "stdout": "", "traceback": "boom"}),
+            "Error executing tool 'web_search': boom",
+        ]
+        for result in ok:
+            assert _detect_tool_failure("process", result) == (False, ""), result
+            assert classify_tool_failure("process", result) == (False, ""), result
+        for result in bad:
+            assert _detect_tool_failure("delegate_task", result)[0] is True, result
+            assert classify_tool_failure("delegate_task", result)[0] is True, result
 
 
 class TestGetCuteToolMessageFailureSuffix:

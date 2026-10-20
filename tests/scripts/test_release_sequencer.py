@@ -394,7 +394,7 @@ def test_two_outstanding_attempts_are_refused_across_versions():
 
 
 def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b" * 64,
-                       drafts_on_claim_tag=False, skip_bundles=False, final_tags=True):
+                       drafts_on_claim_tag=False, skip_bundles=False, final_tags=True, lanes=None):
     """Two green claims with their final tags; releases start as drafts.
 
     final_tags=False is a fresh green claim: no receipt tag yet, the draft on
@@ -412,6 +412,8 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
             "autopublish": False, "skipBundles": skip_bundles, "skipTests": False,
             "claimEpoch": 1_790_000_000 + index,
         }
+        if lanes is not None:
+            claim = {**{k: v for k, v in claim.items() if not k.startswith("skip")}, "lanes": sorted(lanes)}
         final = {
             "schema": 1, "version": version, "commit": commit,
             "autopublish": False, "claimEpoch": claim["claimEpoch"],
@@ -677,6 +679,46 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
     # receipt digest, so the next pass has nothing left to advance.
     assert sequencer.reconcile(env, run=run, read_archive=no_archive) == []
     assert events == [("aliases", "rc.1-v0.21.5", "v0.21.5")]
+
+
+@pytest.mark.parametrize("lanes,docker,store_checked", [
+    # --only windows,docker: a partial desktop set. Only the aliases move; the channel stays.
+    (["windows", "docker"], True, True),
+    # --only windows: no channel moves at all, so the release is finished once public.
+    (["windows"], False, True),
+    # --only macos-arm64,docker: no Store, no channel.
+    (["macos-arm64", "docker"], True, False),
+])
+def test_a_partial_desktop_release_moves_only_what_it_built(monkeypatch, lanes, docker, store_checked):
+    from scripts.releases import channel_releases, docker as docker_module, sequencer, store
+
+    docker_digest = "sha256:" + "b" * 64 if docker else None
+    manifest = hashlib.sha256(b"m").hexdigest()
+    _tags, releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=manifest, docker_digest=docker_digest, lanes=lanes)
+    alias = [None]
+    events = []
+
+    def promote(claim_tag, digest, release_tag):
+        events.append(("aliases", claim_tag, release_tag))
+        alias[0] = digest
+
+    monkeypatch.setattr(channel_releases, "advance_stable",
+                        lambda *_args: pytest.fail("a partial desktop set moved the protected head"))
+    monkeypatch.setattr(store, "check_from_env", lambda _env: events.append(("store",)))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.4")
+    monkeypatch.setattr(docker_module, "promote_stable", promote)
+    monkeypatch.setattr(docker_module, "stable_alias_digest", lambda: alias[0])
+    env = {"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.5"}
+
+    steps = sequencer.reconcile(env, run=run, read_archive=lambda _key: b"m")
+
+    assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
+    assert events == ([("aliases", "rc.1-v0.21.5", "v0.21.5")] if docker else []) + \
+        ([("store",)] if store_checked else [])
+    assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
+    # Finished: the alias carries the receipt's digest, or the release moves no channel at all.
+    assert sequencer.reconcile(env, run=run, read_archive=lambda _key: b"m") == []
 
 
 def test_the_sequencer_narrates_every_phase_on_stderr_and_keeps_stdout_json(capsys):

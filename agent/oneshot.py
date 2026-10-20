@@ -9,6 +9,7 @@ CLI/TUI/desktop. Model selection rides :func:`agent.auxiliary_client.call_llm`:
 resolves a cheap backend.
 """
 
+import json
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -88,18 +89,29 @@ def run_oneshot(
     temperature: Optional[float] = 0.3,
     timeout: float = 60.0,
     main_runtime: Optional[dict[str, Any]] = None,
+    schema: Optional[dict[str, Any]] = None,
+    redact: bool = False,
 ) -> str:
     """Run a single stateless LLM request and return its text (fence-stripped).
 
+    ``schema`` (a JSON Schema) asks for one JSON value, through the prompt and the provider's JSON
+    mode (:func:`oneshot_reply` parses it). ``redact`` masks secrets in the user input first.
     Raises RuntimeError when no provider is configured (from :func:`call_llm`),
     KeyError for an unknown template, ValueError when the prompt is empty.
     """
     if template:
         instructions, user_input = render_template(template, variables)
-    has_instructions = bool((instructions or "").strip())
-    if not has_instructions and not (user_input or "").strip():
+    if not (instructions or "").strip() and not (user_input or "").strip():
         raise ValueError("run_oneshot requires a template or instructions/user_input")
-    messages = [{"role": "system", "content": instructions}] if has_instructions else []
+    if redact:
+        from agent.redact import redact_sensitive_text
+        user_input = redact_sensitive_text(user_input or "", force=True)
+    extra_body = None
+    if schema is not None:
+        from agent.plugin_llm import _json_response_format
+        extra_body = _json_response_format(json_mode=False, json_schema=schema)
+        instructions = "\n\n".join(p for p in ((instructions or "").strip(), _JSON_DIRECTIVE + json.dumps(schema)) if p)
+    messages = [{"role": "system", "content": instructions}] if (instructions or "").strip() else []
     messages.append({"role": "user", "content": user_input or ""})
     response = call_llm(
         task=task,
@@ -108,8 +120,37 @@ def run_oneshot(
         temperature=temperature,
         timeout=timeout,
         main_runtime=main_runtime,
+        extra_body=extra_body,
     )
     return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
+
+
+_JSON_DIRECTIVE = ("Respond with a single JSON value that matches this JSON schema. "
+                   "Do not include prose or markdown fences.\nJSON schema: ")
+
+
+def client_task(task: Optional[str]) -> str:
+    """The auxiliary task an ``llm.oneshot`` client named (default ``title_generation``): a built-in
+    slot or one a loaded plugin registered with ``ctx.register_auxiliary_task``. An unknown key
+    raises KeyError instead of running on the main model unnoticed (#141976)."""
+    from hermes_cli.main_provider_setup import _all_aux_tasks
+    task = (task or "").strip() or "title_generation"
+    if task not in {key for key, _name, _desc in _all_aux_tasks()}:
+        raise KeyError(f"unknown auxiliary task: {task}")
+    return task
+
+
+def oneshot_reply(*, schema: Optional[dict[str, Any]] = None, **kwargs: Any) -> dict[str, Any]:
+    """``llm.oneshot``'s result: ``{"text"}``, plus ``"parsed"`` (the JSON value, checked against
+    ``schema``) when a schema was given. ValueError when the reply is not JSON or does not match."""
+    text = run_oneshot(schema=schema, **kwargs)
+    if schema is None:
+        return {"text": text}
+    from agent.plugin_llm import _parse_structured_text
+    parsed, kind = _parse_structured_text(text=text, json_mode=False, json_schema=schema)
+    if kind != "json":
+        raise ValueError("the model did not answer with JSON")
+    return {"text": text, "parsed": parsed}
 
 
 def _strip_code_fence(text: str) -> str:

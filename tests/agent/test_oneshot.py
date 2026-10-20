@@ -1,8 +1,13 @@
 """Tests for agent.oneshot — shared one-off (stateless) LLM requests."""
 
+import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.oneshot import (
+    client_task,
+    oneshot_reply,
     render_template,
     run_oneshot,
     _truncate,
@@ -55,6 +60,26 @@ class TestRunOneshot:
             return_value=self._mock_response("```\nfix: bug\n```"),
         ):
             assert run_oneshot(instructions="x", user_input="y") == "fix: bug"
+
+    def test_a_client_runs_a_plugin_task_and_gets_schema_checked_json(self, monkeypatch):
+        """#141976: the task is a built-in or plugin-registered slot, never an unknown key; a schema
+        reply comes back parsed and a prose one is an error; ``redact`` masks the input first."""
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_auxiliary_tasks",
+                            lambda: [{"key": "tern_charts", "display_name": "Charts", "description": "d"}])
+        assert client_task("tern_charts") == "tern_charts"
+        with pytest.raises(KeyError, match="tern_chart"):
+            client_task("tern_chart")
+        schema = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
+        secret = "sk-proj-" + "A1b2C3d4" * 5
+        replies = [self._mock_response('{"kind": "line"}'), self._mock_response("a line chart")]
+        with patch("agent.oneshot.call_llm", side_effect=replies) as llm:
+            assert oneshot_reply(instructions="sys", user_input=f"key {secret}", task="tern_charts", schema=schema,
+                                 redact=True) == {"text": '{"kind": "line"}', "parsed": {"kind": "line"}}
+            with pytest.raises(ValueError, match="JSON"):
+                oneshot_reply(instructions="sys", user_input="x", task="tern_charts", schema=schema)
+        sent = llm.call_args_list[0].kwargs
+        assert sent["task"] == "tern_charts" and sent["extra_body"]["response_format"]["type"] == "json_schema"
+        assert secret not in json.dumps(sent["messages"])
 
 class TestHelpers:
 

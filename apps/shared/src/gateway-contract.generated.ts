@@ -3642,7 +3642,7 @@ export interface SessionEventsStatsResult {
   max_bytes_per_session: number
   max_bytes_process: number
 }
-/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
+/** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. ``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused); ``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``. */
 export interface LlmOneshotParams {
   profile?: string | null
   template?: string | null
@@ -3653,9 +3653,12 @@ export interface LlmOneshotParams {
   temperature?: number | null
   max_tokens?: number | null
   session_id?: string | null
+  schema?: Record<string, unknown> | null
+  redact?: boolean | null
 }
 export interface LlmOneshotResult {
   text: string
+  parsed?: unknown | null
 }
 export interface SystemBatteryParams {
   profile?: string | null

@@ -22025,7 +22025,7 @@
       },
       "LlmOneshotParams": {
         "additionalProperties": false,
-        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.",
+        "description": "Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model.\n``task`` is a built-in auxiliary slot or a plugin-registered one (unknown keys are refused);\n``schema`` (a JSON Schema) makes the reply carry ``parsed``; ``redact`` masks secrets in ``input``.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -22135,6 +22135,31 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Schema"
+          },
+          "redact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Redact"
           }
         },
         "title": "LlmOneshotParams",
@@ -22146,6 +22171,16 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "parsed": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parsed"
           }
         },
         "required": [

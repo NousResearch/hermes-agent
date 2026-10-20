@@ -1,0 +1,18 @@
+name: advisor
+repo: https://github.com/superlowburn/hermes-advisor
+sha: f5787b4f5f086a7587eef3d9733ba7f170b914ae
+description: "Advisor strategy: keep chat on a cheap or low-effort model and consult a stronger advisor model (default Opus at high effort) only on hard turns. The executor keeps the turn and the main model is never switched, so the cached prompt prefix survives. Three entry points: an advisor tool the model calls itself, /advisor <question>, and an optional TypeSafe Jev gate (pre_llm_call) that nudges or auto-injects advice when a message scores above a threshold. Fail-open; per-user allowlist and hourly cap. Disclosure — with the gate on, each user message over min_message_chars (last 6,000 chars) is sent to api.typesafe.ai with your TypeSafe key; each advisor call sends up to transcript_chars (default 60,000) of the conversation tail to your configured advisor provider."
+maintainer: superlowburn
+tier: community
+category: general
+docs_url: https://github.com/superlowburn/hermes-advisor/blob/f5787b4f5f086a7587eef3d9733ba7f170b914ae/README.md
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - advisor
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - TYPESAFE_API_KEY

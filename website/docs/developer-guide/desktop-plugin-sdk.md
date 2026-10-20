@@ -43,6 +43,10 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
+- **`host.preview`** — run JavaScript in the focused session's live preview
+  Browser tab (`executeJavaScript` / `isAvailable`). Same guest runner as
+  `drive_preview`. Missing when this window has no webview (empty rail, a
+  file peek, or a popped-out Browser).
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
   cron — everything the app itself calls.
 - **`captureGatewayFileDownload()`** — capture a gateway file-save action
@@ -1108,6 +1112,10 @@ ctx.pet.visible                            // ReadableAtom<boolean> — is a pet
 ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
 ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
+host.preview.isAvailable()                 // focused session has a live Browser tab in THIS window
+host.preview.executeJavaScript(code)       // run JS in that guest page → Promise<unknown>
+                                           //   rejects 'No preview page is open.' when unavailable
+                                           //   (file peek, empty rail, or popped-out Browser)
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'

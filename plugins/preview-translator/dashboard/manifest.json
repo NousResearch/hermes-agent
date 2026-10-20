@@ -1,0 +1,9 @@
+{
+  "name": "preview-translator",
+  "label": "Preview Translator",
+  "description": "LLM-backed in-page translation for the desktop preview browser.",
+  "icon": "Languages",
+  "version": "1.0.0",
+  "tab": { "path": "/preview-translator", "hidden": true },
+  "api": "plugin_api.py"
+}

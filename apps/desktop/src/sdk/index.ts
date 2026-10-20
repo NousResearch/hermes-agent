@@ -112,6 +112,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { executePreviewJavaScript, previewIsAvailable } from './preview'
 import {
   type PluginProfileRequestOptions,
   type PluginProfileRoute,
@@ -625,6 +626,18 @@ export const host = {
 
   /** Read, update, and observe the allowlisted Desktop appearance preferences. */
   settings: desktopSettings,
+
+  /**
+   * Run JavaScript in the focused session's live preview Browser tab — the
+   * same guest `executeJavaScript` drive_preview and the tour use. Rejects
+   * when this window has no mounted webview (empty rail, a file peek, or a
+   * Browser popped out into another window). Always a Promise so a plugin
+   * `.catch()` sees a missing page the same way it sees a guest throw.
+   */
+  preview: {
+    executeJavaScript: executePreviewJavaScript,
+    isAvailable: previewIsAvailable
+  },
 
   /** Toast into the app's notification stack. */
   notify,

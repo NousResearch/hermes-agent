@@ -797,7 +797,13 @@ SCRATCH_DIR_MARKER_ENV = "HERMES_SCRATCH_DIR"
 SCRATCH_MAX_IDLE_HOURS = 24
 _SCRATCH_PRUNE_STAMP = ".last_prune"
 _SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
-_scratch_pruned_once = False
+# After a prune that raised, try again soon instead of burning the whole hour on the failure.
+_SCRATCH_PRUNE_RETRY_SECONDS = 300
+# Per-scratch-root wall-clock deadline for the next stamp check. Keyed by root, not a single
+# flag: one multiplexed process serves every profile, and the gateway is a long-lived daemon,
+# so a process-global latch pruned once per host uptime and then never again while scratch grew
+# to 21.7 GB (PRX-5636). The persisted stamp is the real gate; this only spares a stat per call.
+_scratch_prune_next_check: dict[str, float] = {}
 
 # AF_UNIX socket paths cap at 104 bytes (macOS) / 108 (Linux). Chrome appends
 # ``com.google.Chrome.XXXXXX/SingletonSocket`` (~45) and the code kernel
@@ -947,8 +953,9 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
 
     Every Hermes process and child gets ``TMPDIR``/``TMP``/``TEMP`` pointed here at boot (see
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
-    knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per process
-    and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per hour, gated
+    by a stamp file in the scratch dir so a long-lived daemon (the gateway) keeps pruning for as
+    long as it runs, not once per process (PRX-5636).
 
     Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE`` or
     a managed/shared home is honored instead of a blanket ``0700`` (#117347).
@@ -982,20 +989,41 @@ def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRAT
 
 
 def _prune_scratch_dir_once(scratch: Path) -> None:
-    global _scratch_pruned_once
-    if _scratch_pruned_once:
-        return
-    _scratch_pruned_once = True
+    """Prune *scratch* when the persisted stamp says an hour has passed.
+
+    The stamp file — not a process flag — is the gate, because the gateway is a long-lived
+    daemon: a once-per-process latch fires at boot and never again, which is how a 24 h
+    retention policy left 21.7 GB of idle worktrees on disk with no record (PRX-5636).
+    ``_scratch_prune_next_check`` only spares the stamp stat between calls.
+    """
     import time
+    root = str(scratch)
+    now = time.time()
+    if now < _scratch_prune_next_check.get(root, 0.0):
+        return
     stamp = scratch / _SCRATCH_PRUNE_STAMP
     try:
-        if time.time() - stamp.stat().st_mtime < _SCRATCH_PRUNE_INTERVAL_SECONDS:
-            return
+        last = stamp.stat().st_mtime
     except OSError:
-        pass
-    with contextlib.suppress(Exception):
+        last = 0.0
+    if now - last < _SCRATCH_PRUNE_INTERVAL_SECONDS:
+        _scratch_prune_next_check[root] = last + _SCRATCH_PRUNE_INTERVAL_SECONDS
+        return
+    # Reserve the hour before walking the tree so concurrent processes do not each pay for a
+    # full walk; a failure hands the slot back and retries minutes later.
+    _scratch_prune_next_check[root] = now + _SCRATCH_PRUNE_INTERVAL_SECONDS
+    try:
         stamp.touch()
         prune_scratch_dir(scratch)
+    except Exception as exc:  # health: allow BLE001 -- prune runs inside get_scratch_dir at boot and must never fail the caller; log_prune_failure records type, message and traceback in scratch-prune.log
+        _scratch_prune_next_check[root] = now + _SCRATCH_PRUNE_RETRY_SECONDS
+        # The stamp is the cross-process gate and was set to reserve this hour; nothing was
+        # pruned, so clear it or the next process also waits an hour for a prune that never ran.
+        with contextlib.suppress(OSError):
+            stamp.unlink()
+        from hermes_constants_scratch import log_prune_failure
+
+        log_prune_failure(scratch, exc)
 
 
 def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:

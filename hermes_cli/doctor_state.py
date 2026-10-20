@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
@@ -233,6 +234,9 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 # Cache-root entries at least this big that no pruner covers get a doctor warning.
 _UNPRUNED_CACHE_WARN_BYTES = 1 << 30
+# Scratch is a working dir, not storage: past this it is holding trees its 24 h retention should
+# have released, which is what silently preceded a full host disk (PRX-5636).
+_SCRATCH_SOFT_CAP_BYTES = 10 << 30
 _PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})
 
 
@@ -259,10 +263,26 @@ def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN
 def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
     """Report the scratch dir (TMPDIR target) and its size; a user-set TMPDIR elsewhere is shown, not judged."""
     from hermes_constants import (
-        SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_IDLE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
+        _SCRATCH_PRUNE_STAMP, SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_IDLE_HOURS, get_scratch_dir,
+        scratch_dir_usage_bytes)
     scratch = get_scratch_dir(hermes_home, prune=False)
-    size = _human_bytes(scratch_dir_usage_bytes(scratch))
-    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
+    nbytes = scratch_dir_usage_bytes(scratch)
+    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {_human_bytes(nbytes)}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
+    # A retention policy that stopped running is invisible in a size number alone: the prune
+    # left no trace and the host filled up on idle worktrees (PRX-5636). Two independent
+    # signals — size over the soft cap, and a stamp that stopped advancing.
+    if nbytes >= _SCRATCH_SOFT_CAP_BYTES:
+        check_warn(
+            f"{_DHH}/cache/scratch/ is {_human_bytes(nbytes)}, over the "
+            f"{_human_bytes(_SCRATCH_SOFT_CAP_BYTES)} soft cap — the {SCRATCH_MAX_IDLE_HOURS}h idle prune is not keeping up"
+            " (check the last-prune line below and logs/scratch-prune.log)",
+        )
+    try:
+        stamp_age_h = (time.time() - (scratch / _SCRATCH_PRUNE_STAMP).stat().st_mtime) / 3600
+    except OSError:
+        check_info(f"{_DHH}/cache/scratch/ has never been pruned (no {_SCRATCH_PRUNE_STAMP} stamp)")
+    else:
+        check_info(f"last scratch prune: {stamp_age_h:.1f}h ago ({_DHH}/cache/scratch/{_SCRATCH_PRUNE_STAMP})")
     from hermes_constants_scratch_stuck import removal_hint, stuck_entries
     for entry in stuck_entries(scratch):
         check_warn(f"{_DHH}/cache/scratch/{entry.name}/ holds files you may not delete, so the prune skips it — {removal_hint(entry)}")

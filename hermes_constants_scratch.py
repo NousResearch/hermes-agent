@@ -350,6 +350,27 @@ def release_git_worktrees(repos: set[str]) -> None:
             logger.debug("git worktree prune in %s failed: %s", repo, exc)
 
 
+def log_prune_failure(root: Path, exc: BaseException) -> None:
+    """Record a prune that raised, in the home's ``scratch-prune.log``.
+
+    The caller used to wrap the whole prune in ``contextlib.suppress(Exception)``: an exception
+    left no line anywhere and the process exited 0, so a prune that had stopped working looked
+    exactly like one with nothing to delete (PRX-5636)."""
+    audit = _open_prune_log(root.parent.parent / "logs" / "scratch-prune.log")
+    try:
+        audit.error(
+            "scratch prune FAILED for %r (nothing pruned): %s", str(root), exc, exc_info=exc,
+        )
+    finally:
+        _close_prune_log(audit)
+
+
+def _close_prune_log(audit: logging.Logger) -> None:
+    if audit is not logger:
+        for handler in audit.handlers:
+            handler.close()
+
+
 def prune_idle_entries(
     root: Path, max_idle_hours: float, skip_names: frozenset[str], log_file: Path | None = None,
 ) -> int:
@@ -362,9 +383,7 @@ def prune_idle_entries(
     try:
         return _prune_idle_entries(root, max_idle_hours, skip_names, audit)
     finally:
-        if audit is not logger:
-            for handler in audit.handlers:
-                handler.close()
+        _close_prune_log(audit)
 
 
 def _prune_idle_entries(

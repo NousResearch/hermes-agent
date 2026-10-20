@@ -41,6 +41,20 @@ def test_streamed_mid_string_cut_stays_unrepairable():
     assert calls[0].function.arguments == '{"q": "unterminated string'
 
 
+def test_streamed_dangling_separator_cut_flags_truncated():
+    # A stream cut right after a field separator used to close into valid JSON that kept
+    # every streamed key and silently dropped the rest (memory 'content' is emitted last,
+    # #138050): the call then executed and failed with "content is required" although the
+    # model DID emit it, and every retry hit the same cut. Must be flagged truncated so
+    # the length-recovery path regenerates the call instead of executing a partial one.
+    raw = '{"action": "add", "target": "memory",'
+    calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated(raw), "tool_calls")
+    assert truncated is True
+    # Unrepairable: the raw cut text stays (never a closed prefix), matching the
+    # mid-string-cut contract above.
+    assert calls[0].function.arguments == raw
+
+
 class TestStreamingAssemblyRepair:
     """Verify that _repair_tool_call_arguments is applied to streaming tool
     call arguments before they're assembled into mock_tool_calls.

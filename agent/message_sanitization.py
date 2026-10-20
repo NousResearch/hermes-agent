@@ -240,6 +240,19 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
 
+    # A dangling separator is a stream cut between members, not a malformed-but-complete
+    # document: no valid JSON ends in "," or ":", and a model-side typo keeps its closer
+    # ({"a": 1,}). Closing the prefix here would yield valid JSON that silently lacks every
+    # key/value not yet streamed — memory's 'content' is emitted last, so the call executed
+    # with every earlier field and reported "content is required" while the model did send
+    # it (#138050). Refuse so the caller flags the args truncated instead of executing a
+    # partial call.
+    if raw_stripped[-1] in ",:":
+        logger.warning(
+            "Refusing to repair tool_call arguments for %s ending in a dangling %r: closing the "
+            "prefix would silently drop unstreamed keys", tool_name, raw_stripped[-1])
+        return "{}"
+
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
     # local-model case) and re-serialises to wire-valid JSON.
     try:

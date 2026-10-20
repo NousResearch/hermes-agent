@@ -2065,6 +2065,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         configure_bedrock_openai_client_kwargs(
             client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
         )
+    # Managed llama.cpp 0.4.x authenticates X-Api-Key, not the SDK's Bearer (#132799). Like the
+    # Bedrock branch above: every rebuild from bare {api_key, base_url} kwargs must reinstall
+    # the twin header; an explicit default_headers entry from the caller still wins.
+    try:
+        from hermes_cli.local_runtime.endpoint import llamacpp_auth_headers
+
+        _llamacpp = llamacpp_auth_headers(
+            str(client_kwargs.get("base_url") or ""), client_kwargs.get("api_key", ""))
+        if _llamacpp:
+            client_kwargs["default_headers"] = {
+                **_llamacpp, **(client_kwargs.get("default_headers") or {})}
+    except Exception:
+        _ra().logger.debug("llama.cpp X-Api-Key header resolution skipped", exc_info=True)
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:

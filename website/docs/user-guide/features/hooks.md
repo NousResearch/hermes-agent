@@ -1267,7 +1267,7 @@ def my_router(parent_session_id: str | None,
 | `model` | Child model. Without `provider`, the child keeps the batch provider and endpoint. |
 | `reasoning_effort` | Same values as `delegation.reasoning_effort` (`low`, `high`, ..., or `false`); overrides it for this child only. Unknown values are ignored. |
 
-Dispatch is run-all-then-pick-first: the first valid route in registration order wins and conflicting routes are logged. The hook is fail-open: a callback error, an invalid return, or a provider that cannot be resolved keeps the batch route with a warning, so a broken router never blocks a spawn. Shell hooks cannot return routes. The hook does not fire when the caller pins its own route (for example `/review`, which runs on `auxiliary.review`).
+Dispatch is run-all-then-pick-first: the first valid route in registration order wins and conflicting routes are logged. A callback error or an invalid return keeps the batch route with a warning. A provider that is unknown or has no credentials fails that `delegate_task` call with the resolver's error, so a child never runs on a model the router did not choose. Shell hooks cannot return routes. The hook does not fire when the caller pins its own route (for example `/review`, which runs on `auxiliary.review`): the caller's explicit config for that one call wins.
 
 **Example — route reviews to a stronger model:**
 

@@ -433,21 +433,18 @@ def _plugin_route(
     routing_cfg: dict[str, Any], role: str,
 ) -> Optional[tuple[Optional[str], dict[str, Any]]]:
     """``(model, overrides)`` for one child from ``pre_subagent_route`` plugin hooks, or ``None`` to keep the
-    batch route. Fail-open: a hook error or an unresolvable provider keeps the batch route with a warning."""
-    try:
-        from hermes_cli.plugins_subagent_route import get_plugin_subagent_route
-        route = get_plugin_subagent_route(
-            parent_session_id=getattr(parent_agent, "session_id", None),
-            parent_subagent_id=getattr(parent_agent, "_subagent_id", None),
-            task_index=task_index, task_count=task_count, child_goal=task.get("goal") or "",
-            child_context=task.get("context"), child_role=role,
-            default_provider=creds.get("provider") or getattr(parent_agent, "provider", None),
-            default_model=creds.get("model") or getattr(parent_agent, "model", None),
-            default_reasoning_effort=(routing_cfg or {}).get("reasoning_effort"),
-        )
-    except Exception:  # health: allow BLE001 -- fail-open plugin boundary; traceback logged
-        logger.warning("pre_subagent_route hook failed; keeping the batch route", exc_info=True)
-        return None
+    batch route. A returned provider that cannot be resolved raises ValueError: the spawn fails rather than
+    silently running the child on the batch model the router chose against."""
+    from hermes_cli.plugins_subagent_route import get_plugin_subagent_route
+    route = get_plugin_subagent_route(
+        parent_session_id=getattr(parent_agent, "session_id", None),
+        parent_subagent_id=getattr(parent_agent, "_subagent_id", None),
+        task_index=task_index, task_count=task_count, child_goal=task.get("goal") or "",
+        child_context=task.get("context"), child_role=role,
+        default_provider=creds.get("provider") or getattr(parent_agent, "provider", None),
+        default_model=creds.get("model") or getattr(parent_agent, "model", None),
+        default_reasoning_effort=(routing_cfg or {}).get("reasoning_effort"),
+    )
     if not route:
         return None
     route_cfg, child_creds = routing_cfg, creds
@@ -456,10 +453,8 @@ def _plugin_route(
         route_cfg.update(provider=route["provider"], model=route["model"])
         try:
             child_creds = _resolve_delegation_credentials(route_cfg, parent_agent)
-        except Exception:  # health: allow BLE001 -- fail-open plugin route; traceback logged
-            logger.warning("pre_subagent_route: provider %r could not be resolved; keeping the batch route",
-                           route["provider"], exc_info=True)
-            return None
+        except ValueError as exc:
+            raise ValueError(f"pre_subagent_route chose provider {route['provider']!r} for task {task_index}: {exc}") from exc
     elif route.get("model"):
         child_creds = {**creds, "model": route["model"]}
     overrides = _credential_overrides(child_creds, route_cfg)
@@ -477,8 +472,9 @@ def _build_children(
     plugin_routes: bool = True,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
-    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure. ``plugin_routes=False`` skips
-    ``pre_subagent_route`` hooks (a caller-pinned route such as /review's ``auxiliary.review``)."""
+    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure or an unresolvable plugin route.
+    ``plugin_routes=False`` skips ``pre_subagent_route`` hooks: a caller-pinned route (``credentials_cfg``, e.g.
+    /review's ``auxiliary.review``) wins because it is explicit operator config for that one call."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     overrides = _credential_overrides(creds, routing_cfg)
@@ -489,10 +485,10 @@ def _build_children(
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         _role = _normalize_role(t.get("role") or top_role)
-        _model, _overrides = (plugin_routes and _plugin_route(
-            parent_agent, t, i, len(task_list), creds, routing_cfg, _role,
-        )) or (creds["model"], overrides)
         try:
+            _model, _overrides = (plugin_routes and _plugin_route(
+                parent_agent, t, i, len(task_list), creds, routing_cfg, _role,
+            )) or (creds["model"], overrides)
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets

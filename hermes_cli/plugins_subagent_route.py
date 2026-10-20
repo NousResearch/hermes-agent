@@ -7,7 +7,9 @@ the batch route, or a dict with any of ``provider`` (requires ``model``), ``mode
 ``reasoning_effort``. Privacy: goal and context may contain user and project content.
 
 Credentials stay in core: ``tools.delegate_tool`` resolves a returned provider through the same runtime
-provider path as ``delegation.provider``. Shell hooks cannot return routes (SHELL_UNSUPPORTED_HOOKS).
+provider path as ``delegation.provider``; an unknown or uncredentialed provider fails the spawn instead of
+falling back to the batch model. A caller-pinned route (``credentials_cfg``, e.g. /review) skips the hook.
+Shell hooks cannot return routes (SHELL_UNSUPPORTED_HOOKS).
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ def get_plugin_subagent_route(
 
     Run-all-then-pick-first, like ``get_plugin_error_classification``: every callback runs with failures
     isolated, the first valid route in registration order wins and losing valid routes are logged. Invalid
-    returns degrade to a no-op, so a broken router never blocks a spawn.
+    returns degrade to a no-op; callback errors are isolated by ``invoke_hook``.
     """
     from hermes_cli import plugins
 

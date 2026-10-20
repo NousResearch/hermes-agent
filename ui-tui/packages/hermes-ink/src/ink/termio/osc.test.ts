@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import { supportsOsc52Clipboard } from '../../utils/env.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { link, shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+
+describe('link', () => {
+  it('strips terminal controls from OSC 8 URI and derived identifier', () => {
+    const output = link('https://example.com/\x07\x1b]52;c;SGVsbG8=\x07')
+
+    expect(output).toContain('https://example.com/]52;c;SGVsbG8=')
+    expect(output).not.toContain('\x1b]52;c;SGVsbG8=')
+  })
+})
 
 describe('shouldEmitClipboardSequence', () => {
   it('suppresses local multiplexer clipboard OSC by default', () => {

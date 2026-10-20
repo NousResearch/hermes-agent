@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -25,6 +26,38 @@ _MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache
 
 def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
+
+
+def _git_ignored(root: Path) -> frozenset[str]:
+    """Untracked paths a member's own git work tree ignores, ignored directories collapsed.
+
+    Build output, caches and runtime state are not build inputs; hashing them made every
+    launch rebuild the environment (#122349). Without a usable git, nothing extra is skipped.
+    """
+    if not (root / ".git").exists():
+        return frozenset()
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+            cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return frozenset()
+    if result.returncode != 0:
+        return frozenset()
+    return frozenset(os.fsdecode(path).rstrip("/") for path in result.stdout.split(b"\0") if path)
+
+
+def _member_filter(root: Path):
+    """The ``ignore`` callable for one member tree: members_stamp hashes what is copied."""
+    ignored = _git_ignored(root)
+
+    def ignore(directory, names):
+        skipped = set(_member_ignored(directory, names))
+        base = Path(directory).relative_to(root)
+        return [name for name in names if name in skipped or (base / name).as_posix() in ignored]
+
+    return ignore
 
 
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
@@ -51,9 +84,10 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
+            ignore = _member_filter(entry)
             for directory, dirs, files in os.walk(entry):
-                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
-                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                dirs[:] = sorted(set(dirs) - set(ignore(directory, dirs)))
+                for name in sorted(set(files) - set(ignore(directory, files))):
                     path = Path(directory) / name
                     h.update(path.relative_to(entry).as_posix().encode())
                     h.update(b"\0")
@@ -244,8 +278,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     pyproject = declaration.pyproject
     if pyproject is not None:
         member = root / "plugin-sources" / key
-        shutil.copytree(plugin_dir, member, symlinks=True,
-                        ignore=_member_ignored)
+        shutil.copytree(plugin_dir, member, symlinks=True, ignore=_member_filter(plugin_dir))
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
         # plugin enabled in two profiles would declare one name twice and fail

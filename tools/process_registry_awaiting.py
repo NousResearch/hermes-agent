@@ -66,14 +66,26 @@ def release(events) -> None:
 
 
 @contextlib.contextmanager
-def holding(owner_task_ids):
-    """Hold ``owner_task_ids`` for a drain that dequeues through another API (``drain_notifications``)."""
-    owners = [o for o in owner_task_ids if o]
-    _adjust(owners, +1)
+def drained_for(registry, owns):
+    """Dequeue everything queued for a caller that consumes only the events ``owns`` accepts (the TUI's post-turn
+    safety net). Every dequeued event's owner is held — foreign ones too — until the rejected events are back on
+    the queue and the accepted ones (yielded) have been routed, so no owner is ever between queue and hold."""
+    registry.restore_completions()
+    ready = take_ready(registry.completion_queue, 0)
     try:
-        yield
+        mine = [evt for evt in ready if owns(evt)]
+        for evt in ready:
+            if not any(evt is m for m in mine):
+                registry.completion_queue.put(evt)
+        yield mine
     finally:
-        _adjust(owners, -1)
+        release(ready)
+
+
+def retained_for_delivery(s) -> bool:
+    """A finished entry whose completion is not yet published: pruning it would erase the only record that a notice
+    is coming, so the registry keeps it until publication."""
+    return bool(getattr(s, "_finish_claimed", False)) and not s._completion_event.is_set()
 
 
 def _notifies(s) -> bool:

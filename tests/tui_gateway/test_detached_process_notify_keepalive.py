@@ -8,10 +8,12 @@ with exit -15, no completion was ever delivered, and the promised follow-up sile
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -292,3 +294,101 @@ def test_disabled_watch_does_not_pin_session(server, registry, detached):
     proc._watch_disabled = True
 
     assert server._session_is_reapable(sid, session)
+
+
+# ── the post-turn safety-net drain and agent rebuilds ──────────────────────
+# Session B finishing a turn drains the shared completion queue; an event owned by idle, detached session A passes
+# through B's hands before it is requeued. If A were reapable in that window, the reaper would close A and the
+# requeued notice would be dropped as unowned.
+
+
+def _post_turn_followups(server, namespace_overrides):
+    from tui_gateway import prompt_turn
+    from tui_gateway.method_ctx import rebind
+
+    namespace = dict(vars(server))
+    namespace.update(_drain_queued_prompt=lambda *_: False,
+                     _session_profile_runtime_scope=lambda *_: contextlib.nullcontext(), **namespace_overrides)
+    return rebind(prompt_turn._run_post_turn_followups, namespace)
+
+
+def test_foreign_notice_in_another_sessions_post_turn_drain_keeps_its_owner(server, registry, detached, monkeypatch):
+    sid, session, popped = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.mark_exited(0)
+    registry._move_to_finished(proc)
+    other_sid, other = "other-sid", dict(session, session_key="other-owner", history_lock=threading.Lock())
+    server._sessions[other_sid] = other
+    monkeypatch.setattr(registry, "restore_completions", lambda: 0)
+    real_owns, observed = server._session_owns_notification_event, []
+
+    def owns(draining_sid, draining_session, event):
+        # B is deciding ownership of A's notice; the queue is empty, so only the in-flight hold covers A.
+        if draining_sid == other_sid and event["owner_task_id"] == session["session_key"]:
+            observed.append((registry.completion_queue.empty(), server._session_is_reapable(sid, session)))
+            server._schedule_ws_orphan_reap(sid)
+            server._pending_ws_reaps[sid].callback()
+        return real_owns(draining_sid, draining_session, event)
+
+    routed = []
+    _post_turn_followups(server, {"_session_owns_notification_event": owns,
+                                  "_notif_handle_ready": lambda *a, **k: routed.append(a[2])})(
+        None, other_sid, other, {}, None)
+
+    assert observed == [(True, False)], "A's notice was in B's hands: A must stay protected"
+    assert sid in server._sessions and not popped
+    assert [e["owner_task_id"] for e in registry.completion_queue.queue] == [session["session_key"]]
+    assert routed == [[]], "B routes none of A's events"
+
+
+def test_post_turn_drain_routes_its_own_notice_and_releases_every_hold(server, registry, detached, monkeypatch):
+    from tools import process_registry_awaiting as awaiting
+
+    sid, session, _ = detached
+    for owner in (session["session_key"], "someone-else"):
+        proc = _spawn(registry, owner, notify_on_complete=True)
+        proc.mark_exited(0)
+        registry._move_to_finished(proc)
+    monkeypatch.setattr(registry, "restore_completions", lambda: 0)
+    routed = []
+    _post_turn_followups(server, {"_notif_handle_ready": lambda *a, **k: routed.append(
+        [(e["owner_task_id"], server._session_is_reapable(sid, session)) for e in a[2]])})(None, sid, session, {}, None)
+
+    assert routed == [[(session["session_key"], False)]], "own notice routed while its session is still held"
+    assert [e["owner_task_id"] for e in registry.completion_queue.queue] == ["someone-else"]
+    assert not awaiting._in_flight, "every hold released once routing returned"
+    assert server._session_is_reapable(sid, session)
+
+
+def test_post_turn_drain_releases_holds_when_routing_raises(server, registry, detached, monkeypatch):
+    from tools import process_registry_awaiting as awaiting
+
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.mark_exited(0)
+    registry._move_to_finished(proc)
+    monkeypatch.setattr(registry, "restore_completions", lambda: 0)
+
+    def fail(*_a, **_k):
+        raise RuntimeError("routing failed")
+
+    _post_turn_followups(server, {"_notif_handle_ready": fail})(None, sid, session, {}, None)
+    assert not awaiting._in_flight
+
+
+def test_agent_rebuild_keeps_pre_compression_process_owners(server, registry, detached, monkeypatch):
+    """A Bot Chat capability refresh replaces the agent; a process the old agent started under its pre-compression
+    id must still pin the session (and still be killed by the new agent's close)."""
+    sid, session, _ = detached
+    session["agent"] = SimpleNamespace(_process_owner_task_ids={"pre-compression-id", session["session_key"]},
+                                       _session_db=None, _owns_session_db=False)
+    _spawn(registry, "pre-compression-id", notify_on_complete=True)
+    assert not server._session_is_reapable(sid, session)
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: SimpleNamespace(
+        _process_owner_task_ids={session["session_key"]}, _session_db=None))
+    monkeypatch.setattr(server, "_release_build_profile_scopes", lambda *_: None)
+
+    server._rebuild_session_agent(sid, session)
+
+    assert "pre-compression-id" in session["agent"]._process_owner_task_ids
+    assert not server._session_is_reapable(sid, session)

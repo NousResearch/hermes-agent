@@ -170,6 +170,25 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertEqual(fresh["kernel"]["reused"], False)
         self.assertIn("respawned", fresh["output"])
 
+    def test_cell_stdin_is_at_eof_not_the_request_pipe(self):
+        """A cell and the children it spawns read EOF from stdin, as on the per-call path:
+        the kernel's request pipe must not be where a stdin read blocks until the timeout."""
+        code = (
+            "import subprocess, sys\n"
+            "r = subprocess.run([sys.executable, '-c', 'import sys; print(repr(sys.stdin.read()))'],\n"
+            "                   capture_output=True, text=True)\n"
+            "print('child read', r.stdout.strip())\n"
+            "try:\n"
+            "    input()\n"
+            "except EOFError:\n"
+            "    print('input at EOF')\n"
+        )
+        with _kernel_config(timeout=5):
+            result = _run(code)
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("child read ''", result["output"])
+        self.assertIn("input at EOF", result["output"])
+
     def test_subprocess_fd_output_reaches_the_result(self):
         code = (
             "import subprocess, sys\n"

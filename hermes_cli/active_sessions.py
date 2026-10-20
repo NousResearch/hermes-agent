@@ -12,6 +12,7 @@ import logging
 import collections
 import math
 import os
+import sys
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -290,6 +291,14 @@ def _registry_pid(pid: Any) -> int:
 def _valid_process_start(v: Any) -> bool:
     if v in (None, ""):
         return True
+    if isinstance(v, str) and v.startswith("linux-v1:"):
+        parts = v.split(":")
+        if len(parts) != 3:
+            return False
+        try:
+            return str(uuid.UUID(parts[1])) == parts[1] and parts[2].isascii() and parts[2].isdigit()
+        except ValueError:
+            return False
     parsed = _optional_float(v)
     return parsed is not None and math.isfinite(parsed)
 
@@ -332,6 +341,18 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
 
 
+def _linux_process_identity(pid: int) -> Optional[str]:
+    try:
+        from hermes_cli.web_server_lifecycle import _process_start_marker
+
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        marker = _process_start_marker(pid)
+        identity = f"linux-v1:{boot}:{marker.removeprefix('linux:')}"
+        return identity if marker.startswith("linux:") and _valid_process_start(identity) else None
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = False) -> Optional[bool]:
     """True/False for live/dead, or None when unknowable. ``lenient`` never returns None:
     an unparseable pid or failed existence probe counts as dead, an unreadable start as alive."""
@@ -350,6 +371,12 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
                 return False
         except Exception:
             return unknown_dead
+    if isinstance(process_start_time, str) and process_start_time.startswith("linux-v1:"):
+        current_identity = _linux_process_identity(pid_int) if sys.platform == "linux" else None
+        if current_identity is None or not _valid_process_start(process_start_time):
+            return True if lenient else None
+        return current_identity == process_start_time
+    # Numeric entries retain the legacy epoch contract until their leases turn over.
     expected_start = _optional_float(process_start_time)
     if expected_start is None:
         return True
@@ -463,12 +490,19 @@ def _lease_entry(
     metadata: Optional[dict[str, Any]] = None, track_liveness: bool = False,
 ) -> dict[str, Any]:
     now = time.time()
+    start: str | float | None
+    if sys.platform == "linux":
+        start = _linux_process_identity(os.getpid())
+        if start is None:
+            raise ActiveSessionRegistryError("active session process identity is unreadable")
+    else:
+        start = _own_start_time()
     entry: dict[str, Any] = {
         "lease_id": lease_id,
         "session_id": str(session_id),
         "surface": str(surface),
         "pid": os.getpid(),
-        "process_start_time": _own_start_time(),
+        "process_start_time": start,
         "started_at": now,
         "updated_at": now,
     }

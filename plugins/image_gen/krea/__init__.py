@@ -37,7 +37,7 @@ _MODELS: dict[str, dict[str, Any]] = {
     "krea-3": {
         "display": "Krea 3", "speed": "~5s (1K) / ~40s (2K, high thinking)",
         "strengths": "Generates and edits existing images from instructions; keeps products, characters, logos and text consistent.",
-        "price": "$0.03 (1K) / $0.06 (2K), +$0.07 per reference image, +$0.02 high thinking",
+        "price": "$0.03 (1K) / $0.06 (2K), +$0.02 (1K) or $0.07 (2K) per reference image, +$0.02 high thinking",
         "path": "/generate/image/krea/krea-3", "edit": True, "upscale": False,
     },
     "krea-2-medium": {

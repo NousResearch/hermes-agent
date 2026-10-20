@@ -49,7 +49,8 @@ const DEEP_LINK_ERROR_KEYS: Record<PluginCatalogLookupError, string> = {
  */
 export async function requestPluginCatalogInstallFromDeepLink(
   name: string,
-  lookup: typeof lookupPluginCatalogEntry = lookupPluginCatalogEntry
+  lookup: typeof lookupPluginCatalogEntry = lookupPluginCatalogEntry,
+  profile: null | string = null
 ): Promise<void> {
   const result = await lookup(name)
 
@@ -63,5 +64,5 @@ export async function requestPluginCatalogInstallFromDeepLink(
     return
   }
 
-  openCatalogPluginInstall(result.entry, null)
+  openCatalogPluginInstall(result.entry, profile)
 }

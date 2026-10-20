@@ -1,0 +1,6 @@
+name: keep_history
+description: >-
+  Codex-style request-only compaction. Prunes old tool logs, terminal
+  dumps and file arrays from what is sent to the model while keeping the
+  full conversation transcript (and the visible chat history) intact.
+version: 1.0.0

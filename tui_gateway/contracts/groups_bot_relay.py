@@ -154,6 +154,10 @@ class GroupsCapabilitiesResult(Result):
     features: list[str]
     methods: list[str]
     max_log_limit: int
+    #: Local profiles THIS caller may seat in a new group (``gateway/session_hosted_members``): served
+    #: bots, minus retiring/unaddressable ones, plus usable ``hosted_rooms.profiles`` entries; only a
+    #: host-scoped caller gets served siblings. Absent on gateways that predate it.
+    seatable_profiles: list[str] | None = None
 
 
 method("groups.capabilities", params=GroupsCapabilitiesParams, result=GroupsCapabilitiesResult,

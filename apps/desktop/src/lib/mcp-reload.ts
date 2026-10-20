@@ -1,9 +1,10 @@
 import type { ReloadMcpResult } from '@hermes/shared'
 
-import type { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 
 /**
  * What `reload.mcp` did for the chat that asked. The gateway decides and commits; Desktop only reads its
@@ -23,10 +24,12 @@ export interface McpReloadOutcome {
 export class McpReloadDeferred extends Error {}
 
 export async function reloadMcp(
-  gateway: Pick<HermesGateway, 'request'>,
+  gateway: Parameters<typeof ambientRequestFor>[0],
   sessionId: null | string | undefined
 ): Promise<McpReloadOutcome> {
-  const result = await gateway.request<ReloadMcpResult>('reload.mcp', {
+  // The chat's MCP set lives on its owner; the ambient socket refuses (or
+  // reloads the wrong profile for) another profile's session.
+  const result = await requestForOwnedSession<ReloadMcpResult>(sessionId, ambientRequestFor(gateway), 'reload.mcp', {
     confirm: true,
     session_id: sessionId ?? undefined
   })

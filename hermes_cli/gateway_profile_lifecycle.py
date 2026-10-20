@@ -88,6 +88,9 @@ def profile_lifecycle(command: str, args) -> bool:
     if owner is None and not gw.named_profile_served_by_running_multiplexer():
         return False
     host_home = owner.home if owner is not None else get_default_hermes_root()
+    # Unserving stops this profile's executing turns: the live-work policy applies before the teardown.
+    from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
+    refuse_while_sessions_live(command, args, host_home=host_home, profile=name)
     if command == "stop":
         # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
         marker.touch()

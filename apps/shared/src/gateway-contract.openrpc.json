@@ -19236,6 +19236,21 @@
           "max_log_limit": {
             "title": "Max Log Limit",
             "type": "integer"
+          },
+          "seatable_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seatable Profiles"
           }
         },
         "required": [

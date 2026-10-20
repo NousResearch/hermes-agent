@@ -31,6 +31,20 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
   return 'unavailable'
 }
 
+/** The profiles `groups.create` will seat for THIS caller, as `groups.capabilities`
+ *  reports them (the server's member rules: parked, retiring and unaddressable bots
+ *  are out, and only a host-scoped socket seats served siblings). Null when the
+ *  gateway predates the field, so callers keep their connection-only filter. */
+export function groupSeatableProfiles(value: unknown): null | Set<string> {
+  const seatable = value && typeof value === 'object' ? (value as Record<string, unknown>).seatable_profiles : undefined
+
+  if (!Array.isArray(seatable)) {
+    return null
+  }
+
+  return new Set(seatable.filter((name): name is string => typeof name === 'string'))
+}
+
 /** Fence a group-creation flow to the source that approved it. Pass the epoch the
  *  capability was read under (default: now); the predicate turns false once the
  *  connection, profile, socket or activation epoch moves, so a late result is

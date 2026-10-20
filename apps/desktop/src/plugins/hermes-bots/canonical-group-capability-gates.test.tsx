@@ -221,6 +221,21 @@ it('canonical creation offers only members on the current connection before subm
   expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
 })
 
+it('canonical creation offers only the bots the authority says this caller can seat (#141178)', async () => {
+  // `parked` is on this connection but not served (or a sibling this socket may
+  // not seat): groups.create would refuse it, so the picker must not offer it.
+  const withParked: RosterRow[] = [...roster, { name: 'parked', connectionId: 'local' }]
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta', 'default'] })
+  const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={withParked} />)
+
+  await waitFor(() => {
+    expect(baseElement.querySelector('[data-bot-face="alpha"]')).not.toBeNull()
+    expect(baseElement.querySelector('[data-bot-face="beta"]')).not.toBeNull()
+  })
+  expect(baseElement.querySelector('[data-bot-face="parked"]')).toBeNull()
+  expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+})
+
 it('rechecks the current mode before creating after a mixed legacy selection', async () => {
   let capabilityReads = 0
   const onCreated = vi.fn()

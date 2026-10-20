@@ -124,11 +124,16 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return _execution_control(service, method, params)
 
     def capabilities():
+        from gateway.session_hosted_members import member_roster
+        # The roster groups.create will accept from THIS caller, so a picker never offers a bot
+        # (parked, retiring, a sibling a profile-bound socket cannot seat) that create refuses.
+        homes, refused = member_roster(authority, siblings=host_scope)
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
                 'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
-                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
+                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
+                'seatable_profiles': sorted(name for name in homes if name not in refused)}
 
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)

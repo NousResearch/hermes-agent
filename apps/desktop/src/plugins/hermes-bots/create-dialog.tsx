@@ -45,7 +45,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupExecutionMode, groupSeatableProfiles } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
@@ -1209,6 +1209,7 @@ interface CreateGroupChatDialogProps {
 type GroupCapabilityState = {
   activationEpoch: number
   mode: ReturnType<typeof groupExecutionMode>
+  seatable: null | Set<string>
   source: string
 }
 
@@ -1288,6 +1289,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           setCapability({
             activationEpoch,
             mode: groupExecutionMode(result),
+            seatable: groupSeatableProfiles(result),
             source
           })
         }
@@ -1297,6 +1299,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           setCapability({
             activationEpoch,
             mode: 'unavailable',
+            seatable: null,
             source
           })
         }
@@ -1306,6 +1309,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   }, [activationEpoch, connectionId, gateway, open, profile, source])
 
   const mode = capability?.source === source ? capability.mode : 'checking'
+  const seatable = capability?.source === source ? capability.seatable : null
 
   const currentConnection = String(connectionId || '').trim()
 
@@ -1329,7 +1333,15 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return false
     }
 
-    return mode === 'legacy' || belongsToCurrentConnection(bot)
+    if (mode === 'legacy') {
+      return true
+    }
+
+    // Canonical: the authority's own seatable roster wins over connection
+    // membership, so a parked or unseatable bot is never offered (#141178).
+    // The profile is the one createCanonicalGroup will send.
+    return belongsToCurrentConnection(bot) &&
+      (!seatable || seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))
   })
 
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])

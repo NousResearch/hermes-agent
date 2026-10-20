@@ -72,13 +72,13 @@ async def _cold(tmp_path, multiplex=None, profile_name=None):
     """A fresh process: new store, new authority, nothing published."""
     from gateway.session_authorities import SessionAuthorities
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     runner = _Runner(tmp_path, multiplex)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='cold')
     if profile_name is not None:
         runner.session_authorities = SessionAuthorities(tmp_path / 'launch', multiplexed=True)
         runner.session_authorities.add('fixture', authority, name=profile_name)
-    actor = Principal('viewer', 'fixture', frozenset({'session:read'}), 'socket')
+    actor = SessionActor('viewer', 'fixture', frozenset({'session:read'}), 'socket')
     return SimpleNamespace(authority=authority, actor=actor, store=runner.session_store)
 
 
@@ -274,12 +274,12 @@ async def test_a_row_its_route_moved_past_is_read_only(tmp_path):
     lookup or a turn on it reached the successor conversation. One gateway owns every session and
     never crosses them: the historic row reads (its own transcript) and refuses every write by name."""
     from hermes_state_runtime import RuntimeStoreError
-    from gateway.session_contract import Principal, Submission
+    from gateway.session_contract import SessionActor, Submission
     cold, _successor = await _superseded(tmp_path)
     cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
     caps = frozenset({'session:read', 'session:submit', 'session:control', 'session:approve',
                       'session:respond'})
-    writer = Principal('viewer', 'fixture', caps, 'socket')
+    writer = SessionActor('viewer', 'fixture', caps, 'socket')
     for capability in sorted(caps - {'session:read'}):
         with pytest.raises(RuntimeStoreError, match='session_superseded'):
             cold.authority.authorize(writer, _ref('old'), capability)
@@ -329,10 +329,10 @@ async def test_the_lane_reopening_the_row_makes_it_live_again(tmp_path):
 @pytest.mark.asyncio
 async def test_a_row_whose_lane_has_no_entry_mounts_live(tmp_path):
     """Nothing names another conversation: the row is what the lane's next inbound publishes."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
-    writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
+    writer = SessionActor('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
     assert cold.authority.sessions['unrouted'].superseded is False
 
@@ -421,10 +421,10 @@ async def test_a_live_mount_goes_read_only_when_its_lane_publishes_another_conve
     """Mounted while nothing named another conversation, then the lane's next inbound starts a fresh
     session on the same route: from then on the old mount's route is the newer session's."""
     from hermes_state_runtime import RuntimeStoreError
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     _seed(tmp_path, 'unrouted', _source(), routed=False)
     cold = await _cold(tmp_path)
-    writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
+    writer = SessionActor('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
     cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
     fresh = cold.store.get_or_create_session(_source(), force_new=True)
     cold.authority._publish_route(_source(), fresh.session_id, fresh.session_key)

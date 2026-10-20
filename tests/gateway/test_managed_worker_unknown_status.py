@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 
 CHILD = """import json, os, sys, psutil
 me = psutil.Process()
@@ -41,7 +41,7 @@ def test_unknown_worker_loss_publishes_error_status(tmp_path, monkeypatch):
     original = live.event_stream.publish
     monkeypatch.setattr(live.event_stream, 'publish', lambda sid, payload, **kw: (
         published.append((kw.get('event_type', 'message.complete'), payload)), original(sid, payload, **kw))[1])
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
 

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from tests.waiting import async_wait_until
 
 
@@ -31,7 +31,7 @@ def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch)
         authorize=lambda actor, ref, cap: checks.append(cap),
         check_approval_generation=lambda session_id, generation: checks.append(generation))
     row = {'admission_id': 'adm', 'principal_id': 'owner', 'generation': 3, 'payload': {'text': 'go'}}
-    actor = Principal('owner', 'profile', frozenset({'session:control'}), 'transport')
+    actor = SessionActor('owner', 'profile', frozenset({'session:control'}), 'transport')
 
     async def scenario():
         turn = asyncio.create_task(managed.execute_managed(authority, ref, row, policy=None))
@@ -88,7 +88,7 @@ def test_stop_acknowledged_during_spawn_never_bootstraps_the_worker(tmp_path, mo
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     received = tmp_path / 'received.jsonl'

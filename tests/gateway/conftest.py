@@ -691,7 +691,7 @@ def hosted_owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway import run, session_policy
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda cfg: 'fixture')
@@ -713,7 +713,7 @@ def hosted_owner(tmp_path, monkeypatch):
     thread.start()
     authority = asyncio.run_coroutine_threadsafe(initialize_session_authority(runner, profile_id='owned', instance_id='first'), loop).result()
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    principal = Principal('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
+    principal = SessionActor('durable-room-owner', 'owned', frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}), 'room-worker')
     yield authority, loop, principal, agent
     loop.call_soon_threadsafe(loop.stop)
     thread.join()

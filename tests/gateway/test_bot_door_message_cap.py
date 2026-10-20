@@ -6,7 +6,7 @@ import pytest
 
 from tests.waiting import async_wait_until
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
@@ -27,7 +27,7 @@ async def test_long_cron_report_is_admitted_and_relayed_dm_stays_capped(bot):
                            timeout=10, what='the cron report to settle')
     assert (await asyncio.to_thread(read_delivery_result, bot.home, KEY))['message'] == message
 
-    relayed = Principal('uid:1000', 'default', frozenset({'session:submit', 'session:read'}), 'relay')
+    relayed = SessionActor('uid:1000', 'default', frozenset({'session:submit', 'session:read'}), 'relay')
     author = {'id': 'bot:conn/peer', 'name': 'peer', 'is_bot': True}
     connection = type(bot.connection)(authority=bot.authority, actor=relayed)
     with pytest.raises(RuntimeStoreError, match='invalid_params'):

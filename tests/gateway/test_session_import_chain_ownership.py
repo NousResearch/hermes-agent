@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import SessionAuthority
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_mutations import mutate_session
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch
@@ -17,7 +17,7 @@ async def test_foreign_compressed_root_survives_import_and_delete_of_a_child(tmp
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='owner',
                                      db=db, epoch=begin_runtime_epoch(db, instance_id='owner'))
-        attacker, victim = (Principal(name, 'p', _CAPS, name) for name in ('attacker', 'victim'))
+        attacker, victim = (SessionActor(name, 'p', _CAPS, name) for name in ('attacker', 'victim'))
 
         async def mutate(actor, sid, request_id, operation, payload):
             row = db.get_session(sid) or {'runtime_revision': 0, 'runtime_generation': 0}

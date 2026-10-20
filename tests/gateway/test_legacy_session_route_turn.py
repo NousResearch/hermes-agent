@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
 SID = '20261012_122515_721bf6'
@@ -33,7 +33,7 @@ def _adopt_and_resolve(home, legacy_route, source='tui', billing=None):
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = asyncio.run(initialize_session_authority(runner, profile_id=str(home), instance_id='fixture'))
-    actor = Principal('uid:1000', str(home), frozenset({'session:read', 'session:create'}), 'native')
+    actor = SessionActor('uid:1000', str(home), frozenset({'session:read', 'session:create'}), 'native')
     bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': str(home), 'instance_id': 'fixture'})
     reasoning = {'enabled': True, 'effort': 'xhigh'}
     authority.db.create_session(SID, source=source, model='legacy-model', model_config={

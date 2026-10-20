@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -16,7 +16,7 @@ async def test_attachment_retry_survives_lost_staging_but_rejects_changed_payloa
     authority = await _authority(tmp_path, monkeypatch, answer)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     staged = Path(cache_image_from_bytes(_ONE_PX_PNG, '.png'))
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     request = Submission('retry', SessionRef('p', 's'),
         {'text': 'look', 'attachments': [{'path': str(staged), 'mime': 'image/png'}]}, 'queue')
     receipt = await authority.submit(actor, request)

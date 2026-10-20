@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 from gateway.config import Platform
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
 from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
@@ -128,7 +128,7 @@ class AuthorityConnection:
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
         from gateway.session_identity import authenticated_subject
-        self.actor = Principal(authenticated_subject(identity),
+        self.actor = SessionActor(authenticated_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport

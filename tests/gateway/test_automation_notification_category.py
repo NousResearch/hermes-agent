@@ -7,7 +7,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 
 
@@ -43,7 +43,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
     from gateway.session_local_title import title_new_session
     from gateway.session_automation import restore_local_automation
     _runner, authority = await _authority(tmp_path, monkeypatch)
-    actor = Principal('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}), 'fixture')
+    actor = SessionActor('test-owner', 'default', frozenset({'session:create', 'session:submit', 'session:read'}), 'fixture')
     try:
         ref = create_local_session(authority, actor, dict(request_id='bot', source='gui', model='fixture', toolsets=[]))
         title_new_session(authority, ref, 'Bot Chat')
@@ -85,7 +85,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
 async def test_bot_invalid_category_refuses_before_admission(tmp_path, monkeypatch, category):
     from gateway.session_bot import deliver
     _runner, authority = await _authority(tmp_path, monkeypatch)
-    actor = Principal('test-owner', 'default', frozenset({'session:submit'}), 'fixture')
+    actor = SessionActor('test-owner', 'default', frozenset({'session:submit'}), 'fixture')
     try:
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             await deliver(SimpleNamespace(authority=authority, actor=actor),

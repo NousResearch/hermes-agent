@@ -742,6 +742,28 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == []
 
+    @pytest.mark.platforms("windows")
+    def test_windows_never_touches_psutil_at_all(self, monkeypatch):
+        """#142085: psutil's Windows liveness path does not release the GIL, so one slow
+        ``EnumProcesses``/``NtQuerySystemInformation`` call freezes every other Python thread in
+        the process (Desktop backend and gateway stall for minutes under load). The Windows
+        branch must go straight to the ctypes probe and never import psutil."""
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_pid_exists = psutil.pid_exists
+
+        def spy(pid):
+            calls.append(pid)
+            return real_pid_exists(pid)
+
+        monkeypatch.setattr(psutil, "pid_exists", spy)
+        # Also assert Process.status was never reached (the zombie probe is POSIX-only anyway).
+        self._spy_status(monkeypatch)
+
+        assert status._pid_exists(os.getpid()) is True
+        assert status._pid_exists(999999) is False
+        assert calls == []
+
     @pytest.mark.platforms("linux")
     def test_posix_still_probes_zombie_status(self, monkeypatch):
         # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.

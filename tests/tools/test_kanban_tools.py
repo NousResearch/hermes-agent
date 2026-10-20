@@ -255,6 +255,54 @@ def test_complete_reports_registered_attachments(worker_env):
     assert readback["attachments"] == d["attachments"]
 
 
+def test_complete_stale_run_refusal_names_the_live_state(worker_env):
+    """#136521: a worker whose run was superseded got "unknown id, stale run,
+    or already terminal" with no way to tell which — and retried the same call
+    until its iteration budget ran out while kanban_show said running. The
+    refusal must name this session's run, the card's live run, and say stop."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        stale = kb.get_task(conn, worker_env)
+        assert stale.current_run_id is not None
+        # Simulate the dispatcher handing the card to a successor run while the
+        # stale worker's env still pins the old id.
+        conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?",
+                     (stale.current_run_id + 1, worker_env))
+
+    out = json.loads(kt._handle_complete({"summary": "finished the work"}))
+
+    assert out.get("error"), out
+    err = out["error"]
+    assert f"this session is run {stale.current_run_id}" in err
+    assert f"run {stale.current_run_id + 1}" in err, err
+    assert "stale run" in err
+    assert "do not retry" in err
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_complete_terminal_refusal_says_do_not_retry(worker_env):
+    """#136521 sibling: after another run closed the card, the stale worker's
+    complete must say the card is terminal instead of the generic refusal."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        assert kb.complete_task(conn, worker_env, result="done elsewhere", force=True)
+
+    out = json.loads(kt._handle_complete({"summary": "finished the work"}))
+
+    assert out.get("error"), out
+    err = out["error"]
+    assert "'done'" in err
+    assert "already terminal" in err
+    assert "do not retry" in err
+
+
 def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, worker_env, tmp_path):
     """#106163: a non-profile ``reviewer`` (e.g. the literal "reviewer") must be
     refused with an error the model sees, leaving the task running under the

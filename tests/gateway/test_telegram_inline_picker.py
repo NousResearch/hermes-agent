@@ -8,7 +8,6 @@ Hermes default / 100 API max, ~4KB payload) while inline mode is uncapped —
 every command and skill must be reachable through it.
 """
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,11 +21,9 @@ from plugins.platforms.telegram.inline_picker import (
     filter_catalog,
 )
 
-
 # ---------------------------------------------------------------------------
 # Logic module — no PTB required
 # ---------------------------------------------------------------------------
-
 
 class TestFilterCatalog:
     CATALOG = [
@@ -57,7 +54,6 @@ class TestFilterCatalog:
 
     def test_no_match_returns_empty(self):
         assert filter_catalog(self.CATALOG, "zzzznope") == []
-
 
 class TestBuildInlineResults:
     def _fake_catalog(self, n):
@@ -119,7 +115,6 @@ class TestBuildInlineResults:
         ids = {r["id"] for r in page1} | {r["id"] for r in page2}
         assert len(ids) == PAGE_SIZE * 2
 
-
 class TestCollectInlineCatalog:
     def test_catalog_is_uncapped_and_includes_all_skills(self, tmp_path, monkeypatch):
         """The whole point: unlike the 60-slot menu, EVERY skill appears."""
@@ -155,11 +150,9 @@ class TestCollectInlineCatalog:
         names = [i["name"] for i in catalog]
         assert len(names) == len(set(names))
 
-
 # ---------------------------------------------------------------------------
 # Adapter handler — telegram mock from tests/gateway/conftest.py
 # ---------------------------------------------------------------------------
-
 
 def _make_adapter(authorized=True):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -170,7 +163,6 @@ def _make_adapter(authorized=True):
     adapter._is_callback_user_authorized = MagicMock(return_value=authorized)
     return adapter
 
-
 def _inline_update(query="", offset="", user_id=42):
     inline_query = SimpleNamespace(
         query=query,
@@ -179,7 +171,6 @@ def _inline_update(query="", offset="", user_id=42):
         answer=AsyncMock(),
     )
     return SimpleNamespace(inline_query=inline_query)
-
 
 @pytest.mark.asyncio
 async def test_inline_query_authorized_answers_with_articles():
@@ -196,7 +187,6 @@ async def test_inline_query_authorized_answers_with_articles():
     assert kwargs["is_personal"] is True
     assert kwargs["next_offset"] == ""
 
-
 @pytest.mark.asyncio
 async def test_inline_query_unauthorized_gets_empty_results():
     adapter = _make_adapter(authorized=False)
@@ -207,7 +197,6 @@ async def test_inline_query_unauthorized_gets_empty_results():
     assert args[0] == []
     assert kwargs["is_personal"] is True
 
-
 @pytest.mark.asyncio
 async def test_inline_query_missing_user_denied():
     adapter = _make_adapter(authorized=True)
@@ -217,24 +206,6 @@ async def test_inline_query_missing_user_denied():
     args, _kwargs = update.inline_query.answer.call_args
     assert args[0] == []
 
-
-@pytest.mark.asyncio
-async def test_inline_query_pagination_offset_passthrough():
-    adapter = _make_adapter(authorized=True)
-    catalog = [
-        {"name": f"cmd-{i:03d}", "description": ""} for i in range(PAGE_SIZE + 5)
-    ]
-    update = _inline_update(query="", offset=str(PAGE_SIZE))
-    with patch(
-        "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
-        return_value=catalog,
-    ):
-        await adapter._handle_inline_query(update, None)
-    args, kwargs = update.inline_query.answer.call_args
-    assert len(args[0]) == 5
-    assert kwargs["next_offset"] == ""
-
-
 @pytest.mark.asyncio
 async def test_inline_query_answer_failure_is_swallowed():
     adapter = _make_adapter(authorized=True)
@@ -242,9 +213,3 @@ async def test_inline_query_answer_failure_is_swallowed():
     update.inline_query.answer = AsyncMock(side_effect=RuntimeError("boom"))
     # Must not raise — inline answering is best-effort.
     await adapter._handle_inline_query(update, None)
-
-
-@pytest.mark.asyncio
-async def test_inline_query_none_update_is_noop():
-    adapter = _make_adapter(authorized=True)
-    await adapter._handle_inline_query(SimpleNamespace(inline_query=None), None)

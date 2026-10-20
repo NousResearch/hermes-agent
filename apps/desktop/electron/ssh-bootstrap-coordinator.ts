@@ -1,5 +1,7 @@
 import crypto from 'node:crypto'
 
+import { markExpectedTransition } from './crash-forensics'
+
 function sshConfigFingerprint(scope, config) {
   const parts = [
     scope,
@@ -30,7 +32,7 @@ function createBootstrapCoordinator() {
       const error: any = new Error('SSH bootstrap was cancelled because Desktop is quitting.')
       error.kind = 'superseded'
 
-      return Promise.reject(error)
+      return Promise.reject(markExpectedTransition(error))
     }
 
     const current = pending.get(scope)
@@ -99,6 +101,7 @@ function createBootstrapCoordinator() {
     const own = new Promise<void>(resolve => {
       release = resolve
     })
+
     // Compose with any drain already in flight for this scope (a pool stop
     // still tearing down SSH while a connection apply cancels the same scope):
     // start() must wait for every active teardown, and the map entry is
@@ -126,6 +129,7 @@ function createBootstrapCoordinator() {
       // drain barrier still prevents stale resurrection.
       await Promise.allSettled(entries.flatMap(entry => [...entry.forceCleanups]).map(cleanup => cleanup()))
       await Promise.allSettled(entries.map(entry => entry.promise))
+
       // Keep the drain up through caller teardown (SSH keepalive / tunnel)
       // so a replacement start() cannot publish before the old scope is gone.
       if (afterCancel) {

@@ -15,13 +15,13 @@ GitHub via gh CLI: PRs, issues, reviews, repos, auth.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\github` |
+| Path | `skills/software-development/github` |
 | Version | `2.0.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `github`, `gh`, `git`, `pull-requests`, `issues`, `code-review`, `repos`, `auth`, `ci` |
-| Related skills | [`codebase-inspection`](./software-development-codebase-inspection.md), [`requesting-code-review`](./software-development-requesting-code-review.md) |
+| Related skills | [`codebase-inspection`](../../bundled/software-development/software-development-codebase-inspection.md), [`requesting-code-review`](../../bundled/software-development/software-development-requesting-code-review.md) |
 
 ## Reference: full SKILL.md
 

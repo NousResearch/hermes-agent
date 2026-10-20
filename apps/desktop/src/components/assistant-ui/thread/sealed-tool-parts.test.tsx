@@ -16,7 +16,11 @@ stubThreadViewportSize()
 const createdAt = new Date('2026-09-11T12:00:00Z')
 const sealedAt = createdAt.getTime() / 1000 + 5
 
-function sealedMessage(toolName: string, args: Record<string, unknown>): ThreadMessage {
+function sealedMessage(
+  toolName: string,
+  args: Record<string, unknown>,
+  extra: Record<string, unknown> = {}
+): ThreadMessage {
   return {
     id: `assistant-sealed-${toolName}`,
     role: 'assistant',
@@ -27,7 +31,8 @@ function sealedMessage(toolName: string, args: Record<string, unknown>): ThreadM
         toolName,
         args,
         argsText: JSON.stringify(args),
-        completedAt: sealedAt
+        completedAt: sealedAt,
+        ...extra
       }
     ],
     status: { type: 'complete', reason: 'stop' },
@@ -77,5 +82,12 @@ describe('tool parts sealed without a result', () => {
 
     expect(await screen.findByText('Result unavailable')).toBeTruthy()
     expect(container.querySelector('[data-slot="aui_agent-delivery-notice"]')).toBeNull()
+  })
+
+  it('renders a call the user interrupted as Interrupted, not as a lost result', async () => {
+    render(<Harness message={sealedMessage('terminal', { command: 'ls' }, { interrupted: true })} />)
+
+    expect(await screen.findByText('Interrupted')).toBeTruthy()
+    expect(screen.queryByText('Result unavailable')).toBeNull()
   })
 })

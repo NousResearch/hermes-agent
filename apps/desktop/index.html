@@ -20,14 +20,12 @@
       // `transparent: true` already have a clear canvas, and pre-painting a
       // theme colour there does not prevent a flash, it IS the flash: an
       // opaque rectangle standing until that window's module graph executes.
-      // On the full-screen intro cinematic, over the real desktop, on a dev
-      // server that serves the graph unbundled, that read as seconds of white.
       // The list is TRANSPARENT_WINDOWS in src/main.tsx — keep the two in step.
       // `secondary` (a session window) and `browser` are opaque and DO want the
       // pre-paint.
       try {
         const win = new URLSearchParams(window.location.search).get('win')
-        if (!win || ['hud', 'overlay', 'quick', 'wake', 'intro'].indexOf(win) === -1) {
+        if (!win || ['hud', 'overlay', 'quick', 'wake'].indexOf(win) === -1) {
           let bg = localStorage.getItem('hermes-boot-background')
           let scheme = localStorage.getItem('hermes-boot-color-scheme')
           if (!bg) {

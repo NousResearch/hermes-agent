@@ -13,7 +13,7 @@ Logic (kept in sync with contributor-check.yml):
   - skips teknium/bot emails and ``<id>+<login>@users.noreply.github.com``
     (CI auto-resolves those)
   - everything else must have ``contributors/emails/<email>`` or a legacy
-    AUTHOR_MAP entry in scripts/release.py
+    AUTHOR_MAP entry in scripts/releases/authors_legacy.py
 
 ``--fix`` resolution order for an unmapped email:
   1. bare ``<login>@users.noreply.github.com`` → ``<login>``, verified via
@@ -49,6 +49,7 @@ def run(*args: str, check: bool = True) -> str:
     result = subprocess.run(
         list(args), capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}: {result.stderr.strip()}")
@@ -68,9 +69,9 @@ def is_mapped(email: str) -> bool:
         return True
     if (REPO_ROOT / "contributors" / "emails" / email).is_file():
         return True
-    release_py = REPO_ROOT / "scripts" / "release.py"
+    authors_py = REPO_ROOT / "scripts" / "releases" / "authors_legacy.py"
     try:
-        if f'"{email}"' in release_py.read_text(encoding="utf-8", errors="replace"):
+        if f'"{email}"' in authors_py.read_text(encoding="utf-8-sig", errors="replace"):
             return True
     except OSError:
         pass

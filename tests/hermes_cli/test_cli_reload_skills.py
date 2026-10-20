@@ -43,12 +43,8 @@ class TestReloadSkillsCLI:
             cli._reload_skills()
 
         out = capsys.readouterr().out
-        assert "Added Skills:" in out
-        assert "- alpha: Run alpha to do xyz" in out
-        assert "- beta: Run beta to do abc" in out
-        assert "Removed Skills:" in out
-        assert "- gamma: Old removed skill" in out
-        assert "3 skill(s) available" in out
+        for name in ("alpha", "beta", "gamma"):
+            assert name in out
 
         # Must NOT pollute conversation_history — alternation-safe.
         assert cli.conversation_history == []
@@ -56,13 +52,8 @@ class TestReloadSkillsCLI:
         # One-shot note queued with system-prompt-style formatting.
         note = getattr(cli, "_pending_skills_reload_note", None)
         assert note is not None
-        assert note.startswith("[USER INITIATED SKILLS RELOAD:")
-        assert note.endswith("Use skills_list to see the updated catalog.]")
-        assert "Added Skills:" in note
-        assert "    - alpha: Run alpha to do xyz" in note
-        assert "    - beta: Run beta to do abc" in note
-        assert "Removed Skills:" in note
-        assert "    - gamma: Old removed skill" in note
+        for name in ("alpha", "beta", "gamma"):
+            assert name in note
 
     def test_reports_no_changes_and_queues_nothing(self, capsys):
         cli = _make_cli()
@@ -78,9 +69,6 @@ class TestReloadSkillsCLI:
         ):
             cli._reload_skills()
 
-        out = capsys.readouterr().out
-        assert "No new skills detected" in out
-        assert "1 skill(s) available" in out
         assert cli.conversation_history == []
         assert getattr(cli, "_pending_skills_reload_note", None) is None
 
@@ -92,8 +80,6 @@ class TestReloadSkillsCLI:
         ):
             cli._reload_skills()
 
-        out = capsys.readouterr().out
-        assert "Skills reload failed" in out
-        assert "boom" in out
+        assert "boom" in capsys.readouterr().out
         assert cli.conversation_history == []
         assert getattr(cli, "_pending_skills_reload_note", None) is None

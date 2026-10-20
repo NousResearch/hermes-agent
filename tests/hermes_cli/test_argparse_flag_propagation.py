@@ -12,48 +12,9 @@ so the subparser only sets the attribute when the user explicitly provides it.
 """
 
 import argparse
-import os
 import sys
 
 import pytest
-
-
-def _build_parser():
-    """Build the hermes argument parser from the real code.
-
-    We import the real main() and extract the parser it builds.
-    Since main() is a large function that does much more than parse args,
-    we replicate just the parser structure here to avoid side effects.
-    """
-    parser = argparse.ArgumentParser(prog="hermes")
-    parser.add_argument("--resume", "-r", metavar="SESSION", default=None)
-    parser.add_argument(
-        "--continue", "-c", dest="continue_last", nargs="?",
-        const=True, default=None, metavar="SESSION_NAME",
-    )
-    parser.add_argument("--worktree", "-w", action="store_true", default=False)
-    parser.add_argument("--skills", "-s", action="append", default=None)
-    parser.add_argument("--yolo", action="store_true", default=False)
-    parser.add_argument("--pass-session-id", action="store_true", default=False)
-
-    subparsers = parser.add_subparsers(dest="command")
-    chat = subparsers.add_parser("chat")
-    # These MUST use argparse.SUPPRESS to avoid overwriting parent values
-    chat.add_argument("--yolo", action="store_true",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--worktree", "-w", action="store_true",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--skills", "-s", action="append",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--pass-session-id", action="store_true",
-                      default=argparse.SUPPRESS)
-    chat.add_argument("--resume", "-r", metavar="SESSION_ID",
-                      default=argparse.SUPPRESS)
-    chat.add_argument(
-        "--continue", "-c", dest="continue_last", nargs="?",
-        const=True, default=argparse.SUPPRESS, metavar="SESSION_NAME",
-    )
-    return parser
 
 
 class TestChatVerboseArg:
@@ -84,11 +45,11 @@ class TestChatVerboseArg:
         def fake_main(**kwargs):
             captured.update(kwargs)
 
-        setattr(fake_cli, "main", fake_main)
+        fake_cli.main = fake_main
         fake_banner = types.ModuleType("hermes_cli.banner")
-        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("tools.skills_sync")
-        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+        fake_skills_sync.sync_skills = lambda quiet=True: None
 
         monkeypatch.setitem(sys.modules, "cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
@@ -101,29 +62,39 @@ class TestChatVerboseArg:
         assert captured["quiet"] is False
         assert "verbose" not in captured
 
+    @pytest.mark.parametrize("argv, expected", [
+        (["chat", "--provider", "custom", "--base-url", "http://127.0.0.1:9/v1", "--api-key", "launch-key"],
+         {"api_key": "launch-key", "base_url": "http://127.0.0.1:9/v1"}),
+        (["chat"], {}),
+    ])
+    def test_cmd_chat_forwards_the_launch_key_and_endpoint_to_the_classic_cli(self, monkeypatch, argv, expected):
+        """`hermes chat --cli --api-key K --base-url U` must launch the classic CLI on K and U, not on the
+        profile's credential; the TUI refuses both flags and points here."""
+        import types
 
-class TestYoloEnvVar:
-    """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
+        import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
 
-    This tests the actual cmd_chat logic pattern (getattr → os.environ).
-    """
+        parser, _subparsers, chat_parser = build_top_level_parser()
+        chat_parser.set_defaults(func=main_mod.cmd_chat)
+        args = parser.parse_args(argv)
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+        fake_cli.main = lambda **kwargs: captured.update(kwargs)
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        fake_banner.prefetch_update_check = lambda: None
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        fake_skills_sync.sync_skills = lambda quiet=True: None
 
-    @pytest.fixture(autouse=True)
-    def _clean_env(self):
-        os.environ.pop("HERMES_YOLO_MODE", None)
-        yield
-        os.environ.pop("HERMES_YOLO_MODE", None)
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
 
-    def _simulate_cmd_chat_yolo_check(self, args):
-        """Replicate the exact check from cmd_chat in main.py."""
-        if getattr(args, "yolo", False):
-            os.environ["HERMES_YOLO_MODE"] = "1"
+        main_mod.cmd_chat(args)
 
-    def test_yolo_before_chat_sets_env(self):
-        parser = _build_parser()
-        args = parser.parse_args(["--yolo", "chat"])
-        self._simulate_cmd_chat_yolo_check(args)
-        assert os.environ.get("HERMES_YOLO_MODE") == "1"
+        assert {k: captured[k] for k in ("api_key", "base_url") if k in captured} == expected
 
 
 class TestAcceptHooksOnAgentSubparsers:
@@ -189,6 +160,7 @@ print(json.dumps(results))
             capture_output=True,
             text=True,
             timeout=180,
+            check=False,
         )
         assert result.returncode == 0, (
             f"driver failed rc={result.returncode}\n"
@@ -221,8 +193,6 @@ class TestChatSubparserInheritedValueFlags:
         from hermes_cli._parser import build_top_level_parser
         parser, _subparsers, _chat = build_top_level_parser()
         return parser
-
-
 
 
     def test_all_three_flags_before_chat(self, real_parser):
@@ -271,3 +241,12 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+@pytest.mark.parametrize("argv", [
+    ["--tui", "--checkpoints"], ["--checkpoints", "chat"], ["chat", "--tui", "--checkpoints"]])
+def test_checkpoints_parses_at_the_top_level_and_survives_chat(argv):
+    """`hermes --tui --checkpoints` is the TUI launch the docs and gateway refusals name; it was
+    declared only on `chat`, so the top-level form failed with "unrecognized arguments"."""
+    from hermes_cli._parser import build_top_level_parser
+    assert build_top_level_parser()[0].parse_args(argv).checkpoints is True

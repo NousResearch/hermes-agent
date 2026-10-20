@@ -46,7 +46,7 @@ hermes fallback [add|remove|list]  Fallback provider chain
 hermes config [show|edit|get|set|unset|path|env-path|check|migrate]
 hermes login / logout       OAuth sign-in / clear stored auth
 hermes doctor [--fix]       Check dependencies and config
-hermes status [--all]       Component status
+hermes status [--full]      Component summary (--full: every section)
 ```
 
 ### Tools & Skills

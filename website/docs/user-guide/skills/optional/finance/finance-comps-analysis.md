@@ -15,13 +15,13 @@ Build comparable-company valuation workbooks in Excel.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/comps-analysis` |
-| Path | `optional-skills/finance\comps-analysis` |
+| Path | `optional-skills/finance/comps-analysis` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `finance`, `valuation`, `comps`, `excel`, `openpyxl`, `modeling`, `investment-banking` |
-| Related skills | [`excel-author`](./finance-excel-author.md), [`pptx-author`](./finance-pptx-author.md), [`dcf-model`](./finance-dcf-model.md), [`lbo-model`](./finance-lbo-model.md) |
+| Related skills | [`excel-author`](../../optional/finance/finance-excel-author.md), [`pptx-author`](../../optional/finance/finance-pptx-author.md), [`dcf-model`](../../optional/finance/finance-dcf-model.md), [`lbo-model`](../../optional/finance/finance-lbo-model.md) |
 
 ## Reference: full SKILL.md
 

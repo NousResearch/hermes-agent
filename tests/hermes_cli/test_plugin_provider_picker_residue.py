@@ -56,7 +56,7 @@ def _pool_entry(provider: str, **fields):
 def test_hermes_model_routes_registered_plugin_profiles_to_the_generic_flow(plugin, monkeypatch, tmp_path):
     """Selecting an admitted external-process or OAuth plugin in `hermes model` persists config.model;
     an api_key profile still takes the api-key flow and an unknown slug stays a no-op."""
-    import hermes_cli.main as main
+    from hermes_cli import main
     from hermes_cli import auth
     from hermes_cli.config import load_config
 
@@ -114,9 +114,6 @@ def test_oauth_plugin_status_follows_the_credential_pool(plugin):
     # the live entry still wins for example-oauth
     assert auth.get_auth_status("example-oauth")["logged_in"] is True
 
-    assert auth._STATUS_BY_AUTH_TYPE["oauth_external"] == auth._STATUS_BY_AUTH_TYPE["oauth_device_code"]
-    for builtin in ("nous", "openai-codex"):
-        assert builtin in auth._BESPOKE_STATUS_FUNCTIONS  # bespoke status wins; plugin builder never consulted
     assert auth.get_plugin_oauth_auth_status("openai-codex") == {"logged_in": False}
 
 

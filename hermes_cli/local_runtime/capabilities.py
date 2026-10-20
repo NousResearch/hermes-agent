@@ -37,22 +37,22 @@ def is_managed_provider(provider: str, base_url: str = "") -> bool:
     return False
 
 
-def _props_modalities(model_id: str) -> "bool | None":
+def _props_modalities(model_id: str) -> bool | None:
     """Ask the running server whether this loaded child sees images. None when the server is down,
     the model isn't loaded, or the build doesn't report modalities."""
     with suppress(Exception):
-        from hermes_cli.local_runtime.endpoint import managed_get_json, managed_root
+        from hermes_cli.local_runtime.endpoint import child_query, managed_get_json, managed_root
 
         ep = managed_root()
         if ep is None:
             return None
-        modalities = managed_get_json(*ep, f"/props?model={model_id}", timeout_s=3).get("modalities")
+        modalities = managed_get_json(*ep, f"/props?{child_query(model_id)}", timeout_s=3).get("modalities")
         if isinstance(modalities, dict) and "vision" in modalities:
             return bool(modalities["vision"])
     return None
 
 
-def managed_model_supports_vision(model_id: str) -> "bool | None":
+def managed_model_supports_vision(model_id: str) -> bool | None:
     """Ground-truth vision capability for a staged model, or None when the model isn't ours /
     nothing is known (caller keeps falling through)."""
     if not model_id:
@@ -77,12 +77,3 @@ def managed_model_supports_vision(model_id: str) -> "bool | None":
         return (entry.mmproj is not None
                 and (assets_dir() / entry.mmproj.local_name).exists())
     return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-import urllib.request  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

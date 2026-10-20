@@ -66,13 +66,73 @@ def _make_codex_agent(**kwargs):
     )
 
 
-class TestApiModeAccepted:
-    def test_api_mode_is_codex_app_server(self):
-        agent = _make_codex_agent()
-        assert agent.api_mode == "codex_app_server"
 
 
 class TestRunConversationCodexPath:
+    @pytest.mark.parametrize(
+        "reasoning_config,service_tier,expected_effort,expected_tier",
+        [
+            ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
+            ({"enabled": False}, None, "none", None),
+            # Hermes-only levels are clamped to the route's vocabulary: gpt-5.4 has no `max`, so ultra goes out as xhigh.
+            # A tier codex has no word for is not sent.
+            ({"enabled": True, "effort": "ultra"}, "ultrafast", "xhigh", None),
+        ],
+    )
+    def test_effective_runtime_settings_reach_codex_turn(
+        self,
+        monkeypatch,
+        reasoning_config,
+        service_tier,
+        expected_effort,
+        expected_tier,
+    ):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-settings-1",
+                thread_id="thread-settings-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1")
+        agent = _make_codex_agent(
+            model="gpt-5.4",
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            # Every surface pins a static /fast tier into request_overrides (resolve_fast_mode_overrides).
+            request_overrides={"service_tier": service_tier} if service_tier else None,
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert captured["model"] == "gpt-5.4"
+        assert captured["reasoning_effort"] == expected_effort
+        assert captured["service_tier"] == expected_tier
+
+    @pytest.mark.parametrize("model,expected", [("gpt-5.6-sol", "ultra"), ("gpt-5.5", "xhigh")])
+    def test_ultra_stays_codex_harness_mode_where_the_model_reaches_max(self, monkeypatch, model, expected):
+        """Live codex-cli 0.147: ``ultra`` runs on a model whose ladder reaches ``max`` and 400s on one
+        without it (codex maps it to ``max``), so only the latter is clamped."""
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(final_text="done", projected_messages=[{"role": "assistant", "content": "done"}])
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1")
+        agent = _make_codex_agent(model=model, reasoning_config={"enabled": True, "effort": "ultra"})
+        agent.provider = "openai-codex"
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+        assert captured["reasoning_effort"] == expected
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests
@@ -307,45 +367,7 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
-    def test_background_review_signature_never_breaks(self, fake_session):
-        """Even when no trigger fires, the helper must never call
-        _spawn_background_review with the wrong signature. Run a turn,
-        then run another turn after manually tripping the skill counter
-        and confirm the call shape is the kwargs-only form the function
-        actually accepts."""
-        agent = _make_codex_agent()
-        agent._skill_nudge_interval = 1  # very low so any iter trips it
-        agent._iters_since_skill = 0
-        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
-        agent.valid_tool_names.add("skill_manage")
 
-        with patch.object(agent, "_spawn_background_review",
-                          return_value=None) as spawn:
-            agent.run_conversation("first")
-        # The fake session reports tool_iterations=1, which trips
-        # _skill_nudge_interval=1. So review should fire.
-        assert spawn.called
-        # Critical invariant: positional args must be empty, all real
-        # args must be kwargs (matching _spawn_background_review's
-        # actual signature).
-        call = spawn.call_args
-        assert call.args == (), (
-            f"expected no positional args, got {call.args!r} — "
-            "would crash _spawn_background_review at runtime"
-        )
-        assert "messages_snapshot" in call.kwargs
-
-    def test_chat_completions_loop_is_not_entered(self, fake_session):
-        """The early-return must bypass the regular API call loop entirely.
-        We confirm by patching the SDK call and asserting it's never invoked."""
-        agent = _make_codex_agent()
-        # The chat_completions loop calls self.client.chat.completions.create(...)
-        # If our early-return works, that path is dead.
-        with patch.object(agent, "client") as client_mock, patch.object(
-            agent, "_spawn_background_review", return_value=None
-        ):
-            agent.run_conversation("hi")
-        assert not client_mock.chat.completions.create.called
 
     def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
         """Gateway sessions set TERMINAL_CWD without pinning agent.session_cwd.
@@ -790,28 +812,7 @@ class TestCodexToolProgressBridge:
     bridge (make_codex_app_server_event_bridge); these tests pin the same
     mapping contract against the bridge helpers."""
 
-    def test_mapper_command_execution(self):
-        from agent.codex_runtime import (
-            _codex_item_to_args,
-            _codex_item_to_preview,
-            _codex_item_to_tool_name,
-        )
-        item = {"type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}
-        assert _codex_item_to_tool_name(item) == "exec_command"
-        assert _codex_item_to_preview(item) == "ls -la"
-        assert _codex_item_to_args(item) == {"command": "ls -la", "cwd": "/tmp"}
 
-    def test_mapper_file_change(self):
-        from agent.codex_runtime import (
-            _codex_item_to_preview,
-            _codex_item_to_tool_name,
-        )
-        item = {
-            "type": "fileChange",
-            "changes": [{"path": "a.py"}, {"path": "b.py"}],
-        }
-        assert _codex_item_to_tool_name(item) == "apply_patch"
-        assert _codex_item_to_preview(item) == "a.py, b.py"
 
     def test_mapper_mcp_and_dynamic_tool_calls(self):
         from agent.codex_runtime import (

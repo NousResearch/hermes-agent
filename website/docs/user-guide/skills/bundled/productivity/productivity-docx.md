@@ -15,13 +15,13 @@ Create, read, edit, template, and review Word .docx files.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\docx` |
+| Path | `skills/productivity/docx` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `word`, `docx`, `documents`, `office`, `templates`, `revisions`, `comments` |
-| Related skills | [`pdf`](./productivity-pdf.md), [`xlsx`](./productivity-xlsx.md), [`powerpoint`](./productivity-powerpoint.md) |
+| Related skills | [`pdf`](../../bundled/productivity/productivity-pdf.md), [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`powerpoint`](../../bundled/productivity/productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

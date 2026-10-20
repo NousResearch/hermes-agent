@@ -15,7 +15,7 @@ Zero-install localhost tunnels over SSH via Pinggy.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/pinggy-tunnel` |
-| Path | `optional-skills/devops\pinggy-tunnel` |
+| Path | `optional-skills/devops/pinggy-tunnel` |
 | Version | `0.1.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |

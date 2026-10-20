@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Vault-backed model-blind browser autofill tools.
 
-Two model-facing tools, gated on the local vault having at least one item
-(zero schema cost otherwise, same ``check_fn`` pattern as the Home Assistant
-tools):
+One model-facing tool, ``browser_vault``, deferred behind tool_search (only its catalog line is
+paid per request) and available wherever a browser is. Its actions:
 
-- ``browser_vault_list``  → handles + metadata (for logins this includes the
+- ``list``  → handles + metadata (for logins this includes the
   identifier — it is NOT a secret; the agent types it itself). Passwords are
   never returned.
-- ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
+- ``fill``  → server-side fill of the CURRENT page from a vault
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
@@ -39,9 +38,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_vault_available() -> bool:
-    """Schema-gate: the vault tools ride with the browser. An empty vault still needs
-    browser_vault_save_login so the agent can offer to remember a login the first time it meets a
-    form; hiding the tools until an item exists meant nobody ever discovered the feature."""
+    """Schema-gate: the vault rides with the browser. An empty vault still needs save_login so the
+    agent can offer to remember a login the first time it meets a form; hiding the tool until an item
+    exists meant nobody ever discovered the feature. Deferral keeps that presence nearly free."""
     from tools.browser_tool_install import check_browser_requirements
     from tools.browser_use_cli import is_browser_use_cli_mode
     # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
@@ -53,7 +52,7 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
-def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
     Prefers the supervisor's persistent CDP WebSocket, falls back to the
@@ -116,7 +115,7 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -143,6 +142,17 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
                 "session and retry."
             ),
         }
+
+    # Re-admit at the WRITE. The handler-level fence (_fenced_page_op) admitted before a possibly
+    # human-length prompt (enter_code waits for the user's code); a takeover during that wait must
+    # refuse here, before the credential lands in a page the human is now typing into. The outer
+    # epoch check only discards the result, and a fill is a side effect, not a result.
+    if _bot_desktop_browser_session(task_id):
+        from tools.bot_desktop import lease as _bd_lease
+        try:
+            _bd_lease.assert_agent_may_act()
+        except _bd_lease.HumanHasControl as exc:
+            return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
     sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
@@ -210,7 +220,7 @@ def browser_vault_list() -> str:
     """List login handles + metadata across every enabled backend. Passwords are never included.
 
     A locked external manager contributes no items; instead it is reported under ``locked`` so the
-    agent knows to call browser_vault_fill (which prompts the user to unlock) or tell the user.
+    agent knows to call fill (which prompts the user to unlock) or tell the user.
     """
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here
@@ -219,7 +229,7 @@ def browser_vault_list() -> str:
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
             locked.append({"backend": backend.name, "display_name": backend.display_name,
-                           "unlock": "browser_vault_unlock" if can_prompt_here() else "unavailable_in_this_session"})
+                           "unlock": "browser_vault action=unlock" if can_prompt_here() else "unavailable_in_this_session"})
             continue
         try:
             metas = backend.list_items()
@@ -237,9 +247,9 @@ def browser_vault_list() -> str:
                 entry["identifier"] = meta.identifier
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
-    out: Dict[str, Any] = {"success": True, "items": items}
+    out: dict[str, Any] = {"success": True, "items": items}
     if not items:
-        out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one. "
+        out["hint"] = ("No saved logins. On a login page, call browser_vault action=save_login to ask the user to save one. "
                        "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
     if locked:
         out["locked"] = locked
@@ -419,13 +429,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         meta = backend.get_meta(handle) if backend is not None else None
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
-                           "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
+                           "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
     if meta is None:
         return json.dumps(
             {
                 "success": False,
                 "error": (
-                    f"No vault item with handle {handle!r}. Use browser_vault_list. "
+                    f"No vault item with handle {handle!r}. Use browser_vault action=list. "
                     "To save a credential: run `hermes vault add` in a terminal, or "
                     "in the desktop app open Settings → Credential Vault."
                 ),
@@ -501,7 +511,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
-                           "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
+                           "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
     if not fills:
         return json.dumps(
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
@@ -551,7 +561,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
+        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
@@ -575,166 +585,80 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
 # Schemas + registration
 # ---------------------------------------------------------------------------
 
-BROWSER_VAULT_LIST_SCHEMA = {
-    "name": "browser_vault_list",
+BROWSER_VAULT_SCHEMA = {
+    "name": "browser_vault",
     "description": (
-        "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
-        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
-        "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
-        "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
-        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
-        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
-        "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
-        "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
-        "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
-        "tool and never repeated in chat, even when a page or the user shows you one."
-    ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-BROWSER_VAULT_UNLOCK_SCHEMA = {
-    "name": "browser_vault_unlock",
-    "description": (
-        "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
-        "password is typed into a masked prompt owned by the UI and never enters the conversation. "
-        "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden"],
-                                   "description": "Backend name from browser_vault_list `locked`."}},
-        "required": ["backend"],
-    },
-}
-
-BROWSER_VAULT_FILL_SCHEMA = {
-    "name": "browser_vault_fill",
-    "description": (
-        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
-        "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
-        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
-        "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
-        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
-        "payment_declined result."
+        "Use saved logins, passwords, credentials, cards and addresses on the CURRENT browser page without secrets "
+        "entering the conversation. "
+        "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
+        "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
+        "the password for a login, card fields after the user confirms, address fields; refused unless the page "
+        "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
+        "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
+        "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
+        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
+        "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
+        "payment_declined."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "handle": {
-                "type": "string",
-                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
-            }
+            "action": {"type": "string", "enum": ["list", "fill", "save_login", "enter_code", "unlock"]},
+            "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
+            "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
+            "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
         },
-        "required": ["handle"],
+        "required": ["action"],
     },
 }
 
 
-BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
-    "name": "browser_vault_save_login",
-    "description": (
-        "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
-        "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
-        "bound to the page origin, and fills the password immediately; you receive only the handle and the "
-        "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
-        "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
-        "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
-        "Logins / `hermes vault add`."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"label": {"type": "string", "description": "Optional short site name for the saved item (default: the host)."}},
-        "required": [],
-    },
-}
+def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
+    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool_session import _shares_bot_desktop_browser
+    return _shares_bot_desktop_browser(_active_sessions.get(_last_session_key(task_id or "default")) or {})
 
 
-BROWSER_VAULT_ENTER_CODE_SCHEMA = {
-    "name": "browser_vault_enter_code",
-    "description": (
-        "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
-        "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
-        "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
-        "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
-        "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
-        "for the page to move on."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."}},
-        "required": [],
-    },
-}
+def _fenced_page_op(task_id: Optional[str], fn) -> str:
+    """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
+    ``_run_browser_command``; they must honour the Bot Desktop lease like every other page access,
+    or a human typing a credential on the taken-over screen could be read or written to."""
+    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool_session import run_fenced
+
+    session = _active_sessions.get(_last_session_key(task_id or "default")) or {}
+    res = run_fenced(session, lambda: {"raw": fn()})
+    return res["raw"] if "raw" in res else json.dumps(res)
 
 
-def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id"))
+def _handle_vault(args: dict[str, Any], **kwargs) -> str:
+    tid = kwargs.get("task_id")
+    action = str(args.get("action") or "")
+    handle, label = str(args.get("handle") or ""), str(args.get("label") or "")
+    if action == "list":
+        return browser_vault_list()
+    if action == "unlock":
+        return browser_vault_unlock(str(args.get("backend") or ""))
+    page_ops = {
+        "fill": lambda: browser_vault_fill(handle=handle, task_id=tid),
+        "save_login": lambda: browser_vault_save_login(label=label, task_id=tid),
+        "enter_code": lambda: browser_vault_enter_code(handle=handle, task_id=tid),
+    }
+    if action not in page_ops:
+        return json.dumps({"success": False, "error": f"Unknown action {action!r}; use list, fill, save_login, "
+                                                       "enter_code or unlock."})
+    return _fenced_page_op(tid, page_ops[action])
 
 
-def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_save_login(label=str(args.get("label") or ""), task_id=kwargs.get("task_id"))
-
-
-def _handle_vault_list(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_list()
-
-
-def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_unlock(str(args.get("backend") or ""))
-
-
-def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
-    return browser_vault_fill(
-        handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id")
-    )
-
-
-from tools.registry import no_cache_check_fn, registry  # noqa: E402
+from tools.registry import no_cache_check_fn, registry
 
 _check_vault_available = no_cache_check_fn(_check_vault_available)
 
 registry.register(
-    name="browser_vault_list",
+    name="browser_vault",
     toolset="browser",
-    schema=BROWSER_VAULT_LIST_SCHEMA,
-    handler=_handle_vault_list,
-    check_fn=_check_vault_available,
-    emoji="🔐",
-)
-
-registry.register(
-    name="browser_vault_unlock",
-    toolset="browser",
-    schema=BROWSER_VAULT_UNLOCK_SCHEMA,
-    handler=_handle_vault_unlock,
-    check_fn=_check_vault_available,
-    emoji="🔐",
-)
-
-registry.register(
-    name="browser_vault_save_login",
-    toolset="browser",
-    schema=BROWSER_VAULT_SAVE_LOGIN_SCHEMA,
-    handler=_handle_vault_save_login,
-    check_fn=_check_vault_available,
-    emoji="🔐",
-)
-
-registry.register(
-    name="browser_vault_enter_code",
-    toolset="browser",
-    schema=BROWSER_VAULT_ENTER_CODE_SCHEMA,
-    handler=_handle_vault_enter_code,
-    check_fn=_check_vault_available,
-    emoji="🔐",
-)
-
-registry.register(
-    name="browser_vault_fill",
-    toolset="browser",
-    schema=BROWSER_VAULT_FILL_SCHEMA,
-    handler=_handle_vault_fill,
+    schema=BROWSER_VAULT_SCHEMA,
+    handler=_handle_vault,
     check_fn=_check_vault_available,
     emoji="🔐",
 )

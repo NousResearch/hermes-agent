@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Payload, Result, WireEnum
@@ -126,16 +128,43 @@ class StoredSessionRow(OpenModel):
     handoff_state: str | None = None
     lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
     lineage_ids: list[str] | None = Field(default=None, alias="_lineage_ids")
+    # #121148: provenance of a projected continuation tip — 'compression' when the row
+    # continues a sealed segment (automatic rotation), None for plain rows and branches.
+    continuation_kind: str | None = None
+
+
+class ToolLabelKind(WireEnum):
+    """Which surface one inner call of a bridged ``tool_call`` runs on."""
+
+    connector = "connector"
+    mcp = "mcp"
+    tool = "tool"
+
+
+class ToolLabel(Payload):
+    """``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is,
+    in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse
+    the tool name themselves."""
+
+    kind: ToolLabelKind
+    app: str
+    action: str
+    emoji: str
+    text: str
+    name: str
+    preview: str = ""
 
 
 class TranscriptMessage(OpenModel):
     """One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):
-    ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the
-    durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.
+    ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``
+    rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.
     Assistant detail sidecars (``reasoning``, …) ride as extra keys."""
 
     role: str
     text: str | None = None
+    content: JsonValue | None = None
+    tool_call_id: str | None = None
     timestamp: float | None = None
     row_id: int | None = None
     display_kind: str | None = None
@@ -143,6 +172,7 @@ class TranscriptMessage(OpenModel):
     name: str | None = None
     context: str | None = None
     args: dict[str, JsonValue] | None = None
+    labels: list[ToolLabel] | None = None
     reasoning: str | None = None
 
 
@@ -204,6 +234,18 @@ class ProfileParams(Params):
     profile: str | None = None
 
 
+class SessionOwner(Params):
+    type: Literal["session"]
+    session_id: str = Field(min_length=1)
+
+
+class AccountOwner(Params):
+    type: Literal["account"]
+
+
+ConnectorOwner = Annotated[SessionOwner | AccountOwner, Field(discriminator="type")]
+
+
 class OkResult(Result):
     ok: bool = True
 
@@ -221,7 +263,8 @@ class EmptyPayload(Payload):
 
 
 __all__ = [
-    "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "MessageReaction", "OkResult", "OpenModel", "PendingApproval",
-    "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
-    "SubagentStatus", "TranscriptMessage", "Usage",
+    "TERMINAL_SUBAGENT_STATUSES", "AccountOwner", "ConnectorOwner", "EmptyPayload", "EmptyResult", "McpServerStatus",
+    "MessageReaction", "OkResult", "OpenModel", "PendingApproval",
+    "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
+    "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",
 ]

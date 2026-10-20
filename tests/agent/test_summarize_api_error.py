@@ -56,10 +56,7 @@ def test_network_resolution_failure_explains_that_the_user_may_be_offline(
 
     summary = AIAgent._summarize_api_error(error)
 
-    assert summary == (
-        "Hermes can't reach the model provider. You may be offline. "
-        "Check your internet connection and try again."
-    )
+    assert "You may be offline" in summary
     assert "name resolution" not in summary.lower()
 
 

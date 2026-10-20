@@ -28,6 +28,7 @@ def test_hermes_help(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--rm", built_image, "--help"],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert r.returncode == 0, (
         f"hermes --help failed (exit {r.returncode}): "
@@ -49,6 +50,7 @@ def test_dashboard_subcommand_present(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--rm", built_image, "dashboard", "--help"],
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert r.returncode == 0, (
         f"hermes dashboard --help failed (exit {r.returncode}): "
@@ -73,6 +75,7 @@ def test_hermes_help_under_wrapped_init(built_image: str) -> None:
     r = subprocess.run(
         ["docker", "run", "--init", "--rm", built_image, "--help"],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert "can only run as pid 1" not in (r.stdout + r.stderr), (
         f"s6-overlay-suexec aborted under a wrapped init (#38349): "

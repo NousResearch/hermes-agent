@@ -13,7 +13,14 @@ import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
-import { $routesVersion, ARTIFACTS_ROUTE, CAPABILITIES_ROUTE, contributedRoutes, MESSAGING_ROUTE, ROUTES_AREA } from '../routes'
+import {
+  $routesVersion,
+  ARTIFACTS_ROUTE,
+  CAPABILITIES_ROUTE,
+  contributedRoutes,
+  MESSAGING_ROUTE,
+  ROUTES_AREA
+} from '../routes'
 
 import { paneMirror } from './pane-mirror'
 

@@ -565,29 +565,54 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 ### NVIDIA NIM
 
-Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
+Use the NVIDIA NIM provider to access Nemotron and other open-source models through NVIDIA’s hosted service or a local NIM endpoint. Model identifiers for hosted endpoints and instructions for local deployment are available at [build.nvidia.com/models](https://build.nvidia.com/models).
+
+:::note The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+
+#### Cloud (build.nvidia.com)
+
+Create an account and a free API key at [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys) and add it to `~/.hermes/.env`:
 
 ```bash
-# Cloud (build.nvidia.com)
-hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
-# Requires: NVIDIA_API_KEY in ~/.hermes/.env
-
-# Local NIM endpoint — override base URL
-NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+NVIDIA_API_KEY=nvapi-...
 ```
 
-Or set it permanently in `config.yaml`:
+Then start a chat:
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+:::note Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+
+#### Local NIM
+
+For local or on-premises deployments, such as DGX Spark, DGX Station, or a local GPU, set `NVIDIA_BASE_URL` to your NIM endpoint in `~/.hermes/.env`:
+
+```bash
+NVIDIA_API_KEY=local-no-auth
+NVIDIA_BASE_URL=http://localhost:8000/v1
+```
+
+:::note Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
+
+Then start a chat using the model served by your endpoint:
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+Local NIM endpoints expose the same OpenAI-compatible chat completions API as NVIDIA’s hosted service. To switch endpoints, update `NVIDIA_BASE_URL` and adjust the API key and model name as needed.
+
+#### Set the default model
+
+For either deployment, save the provider and model identifier in `config.yaml` to avoid specifying them on every invocation:
+
 ```yaml
 model:
   provider: "nvidia"
-  default: "nvidia/nemotron-3-super-120b-a12b"
+  default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
-
-:::tip Local NIM
-For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
-:::
-
-Hermes automatically attaches the NIM billing-origin header on every request to `build.nvidia.com` — no configuration needed. This routes consumption against the correct origin in NVIDIA's billing dashboard.
 
 ### GMI Cloud
 
@@ -1270,6 +1295,10 @@ Hermes no longer reads `model.max_tokens`, `HERMES_MAX_TOKENS`, provider output-
 settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settings.
 Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
 Their server defaults apply; these can be lower than the model maximum.
+A reply that degenerates into a repetition loop is still stopped: within about 130,000
+characters of the loop starting (visible or reasoning text), Hermes closes the stream
+and ends the turn with a "Repetition Detected" notice, so an uncapped endpoint cannot keep a
+looping model running.
 
 Native Anthropic Messages (including the native Anthropic Bedrock path) requires
 `max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate
@@ -1393,7 +1422,7 @@ Older configs used a top-level `custom_providers:` list instead. It still works 
 
 **Context window on `codex_responses` proxies.** A custom entry with `transport: codex_responses` (a local Codex proxy, for example) resolves the context window of Codex OAuth models (`gpt-6-astra`, `gpt-5.6-sol`/`-terra`/`-luna`, `gpt-5.5`, …) from the Codex OAuth table — 272K for most slugs — not from the 1.05M direct-API catalog, so compression fires before the Codex backend's limit and its 272K billing tier. The decision follows the transport, not the hostname; the same holds for `openai-codex` behind `HERMES_CODEX_BASE_URL` or `model.base_url`. A per-model `models.<id>.context_length`, an entry-level `context_length`, or `model.context_length` still wins; the opt-in `-900k` picker variants keep their verified 900K.
 
-**Reasoning effort on custom endpoints.** The configured `reasoning_effort` (`/reasoning max`, `agent.reasoning_effort`) reaches a custom endpoint unchanged on both the `chat_completions` and the `codex_responses` transport — up to `max`; only the Hermes-internal `ultra` is clamped to `max`. Two exceptions follow the host rather than the entry: a custom entry pointed at `api.openai.com` keeps OpenAI's per-model ladder (`max` is a gpt-5.6-only level there), and an entry pointed at a provider whose profile publishes a per-model vocabulary (Ramp Router) is clamped to that catalog. An endpoint that rejects the level answers with an HTTP 400 instead of Hermes silently downgrading it.
+**Reasoning effort on custom endpoints.** The configured `reasoning_effort` (`/reasoning max`, `agent.reasoning_effort`) reaches a custom endpoint unchanged on both the `chat_completions` and the `codex_responses` transport — up to `max`; only the Hermes-internal `ultra` is clamped to `max`. Two exceptions follow the host rather than the entry: a custom entry pointed at `api.openai.com` keeps OpenAI's per-model ladder (`max` is a gpt-5.6-only level there), and an entry pointed at a provider whose profile publishes a per-model vocabulary (Ramp Router) is clamped to that catalog. An endpoint that rejects the level answers with an HTTP 400 instead of Hermes silently downgrading it. When no effort is configured at all, `chat_completions` requests carry `reasoning_effort: medium` — the same default the Nous Portal and OpenRouter routes apply — rather than leaving the endpoint's own default in charge (kimi-k3's is `max`, about 3x the reasoning tokens of `medium`); models marked `supports_reasoning: false` in the catalog or `model_overrides`, and Ollama models without the `thinking` capability, keep the field off.
 
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 

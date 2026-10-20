@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import logging
 import os
 import platform
@@ -68,9 +69,32 @@ def _play_via_tempfile(audio_iter: Iterable[bytes], stop_evt: threading.Event, s
         _unlink_quietly(tmp_path)
 
 
-def _drain_chunks(chunk_queue: "queue.Queue[Optional[bytes]]") -> List[bytes]:
+def _drain_chunks(chunk_queue: queue.Queue[Optional[bytes]]) -> list[bytes]:
     """Collect one sentence's PCM chunks up to the ``None`` sentinel."""
     return list(iter(chunk_queue.get, None))
+
+
+def _first_written_artifact(raw: object, requested: str) -> str:
+    """The audio path the TTS tool actually wrote, falling back to the requested one.
+
+    ``text_to_speech_tool`` reports its artifacts (``file_path``/``file_paths``) in a JSON
+    envelope, and they often land beside — not at — the requested path: a command provider's
+    declared ``format`` rewrites the suffix, and voice-compatible delivery ffmpeg-converts to
+    ``.ogg``. Gating playback on the requested path alone drops every such sentence silently,
+    so prefer the first reported artifact that actually exists and is non-empty."""
+    candidates: list[str] = []
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        if isinstance(payload, dict):
+            reported = payload.get("file_paths") or ([payload["file_path"]] if payload.get("file_path") else [])
+            if isinstance(reported, list):
+                candidates = [p for p in reported if isinstance(p, str)]
+    except (ValueError, TypeError):
+        pass
+    for path in candidates:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+    return requested
 
 
 class _SyncSentencePipeline:
@@ -83,7 +107,7 @@ class _SyncSentencePipeline:
 
     def __init__(self, stop_event: threading.Event, *, lookahead: int = 2):
         self._stop = stop_event
-        self._queue: "queue.Queue[Optional[tuple[str, Future]]]" = queue.Queue(maxsize=max(1, lookahead))
+        self._queue: queue.Queue[Optional[tuple[str, Future]]] = queue.Queue(maxsize=max(1, lookahead))
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-sync-synth")
         self._player = threading.Thread(target=self._drain, name="tts-sync-play", daemon=True)
         self._player.start()
@@ -106,8 +130,11 @@ class _SyncSentencePipeline:
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
-            _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return tmp_path
+            raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            written = _first_written_artifact(raw, tmp_path)
+            if os.path.abspath(written) != os.path.abspath(tmp_path):
+                _unlink_quietly(tmp_path)  # provider wrote elsewhere: the placeholder is empty
+            return written
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)
@@ -145,8 +172,8 @@ class _StreamerPlayback:
         # ``streamer.sample_rate`` is only trustworthy after the request answered (#76466).
         self.output_stream = None
         self._use_device = self._device_usable()
-        self._audio_queue: "queue.Queue[Optional[queue.Queue[Optional[bytes]]]]" = queue.Queue()
-        self._prefetch_threads: List[threading.Thread] = []
+        self._audio_queue: queue.Queue[Optional[queue.Queue[Optional[bytes]]]] = queue.Queue()
+        self._prefetch_threads: list[threading.Thread] = []
         self._prefetch_sem = threading.Semaphore(3)
         self._worker = threading.Thread(target=self._playback_worker, daemon=True)
         self._worker.start()
@@ -203,13 +230,13 @@ class _StreamerPlayback:
             logger.warning("Streaming TTS synthesis failed: %s", exc)
             return
         self._prefetch_sem.acquire()
-        chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
+        chunk_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
         self._audio_queue.put(chunk_queue)
         self._prefetch_threads.append(threading.Thread(
             target=self._consume_to_queue, args=(audio_iter, chunk_queue), daemon=True))
         self._prefetch_threads[-1].start()
 
-    def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: "queue.Queue[Optional[bytes]]") -> None:
+    def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: queue.Queue[Optional[bytes]]) -> None:
         try:
             for chunk in audio_iter:
                 if self.stop_event.is_set():
@@ -284,7 +311,7 @@ class _StreamerPlayback:
         try:
             from tools.voice_mode import mark_audio_output_active
         except Exception:
-            mark_audio_output_active = lambda _active: None  # noqa: E731
+            mark_audio_output_active = lambda _active: None
         self._np, self._reinit_count, self._current_stream, self._current_rate = _np, 0, None, None
         mark_audio_output_active(True)
         try:

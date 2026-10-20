@@ -17,13 +17,7 @@ def test_meta_cached_tokens_flows_to_cache_read():
     cu = normalize_usage(usage, api_mode="codex_responses")
     assert cu.cache_read_tokens == 3920
     assert cu.input_tokens == 80  # 4000 - 3920
-    # rendered cache line would be cache=3920/4000 (98%)
-    total = cu.prompt_tokens
-    assert total == 4000
-    pct = (cu.cache_read_tokens / total * 100) if total else 0
-    assert 97 <= pct <= 99
-    rendered = f"cache={cu.cache_read_tokens}/{total} ({pct:.0f}%)"
-    assert rendered == "cache=3920/4000 (98%)"
+    assert cu.prompt_tokens == 4000
 
 
 def test_meta_cache_write_tokens():

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 const a=process.env.ASYNC_REPORT_ARTIFACT_DIR
 if (!a) throw new Error('Set ASYNC_REPORT_ARTIFACT_DIR to an offline artifact directory')
 const tag=process.argv[2]??'after'
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']})
+const browser=await chromium.launch({channel:'chromium',executablePath:process.env.AGENT_BROWSER_EXECUTABLE_PATH,headless:true,args:['--no-sandbox']})
 const page=await browser.newPage({viewport:{width:1400,height:1000}})
 const errors=[];page.on('pageerror',e=>errors.push(String(e)))
 const producer=JSON.parse(fs.readFileSync(`${a}/producer.json`,'utf8'))

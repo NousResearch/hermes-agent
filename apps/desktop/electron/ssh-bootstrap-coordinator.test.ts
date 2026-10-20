@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { isExpectedTransition } from './crash-forensics'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 
 function deferred() {
@@ -212,10 +213,13 @@ test('cancelAndWait keeps the drain up through afterCancel teardown', async () =
   const coordinator = createBootstrapCoordinator()
   const events: string[] = []
   let releaseAfter: (() => void) | undefined
+
   const afterGate = new Promise<void>(resolve => {
     releaseAfter = resolve
   })
+
   let teardownStarted: (() => void) | undefined
+
   const started = new Promise<void>(resolve => {
     teardownStarted = resolve
   })
@@ -228,6 +232,7 @@ test('cancelAndWait keeps the drain up through afterCancel teardown', async () =
   })
 
   await started
+
   const next = coordinator.start('scope', 'new', async () => {
     events.push('new-start')
 
@@ -289,6 +294,7 @@ test('a second cancelAndWait on the same scope composes with the teardown still 
 
   await teardownStarted.promise
   const apply = coordinator.cancelAndWait('scope').then(() => events.push('apply-drained'))
+
   const next = coordinator.start('scope', 'new', async () => {
     events.push('new-start')
 
@@ -305,4 +311,16 @@ test('a second cancelAndWait on the same scope composes with the teardown still 
   // their position after teardown-done is the contract.
   assert.deepEqual(events.slice(0, 2), ['teardown-start', 'teardown-done'])
   assert.deepEqual(events.slice(2).sort(), ['apply-drained', 'new-start'])
+})
+
+test('a start after shutdown rejects with a marked expected-transition sentinel', async () => {
+  const coordinator = createBootstrapCoordinator()
+  coordinator.shutdown()
+
+  await assert.rejects(
+    coordinator.start('', 'fingerprint', async () => {}),
+    (error: unknown) =>
+      isExpectedTransition(error) &&
+      (error as Error).message === 'SSH bootstrap was cancelled because Desktop is quitting.'
+  )
 })

@@ -1,0 +1,17 @@
+name: maqami-travel
+repo: https://github.com/negm17111995/mcp-server
+sha: 6478de2d093fcf9bdd3c5dbff6d6ef267dcb56ae
+description: "Search hotels (3M+ hotels) and flights worldwide on MAQAMI, read hotel details and reviews, then send the customer a secure checkout link on book.maqami.co, through the official MAQAMI Travel MCP server (Streamable HTTP at mcp.maqami.co, no account or key), with the maqami-travel-booking skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — connects to the hosted MAQAMI MCP server at mcp.maqami.co (no key); its tool list is defined by that server, not by the pinned repo. The tool arguments the agent sends go to it: destinations, dates, guests, lead-guest nationality and currency, plus booking ID and email for lookups, amendments and cancellations. Prebook (hotels) and verify (flights) hold a real rate, and the amend and cancel tools change or cancel real bookings (late or non-refundable cancellations are still charged); the skill tells the agent to show the details and get a clear yes before each prebook, amend or cancel. Customers pay only on book.maqami.co; no tool takes card or passport details."
+maintainer: negm17111995
+tier: community
+category: tools
+title: MAQAMI Travel
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/negm17111995/mcp-server#readme
+version: "1.0.7"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

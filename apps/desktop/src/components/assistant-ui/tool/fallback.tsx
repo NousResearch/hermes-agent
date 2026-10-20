@@ -20,6 +20,7 @@ import {
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
+import { SET_THEME_TOOL, setThemeCall } from '@/components/assistant-ui/theme-picker/args'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -44,14 +45,14 @@ import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
-import { $toolInlineDiff } from '@/store/tool-diffs'
+import { $showToolActivity } from '@/store/tool-activity'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
+import { $toolProgressFor, formatToolProgress } from '@/store/tool-progress'
 import {
   $anyToolDisclosureOpen,
   $hideCodeDiffs,
@@ -74,7 +75,6 @@ import {
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
-  stripInlineDiffChrome,
   toolCopyPayload,
   toolEntryDisclosureId,
   type ToolPart,
@@ -345,6 +345,24 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   return persistedOpen ?? fallbackOpen
 }
 
+/** A running row's trailing meta: live MCP progress (`42% · message`, when the server sends it) + the timer. */
+function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCallId?: string }) {
+  const sessionId = useStore(useSessionView().$runtimeId) ?? ''
+  const progress = useMemo(() => $toolProgressFor(sessionId, toolCallId), [sessionId, toolCallId])
+  const progressText = formatToolProgress(useStore(progress))
+
+  return (
+    <>
+      {progressText && (
+        <span className={cn(SCAFFOLD_META_CLASS, 'max-w-64 truncate')} data-slot="tool-progress" title={progressText}>
+          {progressText}
+        </span>
+      )}
+      <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={seconds} />
+    </>
+  )
+}
+
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
@@ -360,12 +378,25 @@ function ToolEntry({ part }: ToolEntryProps) {
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
+  const {
+    args,
+    completedAt,
+    innerToolName,
+    interrupted,
+    isError,
+    result,
+    toolResultMetadata,
+    timestamp,
+    toolCallId,
+    toolName
+  } = part
 
   const stablePart = useMemo<ToolPart>(
     () => ({
       args,
       completedAt,
+      innerToolName,
+      interrupted,
       isError,
       result,
       toolResultMetadata,
@@ -374,16 +405,24 @@ function ToolEntry({ part }: ToolEntryProps) {
       toolName,
       type: 'tool-call'
     }),
-    [args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
+    [
+      args,
+      completedAt,
+      innerToolName,
+      interrupted,
+      isError,
+      result,
+      toolResultMetadata,
+      timestamp,
+      toolCallId,
+      toolName
+    ]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined && completedAt === undefined
-  // Subscribe to this tool's diff only, so a live patch for one tool doesn't
-  // re-render every mounted tool row (the factory caches a per-id atom).
-  const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
-  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
+  const inlineDiff = inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs
   const disclosureOpen = useDisclosureOpen(disclosureId, defaultOpen)
@@ -418,10 +457,16 @@ function ToolEntry({ part }: ToolEntryProps) {
   const previewTarget = view.previewTarget
   // The session whose transcript this row is IN, which is not necessarily the
   // primary one: a tool row inside a session tile must feed that tile's composer.
-  const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId } = useSessionView()
+
+  const {
+    $cwd: $sessionCwd,
+    $runtimeId: $sessionRuntimeId,
+    $storedId: $sessionStoredId,
+    $messages: $sessionMessages
+  } = useSessionView()
 
   useEffect(() => {
-    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (view.status !== 'success' || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
@@ -430,10 +475,12 @@ function ToolEntry({ part }: ToolEntryProps) {
     // or cwd change.
     const sessionId = $sessionRuntimeId.get()
 
-    if (sessionId) {
-      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '')
+    // A route switch can paint the previous assistant row while these atoms
+    // already describe the next chat. Only that chat's own messages may feed it.
+    if (sessionId && $sessionMessages.get().some(message => message.id === messageId)) {
+      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '', $sessionStoredId.get() ?? sessionId)
     }
-  }, [$sessionCwd, $sessionRuntimeId, isPending, previewTarget])
+  }, [$sessionCwd, $sessionRuntimeId, $sessionStoredId, $sessionMessages, messageId, previewTarget, view.status])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
@@ -513,7 +560,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const trailing = !embedded ? (
     <span className="flex shrink-0 items-center gap-1.5">
       <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
-      {isPending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
+      {isPending && <ToolRunningMeta seconds={elapsed} toolCallId={toolCallId} />}
     </span>
   ) : undefined
 
@@ -642,7 +689,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <MarkdownImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
+              <MarkdownImage alt={copy.outputAlt} src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -968,10 +1015,12 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
+
   const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
     startIndex,
     endIndex
   )
+
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))
@@ -1017,6 +1066,16 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   )
 }
 
+// The name the run splitter classifies a part by: connector and MCP calls are cards, and so is set_theme
+// reached through the tool_call bridge (a reloaded transcript).
+function toolGroupKey(toolName: string, args: ToolCallMessagePartProps['args']): string {
+  if (connectorCalls(toolName, args).length || mcpTargets(toolName, args).length) {
+    return CONNECTION_CARD_KEY
+  }
+
+  return setThemeCall(toolName, args) ? SET_THEME_TOOL : toolName
+}
+
 /**
  * A range of consecutive tool calls, split into the cards that must stay on
  * screen and the runs of activity between them.
@@ -1033,25 +1092,27 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   endIndex,
   startIndex
 }) => {
+  const showToolActivity = useStore($showToolActivity)
+
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
   // fresh array would re-render the whole group on every text delta.
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .map(part =>
-        part.type === 'tool-call'
-          ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
-            mcpTargets(part.toolName, part.args).length
-            ? CONNECTION_CARD_KEY
-            : part.toolName
-          : ''
-      )
+      .map(part => (part.type === 'tool-call' ? toolGroupKey(part.toolName, part.args) : ''))
       .join('\u0000')
   )
 
   const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
   const rows = Children.toArray(children)
+
+  // The run scaffold ("Explored N files") is part of the tool feed and follows
+  // display.tool_progress. Children still mount so clarify, diffs, and failed
+  // calls can render on their own.
+  if (!showToolActivity) {
+    return children
+  }
 
   return (
     <ToolEmbedContext.Provider value={false}>
@@ -1075,13 +1136,15 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * group-shape changes.
  */
 type TimelineToolCallProps = ToolCallMessagePartProps &
-  Pick<ToolPart, 'completedAt' | 'timestamp' | 'toolResultMetadata'>
+  Pick<ToolPart, 'completedAt' | 'innerToolName' | 'interrupted' | 'timestamp' | 'toolResultMetadata'>
 
 export const ToolFallback = ({
   toolCallId,
   toolName,
   args,
   completedAt,
+  innerToolName,
+  interrupted,
   isError,
   result,
   toolResultMetadata,
@@ -1090,6 +1153,8 @@ export const ToolFallback = ({
   const part: ToolPart = {
     args,
     completedAt,
+    innerToolName,
+    interrupted,
     isError,
     result,
     toolResultMetadata,

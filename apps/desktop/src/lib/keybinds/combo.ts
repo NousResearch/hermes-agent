@@ -1,3 +1,5 @@
+import { keybindActionAllowedInEditableTarget } from './actions'
+
 // Keybind combo normalization + display.
 //
 // A combo is a canonical lowercase string like "mod+k", "mod+shift+]", "shift+x",
@@ -32,6 +34,8 @@ const CODE_TO_KEY: Record<string, string> = {
   Enter: 'enter',
   Escape: 'escape',
   Backspace: 'backspace',
+  Delete: 'delete',
+  CapsLock: 'capslock',
   Tab: 'tab',
   PageUp: 'pageup',
   PageDown: 'pagedown',
@@ -55,7 +59,14 @@ const MODIFIER_CODES = new Set([
 // Modifier names as reported by `event.key` on a bare modifier keydown.
 const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
-function baseKeyFromCode(code: string): string | null {
+function baseKeyFromCode(code: unknown): string | null {
+  // event.code is typed string, but synthetic/IME keydowns can arrive without
+  // one (packaged-renderer TypeError reproductions in #91611); treat a
+  // non-string or empty code as "no physical key" instead of throwing.
+  if (typeof code !== 'string' || !code) {
+    return null
+  }
+
   if (code.startsWith('Key')) {
     return code.slice(3).toLowerCase()
   }
@@ -170,6 +181,8 @@ const TOKEN_LABELS: Record<string, string> = {
   enter: '↵',
   escape: 'Esc',
   backspace: '⌫',
+  delete: 'Del',
+  capslock: 'Caps Lock',
   tab: '⇥',
   pageup: 'PgUp',
   pagedown: 'PgDn',
@@ -258,6 +271,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 const INPUT_SAFE_ACTIONS = new Set([
   'composer.modelPicker',
   'composer.voice',
+  'composer.dictate',
   'keybinds.openPanel',
   'nav.commandPalette',
   'session.next',
@@ -275,16 +289,37 @@ const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'en
 // a global navigation action, and bare/Shift-only combos (typed letters) are
 // gated by the allowlist so they never hijack normal typing.
 export function actionAllowedInInput(actionId: string, combo: string): boolean {
-  const base = combo.split('+').pop()
+  const parts = combo.split('+')
+  const base = parts.pop()
 
   // A bare modifier (no key) is not a real chord — `comboFromEvent` never
   // yields one, but reject it here so a malformed stored binding can't pass
   // the shape-only mod/ctrl check below.
-  if (!base || base === 'mod' || base === 'ctrl' || TEXT_NAVIGATION_KEYS.has(base)) {
+  if (!base || base === 'mod' || base === 'ctrl') {
+    return false
+  }
+
+  // Navigation keys stay with the focused input only for chords that can BE
+  // text navigation: a single primary modifier (⌘← line-start, Ctrl+PgUp,
+  // ⌘⇧← selection) or bare Alt (⌥← word-jump). A chord that carries Alt on
+  // top of a primary modifier (⌘⌥←, Ctrl+Alt+←) has no native text-editing
+  // meaning, so an explicitly rebound global action keeps firing while
+  // typing — the same shape as the shipped `mod+alt+t` tab-strip default.
+  const hasPrimary = parts.includes('mod') || parts.includes('ctrl')
+
+  if (TEXT_NAVIGATION_KEYS.has(base) && !(hasPrimary && parts.includes('alt'))) {
     return false
   }
 
   if (/^(?:mod|ctrl)(?:\+|$)/.test(combo)) {
+    return true
+  }
+
+  // An action that opts in (reasoning up/down) fires from an editable target
+  // on any modified combo — including Alt/Numpad chords without a primary
+  // modifier (#71627). Bare/shift-only combos never qualify, so typing is
+  // never hijacked.
+  if (keybindActionAllowedInEditableTarget(actionId, combo)) {
     return true
   }
 

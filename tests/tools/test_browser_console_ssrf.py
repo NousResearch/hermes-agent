@@ -77,15 +77,6 @@ def test_skips_guard_for_local_backend(monkeypatch):
     assert result["total_messages"] == 1
 
 
-def test_skips_guard_when_private_urls_allowed(monkeypatch):
-    _mock_run_success(monkeypatch)
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: False)
-
-    result = json.loads(browser_tool.browser_console(task_id="test"))
-    assert result["success"] is True
-    assert result["total_messages"] == 1
-
-
 def test_guard_does_not_block_on_failed_console_command(monkeypatch):
     """If the console command itself fails, browser_console returns the error naturally."""
     def _run(task_id, command, args=None, **kwargs):

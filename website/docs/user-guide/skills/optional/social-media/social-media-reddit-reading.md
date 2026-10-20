@@ -21,7 +21,7 @@ Read Reddit: subreddits, search, threads, users. No browser.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Reddit`, `Social Media`, `Research`, `Discussions`, `Community` |
-| Related skills | [`rss-feeds`](../research/research-rss-feeds.md), [`grounded-citations`](../../bundled/research/research-grounded-citations.md), [`blocked-page-recovery`](../../bundled/web/web-blocked-page-recovery.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
+| Related skills | [`rss-feeds`](../../optional/research/research-rss-feeds.md), [`grounded-citations`](../../bundled/research/research-grounded-citations.md), [`blocked-page-recovery`](../../bundled/web/web-blocked-page-recovery.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
 
 ## Reference: full SKILL.md
 

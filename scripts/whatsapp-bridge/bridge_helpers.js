@@ -1,6 +1,7 @@
 import path from 'path';
 import { mkdirSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { format } from 'util';
 
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
@@ -724,4 +725,32 @@ export function createVersionResolver(fetchVersionFn, {
     }
     return cachedVersion;
   };
+}
+
+const pad = (value, width = 2) => String(value).padStart(width, '0');
+
+/** `2026-09-28 13:18:46,062` in local time: the asctime shape every file in logs/ uses. */
+export function formatLogStamp(date) {
+  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return `${day} ${time},${pad(date.getMilliseconds(), 3)}`;
+}
+
+/**
+ * Stamp every console.log/warn/error line. The adapter captures stdout/stderr
+ * verbatim into bridge.log, which otherwise cannot be sequenced (#97021).
+ */
+export function installConsoleStamps(target = console) {
+  for (const method of ['log', 'warn', 'error']) {
+    const original = target[method].bind(target);
+    target[method] = (...args) => {
+      const text = format(...args);
+      original('%s', text ? `${formatLogStamp(new Date())} ${text}` : text);
+    };
+  }
+}
+
+/** Machine-read JSON event lines bypass the console stamp so line parsers see bare JSON. */
+export function writeJsonLine(payload, stream = process.stdout) {
+  stream.write(`${JSON.stringify(payload)}\n`);
 }

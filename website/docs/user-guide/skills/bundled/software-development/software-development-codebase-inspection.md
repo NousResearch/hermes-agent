@@ -15,13 +15,13 @@ Inspect codebases w/ pygount: LOC, languages, ratios.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\codebase-inspection` |
+| Path | `skills/software-development/codebase-inspection` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `LOC`, `Code Analysis`, `pygount`, `Codebase`, `Metrics`, `Repository` |
-| Related skills | [`github`](./software-development-github.md) |
+| Related skills | [`github`](../../bundled/software-development/software-development-github.md) |
 
 ## Reference: full SKILL.md
 

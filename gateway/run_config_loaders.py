@@ -31,11 +31,13 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
@@ -55,7 +57,7 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
@@ -77,7 +79,7 @@ class GatewayConfigLoadersMixin:
             logger.warning("Prefill messages file not found: %s", path)
             return []
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 logger.warning("Prefill messages file must contain a JSON array: %s", path)
@@ -89,9 +91,11 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
+        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
+        ``display.personality`` / ``agent.system_prompt``."""
+        from agent.session_client_env import session_env
         from gateway.run import _load_gateway_config
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
@@ -184,6 +188,10 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        from gateway.session_setting_commands import local_policy
+        if (policy := local_policy(self, source)) is not None:
+            # A local session runs its frozen (or followed) level, not the profile's.
+            return policy.current_reasoning_config(self, resolved_session_key)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
@@ -206,6 +214,10 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        from gateway.session_setting_commands import local_live_for_route, local_policy
+        live = local_live_for_route(self, resolved_session_key)
+        if live is not None and (policy := local_policy(self, live.source)) is not None:
+            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
@@ -220,17 +232,10 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
-        raw = cls._cfg_str("agent", "service_tier")
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
+        """``agent.service_tier`` parsed like the CLI (``hermes_cli.cli_config_load``); None when unset/unknown."""
+        from hermes_cli.cli_config_load import _parse_service_tier_config
+
+        return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -271,14 +276,72 @@ class GatewayConfigLoadersMixin:
             text_mode = fallback_text
         return input_mode, text_mode
 
+    @staticmethod
+    def _busy_text_timing_from_config(config: dict) -> tuple[float, float]:
+        """``display.busy_text_debounce_seconds`` / ``display.busy_text_hard_cap_seconds`` for one
+        profile, without consulting process env (#116893). A non-numeric or negative value is
+        rejected with a warning naming the key, never silently coerced."""
+        from gateway.platforms.base import DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS, DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
+        out = []
+        for key, default in (("busy_text_debounce_seconds", DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS),
+                             ("busy_text_hard_cap_seconds", DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS)):
+            raw = cfg_get(config, "display", key, default=None)
+            if raw is None or raw == "":
+                out.append(default)
+                continue
+            try:
+                value = float(raw)
+                if value < 0 or value != value:
+                    raise ValueError(raw)
+            except (TypeError, ValueError):
+                logger.warning("display.%s=%r is not a non-negative number; using %s", key, raw, default)
+                value = default
+            out.append(value)
+        return out[0], out[1]
+
+    @staticmethod
+    def _human_delay_from_config(config: dict) -> Optional[tuple[int, int]]:
+        """``human_delay.{mode,min_ms,max_ms}`` for one profile as a ``(lo_ms, hi_ms)`` range, or
+        ``None`` when off (#116895). ``natural`` is the fixed 800-2500 range; ``custom`` reads the
+        bounds and rejects non-integer, negative or inverted values with a warning naming the key,
+        falling back to the natural range instead of letting ``random.uniform`` raise at send."""
+        mode = str(cfg_get(config, "human_delay", "mode", default="off") or "off").strip().lower()
+        if mode == "off":
+            return None
+        lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        if mode != "natural":
+            if mode != "custom":
+                logger.warning("human_delay.mode=%r is not off/natural/custom; using natural", mode)
+                return DEFAULT_HUMAN_DELAY_RANGE_MS
+            bounds = []
+            for key, default in (("min_ms", lo), ("max_ms", hi)):
+                raw = cfg_get(config, "human_delay", key, default=None)
+                try:
+                    value = default if raw is None or raw == "" else int(raw)
+                    if value < 0:
+                        raise ValueError(raw)
+                except (TypeError, ValueError):
+                    logger.warning("human_delay.%s=%r is not a non-negative integer; using %s", key, raw, default)
+                    value = default
+                bounds.append(value)
+            lo, hi = bounds
+            if lo > hi:
+                logger.warning("human_delay.min_ms=%s exceeds human_delay.max_ms=%s; using natural range", lo, hi)
+                lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        return lo, hi
+
     def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
-        """Cache a routed profile's busy policy for this gateway lifetime."""
+        """Cache a routed profile's busy policy and pacing for this gateway lifetime."""
         input_mode, text_mode = self._busy_modes_from_config(
             config, fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
             fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
         )
         self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
+        self.__dict__.setdefault("_busy_text_timing_by_profile", {})[profile_name] = (
+            self._busy_text_timing_from_config(config))
+        self.__dict__.setdefault("_human_delay_by_profile", {})[profile_name] = (
+            self._human_delay_from_config(config))
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""
@@ -385,7 +448,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_cron_drain_timeout(cls) -> float:
-        """The cron-only floor under the stop()/drain wait.
+        """The cron and api_server (/v1) floor under the stop()/drain wait.
 
         See #82161.
         """

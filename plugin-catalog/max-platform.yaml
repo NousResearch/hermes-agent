@@ -1,0 +1,21 @@
+name: max-platform
+title: Hermes MAX.ru Integration
+repo: https://github.com/Realmagnum/hermes-max-integration
+sha: 50c7a9a7c16b6207a079b7b883718dd863e9e951
+version: "2.11.0"
+requires_hermes: ">=0.21.4"
+image: https://raw.githubusercontent.com/Realmagnum/hermes-max-integration/50c7a9a7c16b6207a079b7b883718dd863e9e951/assets/banner.jpg
+docs_url: https://github.com/Realmagnum/hermes-max-integration/blob/50c7a9a7c16b6207a079b7b883718dd863e9e951/README.md
+description: "MAX messenger gateway with polling/webhook, streaming, interactive questions, native attachments, Core voice transcription, optional PNG tables and a Desktop sessions sidebar. Disclosure — sends the bot token and message/file content to the MAX Bot API (platform-api2.max.ru) and MAX upload hosts (*.max.ru, *.oneme.ru, *.okcdn.ru). Inbound attachments are downloaded only for allowlisted senders, with SSRF protection, and cached under HERMES_HOME. The bundled Russian Trusted Root CA is trusted only by the MAX API/upload clients, not attachment downloads. Its platform hint lets the agent attach local host files to MAX replies via MEDIA paths, and a public output hook adds a filename caption to file-only MAX replies. Webhook mode opens a listener (default 0.0.0.0:8646) that requires a secret and public HTTPS. Polling startup deletes all of the bot's webhook subscriptions. Optional table rendering launches Playwright/Chromium; with MAX_AUTO_INSTALL_PLAYWRIGHT=true it pip-installs playwright==1.62.0 and downloads Chromium (~115 MB). The MAX allowlist does not honour Hermes pairing approvals. No telemetry or self-update."
+maintainer: Realmagnum
+tier: community
+category: platform
+platforms: []
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env:
+    - MAX_BOT_TOKEN

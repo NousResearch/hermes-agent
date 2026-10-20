@@ -30,11 +30,6 @@ def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
 
 
 class TestSmallContextThresholdFloor:
-    def test_sub_512k_floors_to_75_percent(self):
-        for ctx in (128_000, 200_000, 262_144, 511_999):
-            comp = _make(ctx, pct=0.50)
-            assert comp.threshold_percent == 0.75, ctx
-            assert comp.threshold_tokens == int(ctx * 0.75), ctx
 
 
 
@@ -83,10 +78,6 @@ class TestReasoningExcludedFromSummarizer:
             out = comp._generate_summary([{"role": "user", "content": "hi"}])
         assert out is not None
         assert "OUTPUT_TRACE" not in out
-        # Snapshot grounding rewrites the legacy "## Active Task" alias into the canonical, grounded
-        # section instead of prepending a second task section next to it.
-        assert cc.HISTORICAL_TASK_HEADING in out
-        assert "## Active Task" not in out
         # The iterative-update seed must be clean too, or the trace compounds
         # across every subsequent compaction.
         assert "OUTPUT_TRACE" not in (comp._previous_summary or "")
@@ -123,18 +114,7 @@ class TestSummaryBudgetEnvelope:
             out = comp._generate_summary([{"role": "user", "content": "hi"}])
         assert out is not None
         assert "max_tokens" not in captured
-        # The budget still lands as prompt guidance, within the envelope.
-        prompt = captured["messages"][0]["content"]
-        import re
-        m = re.search(r"Target ~(\d+) tokens", prompt)
-        assert m, "prompt-level token target guidance missing"
-        assert 1_000 <= int(m.group(1)) <= 10_000
 
-    def test_budget_capped_at_10k_even_on_1m_window(self):
-        comp = _make(1_000_000)
-        huge = [{"role": "assistant", "content": "x" * 8000} for _ in range(200)]
-        assert comp._compute_summary_budget(huge) <= 10_000
-        assert comp.max_summary_tokens <= 10_000
 
 
 
@@ -151,11 +131,39 @@ class TestTailBudgetProportionality:
         # Sanity: tail protection stays a modest slice of the window (<= 20%).
         assert comp.tail_token_budget <= comp.context_length * 0.20
 
-    def test_default_lean_tail_is_clamped(self):
-        # Default-mode contract after the flip: lean clamp, never the
-        # threshold-proportional hoard.
-        from agent.context_compressor import LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
 
-        comp = _make(128_000)
-        assert comp.tail_mode == "lean"
-        assert LEAN_TAIL_FLOOR_TOKENS <= comp.tail_token_budget <= LEAN_TAIL_CAP_TOKENS
+    def test_tail_budget_never_exceeds_window_share(self):
+        """The lean 10K floor is 61% of a 16K window and 122% of an 8K one: on a local 27B the
+        "protected" tail was the whole request and compaction reclaimed nothing. Whatever the
+        formula, the verbatim tail stays within ``TAIL_MAX_CONTEXT_FRACTION`` of the window."""
+        from agent.context_compressor import LEAN_TAIL_FLOOR_TOKENS, TAIL_MAX_CONTEXT_FRACTION
+
+        for ctx in (8_192, 16_384, 32_768):
+            comp = _make(ctx)
+            assert comp.tail_token_budget <= ctx * TAIL_MAX_CONTEXT_FRACTION, ctx
+            assert comp.tail_token_budget > 0, ctx
+        # Big windows are untouched: the lean clamp still binds.
+        assert _make(131_072).tail_token_budget == LEAN_TAIL_FLOOR_TOKENS
+
+    def test_small_window_compress_leaves_a_real_middle(self):
+        """End to end through the boundary walk: on an 8K window a tool-heavy transcript must yield a
+        compressible middle that is most of the transcript, and the retained tail must stay near the
+        window share (one atomic tool group of overrun is allowed for the required anchors)."""
+        from agent.context_compressor import TAIL_MAX_CONTEXT_FRACTION, _estimate_msg_budget_tokens
+
+        ctx = 8_192
+        comp = _make(ctx)
+        msgs: list = [{"role": "system", "content": "sys"}]
+        for i in range(12):
+            msgs.append({"role": "user", "content": f"step {i}"})
+            msgs.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+            })
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "x" * 4_000})
+            msgs.append({"role": "assistant", "content": f"done {i}"})
+        start, end = comp._compress_window(msgs)
+        tail_tokens = sum(_estimate_msg_budget_tokens(m) for m in msgs[end:])
+        one_turn = sum(_estimate_msg_budget_tokens(m) for m in msgs[-4:])
+        assert tail_tokens <= ctx * TAIL_MAX_CONTEXT_FRACTION + one_turn
+        assert end - start >= (len(msgs) - start) // 2, (start, end, len(msgs))

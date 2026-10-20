@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import user_originated_turn_view
+from hermes_state_messages import DISPLAY_VISIBLE_SQL
 
 
 _SYNTHETIC_PROMPT = re.compile(
@@ -56,10 +57,10 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
     SQLite; only user content crosses the Python boundary for carrier normalization.
     Current stores use the durable display index, including protected-tail copies.
     """
-    role = " AND role = 'user'" if users_only else ""
+    filters = (" AND role = 'user'" if users_only else "") + DISPLAY_VISIBLE_SQL
     indexed = conn.execute(
         "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
-        f"{role} AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1",
+        f"{filters} AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1",
         (session_id,),
     ).fetchone() is None
     if indexed:
@@ -67,16 +68,16 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
             SELECT (SELECT candidate.id FROM messages candidate
                     WHERE candidate.session_id = :sid
                       AND candidate.display_order = m.display_order
-                      AND (candidate.active = 1 OR candidate.compacted = 1)
+                      AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
                     ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1) AS row_id,
                    m.display_order AS sort_id
-            FROM messages m WHERE session_id = :sid AND (active = 1 OR compacted = 1){role}
+            FROM messages m WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
             GROUP BY m.display_order
         )"""
     return f"""WITH ranked AS (
         SELECT id, MIN(id) OVER identity AS sort_id,
                ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
-        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){role}
+        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
         WINDOW identity AS (PARTITION BY role,
             CASE WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END,
             timestamp, tool_call_id, tool_calls, tool_name)

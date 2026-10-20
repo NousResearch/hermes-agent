@@ -36,9 +36,19 @@ def test_monitor_shortcuts_preserve_draft_and_respect_modal_prompts(monkeypatch)
                     await asyncio.wait_for(painted.wait(), 3)
                     assert opened.pop() is cli
                     assert (editor.text, editor.buffer.cursor_position) == ('keep my draft', 5)
-                cli._approval_state = {'options': []}
+
+                for key in ('\x12', '\x1b[18~'):
+                    editor.buffer.document = Document('keep collapse draft', 5)
+                    painted.clear()
+                    pipe.send_text(key)
+                    await asyncio.wait_for(painted.wait(), 3)
+                    assert (editor.text, editor.buffer.cursor_position) == ('keep collapse draft', 5)
                 bindings = app.key_bindings
-                for key in ('c-t', 'f6'):
+                assert bindings is not None
+                assert any(b.filter() for b in bindings.get_bindings_for_keys(('c-r',)))
+                assert any(b.filter() for b in bindings.get_bindings_for_keys(('f7',)))
+                cli._approval_state = {'options': []}
+                for key in ('c-t', 'f6', 'c-r', 'f7'):
                     assert not any(b.filter() for b in bindings.get_bindings_for_keys((key,)))
             finally:
                 cli._approval_state = None

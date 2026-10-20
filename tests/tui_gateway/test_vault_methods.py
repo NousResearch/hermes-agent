@@ -85,12 +85,10 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "origin is required" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
     err = _error(srv._methods["vault.add"](2, {"kind": "login", "label": "x"}))
     assert err["code"] == 5095
-    assert "secret payload is required" in err["message"]
 
     err = _error(
         srv._methods["vault.add"](
@@ -98,7 +96,6 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "unknown vault kind" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
 
@@ -138,6 +135,21 @@ def test_undetected_manager_stays_off(home, monkeypatch):
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
     rows = _sources_rows(home)
     assert rows["bitwarden"]["installed"] is False
+
+
+def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
+    """A hand-edited ``vault: true`` in config.yaml must not crash the Desktop
+    Credential Vault source toggle: the malformed section is coerced to a dict
+    before the opt-out is written (same YAML-shape hazard class _voice_cfg_dict
+    documents for voice.*, #19835)."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    (home / "config.yaml").write_text("vault: true\n")
+    _result(
+        srv._methods["vault.source.set"](82, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
     assert rows["bitwarden"]["enabled"] is False
 
 

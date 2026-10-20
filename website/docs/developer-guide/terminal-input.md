@@ -58,6 +58,14 @@ preferred-column navigation and narrow/wide layout changes. Paste handlers recei
 snapshot with the selected range removed; the editable draft changes only when paste
 processing returns a successful result.
 
+The real-process tests in `tests/e2e/core/terminal/` cover transcript integrity and
+streaming resize on both interfaces. Their isolated HOME uses the prebuilt TUI and
+an explicit Node executable, so terminal checks do not provision a toolchain.
+`test_terminal_clipboard_pty.py` drives SGR mouse selection during a streamed reply,
+checks the terminal clipboard payload and receipt placement/expiry, then resizes.
+The glyph CLI's intentional Thought footer is excluded when checking for duplicated
+reasoning body text.
+
 Run Python tests through `scripts/run_tests.sh`, TUI tests through Vitest, and the normal
 typecheck/build/repository checks. Validate actual terminal selection, clipboard round-trips,
 resizing, and Unicode input by hand: unit tests cannot establish emulator/font behavior.

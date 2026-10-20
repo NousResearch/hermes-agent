@@ -3495,6 +3495,11 @@ display:
     summary_cli: "  💾 自我改进回顾：{summary}"
     summary_callback: "💾 自我改进回顾：{summary}"
     aux_failure_label: "后台审查"
+    pending_header: "📥 待审批写入 {count} 条（记忆 {memory} 条，技能 {skills} 条）——用 /memory pending 或 /skills pending 查看"
+    pending_item: "• {id} [{subsystem}/{action}] {summary}"
+    pending_more: "…另有 {count} 条"
+    pending_footer: "批准：/memory approve <id> · 拒绝：/memory reject <id>（技能：/skills approve|reject <id>）"
+    pending_untitled: "（无摘要）"
   notice:
     uncompressed_context_overflow: "⚠️ 会话上下文（约 {tokens} 个 token）在压缩已禁用（compression.enabled: false）的情况下超出了模型上下文窗口（约 {context_length} 个 token）。请使用 /compact 压缩历史记录，或在 config.yaml 中启用压缩。"
 explainer:

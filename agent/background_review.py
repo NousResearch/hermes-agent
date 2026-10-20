@@ -1208,8 +1208,80 @@ def _run_review_fork(
     st.review_agent = None
 
 
-def _publish_review_summary(agent: Any, actions: list[str]) -> None:
-    summary = " · ".join(dict.fromkeys(actions))
+_PENDING_DIGEST_LIMIT = 5
+
+
+def _pending_created_at(record: dict[str, Any]) -> float:
+    try:
+        return float(record.get("created_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pending_summary(record: dict[str, Any]) -> str:
+    """One-line label for a staged write, without the review's internal wrapper text."""
+    summary = str(record.get("summary") or "").strip()
+    if summary.startswith("background review consolidation") and "): " in summary:
+        summary = summary.split("): ", 1)[1]
+    summary = summary.lstrip("- ").strip()
+    if not summary:
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        summary = str(payload.get("content") or payload.get("old_text") or "")
+    summary = " ".join(summary.split())
+    summary = "".join(ch for ch in summary if ch.isprintable())
+    if len(summary) > 120:
+        summary = summary[:117].rstrip() + "…"
+    return summary or t("display.review.pending_untitled")
+
+
+def _pending_write_lines(verbose: bool = False, limit: int = _PENDING_DIGEST_LIMIT) -> list[str]:
+    """Compact notice for staged memory/skill writes awaiting approval.
+
+    A background review can stage several writes in one pass. The per-operation staging
+    messages are terse and easy to miss, and a review that only staged proposals used to
+    publish nothing at all. Surface a count and the review commands in ``on`` mode; list
+    the pending ids/content in ``verbose`` mode (#58834).
+    """
+    try:
+        from tools import write_approval as wa
+
+        records = [(wa.MEMORY, record) for record in wa.list_pending(wa.MEMORY)]
+        records.extend((wa.SKILLS, record) for record in wa.list_pending(wa.SKILLS))
+    except Exception:
+        logger.debug("Could not read pending write approvals", exc_info=True)
+        return []
+    if not records:
+        return []
+    records.sort(key=lambda pair: _pending_created_at(pair[1]), reverse=True)
+    memory_count = sum(1 for subsystem, _ in records if subsystem == wa.MEMORY)
+    skills_count = len(records) - memory_count
+    lines = [t("display.review.pending_header", count=len(records),
+               memory=memory_count, skills=skills_count)]
+    if not verbose:
+        return lines
+    for subsystem, record in records[:max(1, limit)]:
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        action = str(record.get("action") or payload.get("action") or "?")
+        operations = payload.get("operations")
+        if action == "batch" and isinstance(operations, list):
+            action = f"batch/{len(operations)}"
+        label = (t("display.review.label.memory") if subsystem == wa.MEMORY
+                 else t("display.review.label.skill"))
+        lines.append(t("display.review.pending_item", id=str(record.get("id") or "?"),
+                       subsystem=label, action=action, summary=_pending_summary(record)))
+    if len(records) > limit:
+        lines.append(t("display.review.pending_more", count=len(records) - limit))
+    lines.append(t("display.review.pending_footer"))
+    return lines
+
+
+def _publish_review_summary(agent: Any, actions: list[str], *, verbose: bool = False) -> None:
+    """Print/publish the review summary plus any pending-write approval notice."""
+    action_summary = " · ".join(dict.fromkeys(actions))
+    pending_lines = _pending_write_lines(verbose=verbose)
+    if not action_summary and not pending_lines:
+        return
+    summary = "\n".join(part for part in (action_summary, "\n".join(pending_lines)) if part)
     agent._safe_print(t("display.review.summary_cli", summary=summary))
     if agent.background_review_callback:
         with suppress(Exception):
@@ -1280,8 +1352,11 @@ def _run_review_in_thread(
             )
             actions = []
         _log_review_completion(st.review_usage, _classify_review_result(actions))
-        if actions:
-            _publish_review_summary(agent, actions)
+        mode = str(getattr(agent, "memory_notifications", "on") or "on").strip().lower()
+        if mode != "off":
+            # Also emit when the pass only staged proposals: the pending notice is the
+            # user's only notification that an approval is waiting (#58834).
+            _publish_review_summary(agent, actions, verbose=(mode == "verbose"))
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:

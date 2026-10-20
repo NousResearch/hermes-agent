@@ -1219,7 +1219,7 @@ hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompti
 hermes logs [log_name] [options]
 ```
 
-View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/` (or `<profile>/logs/` for non-default profiles).
+View, tail, and filter Hermes log files. Ordinary logs are stored in the active profile's `logs/` directory (`~/.hermes/logs/` for the default profile). `update.log` and `desktop-update-handoff.log` always stay in the root Hermes home's `logs/` directory, even when a named profile is selected. For a custom layout `<root>/profiles/<name>`, these two files remain in `<root>/logs/`. For example, `hermes -p coder logs update` reads the shared root update log.
 
 ### Log files
 
@@ -1271,6 +1271,13 @@ hermes logs errors --since 30m -f
 
 # List all log files with their sizes
 hermes logs list
+
+# With an existing profile named "coder": read the root update and hand-off logs
+hermes -p coder logs update
+hermes -p coder logs handoff
+
+# Under a named profile, list labels the root-home logs "(root)"
+hermes -p coder logs list
 ```
 
 ### Filtering

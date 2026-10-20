@@ -50,11 +50,6 @@ def _latest_run_event(conn, task_id, kind):
     return payload if isinstance(payload, dict) else {}
 
 
-def _claim_lock(conn, task_id):
-    row = conn.execute("SELECT claim_lock FROM tasks WHERE id=?", (task_id,)).fetchone()
-    return row['claim_lock'] if row is not None else None
-
-
 def _host_local_lock(lock) -> bool:
     """True when ``lock`` was issued by this host — the only pids we can judge."""
     from hermes_cli import kanban_db as kb
@@ -62,13 +57,7 @@ def _host_local_lock(lock) -> bool:
 
 
 def bound_interpreter_gone(conn, task_id):
-    """True when the owner bound an interpreter to the task's current run and it is dead.
-
-    Host-local only: ``worker_bound`` records a pid of THIS board's host, so a numeric
-    coincidence on another host must never read as a death and release a live claim.
-    """
-    if not _host_local_lock(_claim_lock(conn, task_id)):
-        return False
+    """True when the owner bound an interpreter to the task's current run and it is dead."""
     bound = _latest_run_event(conn, task_id, 'worker_bound')
     if not bound:
         return False

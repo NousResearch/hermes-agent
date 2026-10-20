@@ -1138,6 +1138,8 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(kbd, "configured_max_in_progress", lambda: 4)
+        monkeypatch.setattr(kbd, "resolve_max_in_progress", lambda configured: configured)
 
         task = kb.Task(
             id="t_dispatch_env",
@@ -1165,6 +1167,7 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_KANBAN_MAX_IN_PROGRESS"] == "4"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
         for key in sc._VAR_MAP:
             if key == "HERMES_SESSION_SOURCE":

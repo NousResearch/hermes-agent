@@ -43,7 +43,7 @@ from agent.codex_headers import (
     is_official_codex_base_url as _is_official_codex_base_url,
 )
 from agent.codex_runtime import _codex_event_has_content
-from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
+from agent.azure_schema_boundary import prepare_chat_request
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
@@ -1390,9 +1390,10 @@ class _CodexStreamGuard:
 class _CodexCompletionsAdapter:
     """Drop-in shim routing chat.completions.create() kwargs through Codex Responses streaming."""
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(self, real_client: OpenAI, model: str, *, provider: str = ""):
         self._client = real_client
         self._model = model
+        self._provider = provider
 
     def _build_responses_kwargs(self, kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, Any]:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
@@ -1422,22 +1423,8 @@ class _CodexCompletionsAdapter:
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
         is_github = route.is_github_responses
-        tools = kwargs.get("tools")
-        if tools:
-            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
-            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
-            # in place and would strip the caller's tool registry.
-            try:
-                import copy as _copy
-                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
-                tools = _copy.deepcopy(list(tools))
-                tools, _ = strip_pattern_and_format(tools)
-                tools, _ = strip_slash_enum(tools)
-            except Exception as exc:
-                logger.warning(
-                    "Auxiliary client: failed to sanitize tool schemas for "
-                    "Codex/xAI Responses path: %s", exc,
-                )
+        from agent.azure_schema_boundary import prepare_auxiliary_responses_tools
+        tools = prepare_auxiliary_responses_tools(kwargs.get("tools"), self._provider, host)
         # Tool schemas go through the SAME converter (``strict: False``) and the SAME reserved-name
         # aliasing (OpenCode / Perplexity / xAI) as agent/transports/codex.py::build_kwargs. A private
         # list here sent raw names without ``strict``, so title/compression/MoA calls 400ed on routes
@@ -1576,6 +1563,10 @@ class _CodexCompletionsAdapter:
             from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            from tools.azure_schema import prepare_azure_request
+            stream_kwargs = prepare_azure_request(
+                stream_kwargs, provider=self._provider, base_url=getattr(self._client, "base_url", ""),
+            )
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1664,9 +1655,9 @@ _AsyncAnthropicCompletionsAdapter = _AsyncCompletionsAdapter  # imported by test
 class CodexAuxiliaryClient:
     """OpenAI-client-compatible wrapper routing through the Codex Responses API (.api_key/.base_url for introspection)."""
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(self, real_client: OpenAI, model: str, *, provider: str = ""):
         self._real_client = real_client
-        self.chat = _ChatShim(_CodexCompletionsAdapter(real_client, model))
+        self.chat = _ChatShim(_CodexCompletionsAdapter(real_client, model, provider=provider))
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
 
@@ -2703,7 +2694,7 @@ def _relay_sync_stream(
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
-    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
+    create = lambda request: client.chat.completions.create(**prepare_chat_request(request, client, provider or ""))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return create(kwargs)
@@ -3036,7 +3027,7 @@ def _try_azure_foundry(
     extra: dict[str, Any] = {"default_query": _dq} if _dq else {}
     client = _create_openai_client(api_key=api_key, base_url=_clean_base, **extra)
     if runtime_api_mode == "codex_responses":
-        return CodexAuxiliaryClient(client, final_model), final_model
+        return CodexAuxiliaryClient(client, final_model, provider="azure-foundry"), final_model
     if runtime_api_mode == "anthropic_messages":
         # api_key forwarded verbatim (string or Entra callable; build_anthropic_client installs the bearer hook).
         return _maybe_wrap_anthropic(client, final_model, api_key, base_url, runtime_api_mode), final_model
@@ -6796,6 +6787,8 @@ def _build_call_kwargs(
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
     # turn so compression/title/vision calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_session_affinity_headers
+    from tools.azure_schema import prepare_azure_request
+    kwargs = prepare_azure_request(kwargs, provider=provider, base_url=effective_base)
     return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
 
 
@@ -7110,7 +7103,7 @@ def _create_with_progress_once(
     ``force_stream``, where a stream-only provider rejects the plain call by definition, so the original
     error is surfaced to the normal recovery chains instead.
     """
-    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
+    kwargs = prepare_chat_request(kwargs, client)
     _notify_aux_dispatch()
     # Dispatch alone is not forward progress: a 401/retry/fallback dispatch must not
     # reset the compression inactivity fence, or a zero-output attempt runs to the
@@ -7344,7 +7337,7 @@ async def _acreate_with_progress(
 ) -> Any:
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
-    kwargs = bypass_chat_sdk_request_transform(kwargs, client)
+    kwargs = prepare_chat_request(kwargs, client)
     _notify_aux_dispatch()
     # Same contract as the sync twin (#114938): dispatch alone is not progress.
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):

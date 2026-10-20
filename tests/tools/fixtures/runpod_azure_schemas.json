@@ -1,0 +1,95 @@
+[
+  {
+    "name": "create-global-volume",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/CreateGlobalVolumeRequest"
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "$defs": {
+        "CreateGlobalVolumeRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 191,
+              "pattern": "[^\\p{Z}\\t-\\r\u0085]",
+              "description": "Human-readable name, 1\u2013191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.",
+              "examples": [
+                "training-data"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "update-endpoint",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Serverless endpoint identifier"
+        },
+        "body": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "body"
+      ]
+    }
+  },
+  {
+    "name": "update-global-volume",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Global volume identifier"
+        },
+        "body": {
+          "$ref": "#/$defs/UpdateGlobalVolumeRequest"
+        }
+      },
+      "required": [
+        "id",
+        "body"
+      ],
+      "$defs": {
+        "UpdateGlobalVolumeRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "Only the provided fields are updated. At least one field must be present; an empty body is rejected.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 191,
+              "pattern": "[^\\p{Z}\\t-\\r\u0085]",
+              "description": "New human-readable name, 1\u2013191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.",
+              "examples": [
+                "renamed-volume"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+]

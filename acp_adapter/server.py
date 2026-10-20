@@ -252,6 +252,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        # Client-side capabilities as advertised in initialize(). ACP's
+        # reverse fs/read_text_file + fs/write_text_file only work when the
+        # client says so (fs.readTextFile / fs.writeTextFile); clients without
+        # them keep the plain local-disk path. terminal (clientCapabilities.terminal)
+        # gates routing shell commands into the client's own Terminal tool window
+        # via terminal/* reverse methods; when false (the JetBrains 2026.2 EAP
+        # default, behind the llm.chat.agent.acp.terminal.enabled registry flag)
+        # terminal routing is a no-op and commands run locally as before.
+        self._client_fs_read: bool = False
+        self._client_fs_write: bool = False
+        self._client_terminal: bool = False
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -259,6 +270,28 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+
+    def _set_client_fs_capabilities(self, client_capabilities: Any) -> None:
+        """Record the client's fs + terminal capability flags from initialize().
+
+        Omitted/absent flags mean unsupported (per the ACP spec), so a
+        missing ``fs`` block or missing booleans simply leave the flags False
+        and the local-disk read / local terminal stay the only paths.
+        """
+        # Always populate (defaults False) so the attributes exist even when the
+        # client advertised no capabilities at all (a test may build the agent
+        # via object.__new__ without a full __init__).
+        self._client_fs_read = False
+        self._client_fs_write = False
+        self._client_terminal = False
+        if client_capabilities is None:
+            return
+        self._client_terminal = bool(getattr(client_capabilities, "terminal", False))
+        fs = getattr(client_capabilities, "fs", None)
+        if fs is None:
+            return
+        self._client_fs_read = bool(getattr(fs, "read_text_file", False))
+        self._client_fs_write = bool(getattr(fs, "write_text_file", False))
 
     async def _send(self, session_id: str, update: Any, *, fail_msg: str, level: int = logging.WARNING) -> bool:
         """``session_update`` that logs instead of raising; False on failure."""
@@ -534,6 +567,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION,
         )
 
+        self._set_client_fs_capabilities(client_capabilities)
+        logger.info(
+            "Client capabilities: fs.read=%s fs.write=%s terminal=%s",
+            self._client_fs_read, self._client_fs_write, self._client_terminal,
+        )
+
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=get_version_info().base_version),
@@ -787,11 +826,36 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 token = set_edit_approval_requester(edit_approval_requester)
                 return lambda: reset_edit_approval_requester(token)
 
+            def _client_fs() -> Callable[[], None]:
+                # Bind the client-fs bridge for this turn: file tools targeting
+                # host-side paths (IDE project files, invisible in a container)
+                # route through the client's fs/read_text_file / fs/write_text_file,
+                # and terminal commands may route into the client's Terminal
+                # window. ContextVar-scoped, restored by the ExitStack teardown.
+                from acp_adapter.client_fs import (
+                    ClientFSBridge,
+                    reset_client_fs_bridge,
+                    set_client_fs_bridge,
+                )
+
+                token = set_client_fs_bridge(ClientFSBridge(
+                    conn=conn,
+                    session_id=session_id,
+                    loop=loop,
+                    fs_read=self._client_fs_read,
+                    fs_write=self._client_fs_write,
+                    terminal=self._client_terminal,
+                    project_cwd=getattr(state, "cwd", None),
+                ))
+                return lambda: reset_client_fs_bridge(token)
+
             _bind_guarded(stack, "session context", _session_context)
             if approval_cb:
                 _bind_guarded(stack, "approval callback", _approval)
             if edit_approval_requester:
                 _bind_guarded(stack, "edit approval requester", _edit_approval)
+            if conn:
+                _bind_guarded(stack, "client-fs bridge", _client_fs)
             stack.callback(reset_hermes_interactive_context, set_hermes_interactive_context(True))
             # Tools tag side-effects with the ACP session (``kanban_create``); save/restore it.
             stack.callback(_restore_env, "HERMES_SESSION_ID", os.environ.get("HERMES_SESSION_ID"))
@@ -820,7 +884,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
-        user_content = _content_blocks_to_openai_user_content(prompt)
+        user_content = await _content_blocks_to_openai_user_content(
+            prompt,
+            conn=self._conn,
+            session_id=session_id,
+            can_use_client_fs=self._client_fs_read,
+        )
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
         if not user_text and not (isinstance(user_content, list) and user_content):
             return PromptResponse(stop_reason="end_turn")

@@ -943,6 +943,31 @@ def handle_function_call(
             result, error_type, error_message = blocked
             return _emit(result, status="blocked", error_type=error_type, error_message=error_message)
 
+        # ACP client-fs routing: when a file tool targets a path that only
+        # exists on the editor's machine (containerized agent), execute it
+        # through the client's fs/read_text_file / fs/write_text_file instead
+        # of the local filesystem. Runs after edit approval — mutations are
+        # already approved (with a real diff, fetched via the client). Returns
+        # None for container-local paths → normal dispatch. Only active when
+        # the client-fs bridge is bound (ACP sessions with an IDE client);
+        # CLI/gateway runs are unaffected.
+        try:
+            from acp_adapter.client_fs import route_file_tool_to_client
+
+            client_fs_result = route_file_tool_to_client(function_name, function_args, task_id or "")
+            if client_fs_result is not None:
+                return _emit(client_fs_result, duration_ms=_elapsed_ms(start))
+        except Exception as _client_fs_err:
+            # Fail-closed for mutations (a local fallback could create phantom
+            # files in the container); fail-open for reads (a local read error
+            # is a clean, informative failure).
+            logger.debug("ACP client-fs routing error: %s", _client_fs_err, exc_info=True)
+            if function_name in {"write_file", "patch"}:
+                return _emit(
+                    tool_error(f"Client-fs routing failed for {function_name}: {_client_fs_err}"),
+                    duration_ms=_elapsed_ms(start),
+                )
+
         # Any non-read/search tool resets the consecutive-read-loop counter.
         if function_name not in _READ_SEARCH_TOOLS:
             try:

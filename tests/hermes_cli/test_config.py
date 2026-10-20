@@ -2018,3 +2018,11 @@ class TestCompatibleProvidersMalformedLegacyKey:
 
         assert names == ["legacy"]
         assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]
+
+
+def test_bedrock_profile_is_a_declared_config_key():
+    """``bedrock.profile`` is read from config.yaml, so it must be declared (and so not flagged as a typo)."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["bedrock"]["profile"] == ""
+    assert _validate_config_key("bedrock.profile") == (True, None)

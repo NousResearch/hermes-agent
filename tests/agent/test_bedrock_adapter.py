@@ -1797,3 +1797,64 @@ class TestSealedReasoningResendOnce:
             with pytest.raises(Exception, match="ValidationException"):
                 call_converse(region="us-east-1", model="m", messages=[{"role": "user", "content": "hi"}])
         assert client.converse.call_count == 1
+
+
+class TestConfiguredBedrockProfile:
+    """config.yaml ``bedrock.profile`` pins the named AWS profile (SSO / cross-account) without AWS_PROFILE."""
+
+    def test_unscoped_client_is_built_from_configured_profile(self):
+        from agent.bedrock_adapter import _cached_client
+        boto3 = MagicMock()
+        with patch("agent.bedrock_adapter._require_boto3", return_value=boto3), \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="sso-prod"):
+            client = _cached_client({}, "bedrock-runtime", "us-east-1")
+        boto3.Session.assert_called_once_with(profile_name="sso-prod")
+        assert client is boto3.Session.return_value.client.return_value
+
+    def test_unscoped_client_uses_default_chain_without_profile(self):
+        from agent.bedrock_adapter import _cached_client
+        boto3 = MagicMock()
+        with patch("agent.bedrock_adapter._require_boto3", return_value=boto3), \
+                patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value=""):
+            client = _cached_client({}, "bedrock-runtime", "us-east-1")
+        boto3.Session.assert_not_called()
+        assert client is boto3.client.return_value
+
+    def test_region_comes_from_configured_profile_in_aws_config(self):
+        from agent.bedrock_adapter import resolve_bedrock_region
+        session = MagicMock()
+        session.get_config_variable.return_value = "ap-northeast-1"
+        with _mock_botocore_session(return_value=session):
+            assert resolve_bedrock_region({}, profile="sso-prod") == "ap-northeast-1"
+        session.set_config_variable.assert_called_once_with("profile", "sso-prod")
+
+    def test_env_region_beats_configured_profile_region(self):
+        from agent.bedrock_adapter import resolve_bedrock_region
+        with _mock_botocore_session(return_value=MagicMock()) as get_session:
+            assert resolve_bedrock_region({"AWS_REGION": "eu-west-1"}, profile="sso-prod") == "eu-west-1"
+        get_session.assert_not_called()
+
+    def test_profile_change_in_same_region_builds_a_new_client(self):
+        from agent.bedrock_adapter import _cached_client
+        boto3 = MagicMock()
+        cache = {}
+        with patch("agent.bedrock_adapter._require_boto3", return_value=boto3):
+            with patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="sso-a"):
+                _cached_client(cache, "bedrock-runtime", "us-east-1")
+            with patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="sso-b"):
+                _cached_client(cache, "bedrock-runtime", "us-east-1")
+        assert [c.kwargs for c in boto3.Session.call_args_list] == [{"profile_name": "sso-a"}, {"profile_name": "sso-b"}]
+        assert len(cache) == 2
+
+    def test_discovery_cache_is_per_profile(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+        control = MagicMock()
+        control.list_foundation_models.return_value = {"modelSummaries": []}
+        control.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=control):
+            with patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="sso-a"):
+                discover_bedrock_models("us-east-1")
+            with patch("agent.bedrock_adapter.resolve_bedrock_profile", return_value="sso-b"):
+                discover_bedrock_models("us-east-1")
+        assert control.list_foundation_models.call_count == 2

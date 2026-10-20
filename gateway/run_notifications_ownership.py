@@ -150,7 +150,9 @@ class GatewayNotificationOwnershipMixin:
                     return "retry", session_id, None
             config = row.model_config
             if "_delegate_from" not in config:
-                verdict = "terminal" if row.source == "subagent" else "deliver"
+                # ``source`` is rewritten by the peer stamp when a surface takes a routing key;
+                # ``created_source`` is immutable provenance, so either one marks an execution transcript.
+                verdict = "terminal" if "subagent" in (row.source, row.created_source) else "deliver"
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:

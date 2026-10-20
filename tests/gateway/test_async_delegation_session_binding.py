@@ -24,7 +24,7 @@ def _record(row):
     """A session row as the storage interface's record: the fields the resolver reads, as attributes."""
     if row is None:
         return None
-    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **row})
+    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "created_source": None, "model_config": {}, **row})
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +107,31 @@ class TestGatewayPinningFailsClosed:
     def _assert_no_route_change(runner):
         runner.session_store.switch_session.assert_not_called()
         runner.session_store.advance_compression_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_subagent_pinned_completion_never_rebinds_chat_route(self):
+        current = self._entry("sess_chat")
+        runner = self._make_runner(
+            {
+                "sess_chat": {"id": "sess_chat", "source": "telegram", "created_source": "telegram"},
+                "sess_sub": {"id": "sess_sub", "source": "telegram", "created_source": "subagent",
+                             "parent_session_id": "sess_chat"},
+            }
+        )
+        resolved = await runner._resolve_async_delegation_session(current, "sess_sub")
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_subagent_without_resolvable_parent_fails_closed(self):
+        current = self._entry("sess_chat")
+        runner = self._make_runner(
+            {"sess_sub": {"id": "sess_sub", "source": "telegram", "created_source": "subagent",
+                          "parent_session_id": "sess_gone"}}
+        )
+        resolved = await runner._resolve_async_delegation_session(current, "sess_sub")
+        assert resolved is None
+        self._assert_no_route_change(runner)
 
 
     @pytest.mark.asyncio
@@ -494,7 +519,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
         route_before = current.session_id
         rejected = case in {
             "over_limit", "missing", "cycle", "malformed", "nonobject", "invalid_marker",
-            "empty_marker", "null_marker", "markerless", "null_config", "absent_config",
+            "empty_marker", "null_marker", "markerless", "null_config", "absent_config", "generic_parent",
             "current_boundary", "parent_boundary", "child_boundary", "intermediate_boundary", "compression_foreign",
         }
         resolved = []
@@ -527,7 +552,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
             row = ad.get_durable_delegation(event["delegation_id"])
             assert row is not None
             assert row["delivery_state"] == ("dropped" if rejected else "delivered")
-        expected = "continuation" if case == "compression" else pinned if case == "generic_parent" else route_before
+        expected = "continuation" if case == "compression" else route_before
         assert resolved == ([] if rejected else [expected])
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None
@@ -536,7 +561,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None
         assert current.session_id == (route_before if rejected else expected)
-        if case not in {"generic_parent", "compression"}:
+        if case != "compression":
             for sid, row in before.items():
                 after = session_row(db, sid)
                 for field in ("ended_at", "end_reason", "source", "session_key", "model_config"):

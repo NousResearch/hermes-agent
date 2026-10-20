@@ -240,6 +240,22 @@ def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> li
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
 
+def build_otp_probe_js() -> str:
+    """Read-only tab predicate using the same visibility/label rules as inspection."""
+    inspection = _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", "null")
+    return """(() => {
+      const controls = JSON.parse(%s);
+      const pattern = new RegExp(%s);
+      return controls.some(c => {
+        if (c.autocomplete.toLowerCase().split(/\\s+/).includes("one-time-code")) return true;
+        if (!["text", "tel", "number", "password", ""].includes(c.type)) return false;
+        const text = [c.name, c.label].join(" ").normalize("NFKD").toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ").trim();
+        return pattern.test(text);
+      });
+    })()""" % (inspection, json.dumps(_RE_OTP.pattern))
+
+
 def build_inspection_js(nonce: str) -> str:
     return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
 
@@ -248,7 +264,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   const elements = Array.from(document.querySelectorAll("input, select"));
   const forms = Array.from(document.forms);
-  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
+  if (nonce !== null) elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];

@@ -3,6 +3,8 @@ import { atom, computed } from 'nanostores'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $sessions, rememberedSessionProfile } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 
 /**
  * Petdex mascot state for the desktop floating pet.
@@ -150,8 +152,21 @@ export const $petActive = computed($petInfo, info => info.enabled && Boolean(inf
  * other profile, which is what makes per-profile pets work in app-global remote
  * mode (one backend serving every profile).
  */
+export const $petProfile = computed(
+  [$focusedStoredSessionId, $sessions, $activeGatewayProfile],
+  (focused, sessions, activeProfile): string =>
+    normalizeProfileKey(rememberedSessionProfile(sessions, focused, activeProfile))
+)
+
+/**
+ * The pet follows the chat the user is looking at, not the gateway socket's
+ * home: with pooled per-profile backends, focusing another profile's session
+ * does not move `$activeGatewayProfile`, so keying on it left the previous
+ * profile's mascot on screen. Drafts and unknown ids fall back to the gateway
+ * profile, the same ladder the plugin SDK's `focusedSessionProfile` uses.
+ */
 export function petProfile(): string {
-  return normalizeProfileKey($activeGatewayProfile.get())
+  return $petProfile.get()
 }
 
 /**

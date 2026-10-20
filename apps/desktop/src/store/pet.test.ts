@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
 
 import {
   $petActivity,
@@ -11,9 +12,11 @@ import {
   flashPetActivity,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
+  petProfile,
   setPetActivity
 } from './pet'
-import { $activeSessionId, $busy } from './session'
+import { $activeGatewayProfile } from './profile'
+import { $activeSessionId, $busy, $selectedStoredSessionId, $sessions } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 
 describe('derivePetState', () => {
@@ -150,5 +153,33 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     publishSessionState(runtimeId, slice(false))
     expect($petState.get()).toBe('idle')
     expect($petAtRest.get()).toBe(true)
+  })
+})
+
+describe('petProfile', () => {
+  const row = (id: string, profile: string) =>
+    ({ id, title: '', created_at: '', updated_at: '', profile }) as unknown as SessionInfo
+
+  afterEach(() => {
+    $sessions.set([])
+    $selectedStoredSessionId.set(null)
+    $activeGatewayProfile.set('default')
+  })
+
+  it('follows the focused chat across profiles without a gateway switch', () => {
+    $activeGatewayProfile.set('default')
+    $sessions.set([row('a', 'fern'), row('b', 'reimu')])
+
+    $selectedStoredSessionId.set('a')
+    expect(petProfile()).toBe('fern')
+
+    $selectedStoredSessionId.set('b')
+    expect(petProfile()).toBe('reimu')
+  })
+
+  it('falls back to the gateway profile for a draft', () => {
+    $activeGatewayProfile.set('gwen')
+    $selectedStoredSessionId.set(null)
+    expect(petProfile()).toBe('gwen')
   })
 })

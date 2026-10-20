@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { renameProfileInRailPrefs } from '@/store/profile'
 import { migrateTilesForProfile } from '@/store/session-states'
 
 import { isValidProfileName } from './create-profile-dialog'
@@ -102,6 +103,16 @@ export function RenameProfileDialog({
       // dials a backend that no longer exists (#111868).
       if (!isDefault && scope == null) {
         migrateTilesForProfile(currentName, trimmed)
+      }
+
+      // The rail order is what ⌘N resolves against, so a name left behind there
+      // sends the renamed profile to the alphabetical tail and hands its slot —
+      // and every slot below it — to a different profile (#130397). The
+      // long-press colour is keyed by name too. Both are desktop-local prefs, so
+      // they follow a remote rename as well; only the default profile is exempt
+      // (its id stays "default"; just the display name moves).
+      if (!isDefault) {
+        renameProfileInRailPrefs(currentName, trimmed)
       }
 
       await onRenamed?.(trimmed)

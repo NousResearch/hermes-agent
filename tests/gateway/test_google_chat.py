@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 # Platform uses _missing_() for dynamic members, so "google_chat" is
@@ -125,12 +127,12 @@ _ensure_google_mocks()
 # (which targets bare ``import adapter`` / ``from adapter import …`` and
 # ``sys.path.insert`` into ``plugins/platforms/``) does not flag this
 # fully-qualified form.
-import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
+import plugins.platforms.google_chat.adapter as _gc_mod
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
-from plugins.platforms.google_chat.adapter import (  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.google_chat.adapter import (
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
@@ -815,7 +817,7 @@ class TestSend:
         assert buttons[0]["text"] == "Simple"
         assert buttons[0]["onClick"]["action"]["function"] == "hermes_clarify"
         assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
-        assert buttons[-1]["text"] == "Other / type answer"
+        assert buttons[-1]["text"] == t("platform.google_chat.clarify.other_button")
         assert adapter._clarify_state["clarify123"] == "session-key"
 
 
@@ -970,7 +972,7 @@ class TestTypingLifecycle:
         await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
         adapter._patch_message.assert_awaited_once()
         # Patched with a final-state label, not deleted.
-        args, kwargs = adapter._patch_message.call_args
+        args, _kwargs = adapter._patch_message.call_args
         assert "interrupted" in args[1]["text"].lower()
         assert "spaces/S" not in adapter._typing_messages
 

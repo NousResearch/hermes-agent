@@ -10,7 +10,7 @@ const { bridge } = vi.hoisted(() => ({ bridge: vi.fn() }))
 
 vi.mock('./wsl-path-bridge', () => ({ resolveLocalReadPath: bridge }))
 
-import { resolveIpcFileReadPath, resolveMediaRequestPath, resolvePreviewTargetPath } from './local-read-path'
+import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 
 const BRIDGED = '\\\\wsl.localhost\\Ubuntu\\home\\alex\\file'
 
@@ -19,26 +19,44 @@ beforeEach(() => {
   bridge.mockImplementation(() => BRIDGED)
 })
 
-test('resolveMediaRequestPath (hermes-media:// handler) bridges the decoded request pathname', () => {
-  // Mirror how the renderer builds the URL: hermes-media://stream/<encoded path>.
-  const url = new URL(`hermes-media://stream/${encodeURIComponent('/home/alex/My Clips/clip.mp4')}`)
-
-  const result = resolveMediaRequestPath(url.pathname)
+// Regression for hermes-agent 123823: the media protocol handler decodes the
+// request pathname itself (parseMediaProtocolTarget in media-protocol.ts), so
+// the resolveLocalFile boundary must NOT decode or strip leading slashes again.
+// The pre-fix wiring ran decodeURIComponent + strip on the already-decoded
+// path, turning `/home/...` into a cwd-relative `home/...` that ENOENTs into
+// the handler's silent 404, and threw URIError on filenames with a literal `%`.
+test('resolveMediaStreamFile (hermes-media:// resolveLocalFile) bridges the already-decoded path unchanged', () => {
+  const result = resolveMediaStreamFile('/home/alex/My Clips/clip.mp4')
 
   assert.equal(bridge.mock.calls.length, 1)
   assert.equal(bridge.mock.calls[0][0], '/home/alex/My Clips/clip.mp4')
   assert.equal(result, BRIDGED)
 })
 
-test('resolveMediaRequestPath strips leading slashes before decoding and bridging', () => {
-  resolveMediaRequestPath(`///${encodeURIComponent('/mnt/c/Users/alex/clip.mp4')}`)
+test('resolveMediaStreamFile preserves a leading slash so absolute POSIX paths stay absolute', () => {
+  // What the protocol handler hands over for hermes-media://stream/%2Fhome%2F...:
+  // already decoded, still absolute. Stripping the leading slash here is the
+  // 123823 regression (cwd-relative ENOENT -> silent 404 on Linux/macOS).
+  const url = new URL(`hermes-media://stream/${encodeURIComponent('/home/alex/clip.mp4')}`)
+  const filePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+
+  resolveMediaStreamFile(filePath)
 
   assert.equal(bridge.mock.calls.length, 1)
-  assert.equal(bridge.mock.calls[0][0], '/mnt/c/Users/alex/clip.mp4')
+  assert.equal(bridge.mock.calls[0][0], '/home/alex/clip.mp4')
 })
 
-test('resolveMediaRequestPath tolerates nullish pathname', () => {
-  const result = resolveMediaRequestPath(undefined as unknown as string)
+test('resolveMediaStreamFile keeps percent-sign bytes in filenames intact', () => {
+  // A filename containing a literal `%` (e.g. "100% clip.mp4") arrives
+  // decoded; a second decodeURIComponent would throw URIError.
+  resolveMediaStreamFile('/home/alex/100% clip.mp4')
+
+  assert.equal(bridge.mock.calls.length, 1)
+  assert.equal(bridge.mock.calls[0][0], '/home/alex/100% clip.mp4')
+})
+
+test('resolveMediaStreamFile tolerates nullish input', () => {
+  const result = resolveMediaStreamFile(undefined as unknown as string)
 
   assert.equal(bridge.mock.calls.length, 1)
   assert.equal(bridge.mock.calls[0][0], '')

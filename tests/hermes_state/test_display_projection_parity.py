@@ -150,6 +150,8 @@ class TestAncestorPrefix:
             db.append_message(parent, "user", f"P user {i}")
             db.append_message(parent, "assistant", f"P assistant {i}")
         db.archive_and_compact(parent, [{"role": "user", "content": "[parent summary]"}])
+        # A real rotation stamps the parent end_reason='compression' (publish_compression_child).
+        db.end_session(parent, "compression")
 
         db.create_session(child, source="desktop", parent_session_id=parent)
         db.append_message(child, "user", "C user 0")

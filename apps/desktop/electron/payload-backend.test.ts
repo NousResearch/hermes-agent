@@ -6,7 +6,7 @@ import path from 'node:path'
 import { test, vi } from 'vitest'
 
 import type { InstallStamp, PayloadRuntime } from './install-stamp'
-import { bundledPayload, installIdForRoot } from './payload-backend'
+import { bundledPayload, installIdForRoot, payloadPythonPath, payloadTicketRuntime } from './payload-backend'
 
 function stamp(runtime: PayloadRuntime, payload: InstallStamp['payload'] = 'bundled'): InstallStamp {
   return {
@@ -66,6 +66,21 @@ test('bundled launch paths come from build metadata without filesystem access', 
   }
 })
 
+test('ticket minting runs the payload python, never the CLI shim', () => {
+  const payload = {
+    storePython: '/p/tools/python',
+    repoDir: '/p/repo',
+    sitePackages: '/p/venv/site-packages',
+    shim: '/p/bin/hermes'
+  }
+
+  const runtime = payloadTicketRuntime(payload)
+
+  assert.equal(runtime.ticketCommand, payload.storePython)
+  assert.notEqual(runtime.ticketCommand, payload.shim)
+  assert.deepEqual(runtime.ticketEnv, { PYTHONPATH: payloadPythonPath(payload) })
+})
+
 // ─── update channel helpers ─────────────────────────────────────────
 
 test('installIdForRoot matches the Python install id (sha16 of the canonical path)', () => {
@@ -78,5 +93,12 @@ test('installIdForRoot matches the Python install id (sha16 of the canonical pat
   assert.equal(
     installIdForRoot('/link/hermes-agent', () => '/real/hermes-agent'),
     installIdForRoot('/real/hermes-agent')
+  )
+})
+
+test('bundled core code precedes the dependencies, as the bin launchers order them', () => {
+  assert.equal(
+    payloadPythonPath({ repoDir: 'payload/hermes-agent', sitePackages: 'payload/venv/site-packages' }),
+    ['payload/hermes-agent', 'payload/venv/site-packages'].join(path.delimiter)
   )
 })

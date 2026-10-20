@@ -169,7 +169,7 @@ def test_sessions_export_all_rejects_single_oversized_session(
 
     assert result.status == "error"
     assert "runaway" in result.output
-    assert "more than 3 active" in result.output
+    assert "more than 3 exportable" in result.output
     assert "streaming Export" in result.output
     assert "max_export_messages" in result.output
     assert export_all_calls == []

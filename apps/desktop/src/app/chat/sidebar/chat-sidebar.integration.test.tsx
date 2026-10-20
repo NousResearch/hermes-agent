@@ -345,6 +345,61 @@ describe('ChatSidebar section labels', () => {
   })
 })
 
+describe('ChatSidebar empty-profile sections', () => {
+  // A profile with no normal sessions but messaging threads / cron jobs must
+  // still show them: the session area (and the sections inside it) is gated by
+  // showSessionSections, which used to key only on normal-session visibility
+  // and collapsed these profiles to the blank state (#63593).
+  const telegramThread = (id: string, last_active: number) =>
+    makeSessionInfo({ connection_id: 'local', id, last_active, profile: 'default', source: 'telegram', title: id })
+
+  beforeEach(() => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [{ id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null }]
+    } as NonNullable<typeof $connectionsRegistry.value>)
+    $profiles.set([{ name: 'default', is_default: true }] as typeof $profiles.value)
+    $sessions.set([])
+    $messagingSessions.set([telegramThread('tg-one', 60), telegramThread('tg-two', 30)])
+    $messagingTruncated.set(false)
+    $sidebarMessagingOpenIds.set(['telegram'])
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $sessions.set([])
+  })
+
+  it('shows the messaging section for a profile with no normal sessions', () => {
+    const { container } = renderSidebar('/', 'chat')
+
+    // The Telegram platform section renders with its threads…
+    expect(screen.getAllByText('Telegram').length).toBeGreaterThan(0)
+    expect(screen.getByText('tg-one')).toBeTruthy()
+    // …and the sidebar did not collapse to the blank state: the search field
+    // only renders inside the session area, so its presence proves the area
+    // (and the messaging sections inside it) rendered.
+    expect(screen.getByPlaceholderText('Search sessions…')).toBeTruthy()
+  })
+
+  it('still shows the blank state when a profile has nothing at all', () => {
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+
+    // SidebarBlankState: a centered "No sessions yet" plus a "New project"
+    // button, rendered INSTEAD of the whole session area (search included).
+    const { container } = renderSidebar('/', 'chat')
+
+    expect(container.textContent).toContain('No sessions yet')
+    expect(screen.queryByPlaceholderText('Search sessions…')).toBeNull()
+  })
+})
+
 describe('ChatSidebar messaging owners', () => {
   const telegram = (id: string, profile: string, last_active: number) =>
     makeSessionInfo({ connection_id: 'local', id, last_active, profile, source: 'telegram', title: id })

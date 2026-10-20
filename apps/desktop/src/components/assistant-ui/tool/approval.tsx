@@ -35,6 +35,7 @@ import {
   sessionApprovalRequests,
   sessionApprovalStackSize
 } from '@/store/prompts'
+import { $showToolActivity } from '@/store/tool-activity'
 import { setToolDisclosureOpen } from '@/store/tool-view'
 
 import { isApprovalActivity } from './approval-activity'
@@ -78,6 +79,7 @@ export const PendingApprovalStack: FC = () => {
 function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
   const { t } = useI18n()
   const reduced = useReducedMotion()
+  const showToolActivity = useStore($showToolActivity)
 
   const summary = useAuiState(state => {
     if (!visible) {
@@ -117,6 +119,12 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
       )
       .join('\n')
   })
+
+  // The pending approval stays. The run summary beside it is tool feed and
+  // follows display.tool_progress alongside the other process rows.
+  if (!showToolActivity) {
+    return null
+  }
 
   return (
     <AnimatePresence initial={false}>
@@ -268,7 +276,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
     }
   }, [])
 
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
   const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
   const allowSession = choices ? choices.includes('session') : true

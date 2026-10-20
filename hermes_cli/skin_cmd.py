@@ -47,10 +47,14 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
         target = name
     else:
         # Built-in (or missing): fork into an editable copy that keeps its full palette, under a
-        # fresh name so the built-in stays intact for revert.
+        # fresh name so the built-in stays intact for revert — and so an earlier fork of the same
+        # built-in (the user may have switched back to the built-in since) is never overwritten.
         from hermes_cli.skin_engine import load_skin
         resolved = load_skin(name)
-        target = f"{name}-custom"
+        target, n = f"{name}-custom", 1
+        while (_skins_dir() / f"{target}.yaml").exists():
+            n += 1
+            target = f"{name}-custom-{n}"
         path = _skins_dir() / f"{target}.yaml"
         data = {"name": target, "description": f"{name} + custom {key}",
                 "colors": dict(resolved.colors), "branding": dict(resolved.branding),

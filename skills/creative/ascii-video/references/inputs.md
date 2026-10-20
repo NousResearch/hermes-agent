@@ -679,7 +679,7 @@ print(f"Mean drift: {report['mean_drift_ms']:.1f}ms, Max: {report['max_drift_ms'
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Consistent late visual beats | ffmpeg concat adds frames at boundaries | Use `-vsync cfr` flag; pad segments to exact frame count |
+| Consistent late visual beats | ffmpeg concat adds frames at boundaries | Use `-fps_mode cfr` flag (output option: after the last `-i`); pad segments to exact frame count |
 | Drift increases over time | Floating-point accumulation in `t = fi / fps` | Use integer frame counter, compute `t` fresh each frame |
 | Random missed beats | Beat threshold too high / feature smoothing too aggressive | Lower threshold; reduce EMA alpha for beat feature |
 | Beats land on wrong frame | Off-by-one in frame indexing | Verify: frame 0 = t=0, frame 1 = t=1/fps (not t=0) |

@@ -179,3 +179,38 @@ def test_tool_rows_keep_the_classic_tool_emoji():
         assert _plain(tool_row(name, args, 0.2)).startswith(classic_emoji + " "), (name, classic_emoji)
     failed = _plain(tool_row("terminal", {"command": "false"}, 0.2, result='{"exit_code": 1, "output": ""}'))
     assert failed.startswith("✗ ") and "[exit 1]" in failed, failed
+
+
+def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
+    """User message, reasoning and answer each read as: blank line, bar, content, bar, blank line.
+    The blank line after a closing bar is paid by whatever prints next (a tool row, the footer)
+    and never doubled when the next block opens with its own blank line + bar. Tool rows inside a
+    run stay tight."""
+    from cli import HermesCLI
+    import cli as climod
+    from hermes_cli import cli_modern_layout as layout
+
+    out: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: out.extend(_plain(s).split("\n")))
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli.show_timestamps = True, False
+    bar = "─" * 40
+
+    cli._print_user_message_preview("read the hostname")
+    for row in layout.thought_rows(2.0, "Plan the read.", full=True):
+        climod._cprint(row)
+    climod._cprint(layout.completed_tool_line(cli, "read_file", {"path": "/etc/hostname"}, 0.2))
+    climod._cprint(layout.completed_tool_line(cli, "terminal", {"command": "echo hi"}, 0.1))
+    climod._cprint(layout.answer_label())
+    climod._cprint("It is LINUX.")
+    climod._cprint(layout.closing_separator(True))
+    climod._cprint(layout.turn_footer("1.0s"))
+
+    rows = [r.rstrip() for r in out]
+    start = rows.index("❯ read the hostname") - 1
+    got = ["BAR" if r == bar else ("" if not r else r.split()[0]) for r in rows[start - 1:]]
+    assert got == ["", "BAR", "❯", "BAR",          # user message
+                   "", "BAR", "Plan", "∴", "BAR",  # reasoning
+                   "", "📖", "💻",                  # tool rows, tight
+                   "", "BAR", "☤", "It", "BAR",    # answer
+                   "", "─"], got                   # footer

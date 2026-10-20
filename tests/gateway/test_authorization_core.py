@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import pickle
-from collections.abc import Iterable
+import warnings
+from collections.abc import Iterable, Set as AbstractSet
 from dataclasses import FrozenInstanceError, fields
 from typing import TYPE_CHECKING, Any, cast
 
@@ -513,6 +515,116 @@ def test_authorize_fail_closed_denies_known_permission_membership_failure() -> N
     assert provider_accesses == []
 
 
+def test_authorize_fail_closed_rejects_custom_set_without_using_it() -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    provider_accesses: list[str] = []
+    set_accesses: list[str] = []
+
+    class InfinitePermissions(AbstractSet[str]):
+        def __contains__(self, _permission: object) -> bool:
+            set_accesses.append("contains")
+            raise AssertionError("custom membership must not run")
+
+        def __iter__(self) -> Any:
+            set_accesses.append("iter")
+            raise AssertionError("custom iteration must not run")
+
+        def __len__(self) -> int:
+            set_accesses.append("len")
+            raise AssertionError("custom length must not run")
+
+    class Provider:
+        def __getattribute__(self, name: str) -> Any:
+            if name in {"readiness", "authorize"}:
+                provider_accesses.append(name)
+            return object.__getattribute__(self, name)
+
+        async def readiness(self) -> bool:
+            return True
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            return PermissionDecision.ALLOW
+
+    decision = asyncio.run(
+        authorize_fail_closed(
+            Provider(),
+            principal=_issuer().issue_user(
+                principal_id="telegram:123", authz_version=7
+            ),
+            permission="agent.use",
+            known_permissions=cast(Any, InfinitePermissions()),
+        )
+    )
+
+    assert decision is PermissionDecision.DENY
+    assert set_accesses == []
+    assert provider_accesses == []
+
+
+def test_authorize_fail_closed_rejects_oversized_exact_permission_set() -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    provider_accesses: list[str] = []
+
+    class Provider:
+        def __getattribute__(self, name: str) -> Any:
+            if name in {"readiness", "authorize"}:
+                provider_accesses.append(name)
+            return object.__getattribute__(self, name)
+
+        async def readiness(self) -> bool:
+            return True
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            return PermissionDecision.ALLOW
+
+    permissions = {f"permission.{index}" for index in range(513)}
+    permissions.add("agent.use")
+    decision = asyncio.run(
+        authorize_fail_closed(
+            Provider(),
+            principal=_issuer().issue_user(
+                principal_id="telegram:123", authz_version=7
+            ),
+            permission="agent.use",
+            known_permissions=permissions,
+        )
+    )
+
+    assert decision is PermissionDecision.DENY
+    assert provider_accesses == []
+
+
+@pytest.mark.parametrize(
+    "known_permissions", [{"agent.use"}, frozenset({"agent.use"})]
+)
+def test_authorize_fail_closed_accepts_exact_builtin_permission_sets(
+    known_permissions: set[str] | frozenset[str],
+) -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    class Provider:
+        async def readiness(self) -> bool:
+            return True
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            return PermissionDecision.ALLOW
+
+    decision = asyncio.run(
+        authorize_fail_closed(
+            Provider(),
+            principal=_issuer().issue_user(
+                principal_id="telegram:123", authz_version=7
+            ),
+            permission="agent.use",
+            known_permissions=known_permissions,
+        )
+    )
+
+    assert decision is PermissionDecision.ALLOW
+
+
 def test_authorize_fail_closed_accepts_maximum_permission_length() -> None:
     from gateway.authorization import PermissionDecision, authorize_fail_closed
 
@@ -645,6 +757,174 @@ def test_authorize_fail_closed_supports_non_coroutine_awaitables() -> None:
     )
 
     assert decision is PermissionDecision.ALLOW
+
+
+@pytest.mark.parametrize("phase", ["readiness", "authorize"])
+@pytest.mark.parametrize(
+    "failure_point", ["create_future", "call_later", "wait", "task"]
+)
+def test_authorize_fail_closed_closes_provider_coroutine_on_setup_failure(
+    phase: str,
+    failure_point: str,
+) -> None:
+    import gateway.authorization as authorization
+
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    created: list[Any] = []
+
+    class Provider:
+        @staticmethod
+        async def _result(value: object) -> object:
+            return value
+
+        def readiness(self) -> Any:
+            coroutine = self._result(True)
+            created.append(coroutine)
+            return coroutine
+
+        def authorize(self, **_kwargs: object) -> Any:
+            coroutine = self._result(PermissionDecision.ALLOW)
+            created.append(coroutine)
+            return coroutine
+
+    active_phase = ""
+
+    class PhaseProvider(Provider):
+        def readiness(self) -> Any:
+            nonlocal active_phase
+            active_phase = "readiness"
+            return super().readiness()
+
+        def authorize(self, **kwargs: object) -> Any:
+            nonlocal active_phase
+            active_phase = "authorize"
+            return super().authorize(**kwargs)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        failure_injected = False
+
+        def should_fail() -> bool:
+            nonlocal failure_injected
+            if active_phase != phase or failure_injected:
+                return False
+            failure_injected = True
+            return True
+
+        if failure_point == "wait":
+            original = authorization.asyncio.wait
+
+            async def injected_wait_failure(*args: Any, **kwargs: Any) -> Any:
+                if should_fail():
+                    raise RuntimeError("injected wait failure")
+                return await original(*args, **kwargs)
+
+            setattr(authorization.asyncio, "wait", injected_wait_failure)
+            restore = lambda: setattr(authorization.asyncio, "wait", original)
+        elif failure_point == "task":
+            original = authorization.asyncio.Task
+
+            def injected_task_failure(*args: Any, **kwargs: Any) -> Any:
+                if should_fail():
+                    raise RuntimeError("injected Task failure")
+                return original(*args, **kwargs)
+
+            setattr(authorization.asyncio, "Task", injected_task_failure)
+            restore = lambda: setattr(authorization.asyncio, "Task", original)
+        else:
+            original = getattr(loop, failure_point)
+
+            def injected_loop_failure(*args: Any, **kwargs: Any) -> Any:
+                if should_fail():
+                    raise RuntimeError(f"injected {failure_point} failure")
+                return original(*args, **kwargs)
+
+            setattr(loop, failure_point, injected_loop_failure)
+            restore = lambda: setattr(loop, failure_point, original)
+
+        try:
+            decision = await authorize_fail_closed(
+                cast(Any, PhaseProvider()),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+            )
+            await asyncio.sleep(0)
+        finally:
+            restore()
+
+        assert decision is PermissionDecision.DENY
+        assert failure_injected
+        assert len(created) == (1 if phase == "readiness" else 2)
+        assert all(coroutine.cr_frame is None for coroutine in created)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        asyncio.run(scenario())
+        created.clear()
+        gc.collect()
+
+
+def test_authorize_fail_closed_closes_unstarted_non_coroutine_awaitable_once() -> None:
+    import gateway.authorization as authorization
+
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    class CloseableAwaitable:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self.await_calls = 0
+
+        def __await__(self) -> Any:
+            self.await_calls += 1
+
+            async def resolve() -> bool:
+                return True
+
+            return resolve().__await__()
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    awaitable = CloseableAwaitable()
+
+    class Provider:
+        def readiness(self) -> CloseableAwaitable:
+            return awaitable
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            raise AssertionError("authorize must not run")
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        original = loop.create_future
+
+        def injected_failure() -> Any:
+            raise RuntimeError("injected create_future failure")
+
+        setattr(loop, "create_future", injected_failure)
+        try:
+            decision = await authorize_fail_closed(
+                cast(Any, Provider()),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+            )
+            await asyncio.sleep(0)
+        finally:
+            setattr(loop, "create_future", original)
+
+        assert decision is PermissionDecision.DENY
+
+    asyncio.run(scenario())
+
+    assert awaitable.await_calls == 0
+    assert awaitable.close_calls == 1
 
 
 def test_zero_deadline_tracks_suppress_then_finish_until_registry_drains() -> None:

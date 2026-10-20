@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
-from collections.abc import Iterable, Mapping, Set as AbstractSet
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Never, Protocol, TypeVar, runtime_checkable
+from typing import Any, Awaitable, Generic, Never, Protocol, TypeVar, runtime_checkable
 
 
 _MAX_IDENTITY_LENGTH = 256
@@ -16,6 +16,10 @@ _MAX_SCOPE_LENGTH = 256
 # Permissions are protocol identifiers, not payloads. 256 characters leaves ample
 # room for namespaced identifiers while bounding attacker-controlled input.
 _MAX_PERMISSION_LENGTH = 256
+# The permission catalog is trusted configuration, but still crosses this public
+# boundary. Exact built-in sets make length and iteration finite and side-effect
+# free; the cap bounds validation work before any provider access.
+_MAX_KNOWN_PERMISSIONS = 512
 # Keep authorization deadlines bounded to values every supported event loop can
 # represent operationally, and to a duration appropriate for an ingress check.
 _MAX_AUTHORIZATION_TIMEOUT_SECONDS = 60
@@ -246,7 +250,7 @@ async def authorize_fail_closed(
     *,
     principal: VerifiedPrincipal,
     permission: str,
-    known_permissions: AbstractSet[str],
+    known_permissions: set[str] | frozenset[str],
     resource: Mapping[str, object] | None = None,
     timeout_seconds: int | float = 1.0,
 ) -> PermissionDecision:
@@ -254,8 +258,9 @@ async def authorize_fail_closed(
 
     The principal must be a ``VerifiedPrincipal`` and the permission must be an
     exact, non-whitespace ``str`` of at most 256 characters. ``known_permissions``
-    must be a set-like object whose membership check succeeds. Invalid inputs deny
-    before provider methods run.
+    must be an exact built-in ``set`` or ``frozenset`` (subclasses are rejected),
+    contain no more than 512 exact valid strings, and include ``permission``.
+    Invalid inputs deny before provider methods run.
 
     ``timeout_seconds`` must be a finite exact ``int`` or ``float`` (not ``bool``)
     between zero and 60 seconds, inclusive. Invalid deadlines also deny before
@@ -275,14 +280,13 @@ async def authorize_fail_closed(
         return PermissionDecision.DENY
     if not _is_valid_permission(permission):
         return PermissionDecision.DENY
-    try:
-        if not isinstance(known_permissions, AbstractSet):
-            return PermissionDecision.DENY
-        if not all(_is_valid_permission(item) for item in known_permissions):
-            return PermissionDecision.DENY
-        if permission not in known_permissions:
-            return PermissionDecision.DENY
-    except (asyncio.CancelledError, Exception):
+    if type(known_permissions) not in (set, frozenset):
+        return PermissionDecision.DENY
+    if len(known_permissions) > _MAX_KNOWN_PERMISSIONS:
+        return PermissionDecision.DENY
+    if not all(_is_valid_permission(item) for item in known_permissions):
+        return PermissionDecision.DENY
+    if permission not in known_permissions:
         return PermissionDecision.DENY
     deadline_seconds = _validated_timeout_seconds(timeout_seconds)
     if deadline_seconds is None:
@@ -347,22 +351,57 @@ def _quarantined_task_count() -> int:
     return len(_QUARANTINED_AUTHORIZATION_TASKS)
 
 
-async def _normalize_awaitable(awaitable: Awaitable[_T]) -> _T:
-    return await awaitable
+@dataclass(slots=True)
+class _OwnedOperation(Generic[_T]):
+    """Own an awaitable from provider return through terminal cleanup."""
 
+    awaitable: Awaitable[_T]
+    task: asyncio.Task[_T] | None = None
+    wrapper_started: bool = False
+    _direct_coroutine: bool = False
+    _original_closed: bool = False
 
-def _create_owned_task(awaitable: Awaitable[_T]) -> asyncio.Task[_T]:
-    """Create an authorization task without consulting the loop task factory."""
+    async def _run_wrapped(self) -> _T:
+        self.wrapper_started = True
+        return await self.awaitable
 
-    loop = asyncio.get_running_loop()
-    coroutine = _normalize_awaitable(awaitable)
-    try:
-        return asyncio.Task(coroutine, loop=loop)
-    except BaseException:
-        coroutine.close()
-        if inspect.iscoroutine(awaitable):
-            awaitable.close()
-        raise
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Transfer ownership to a factory-independent task."""
+
+        if inspect.iscoroutine(self.awaitable):
+            self._direct_coroutine = True
+            coroutine = self.awaitable
+        else:
+            coroutine = self._run_wrapped()
+        try:
+            self.task = asyncio.Task(coroutine, loop=loop)
+        except BaseException:
+            coroutine.close()
+            if self._direct_coroutine:
+                self._original_closed = True
+            self._close_unstarted_original()
+            raise
+
+    def _close_unstarted_original(self) -> None:
+        if self._original_closed or self.wrapper_started or self._direct_coroutine:
+            return
+        self._original_closed = True
+        try:
+            close = getattr(self.awaitable, "close", None)
+            if callable(close):
+                close()
+        except BaseException:
+            pass
+
+    def cancel_and_cleanup(self) -> None:
+        self._close_unstarted_original()
+        if self.task is not None:
+            _cancel_and_quarantine(self.task)
+
+    def result(self) -> _T:
+        if self.task is None:
+            raise RuntimeError("owned operation was not started")
+        return self.task.result()
 
 
 def _expire_deadline(deadline: asyncio.Future[None]) -> None:
@@ -396,14 +435,18 @@ async def _await_with_deadline(
 ) -> _T | _DeadlineExpired:
     """Race an operation against a deadline without trusting cancellation."""
 
+    operation = _OwnedOperation(awaitable)
     deadline_seconds = _validated_timeout_seconds(timeout_seconds)
     if deadline_seconds is None:
-        if inspect.iscoroutine(awaitable):
-            awaitable.close()
+        operation.cancel_and_cleanup()
         return _DEADLINE_EXPIRED
 
     loop = asyncio.get_running_loop()
-    operation = _create_owned_task(awaitable)
+    try:
+        operation.start(loop)
+    except BaseException:
+        operation.cancel_and_cleanup()
+        raise
     try:
         deadline = loop.create_future()
         try:
@@ -413,21 +456,23 @@ async def _await_with_deadline(
             _consume_task_result(deadline)
             raise
     except BaseException:
-        _cancel_and_quarantine(operation)
+        operation.cancel_and_cleanup()
         raise
 
     try:
+        if operation.task is None:
+            raise RuntimeError("owned operation was not started")
         done, _pending = await asyncio.wait(
-            (operation, deadline), return_when=asyncio.FIRST_COMPLETED
+            (operation.task, deadline), return_when=asyncio.FIRST_COMPLETED
         )
     except BaseException:
         _cancel_and_consume_deadline(deadline, handle)
-        _cancel_and_quarantine(operation)
+        operation.cancel_and_cleanup()
         raise
 
     if deadline in done:
         _cancel_and_consume_deadline(deadline, handle)
-        _cancel_and_quarantine(operation)
+        operation.cancel_and_cleanup()
         return _DEADLINE_EXPIRED
 
     _cancel_and_consume_deadline(deadline, handle)

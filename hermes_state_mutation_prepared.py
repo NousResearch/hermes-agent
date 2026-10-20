@@ -141,7 +141,8 @@ def commit_refreshed_policy(db, *, epoch, session_id, old, new, generation):
     def write(conn):
         _epoch(conn, epoch)
         snapshot = local_snapshot(db, conn, session_id)
-        require_idle(db, conn, list({session_id, snapshot['target']}))
+        # A policy refresh edits no transcript: like a model pick, it lands beside a background review.
+        require_idle(db, conn, list({session_id, snapshot['target']}), review_lease_policy=REVIEW_LEASE_IGNORE)
         current = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()
         if snapshot['receipt']['policy'] != old or current is None or current[0] != generation:
             raise RuntimeStoreError('revision_conflict')

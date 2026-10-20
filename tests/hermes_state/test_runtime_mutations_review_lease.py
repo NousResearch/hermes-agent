@@ -417,3 +417,48 @@ def test_completion_note_lands_beside_a_background_review_and_still_refuses_a_fo
             db.append_completion_note(
                 "s", "adm-2", "later", "internal_notification", {}
             )
+
+
+def _refresh(db, epoch, sid, new):
+    from hermes_state_mutation_prepared import commit_refreshed_policy
+    from hermes_state_local import local_receipt
+
+    old = local_receipt(db, sid)["policy"]
+    generation = db.get_session(sid)["runtime_generation"]
+    return commit_refreshed_policy(
+        db, epoch=epoch, session_id=sid, old=old, new=new, generation=generation
+    )
+
+
+def test_policy_refresh_commits_beside_a_background_review(tmp_path):
+    """The owner's config refresh of an idle local session (``refresh_resumed_policy``) edits no
+    transcript: like a model pick, it lands beside a running review instead of keeping the
+    stale policy for the review's lifetime."""
+    from hermes_state_local import local_receipt
+    from tests.hermes_state.test_target_advance_fence import _local_session
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        sid = _local_session(db, epoch, tmp_path)
+        generation = db.get_session(sid)["runtime_generation"]
+        new = {**local_receipt(db, sid)["policy"], "max_turns": 7}
+        assert db.try_acquire_session_turn_lease(sid, _review_holder(), ttl_seconds=60)
+        assert _refresh(db, epoch, sid, new) == generation + 1
+        assert local_receipt(db, sid)["policy"] == new
+        assert db.get_session(sid)["runtime_generation"] == generation + 1
+
+
+def test_policy_refresh_still_refuses_a_foreground_holder(tmp_path):
+    from hermes_state_local import local_receipt
+    from tests.hermes_state.test_target_advance_fence import _local_session
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        sid = _local_session(db, epoch, tmp_path)
+        before = local_receipt(db, sid)["policy"]
+        generation = db.get_session(sid)["runtime_generation"]
+        assert db.try_acquire_session_turn_lease(sid, _foreground_holder(), ttl_seconds=60)
+        with pytest.raises(SessionTurnLeaseLostError):
+            _refresh(db, epoch, sid, {**before, "max_turns": 7})
+        assert local_receipt(db, sid)["policy"] == before
+        assert db.get_session(sid)["runtime_generation"] == generation

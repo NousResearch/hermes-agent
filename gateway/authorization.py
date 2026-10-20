@@ -13,6 +13,9 @@ from typing import Any, Awaitable, Never, Protocol, TypeVar, runtime_checkable
 
 _MAX_IDENTITY_LENGTH = 256
 _MAX_SCOPE_LENGTH = 256
+# Keep authorization deadlines bounded to values every supported event loop can
+# represent operationally, and to a duration appropriate for an ingress check.
+_MAX_AUTHORIZATION_TIMEOUT_SECONDS = 60
 _T = TypeVar("_T")
 
 
@@ -246,7 +249,8 @@ async def authorize_fail_closed(
     """Authorize a known permission, reducing every failure to DENY.
 
     ``timeout_seconds`` must be a finite exact ``int`` or ``float`` (not ``bool``)
-    greater than or equal to zero. Invalid deadlines deny before provider methods run.
+    between zero and 60 seconds, inclusive. Invalid deadlines deny before provider
+    methods run.
 
     This boundary deliberately emits no logs. Callers may audit safe identifiers and
     reason codes, but must never log the protected message or tool payload here.
@@ -258,15 +262,17 @@ async def authorize_fail_closed(
     if deadline_seconds is None:
         return PermissionDecision.DENY
     try:
-        ready = await _await_with_deadline(provider.readiness(), deadline_seconds)
+        readiness_coroutine = provider.readiness()
+        ready = await _await_with_deadline(readiness_coroutine, deadline_seconds)
         if ready is _DEADLINE_EXPIRED or ready is not True:
             return PermissionDecision.DENY
+        authorization_coroutine = provider.authorize(
+            principal=principal,
+            permission=permission,
+            resource=resource,
+        )
         decision = await _await_with_deadline(
-            provider.authorize(
-                principal=principal,
-                permission=permission,
-                resource=resource,
-            ),
+            authorization_coroutine,
             deadline_seconds,
         )
     except Exception:
@@ -285,10 +291,42 @@ def _consume_task_result(task: asyncio.Future[Any]) -> None:
         pass
 
 
+def _cancel_and_consume(task: asyncio.Future[Any]) -> None:
+    if task.done():
+        _consume_task_result(task)
+        return
+    task.cancel()
+    task.add_done_callback(_consume_task_result)
+
+
+def _schedule_awaitable(awaitable: Awaitable[_T]) -> asyncio.Future[_T]:
+    tasks_before = asyncio.all_tasks()
+    try:
+        return asyncio.ensure_future(awaitable)
+    except BaseException:
+        scheduled_task = next(
+            (
+                task
+                for task in asyncio.all_tasks() - tasks_before
+                if task.get_coro() is awaitable
+            ),
+            None,
+        )
+        if scheduled_task is not None:
+            _cancel_and_consume(scheduled_task)
+        elif inspect.iscoroutine(awaitable):
+            awaitable.close()
+        raise
+
+
 def _validated_timeout_seconds(value: object) -> int | float | None:
     if type(value) is int:
-        return value if value >= 0 else None
-    if type(value) is float and math.isfinite(value) and value >= 0:
+        return value if 0 <= value <= _MAX_AUTHORIZATION_TIMEOUT_SECONDS else None
+    if (
+        type(value) is float
+        and math.isfinite(value)
+        and 0 <= value <= _MAX_AUTHORIZATION_TIMEOUT_SECONDS
+    ):
         return value
     return None
 
@@ -304,27 +342,37 @@ async def _await_with_deadline(
             awaitable.close()
         return _DEADLINE_EXPIRED
 
-    operation = asyncio.ensure_future(awaitable)
-    deadline = asyncio.create_task(asyncio.sleep(deadline_seconds))
+    operation: asyncio.Future[_T] | None = None
+    deadline: asyncio.Future[None] | None = None
+    try:
+        operation = _schedule_awaitable(awaitable)
+        deadline_coroutine = asyncio.sleep(deadline_seconds)
+        deadline = _schedule_awaitable(deadline_coroutine)
+    except BaseException:
+        if operation is not None:
+            _cancel_and_consume(operation)
+        if deadline is not None:
+            _cancel_and_consume(deadline)
+        raise
+
     try:
         done, _pending = await asyncio.wait(
             (operation, deadline), return_when=asyncio.FIRST_COMPLETED
         )
     except BaseException:
-        operation.cancel()
-        deadline.cancel()
-        operation.add_done_callback(_consume_task_result)
-        deadline.add_done_callback(_consume_task_result)
+        _cancel_and_consume(operation)
+        _cancel_and_consume(deadline)
         raise
 
     if deadline in done:
-        operation.cancel()
-        operation.add_done_callback(_consume_task_result)
-        _consume_task_result(deadline)
+        _cancel_and_consume(operation)
+        try:
+            deadline.result()
+        except asyncio.CancelledError:
+            return _DEADLINE_EXPIRED
         return _DEADLINE_EXPIRED
 
-    deadline.cancel()
-    deadline.add_done_callback(_consume_task_result)
+    _cancel_and_consume(deadline)
     try:
         return operation.result()
     except asyncio.CancelledError:

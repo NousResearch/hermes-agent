@@ -32,22 +32,6 @@ def mark_planned_stop(pid: int | None = None) -> None:
         pass
 
 
-def separate_gateway_pids(name=None):
-    """This profile's gateway pids, minus the host multiplexer that serves it.
-
-    While the host serves a profile it publishes its OWN pid into that profile's runtime record
-    (``profiles/<name>/gateway.lock``), so ``find_gateway_pids()`` under ``-p <name>`` reports the
-    shared host as "this profile's gateway". Every "is there a separate --force gateway?" check read
-    it that way, stood down, and ``gateway stop`` fell through to SIGTERM the host: every served
-    profile went offline instead of one being parked (#141133). Any other pid is still a separate
-    gateway and keeps its own lifecycle.
-    """
-    from hermes_cli import gateway as gw
-    host = gw.host_multiplexer_serving(name)
-    host_pid = getattr(host, "pid", None)
-    return [pid for pid in gw.find_gateway_pids() if pid != host_pid]
-
-
 def host_scope_for_all_verb(owner):
     """Home a ``--all`` verb acts as: the live host owner's, else the default root.
 
@@ -74,7 +58,7 @@ def profile_lifecycle(command: str, args) -> bool:
         # verbs keep addressing its own gateway process even while a stale host record lists it.
         return False
     marker = parked_marker_path(home)
-    if command == "restart" and profile_is_parked(home) and not separate_gateway_pids(name):
+    if command == "restart" and profile_is_parked(home) and not gw.find_gateway_pids():
         # `stop` parked the profile AND dropped it from the host's served set, so the unserve/serve
         # path below finds no host serving it and would fall through to a standalone restart.
         # Unpark like `start` does; a live --force gateway keeps its own restart (pids non-empty).
@@ -98,7 +82,7 @@ def profile_lifecycle(command: str, args) -> bool:
         return True
 
     # A separate --force gateway still owns its normal process/service lifecycle.
-    if separate_gateway_pids(name):
+    if gw.find_gateway_pids():
         return False
     owner = gw._served_by_another_host_gateway()
     if owner is None and not gw.named_profile_served_by_running_multiplexer():
@@ -149,32 +133,17 @@ def print_parked_status() -> bool:
 
 
 def owned_gateway_pid() -> int | None:
-    """Return only a freshly confirmed process owned by this profile.
+    """This profile's own gateway pid, only on positive, fresh ownership evidence; else None.
 
-    A missing (or cached missing) host is not ownership evidence. Accept a fresh
-    host identity matching PID/home, otherwise require pinned process launch evidence:
-    a satellite's runtime status legitimately carries another home's shared PID.
+    A served profile's runtime record carries the host multiplexer's pid (#141133), so the recorded
+    pid alone never authorizes a stop. Every ``find_gateway_pids()`` caller (stop, uninstall's kill,
+    ``service_manager.is_running``, cron readiness, Windows start polls) reads it through here.
     """
-    from gateway import host_attach
-    from gateway.status import get_running_pid, _get_process_hermes_home, _same_hermes_home
-    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+    from gateway.status import get_running_pid, _get_process_hermes_home
 
     try:
         pid = get_running_pid()
-        if pid is None:
-            return None
-        host_attach.invalidate_host_gateway_cache()
-        owner = host_attach.host_gateway()
-        home = _get_process_hermes_home()
-        if owner is not None and owner.pid == pid:
-            if not _same_hermes_home(owner.home, home):
-                return None
-            # host_gateway refreshed liveness/incarnation and matched the control
-            # socket's PID/home. A bare foreground launch needs no argv profile.
-            if owner.served_known:
-                return pid if get_running_pid() == pid else None
-        process_home = _hermes_home_for_pid(pid, require_launch_identity=True)
-        if process_home is None or not _same_hermes_home(process_home, home):
+        if pid is None or not _pid_owned_by_home(pid, _get_process_hermes_home()):
             return None
         # The runtime may have switched owners while the OS/control probes ran.
         return pid if get_running_pid() == pid else None
@@ -182,6 +151,50 @@ def owned_gateway_pid() -> int | None:
         # An inaccessible rendezvous or process is never permission to kill it.
         logger.debug("Could not prove gateway process ownership", exc_info=True)
         return None
+
+
+def _pid_owned_by_home(pid: int, home) -> bool:
+    """Ownership ladder, cheapest proof first; the control socket is dialled only for the host's pid.
+
+    ``gateway status`` asks once per profile and every served profile's record names the host, so the
+    host record (a file read plus an incarnation check) settles those without a dial.
+    """
+    from gateway import host_attach, host_rendezvous as hr
+    from gateway.status import _same_hermes_home
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+
+    record = hr.read_record(hr.ROLE_GATEWAY)
+    is_host = record is not None and record.pid == pid and hr.record_names_live_owner(record)
+    if is_host and not _same_hermes_home(host_attach.record_home(record), home):
+        return False  # the live host, launched from another home
+    if _launch_record_owns(pid, home):
+        return True
+    if is_host:
+        host_attach.invalidate_host_gateway_cache()
+        owner = host_attach.host_gateway()
+        # A verified identity answer from the host's own home needs no argv profile (bare launch).
+        if owner is not None and owner.pid == pid and owner.served_known:
+            return _same_hermes_home(owner.home, home)
+    process_home = _hermes_home_for_pid(pid, require_launch_identity=True)
+    return process_home is not None and _same_hermes_home(process_home, home)
+
+
+def _launch_record_owns(pid: int, home) -> bool:
+    """``<home>/gateway.pid`` names *pid*'s exact incarnation as launched from *home*.
+
+    A gateway writes that file once, about its own launch home (the host never writes one into a
+    served profile), so it pins the profile resolved at launch: a ``gateway run --force`` that relied
+    on the sticky ``active_profile`` stays stoppable after the sticky choice changes, which argv and
+    environment alone cannot prove.
+    """
+    from gateway.status import (
+        _GATEWAY_KIND, _get_process_start_time, _pid_from_record, _read_pid_record, _same_hermes_home)
+
+    record = _read_pid_record() or {}
+    started, recorded_home = record.get("start_time"), record.get("hermes_home")
+    return (record.get("kind") == _GATEWAY_KIND and _pid_from_record(record) == pid
+            and started is not None and started == _get_process_start_time(pid)
+            and isinstance(recorded_home, str) and _same_hermes_home(recorded_home, home))
 
 
 def report_profile_stop_failure() -> None:
@@ -199,4 +212,19 @@ def report_profile_stop_failure() -> None:
         return
     gw.print_error("Gateway stop was not confirmed; a gateway may still be running. "
                    "Check gateway status and process ownership.")
+    _print_host_hint()
     raise SystemExit(1)
+
+
+def _print_host_hint() -> None:
+    """Name the refused pid when it is the host gateway serving this profile (#141133)."""
+    from gateway import host_rendezvous as hr
+    from gateway.status import get_running_pid
+
+    try:
+        pid, record = get_running_pid(), hr.read_record(hr.ROLE_GATEWAY)
+    except Exception:
+        return
+    if pid is not None and record is not None and record.pid == pid:
+        print(f"  PID {pid} is the host gateway serving this profile; stopping it would take every "
+              f"served profile offline. Stop the host instead: hermes gateway stop --all")

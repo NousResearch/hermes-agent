@@ -152,11 +152,16 @@ def test_stop_parks_a_served_profile_instead_of_stopping_the_host(homes, monkeyp
     host_pid = 4242
     owner = SimpleNamespace(home=root, pid=host_pid, profile_label='default',
                             profiles=('default', 'worker'), describe=lambda: 'test host')
+    from gateway import host_rendezvous as hr, status
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
     monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
-    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [host_pid])
-    monkeypatch.setattr(gw, 'host_multiplexer_serving', lambda *a: owner)
+    # The real find_gateway_pids: the profile's record names the live host, launched from root.
+    monkeypatch.setattr(status, 'get_running_pid', lambda **kw: host_pid)
+    monkeypatch.setattr(hr, 'read_record', lambda role, **kw: SimpleNamespace(pid=host_pid, home=str(root)))
+    monkeypatch.setattr(hr, 'record_names_live_owner', lambda rec: True)
+    monkeypatch.setattr(gw, '_get_service_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_scan_gateway_pids', lambda *a, **kw: [])
     monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: owner)
     monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda *a: True)
     calls = []
@@ -492,8 +497,11 @@ def test_same_home_record_requires_identity_and_stable_pid(homes, monkeypatch, v
     from hermes_cli import gateway as gw, dashboard_procs
     root, _ = homes
     monkeypatch.setenv('HERMES_HOME', str(root))
+    from gateway import host_rendezvous as hr
     owner = host_attach.HostGateway(4242, root, ('default',), served_known=verified)
     monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: owner)
+    monkeypatch.setattr(hr, 'read_record', lambda role, **kw: SimpleNamespace(pid=4242, home=str(root)))
+    monkeypatch.setattr(hr, 'record_names_live_owner', lambda rec: True)
     monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: None)
     pids = iter([4242, 4343 if changed else 4242])
     monkeypatch.setattr(status, 'get_running_pid', lambda: next(pids))

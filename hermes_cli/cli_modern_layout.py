@@ -124,6 +124,9 @@ def thought_title(text: str) -> str:
 def thought_line(seconds: float | None, text: str) -> str:
     """``∴ Thought for 3s · Planning the change`` (dim italic), closing a reasoning block."""
     title = thought_title(text)
+    # The reasoning is printed above this line; a title that IS the whole reasoning would repeat it.
+    if title and title == " ".join((text or "").split()).strip("*# "):
+        title = ""
     took = t("cli.modern.thought_for", seconds=f"{max(seconds or 0.0, 0.0):.0f}") if seconds else t("cli.modern.thought")
     body = f"{took} · {title}" if title else took
     return f"\x1b[2;3m∴ {body}{_RST}"

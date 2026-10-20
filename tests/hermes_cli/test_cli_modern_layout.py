@@ -48,6 +48,28 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     assert any("Added multiply to calc.py." in line for line in rows)
 
 
+def test_one_line_reasoning_is_shown_once(monkeypatch):
+    """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""
+    from cli import HermesCLI
+    import cli as climod
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli.show_reasoning, cli.reasoning_full = True, True, False
+    cli.final_response_markdown, cli.show_timestamps = "raw", False
+    cli._reset_stream_state()
+    emitted: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
+    monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 100)
+    monkeypatch.setattr(HermesCLI, "_scrollback_box_width", lambda self: 100)
+    cli._stream_reasoning_delta("scripted reasoning about gamma zeta-reason")
+    cli._stream_delta("GAMMA answered.\n")
+    cli._flush_stream()
+
+    text = "\n".join(emitted)
+    assert text.count("scripted reasoning about gamma zeta-reason") == 1, emitted
+    assert any(line.startswith("∴") for line in text.split("\n")), emitted
+
+
 @pytest.mark.parametrize("modern", [True, False])
 def test_status_line_sits_under_the_composer_only_in_the_glyph_layout(modern):
     from cli import HermesCLI

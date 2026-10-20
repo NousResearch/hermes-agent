@@ -120,7 +120,7 @@ For every `clarify` call:
 - never include fake form fields in the question such as `enter directory here`, blank lines to fill in, or underscores like `_____`
 - for open-ended path questions, ask only the plain sentence; the user types in the normal CLI prompt below the panel
 
-If a `clarify` call returns an error, inspect the error text, correct the payload, and retry once with a valid `question` and clean choices.
+If a `clarify` call returns an error, inspect the error text, correct the payload, and retry once with a valid `questions` array and clean choices.
 
 When `clarify` is available and the dry run reveals any required user decision, your **next action must be a `clarify` tool call**.
 Do not end the turn with a normal assistant message such as:

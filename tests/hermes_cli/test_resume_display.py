@@ -7,6 +7,7 @@ conversation with correct formatting, truncation, and config behavior.
 
 from io import StringIO
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 
@@ -280,7 +281,7 @@ class TestPreloadResumedSession:
 
         assert result is False
         output = buf.getvalue()
-        assert "Session not found" in output
+        assert t("cli.resume.session_not_found", session_id="nonexistent_session") in output
 
 
 

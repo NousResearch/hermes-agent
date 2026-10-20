@@ -14,6 +14,7 @@ export consumers (trace upload, context guard) read the transcript as-is.
 import pytest
 
 from hermes_state import SessionDB
+import itertools
 
 
 @pytest.fixture()
@@ -94,7 +95,7 @@ def test_acp_restore_heals_alternation_for_live_replay(db):
     roles = [m["role"] for m in state.history]
     # No consecutive user turns — the durable user;user wedge was healed.
     assert roles == ["user", "assistant", "user", "assistant"], roles
-    for a, b in zip(roles, roles[1:]):
+    for a, b in itertools.pairwise(roles):
         assert not (a == "user" and b == "user"), "unhealed user;user in ACP live replay"
     # No user input lost — both user texts survive, merged in order.
     merged = state.history[2]["content"]

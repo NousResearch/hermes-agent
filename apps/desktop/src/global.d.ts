@@ -2,12 +2,15 @@ import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { ChallengeOutcome } from '../electron/challenge-window'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
-import type { PoolLimits } from '../electron/pool-limits'
-import type { GrowRequest } from '../electron/window-growth'
+import type { KeepAwakeMode } from '../electron/power-save'
+import type { UpdateHoldWire } from '../electron/update-hold-types'
+import type { UpdateRunReport } from '../electron/updater/update-metrics'
+import type { WindowSizeMode } from '../electron/window-size-types'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -16,7 +19,12 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
-import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
+import type {
+  QuickEntryStatePush,
+  QuickEntryStatus,
+  QuickEntrySubmitPayload,
+  QuickEntrySubmitResult
+} from './store/quick-entry'
 
 export {}
 
@@ -26,30 +34,38 @@ declare global {
   interface Window {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
-      // the window's backend; pass a named profile to lazily spawn/reuse that
-      // profile's backend from the pool.
-      getConnection: (
-        profile?: string | null,
-        opts?: { priority?: 'foreground' | 'background' }
-      ) => Promise<HermesConnection>
+      // the window's backend; pass a named profile to dial/reuse that profile's
+      // cached gateway descriptor.
+      getConnection: (profile?: string | null) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
-        priority?: 'foreground' | 'background'
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
       }) => Promise<GatewayWsUrlResult>
+      // One-use plugin socket URL for a local gateway (its native grant rides
+      // a header main attaches to that dial); null for every other backend;
+      // { refused: 'permission' } when main refused the grant mint for a
+      // permission reason. Any other failure rejects.
+      getPluginWsUrl?: (payload: {
+        connectionId?: null | string
+        path: string
+        pluginId: string
+        profile?: null | string
+      }) => Promise<null | string | { refused: 'permission' }>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Credential-free routes across the union connection registry. The
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
       getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
+      // Loopback origin serving the YouTube player wrapper (packaged file:// renderer).
+      getEmbedHostOrigin?: () => Promise<string>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -57,19 +73,6 @@ declare global {
       // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
-      // Keepalive: mark a pool profile backend as recently used so the idle
-      // reaper spares it while its chat is active. `activeTurn` reports whether
-      // a prompt turn leases the backend (early skip for cooperative
-      // retirement; the backend probe is the proof).
-      touchBackend: (profile?: string | null, options?: { activeTurn?: boolean }) => Promise<{ ok: boolean }>
-      // Pool sizing (Settings → Advanced): device-local, live-applied by the
-      // main process. get resolves the limits currently in force; set applies
-      // (and persists) new ones, evicting/reaping to converge immediately.
-      getPoolLimits: () => Promise<PoolLimits>
-      setPoolLimits: (limits: { maxBackends?: number; idleMs?: number }) => Promise<{
-        ok: boolean
-        limits: PoolLimits
-      }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
@@ -78,7 +81,7 @@ declare global {
       // a running subagent's session.
       openSessionWindow: (
         sessionId: string,
-        opts?: { profile?: null | string; watch?: boolean }
+        opts?: { connectionId?: null | string; profile?: null | string; watch?: boolean }
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
@@ -94,6 +97,14 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
+      // main relays opaque payloads to the other Hermes renderer windows;
+      // renderer code keeps the destination exact and rejects anything not
+      // addressed to its window.
+      windowRelay?: {
+        send: (payload: unknown) => void
+        onMessage: (callback: (payload: unknown) => void) => () => void
+      }
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
@@ -113,16 +124,7 @@ declare global {
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
       chatOnboarding?: {
-        grow: (request: GrowRequest) => void
-        soloBoot: () => void
-      }
-      introReveal?: {
-        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
-        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
-        skip: () => void
-        ready: () => void
-        onSkip: (callback: () => void) => () => void
-        onClosed: (callback: () => void) => () => void
+        size: (mode: WindowSizeMode) => void
       }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
@@ -183,7 +185,8 @@ declare global {
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
-        submit: (payload: QuickEntrySubmitPayload) => void
+        submit: (payload: QuickEntrySubmitPayload) => Promise<QuickEntrySubmitResult>
+        ackSubmit: (correlationId: string, result: QuickEntrySubmitResult) => void
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +
@@ -193,10 +196,17 @@ declare global {
         // Quick window subscribes to those pushes.
         onState: (callback: (payload: QuickEntryStatePush) => void) => () => void
         // Primary renderer subscribes to submits captured by the quick window.
-        onSubmit: (callback: (payload: QuickEntrySubmitPayload | string) => void) => () => void
+        onSubmit: (
+          callback: (payload: (QuickEntrySubmitPayload & { correlationId: string }) | string) => void
+        ) => () => void
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
         onShown: (callback: () => void) => () => void
+        // Quick window subscribes to the outcome of a submit whose relay timed
+        // out (delivery is unknown until this arrives).
+        onLateResult: (
+          callback: (payload: { correlationId: string; result: QuickEntrySubmitResult }) => void
+        ) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
@@ -243,7 +253,10 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLoginConnectionConfig: (
+        remoteUrl: string,
+        options?: DesktopOauthLoginOptions
+      ) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
@@ -269,6 +282,8 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      /** Launch -> ready ms for the first caller per app launch, null afterwards. Absent on older shells. */
+      claimStartupLatency?: () => Promise<null | number>
       requestMicrophoneAccess: () => Promise<boolean>
       /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
       readWindowBelow?: () => Promise<{
@@ -282,15 +297,15 @@ declare global {
           title: string
         } | null
       } | null>
-      readFileDataUrl: (filePath: string) => Promise<string>
+      readFileDataUrl: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
-      readFileDataUrlForAttach?: (filePath: string) => Promise<string>
+      readFileDataUrlForAttach?: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */
       dataUrlReadMax?: {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
-      readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      readFileText: (filePath: string) => Promise<HermesReadFileTextResult | HermesReadFileErrorResult>
       /** Full-source read for runtime desktop plugins (readFileText truncates
        *  at the 512 KiB preview cap). Absent on older shells — callers fall
        *  back to readFileText and must reject a `truncated` result. */
@@ -302,6 +317,13 @@ declare global {
         filters?: Array<{ extensions: string[]; name: string }>
         title?: string
       }) => Promise<null | string>
+      /** Save dialog + main-process write of renderer-supplied text (/save; the gateway may be remote). */
+      saveTextFileAs?: (request: {
+        content: string
+        defaultPath?: string
+        filters?: Array<{ extensions: string[]; name: string }>
+        title?: string
+      }) => Promise<{ canceled?: boolean; path?: string; saved: boolean }>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
       saveGatewayFile?: (payload: {
@@ -343,7 +365,10 @@ declare global {
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
-      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
+      /** Resolves to `HermesReadFileErrorResult` when the watched file was
+       *  already gone at call time (a restored tab probing a deleted path) —
+       *  structured data instead of a rejection, matching the read handlers. */
+      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch | HermesReadFileErrorResult>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
        *  registry + onPreviewFileChanged channel as watchPreviewFile. Optional:
        *  older Electron shells predate it and fall back to the readdir poll. */
@@ -358,15 +383,13 @@ declare global {
       translucencySupported?: boolean
       /** Feature flag: the local-models UI is enabled. */
       localModelsEnabled?: boolean
-      /** Launch flag shared with every backend the app starts. */
-      guestOnboardingEnabled?: boolean
+      /** Dev-only launch flag (`--fresh-install`, unpackaged builds): onboarding treats this launch as a fresh install. */
+      assumeFreshInstall?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
-      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
-       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
-      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
-      setKeepAwake?: (on: boolean) => void
+      setKeepAwake?: (mode: KeepAwakeMode) => void
+      onKeepAwakeOffer?: (callback: () => void) => () => void
       minimizeToTray?: {
         get: () => Promise<{ enabled: boolean; available: boolean }>
         set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
@@ -386,8 +409,21 @@ declare global {
         }) => void
       ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
+      /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
+      setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
+      /** The free tier's browser challenge (electron/challenge-window.ts): load
+       *  the account service's page in a hidden window, revealed only if the
+       *  page asks for the human. Resolves with how the window ended. */
+      freeTierChallenge?: {
+        run: (request: {
+          url: string
+          required: boolean
+          expiresIn?: number
+          attempt?: number
+        }) => Promise<ChallengeOutcome>
+      }
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
        *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
@@ -410,6 +446,17 @@ declare global {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
+      preparedSubmissions?: {
+        read: () => Promise<string>
+        update: (key: string, entry: string | null) => Promise<void>
+        /** Atomic in the main process: replace `key` only while it holds exactly `expected`
+         *  (null = absent). `current` is the record stored afterwards. Group Send requires it. */
+        compareAndSet?: (
+          key: string,
+          expected: string | null,
+          entry: string | null
+        ) => Promise<{ applied: boolean; current: string | null }>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>
@@ -441,8 +488,9 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
-      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
-      logsRoot?: () => Promise<string>
+      /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
+       *  profile) — error card "Open Logs". */
+      logsRoot?: (profile?: string) => Promise<string>
       // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
       // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
       // so one agent-plugin package can ship a desktop UI half. Optional:
@@ -569,9 +617,6 @@ declare global {
       ) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
-      // Cooperative pool retirement: main is stopping the pooled backend under
-      // `poolKey` for a foreground open. The renderer parks that scope.
-      onPoolBackendRetiring?: (callback: (payload: { poolKey: string }) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
@@ -585,6 +630,12 @@ declare global {
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
+      // The blocked boot screen's actions (an earlier update still holds the install).
+      updateHold: {
+        recheck: () => Promise<{ ok: boolean }>
+        quit: () => Promise<{ ok: boolean }>
+        startAnyway: (request: { holdId: string; confirmed: true }) => Promise<{ ok: boolean }>
+      }
       repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
@@ -600,13 +651,27 @@ declare global {
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
-        setBranch: (name: string) => Promise<{ branch: string }>
+        /** Persist this source install's update channel and return the fresh check. */
+        setChannel?: (name: 'main' | 'stable') => Promise<DesktopUpdateStatus>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
+        /** Claim the pending packaged self-update run (null when none or already claimed). */
+        takePendingRun?: () => Promise<UpdateRunReport | null>
+        /** `sent` deletes the claimed record; false keeps it for the next attach. */
+        ackPendingRun?: (sent: boolean) => Promise<void>
+        onPendingRun?: (callback: () => void) => () => void
+      }
+      desktopMetrics?: {
+        /** Mirror this window's focused profile and its opt-in; false deletes that profile's pending crashes. */
+        setEnabled?: (on: boolean, profile: string) => Promise<void>
+        /** Claim this window's profile's pending renderer-crash reasons (null when off, none, or claimed). */
+        takeRendererCrashes?: () => Promise<{ reasons: Array<'crash' | 'killed' | 'oom' | 'other'> } | null>
+        /** `sent` drops the claimed reasons; false keeps them for the next attach. */
+        ackRendererCrashes?: (sent: boolean) => Promise<void>
       }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+        openAppsSettings: () => Promise<void>
       }
       themes: {
         // Download a VS Code Marketplace extension and return the raw color
@@ -766,6 +831,8 @@ export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 export interface DesktopUninstallSummary {
   /** Local package ownership, resolved by Electron before offering removal. */
   code_removal_allowed: boolean
+  /** Native removal steps when the OS or a package manager owns removal. */
+  native_removal_instructions: null | string
   hermes_home: string
   agent_installed: boolean
   gui_installed: boolean
@@ -822,8 +889,16 @@ export interface DesktopUpdateStatus {
   currentVersion?: string
   /** The R2 channel name; independent of source branch and package version. */
   channel?: string
+  /** The install's source_check can persist a channel (older runtimes cannot). */
+  channelSelectable?: boolean
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
+  /** Source stable: the release version the channel resolves to, e.g. `0.21.6`. */
+  sourceVersion?: string
+  /** Source stable: true when forward-only (newer than the release); absent from older checkers. */
+  aheadOfRelease?: boolean
+  /** Source stable: the checkout already contains the release, so installing it moves back. */
+  rollback?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
@@ -902,6 +977,8 @@ export interface DesktopPluginProfileRoute {
   // across sources.
   connectionId: string
   mode: 'local' | 'remote'
+  // Electron's authoritative registry primary. Absent on older shells.
+  primary?: true
   profile: string
   targetProfile: string
 }
@@ -916,7 +993,8 @@ export interface HermesConnection {
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
-  authMode?: 'oauth' | 'token'
+  // 'native': this machine's gateway; no static token, per-call private grants.
+  authMode?: 'native' | 'oauth' | 'token'
   remoteHost?: string
   remoteIdentity?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
@@ -1039,6 +1117,9 @@ export interface DesktopConnectionConfigInput {
   sshKeyPath?: string
   sshRemoteHermesPath?: string
   sshRemoteProfile?: string
+  // For a URL-remote/cloud per-profile override: the profile name on the remote
+  // host when it differs from this Desktop routing label.
+  remoteProfile?: string
 }
 
 export interface DesktopConnectionTestResult {
@@ -1050,6 +1131,7 @@ export interface DesktopConnectionTestResult {
     | 'auth-failed'
     | 'hermes-not-found'
     | 'host-key-changed'
+    | 'interactive-auth'
     | 'timeout'
     | 'unreachable'
     | 'unsupported-platform'
@@ -1188,6 +1270,8 @@ export interface DesktopManagedUpdateReceipt {
   preVersion?: string
   postVersion?: string
   stopReason?: string
+  followups?: Array<{ step: string; reason: string }>
+  userAction?: { step: string; reason: string } | null
 }
 
 export interface DesktopManagedConnectionUpdateResult {
@@ -1200,6 +1284,8 @@ export interface DesktopManagedConnectionUpdateResult {
   exitCode: number | null
   receipt: DesktopManagedUpdateReceipt | null
   scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  /** Post-commit steps a successful update still owes (named in `message`). */
+  owed?: Array<{ step: string; reason: string }>
   error?: string
   message?: string
 }
@@ -1237,6 +1323,29 @@ export interface DesktopConnectionProbeResult {
 export interface ExternalOpenFailedPayload {
   url: string
   message?: string
+  /** Machine-readable failure class; the dialog picks localized copy per code. */
+  code?: 'missing-file'
+}
+
+export interface DesktopOauthLoginOptions {
+  /**
+   * Registry-draft identity for a sign-in that runs before the draft is
+   * saved. The main process derives the login window's cookie partition from
+   * the settled connection id; without it an unsaved draft's session lands in
+   * the legacy shared jar the saved connection never reads.
+   */
+  connectionId?: null | string
+  /** Draft label — used to mint the id when `connectionId` is absent. */
+  label?: string
+  /**
+   * Draft entry kind — the kind the save will persist. Together with
+   * `authMode` it gates the pre-save cookie jar: only a cookie-auth remote
+   * draft gets its own jar; cloud and token drafts sign in on the legacy
+   * shared jar, which is what they read after the save.
+   */
+  kind?: DesktopConnectionKind
+  /** Draft auth mode ('oauth' | 'token') the save will persist. */
+  authMode?: 'oauth' | 'token'
 }
 
 export interface DesktopOauthLoginResult {
@@ -1244,6 +1353,11 @@ export interface DesktopOauthLoginResult {
   baseUrl: string
   connected: boolean
   error?: string
+  /**
+   * The connection id the session was written for. A pre-save sign-in should
+   * pin this into the draft so the later save reuses the same id (and jar).
+   */
+  connectionId?: string
 }
 
 export interface DesktopOauthLogoutResult {
@@ -1318,7 +1432,12 @@ export interface DesktopBootProgress {
   /** Structured HTTP status when the boot failure carried one (e.g. 503). */
   statusCode?: number | null
   timestamp: number
+  /** Set while an earlier update's hold keeps the local backend from starting (blocked boot screen). */
+  updateHold?: UpdateHoldWire | null
 }
+
+/** What holds the install while the boot is blocked: one definition, shared with the main process. */
+export type { UpdateHoldWire } from '../electron/update-hold-types'
 
 // First-launch install ("bootstrap") event types -- emitted by
 // electron/bootstrap-runner.ts and observed by the renderer install overlay.
@@ -1440,7 +1559,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string
@@ -1454,6 +1573,19 @@ export interface HermesReadFileTextResult {
   path: string
   text: string
   truncated?: boolean
+}
+
+/** Structured failure for a preview read. The main process returns this (it
+ *  does NOT reject the IPC call) when the file is simply not on disk — a
+ *  restored preview tab or transcript reference pointing at a deleted/moved
+ *  file, or a path under a cleared /tmp, is an expected outcome that the
+ *  renderer already displays as "preview unavailable". Other errors still
+ *  reject as before. */
+export interface HermesReadFileErrorResult {
+  ok: false
+  error: string
+  message: string
+  path?: string
 }
 
 export interface HermesPreviewWatch {

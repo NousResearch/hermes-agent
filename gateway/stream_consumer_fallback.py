@@ -58,7 +58,9 @@ class StreamFallbackMixin:
             # the continuation re-sends the broken word's tail and reads as an
             # ordinary continuation.  A prefix with no boundary (one very long
             # token) keeps the original cut rather than re-sending the whole reply.
-            if cut < len(final_text):
+            # A prefix that already ends on a whole word needs no back-up: doing it
+            # re-sent that word at the seam.
+            if cut < len(final_text) and not final_text[cut].isspace() and not final_text[cut - 1].isspace():
                 boundary = max(
                     final_text.rfind(" ", 0, cut),
                     final_text.rfind("\n", 0, cut),
@@ -69,14 +71,14 @@ class StreamFallbackMixin:
         return final_text
 
     @staticmethod
-    def _split_text_chunks(text: str, limit: int, len_fn: "Callable[[str], int]" = len,
+    def _split_text_chunks(text: str, limit: int, len_fn: Callable[[str], int] = len,
                            ) -> list[str]:
         """Split text for fallback sends: newline-preferred, fence-balanced across chunks."""
         from gateway.platforms.helpers import split_text_fence_aware
         return split_text_fence_aware(text, limit, len_fn, prefer_paragraphs=False,
                                       balance_fences=True)
 
-    def _truncate_for_stream(self, text: str, limit: int, len_fn: "Callable[[str], int]",
+    def _truncate_for_stream(self, text: str, limit: int, len_fn: Callable[[str], int],
                              ) -> list[str]:
         """Split via the adapter's canonical truncate_message (platform-specific rules);
         non-base test doubles / legacy adapters keep the two-argument call shape."""
@@ -206,10 +208,10 @@ class StreamFallbackMixin:
         self._mark_final_delivered(record=final_text)
         return None
 
-    def _fallback_len_budget(self) -> "tuple[Callable[[str], int], int]":
+    def _fallback_len_budget(self) -> tuple[Callable[[str], int], int]:
         """(len_fn, raw_limit) for fallback chunking — per-chat cap/unit on base adapters."""
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _len_fn: "Callable[[str], int]" = len
+        _len_fn: Callable[[str], int] = len
         if isinstance(self.adapter, _BasePlatformAdapter):
             _len_fn = self.adapter.message_len_fn
             try:  # per-chat cap/unit (relay adapter fronting N platforms)

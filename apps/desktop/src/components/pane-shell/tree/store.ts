@@ -20,6 +20,7 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
+  anchorsFirst,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -44,6 +45,7 @@ import {
   type SplitNode,
   type TabStripMode
 } from './model'
+import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
 
@@ -251,9 +253,7 @@ const $paneSharePartners = modeLayout.atom<Record<string, string>>(
   () => ({}),
   Codecs.json(value =>
     value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner)
-        )
+      ? Object.fromEntries(Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner))
       : {}
   )
 )
@@ -321,8 +321,8 @@ function rememberPaneShare(tree: LayoutNode, paneId: string) {
     // partner-validated, so it records without a partner and falls back to
     // even on any mismatched recall.
     const partnerGroup = parent.children[partner] as LayoutNode
-    const partnerPane =
-      partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
+
+    const partnerPane = partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
 
     $paneShares.set({ ...$paneShares.get(), [paneId]: share })
 
@@ -939,7 +939,7 @@ export function removeTreePane(paneId: string) {
  *  Usually the root itself (Default, Focus); in a column-root layout (Terminal
  *  deck, Quad) it's the row child that holds sessions/workspace/files. Returns
  *  null when the tree has no row split with side-eligible panes. */
-function rootRow(): SplitNode | null {
+export function rootRow(): SplitNode | null {
   const tree = $layoutTree.get()
 
   if (!tree || tree.type !== 'split') {
@@ -1543,7 +1543,6 @@ export function adoptContributedPanes(): void {
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
-
   const dismissed = $dismissedPanes.get()
 
   // Enforced dock invariants run FIRST: they re-home panes that are ALREADY
@@ -1555,7 +1554,8 @@ export function adoptContributedPanes(): void {
   // turn it into a track that steals width from a zone, which is the whole
   // thing floating exists to avoid.
   const missing = panes.filter(
-    c => !inTree.has(c.id) && !dismissed.has(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
+    c =>
+      !inTree.has(c.id) && !dismissed.has(c.id) && !isTreePaneParked(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
   )
 
   if (missing.length === 0) {
@@ -1568,7 +1568,7 @@ export function adoptContributedPanes(): void {
 
   let next = healed
 
-  for (const pane of missing) {
+  for (const pane of anchorsFirst(missing, id => dataOf(id)?.dock?.pane)) {
     const dock = dataOf(pane.id)?.dock
     const placement = placementOf(pane.id) ?? 'right'
 
@@ -1718,15 +1718,7 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(
-        tree,
-        anchor.id,
-        paneId,
-        pos,
-        undefined,
-        true,
-        recalledEdgeWeights(paneId, anchorPaneId)
-      )
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId, anchorPaneId))
 
   if (next && next !== tree) {
     commit(next)

@@ -11,7 +11,9 @@ import time
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
-from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
+from hermes_state_keys import CRON_PRINCIPAL_ID
+from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
@@ -57,12 +59,26 @@ def escape_like(text: str) -> str:
 
 
 _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
-_PREVIEW_SCAFFOLDED_SQL = f"m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+# User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
+# the typed request sits at the tail (auto-load) or behind the instruction marker.
+# No LIKE wildcards in either prefix, so no ESCAPE clause is needed.
+_PREVIEW_SCAFFOLDED_SQL = (
+    f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+    f" OR m.content LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
 _SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 
 def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
+
+
+# ``display_metadata`` flag stamped on the user row a busy-queue accept writes (#111868/#121374
+# accept-time durability). The in-memory queue drain re-places an unmarked row at the transcript
+# end and deactivates this one; a backend restart discards the queue with nothing left to retire
+# the accept-time row, so ``reopen_session`` deactivates still-marked rows (#125577) — the marker
+# is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
+# turn's row (which #123532 deliberately keeps active).
+QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 
 
 def _sql_json_extract(expression: str, path: str) -> str:
@@ -141,10 +157,13 @@ def _shape_preview(raw: Any) -> str:
     return text[:_PREVIEW_MAX_CHARS] + "..." if len(text) > _PREVIEW_MAX_CHARS else text
 
 
-# Correlated ``_preview_raw`` column for a ``sessions s`` row.
-_PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m"
-    f" WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL AND {_PREVIEW_ELIGIBLE_SQL}"
-    f" ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
+def _sql_preview_raw(session_id_expr: str = "s.id") -> str:
+    """Correlated ``_preview_raw`` column: the first eligible user message of *session_id_expr*.
+    ``INDEXED BY`` walks the session in timestamp order and stops at the first eligible row; with planner
+    stats older than idx_messages_session_id, SQLite otherwise reads and sorts the whole session (#119403)."""
+    return (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m INDEXED BY idx_messages_session"
+        f" WHERE m.session_id = {session_id_expr} AND m.role = 'user' AND m.content IS NOT NULL"
+        f" AND {_PREVIEW_ELIGIBLE_SQL} ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
@@ -201,6 +220,17 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
+    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
+    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
+    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
+    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in ("_branched_from", "_delegate_from", "_reset_from")
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
+
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
 _RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
@@ -231,7 +261,9 @@ def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
     skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
     session with no trusted cell at all is NULL."""
-    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+    # Pinned for the same reason as _sql_preview_raw (#119403).
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m INDEXED BY idx_messages_session"
+        f" WHERE _act_m.session_id = {session_id_expr}"
         f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
     return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
         f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")
@@ -249,7 +281,12 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+# v32 (#140315): no data migration. #106742 added runtime_epoch, session_admissions, worker_executions,
+# worker_receipts and three columns to SCHEMA_SQL under v31. Drift is detected by the schema read probe
+# (schema_read_probe_statements), never by this number, and its catch-up is the declarative
+# executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
+# idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
+SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -298,7 +335,7 @@ _FTS_OLD_INDEXED_CONTENT_SQL = _fts_indexed_content_sql("old")
 MAX_FTS5_QUERY_CHARS = 2_048
 
 
-def stat_db_file_identity(path) -> "tuple[int, int] | None":
+def stat_db_file_identity(path) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` for *path*, or None.  st_ino=0 (Windows, some network FS) would false-positive
     every replaced-file check, so it counts as unknown."""
     try:
@@ -322,6 +359,26 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
+    """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
+    matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
+    is not a surface and stays unmatched until an upsert stamps the real creator."""
+    labels = list(sources or [])
+    if not labels:
+        return "", []
+    surfaces = list(local_created_sources or ())
+    if not surfaces:
+        return f"s.source IN ({_placeholders(labels)})", labels
+    non_local = [item for item in labels if item != "local"]
+    local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
+    if not non_local:
+        return local_sql, list(surfaces)
+    return (
+        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        [*non_local, *surfaces],
+    )
+
+
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
 # died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
@@ -333,6 +390,43 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
     ids = list(ids)
     for start in range(0, len(ids), size):
         yield ids[start:start + size]
+
+
+def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=None):
+    """Fire ``on_session_delete`` after a committed delete or deliberate archive (#124511).
+
+    Call right after the write transaction commits (before follow-up cleanup that can raise), with
+    the ids it removed or, for ``reason="archive"``, hid. *primary* is the session the caller asked
+    for; without it the first id stands in (bulk sweeps). ``deleted_ids`` rides along when more
+    than one row went. Dispatch runs under the store's own profile home, so a process touching
+    another profile's store (``sessions repair-profiles``) reaches THAT profile's plugins.
+    Late-bound and fail-open: never breaks the delete.
+    """
+    ids = sorted({sid for sid in (deleted_ids or ()) if isinstance(sid, str) and sid})
+    if not ids:
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        from hermes_constants import (
+            get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
+        )
+
+        home = os.path.dirname(os.path.abspath(os.fspath(db.db_path)))
+        profile = profile_name_for_home(home)
+        payload: dict = {"session_id": primary if primary in ids else ids[0], "reason": reason, "profile": profile}
+        if len(ids) > 1:
+            payload["deleted_ids"] = ids
+        if sessions_dir is not None:
+            payload["sessions_dir"] = str(sessions_dir)
+        rebind = profile is not None and os.path.realpath(home) != os.path.realpath(get_hermes_home())
+        token = set_hermes_home_override(home) if rebind else None
+        try:
+            invoke_hook("on_session_delete", **payload)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+    except Exception:
+        logger.warning("on_session_delete dispatch failed", exc_info=True)
 
 
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
@@ -350,7 +444,10 @@ CREATE TABLE IF NOT EXISTS system_prompts (
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    runtime_revision INTEGER NOT NULL DEFAULT 0,
+    runtime_generation INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL,
+    created_source TEXT,
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,
@@ -400,14 +497,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
+    compression_overload_streak INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    auto_archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     tool_names TEXT,
+    transcript_revision INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
@@ -438,7 +538,11 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    message_uid TEXT,
+    absorbed_message_uids TEXT,
+    tool_call_uids TEXT,
+    tool_call_uid TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -461,6 +565,60 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     first_seen REAL,
     last_seen REAL,
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+);
+
+CREATE TABLE IF NOT EXISTS runtime_epoch (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch INTEGER NOT NULL CHECK (epoch > 0),
+    instance_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_admissions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    admission_id TEXT NOT NULL UNIQUE,
+    request_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    target_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    lineage_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    intent TEXT NOT NULL CHECK (intent IN ('queue','steer','redirect')),
+    status TEXT NOT NULL CHECK (status IN ('queued','started','unknown','terminal')),
+    outcome TEXT,
+    owner_epoch INTEGER,
+    generation INTEGER,
+    UNIQUE (principal_id, target_session_id, request_id),
+    CHECK (status != 'started' OR (owner_epoch IS NOT NULL AND generation IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS session_admissions_pending
+    ON session_admissions(target_session_id, status, seq);
+-- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
+-- (``cron:<job>:<execution>``); without this a lookup walked
+-- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay
+-- nothing for it. The constant leading column gives the planner equality + range over a covering
+-- index, so it beats the UNIQUE autoindex's bare principal_id prefix even without ANALYZE stats.
+-- The WHERE is built from CRON_PRINCIPAL_ID, the literal the run queries inline, so they cannot drift.
+CREATE INDEX IF NOT EXISTS idx_session_admissions_cron_request
+    ON session_admissions(principal_id, request_id, target_session_id) WHERE principal_id = '""" + CRON_PRINCIPAL_ID + """';
+CREATE TABLE IF NOT EXISTS worker_executions (
+    execution_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK (kind IN ('cron','child','compute','kanban')),
+    owner_epoch INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('registered','running','unknown','terminal')),
+    adoption_digest TEXT NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0)
+);
+-- Lineage-wide worker exclusion (claim/register/reset) probes every row of a conversation's lineage
+-- inside the write transaction; without this each probe scanned the whole (only-growing) table.
+CREATE INDEX IF NOT EXISTS idx_worker_executions_session_status
+    ON worker_executions(session_id, status);
+CREATE TABLE IF NOT EXISTS worker_receipts (
+    execution_id TEXT NOT NULL REFERENCES worker_executions(execution_id) ON DELETE RESTRICT,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    payload_digest TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY (execution_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -558,6 +716,8 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_pid INTEGER,
     owner_started_at INTEGER,
     task_json TEXT,
+    -- Owner-side execution fence (unified runtime).
+    owner_execution_id TEXT,
     delivery_claim TEXT,
     delivery_claimed_at REAL,
     -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
@@ -594,7 +754,30 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
+# sessions_runtime_ledger_delete_guard: every delete path in this release retires a session's ledger rows
+# (session_admissions / worker_executions, ON DELETE RESTRICT) first, so only a release that predates the
+# gateway runtime reaches it. Such a release (schema_version 31 too, and it never refuses a newer schema)
+# otherwise dies on the bare FK with no hint. It prints the RAISE text verbatim and buckets errors by phrase,
+# so the text must stay free of the words it reads as storage damage, lock contention or disk trouble.
 DEFERRED_INDEX_SQL = """
+DROP TRIGGER IF EXISTS sessions_runtime_ledger_delete_guard;
+CREATE TRIGGER IF NOT EXISTS sessions_runtime_ledger_delete_guard
+BEFORE DELETE ON sessions
+WHEN EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id = old.id)
+  OR EXISTS (SELECT 1 FROM worker_executions WHERE session_id = old.id)
+BEGIN
+    SELECT RAISE(ABORT, 'Refused to delete a session that has gateway runtime history: state.db was upgraded by a newer Hermes, and this older Hermes cannot delete such sessions. Downgrading is unsupported. Run hermes update to go back to the newer release, or restore the pre-update snapshot: https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release');
+END;
+DROP TRIGGER IF EXISTS messages_transcript_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_transcript_revision_update
+AFTER UPDATE OF role, content, api_content, tool_calls, tool_call_id, tool_name, reasoning, reasoning_content,
+    reasoning_details ON messages
+BEGIN
+    -- An in-place rewrite (prompt expansion, multimodal context, a redaction) moves neither the
+    -- active row count nor the highest id; this write-side revision is what a transcript-derived
+    -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
@@ -606,6 +789,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
 CREATE INDEX IF NOT EXISTS idx_messages_display_identity
     ON messages(session_id, display_identity, display_order)
     WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_message_uid_insert;
+CREATE TRIGGER IF NOT EXISTS messages_message_uid_insert
+AFTER INSERT ON messages WHEN new.message_uid IS NULL
+BEGIN
+    -- Every row carries a message_uid, whoever wrote it: a build that predates the column binds NULL, so
+    -- the store mints one on its behalf (the current build always binds a uid; this never fires for it).
+    -- The note lives inside the body: a comment before DROP/CREATE would defeat the settled-trigger skip.
+    UPDATE messages SET message_uid = lower(hex(randomblob(16))) WHERE id = new.id;
+END;
 DROP TRIGGER IF EXISTS messages_display_order_insert;
 CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
 AFTER INSERT ON messages WHEN new.display_order IS NULL
@@ -674,6 +866,9 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+-- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.
+CREATE INDEX IF NOT EXISTS idx_messages_session_uid
+    ON messages(session_id, message_uid) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
@@ -689,6 +884,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
 -- a small candidate set before compression-chain and preview hydration.
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
+-- CLI/TUI listings match gateway rows stored as source='local' by created_source,
+-- before LIMIT. created_source is reconciled onto legacy DBs, so this index lives
+-- here rather than in SCHEMA_SQL. A source-only index would walk every local row
+-- (Desktop and TUI included) to find one surface.
+CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
+    ON sessions(created_source, started_at DESC)
+    WHERE source = 'local';
 """
 
 
@@ -1078,9 +1280,11 @@ def _write_lock_holder_record(handle) -> None:
     from a live wedged one.
 
     Written under the flock so contenders that time out can tell an orphaned-fd holder (recorded process
-    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.
+    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.  ``pidns``: see
+    ``hermes_state_pidns``.
     """
-    record = {"pid": os.getpid(), "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
+    record = {"pid": os.getpid(), "pidns": pid_namespace_id(),
+              "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
     _rewrite_lock_file(handle, json.dumps(record, sort_keys=True).encode("utf-8"))
 
 
@@ -1091,13 +1295,16 @@ def _clear_lock_holder_record(handle) -> None:
 
 def _lock_holder_provably_dead(record) -> bool:
     """True ONLY when the recorded holder is provably dead or PID-recycled.  Anything indeterminate
-    (no/malformed record, PID owned by another user, /proc unavailable) is False: FAIL CLOSED and defer."""
+    (no/malformed record, PID owned by another user, /proc unavailable, foreign PID namespace)
+    is False: FAIL CLOSED and defer.  Unstamped records keep probing: see ``hermes_state_pidns``."""
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         return False
     if pid <= 0:
         return False
+    if not persistent_record_pidns_checkable(record.get("pidns")):
+        return False  # foreign namespace: a local reading is not proof — defer
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1262,3 +1469,12 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+
+def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
+    """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(warning)
+        return fallback

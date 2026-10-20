@@ -39,7 +39,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
             raise _pc().PluginOperationError(not_git_msg())
         if before_pull is not None:
             before_pull()
-        return _reclone_plugin_update(source, install_record.get("revision"))
+        return _reclone_plugin_update(target, source, install_record.get("revision"))
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
@@ -47,12 +47,19 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
     return update_plugin(target, interactive=interactive)
 
 
-def _reclone_plugin_update(source: str, previous_revision: object) -> str:
-    """Update a plugin whose tree is not a git checkout: a subdirectory install ships only
-    ``<clone>/<subdir>``, so the ``.git`` stays in the temp clone (#65314). Re-run the install
-    from the recorded source (same URL, same subdir) and swap the fresh tree in; the metadata
-    revision is rewritten by the installer. Returns pull-shaped output for the callers."""
-    new_target, _manifest, _name = _pc()._install_plugin_core(source, force=True)
+def _reclone_plugin_update(target: Path, source: str, previous_revision: object) -> str:
+    """Update a subdirectory install by re-cloning its source and atomically replacing the tree.
+
+    These installs carry no local ``.git``, so the staged replacement also carries user-owned
+    config/data from *target* before publication instead of silently deleting it (#122006).
+    """
+    from hermes_cli.plugins_cmd_catalog import _carry_user_files
+
+    new_target, _manifest, _name = _pc()._install_plugin_core(
+        source,
+        force=True,
+        before_swap=lambda _manifest, tree: _carry_user_files(target, tree, None),
+    )
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
     previous = previous_revision if isinstance(previous_revision, str) else ""
     if revision and revision == previous:
@@ -60,28 +67,27 @@ def _reclone_plugin_update(source: str, previous_revision: object) -> str:
     return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
-def cmd_update(name: str, *, interactive: bool = True) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+def update_one(name: str, target: Path, console, *, interactive: bool = True) -> bool:
+    """Update one installed plugin, printing progress and consent prompts; True when it moved.
+
+    Refusals raise :class:`~hermes_cli.plugins_cmd_catalog.RepinConsentRequired` or
+    ``PluginOperationError`` with nothing changed; :func:`cmd_update` turns them into exit 1 and
+    ``hermes plugins update`` with no name records them per plugin and moves on.
+    """
     from rich.markup import escape
     from hermes_cli import plugins_cmd_catalog as catalog
-    console = _pc()._console()
-    target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
     sidecar = catalog.catalog_install_record(target)
     if sidecar:  # catalog installs re-pin to the reviewed SHA — never `git pull`
-        catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
-        return
-    try:
-        output = _pull_plugin_update(
-            target,
-            lambda rec: (
-                f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
-                f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
-                "--ref <40-character commit SHA>`."),
-            lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
-            before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
-            interactive=interactive)
-    except _pc().PluginOperationError as exc:
-        _pc()._fail(console, f"[red]Error:[/red] {exc}")
+        return catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
+    output = _pull_plugin_update(
+        target,
+        lambda rec: (
+            f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
+            f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
+            "--ref <40-character commit SHA>`."),
+        lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
+        before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
+        interactive=interactive)
     _post_pull_housekeeping(target, console)
 
     # Update-time re-consent (#64228): if the new version declares
@@ -103,9 +109,23 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
     out = output.strip()
     if "Already up to date" in out:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
-    else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
+        return False
+    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
+    console.print(f"[dim]{out}[/dim]")
+    return True
+
+
+def cmd_update(name: str, *, interactive: bool = True) -> None:
+    """``hermes plugins update <name>``: :func:`update_one`, exit 1 on a refusal."""
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    console = _pc()._console()
+    target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
+    try:
+        update_one(name, target, console, interactive=interactive)
+    except RepinConsentRequired as exc:
+        _pc()._fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
+    except _pc().PluginOperationError as exc:
+        _pc()._fail(console, f"[red]Error:[/red] {exc}")
 
 
 def _post_pull_housekeeping(target: Path, console) -> None:
@@ -262,7 +282,8 @@ def cmd_check_updates(args: Any | None = None) -> None:
     console.print()
     console.print(table)
     console.print()
-    console.print("[dim]Check-only. Apply with: hermes plugins update <name>[/dim]")
+    console.print("[dim]Check-only. Apply with: hermes plugins update <name>, or "
+                  "hermes plugins update to update them all[/dim]")
 
 
 def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False) -> dict[str, Any]:

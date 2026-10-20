@@ -46,7 +46,7 @@ Model IDs are case-sensitive and go out verbatim.
 |----------|-------|----------------------|
 | `/v1/audio/transcriptions` | `whisper-large-v3-turbo` | built-in STT provider `mittwald` |
 | `/v1/audio/speech` | `Qwen3-TTS-12Hz-1.7B-CustomVoice` | built-in TTS provider `mittwald` |
-| `/v1/embeddings` | `Qwen3-Embedding-8B` (4096 dims) | mem0 OSS embedder `mittwald` |
+| `/v1/embeddings` | `Qwen3-Embedding-8B` (4096 dims) | not wired — the bundled mem0 provider moved to the plugin catalog |
 | `/v1/rerank` | `Qwen3-VL-Reranker-2B` | not wired — Hermes has no rerank consumer |
 | `/v1/chat/completions` | `GLM-OCR` | not wired — documents go through the vision models |
 

@@ -48,7 +48,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     elif os.name == "nt":
         shutil.copytree(Path(sys.base_prefix), source_python.parent, dirs_exist_ok=True)
     else:
-        shutil.copytree(Path(getattr(sys, "_base_executable")).resolve().parents[1],
+        shutil.copytree(Path(sys._base_executable).resolve().parents[1],
                         source_python.parents[1], dirs_exist_ok=True)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -250,6 +250,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert not (output / "hermes-agent/untracked").exists()
     assert not (output / "hermes-agent/.git").exists()
     facts = Facts(output / "tools/facts.json")
+    venv_fact = facts.get("venv")
+    assert venv_fact is not None
+    assert venv_fact["extras"] == json.loads((output / "enabled-features.json").read_text())["extras"]
+    assert "environment" not in venv_fact
+    from pm.install import venv_is_current
+    with monkeypatch.context() as patch:
+        # The desktop app points the bundled backend's store at the payload's tools dir.
+        patch.setenv("HERMES_RUNTIME_DIR", str(output / "tools"))
+        patch.setattr("pm.paths.repo_root", lambda: output / "hermes-agent")
+        assert venv_is_current(project_root=output / "hermes-agent")
     for name in stale:
         assert facts.get(name) is None
         assert not (output / "tools" / f"cached-{name}").exists()
@@ -275,14 +285,14 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     moved = tmp_path / "installed elsewhere"
     output.rename(moved)
     try:
-        run = subprocess.run([str(moved / command)], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+        run = subprocess.run([str(moved / command)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
         assert run.returncode == 7, run.stderr
         assert run.stdout.strip() == "1.0"
         from pm import runtime as runtime_api, paths
         with monkeypatch.context() as patch:
             patch.setattr(paths, "repo_root", lambda: moved / "hermes-agent")
             run = subprocess.run(runtime_api.runtime_command(moved / "hermes-agent/pm/launch.py", ["status"]),
-                                 cwd=tmp_path, env=runtime_api.runtime_environment(), capture_output=True, text=True, timeout=30)
+                                 cwd=tmp_path, env=runtime_api.runtime_environment(), capture_output=True, text=True, timeout=30, check=False)
         assert run.returncode == 0, run.stderr
         assert "no pm sync receipt" in run.stdout
     finally:
@@ -499,16 +509,19 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
              "--no-deps", "--index-url", index_url,
              "cache-proof==1.0.0", "wheel-proof==1.0"],
             env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert warm.returncode == 0, warm.stderr + warm.stdout
         locked = subprocess.run(
             [uv, "lock", "--python", sys.executable, "--index-url", index_url],
             env=env, cwd=project, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert locked.returncode == 0, locked.stderr
         warmed = subprocess.run(
             [uv, "sync", "--python", sys.executable, "--frozen", "--index-url", index_url],
             env=env, cwd=project, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert warmed.returncode == 0, warmed.stderr
 
@@ -533,6 +546,7 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
             [uv, "sync", "--python", sys.executable, "--frozen", "--offline"],
             env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=project,
             capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert result.returncode == 0, result.stderr
         assert "Building" not in result.stderr and "Built" not in result.stdout, result.stderr + result.stdout
@@ -606,7 +620,7 @@ def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, 
     before, run, homes = dict(os.environ), subprocess.run, []
     observed = tmp_path / "child.json"
 
-    def child(command, *, cwd, env):
+    def child(command, *, cwd, env, check):
         assert command[command.index("-m") + 1] == "scripts.bundles.native"
         return run([sys.executable, "-c",
                     "import os,json,sys; from pathlib import Path; "
@@ -614,7 +628,7 @@ def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, 
                     "assert all((Path(os.environ[k])/'fixture-state').read_text() == k for k in ('CARGO_HOME','RUSTUP_HOME')); "
                     "p=Path(os.environ['UV_CACHE_DIR']); p.mkdir(parents=True,exist_ok=True); "
                     "f=p/'reused'; f.write_text(f.read_text()+'x' if f.exists() else 'x'); sys.exit(int(sys.argv[2]))",
-                    str(observed), str(status)], cwd=cwd, env=env)
+                    str(observed), str(status)], cwd=cwd, env=env, check=check)
 
     monkeypatch.setattr(native.subprocess, "run", child)
     out = tmp_path / "payload"

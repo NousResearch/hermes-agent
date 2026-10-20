@@ -167,7 +167,7 @@ def _managed_browser_use_state(session: str, env: dict, cmd: list[str]) -> Optio
     key = str(runtime)
     with _browser_use_sessions_lock:
         if (state := _browser_use_sessions.get(key)) is None:
-            state = {"key": key, "runtime_dir": runtime, "session": daemon_name,
+            state = {"key": key, "runtime_dir": runtime, "session": daemon_name, "home_key": hermes_home_key(),
                      "cmd": tuple(cmd), "env": dict(env), "last_activity": time.monotonic(),
                      "inflight": 0, "operation_lock": threading.Lock()}
             _browser_use_sessions[key] = state
@@ -317,7 +317,7 @@ def _harness_credentials() -> dict:
     return {key: value for key, value in values.items() if value is not None}
 
 
-def _base_subprocess_env() -> dict:
+def _base_subprocess_env(*, manage_runtime: bool = False) -> dict:
     from tools.browser_session import build_browser_env
     env = build_browser_env()
     env.update(_harness_credentials())
@@ -333,9 +333,8 @@ def _base_subprocess_env() -> dict:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
-    # The harness reuses any live daemon of a BU_NAME in its runtime dir, and that dir is per OS user:
-    # every profile (served, CLI, cron) gets its own, or one drives another's attached browser (#149829).
-    namespace_harness_dirs(env, hermes_home_key())
+    if not manage_runtime or env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR"):
+        namespace_harness_dirs(env, hermes_home_key())
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
     return env
@@ -904,9 +903,15 @@ def _route_exec_current(env: dict, session: str, task_id: Optional[str], local: 
     return routed, route_err, sidecar, generation
 
 
-def _reload_if_republished(env: dict, generation: int) -> None:
+def _reload_if_republished(env: dict, generation: int, lifecycle_state: dict | None = None) -> None:
     """Stop this call's daemon if the profile published a new endpoint while it spawned on the old one."""
     if _live_generation() == generation:
+        return
+    if lifecycle_state is not None:
+        if _stop_browser_use_state(lifecycle_state):
+            with _browser_use_sessions_lock:
+                if _browser_use_sessions.get(lifecycle_state["key"]) is lifecycle_state:
+                    _browser_use_sessions.pop(lifecycle_state["key"], None)
         return
     daemon = daemon_identity(env)
     with _driven_daemons_lock:
@@ -963,7 +968,8 @@ def _dispatch_browser_use(cmd: list[str], code: str, env: dict, timeout: int,
     _attach_vault_supervisor(env, task_id)
     if lifecycle_state is None:
         with _driven_daemons_lock:
-            _driven_daemons.add(env.get("BU_NAME", "default"))
+            daemon = daemon_identity(env)
+            _driven_daemons[daemon] = hermes_home_key()
     # The first call starts the daemon and may run long (navigation, user code): own it as soon as
     # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
     from agent.periodic_scheduler import schedule
@@ -1016,7 +1022,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_error("browser-harness is missing from Hermes's Python environment. "
                           "Run `hermes update` to re-sync it.")
 
-    env = _base_subprocess_env()
+    env = _base_subprocess_env(manage_runtime=True)
     if session:
         if not _SESSION_RE.match(session):
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
@@ -1062,7 +1068,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             dispatched = run_fenced({"features": {"local": True}}, dispatch)
         else:
             dispatched = dispatch()
-        _reload_if_republished(env, generation)
+        _reload_if_republished(env, generation, lifecycle_state)
         _own_harness_daemon(env)
         if "proc" not in dispatched:
             if "error_result" in dispatched:

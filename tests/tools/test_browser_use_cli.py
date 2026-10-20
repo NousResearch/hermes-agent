@@ -881,7 +881,7 @@ class TestBrowserUseManagedLifecycle:
     def test_timeout_cleanup_preserves_queued_session_serialization(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
-        monkeypatch.setattr(bu_cli, "_base_subprocess_env", dict)
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda **kwargs: {})
         monkeypatch.setattr(bu_cli, "_code_url_verdict", lambda code: bu_cli._CodeUrlVerdict(None, False))
         monkeypatch.setattr(bu_cli, "_route_backend", lambda *args, **kwargs: None)
         monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *args: None)
@@ -938,7 +938,7 @@ class TestBrowserUseManagedLifecycle:
     def test_call_remains_managed_when_idle_cleanup_wins_registration_race(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
-        monkeypatch.setattr(bu_cli, "_base_subprocess_env", dict)
+        monkeypatch.setattr(bu_cli, "_base_subprocess_env", lambda **kwargs: {})
         monkeypatch.setattr(bu_cli, "_code_url_verdict", lambda code: bu_cli._CodeUrlVerdict(None, False))
         monkeypatch.setattr(bu_cli, "_route_backend", lambda *args, **kwargs: None)
         monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *args: None)

@@ -219,9 +219,13 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
-            if adapters or not self._is_shared_bot_satellite(profile_name):
+            from cron.scheduler_preflight import has_credential_platform
+            if has_credential_platform(adapters) or not self._is_shared_bot_satellite(profile_name):
                 return adapters
-            return self._primary_adapters()
+            # A satellite whose map holds only non-credential adapters (a Desktop-served local
+            # session, mirrored listeners) still borrows the primary's bots, its own layered on
+            # top — background notices and tool sends for it stay deliverable (#141910).
+            return {**self._primary_adapters(), **adapters}
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:

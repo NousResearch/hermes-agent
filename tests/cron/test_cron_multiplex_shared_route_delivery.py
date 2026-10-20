@@ -227,3 +227,24 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
     # The routed view releases the primary adapter for exactly the route-mapped target.
     assert shared.get(Platform.DISCORD, {"chat_id": "C1"}) is primary
     assert shared.get(Platform.DISCORD, {"chat_id": "unmapped"}) is None
+
+
+def test_adapters_for_profile_layers_primary_under_local_only_satellite():
+    """#141910: the authz resolution is the third call site that decided "owns its adapters" by
+    map truthiness. A shared-bot satellite holding only a Desktop ``local`` adapter must still
+    resolve the primary's bots (background notices, tool sends) with its own local adapter
+    layered on top — not instead of the primary."""
+    from gateway.authz_mixin import GatewayAuthorizationMixin
+
+    primary, local = object(), object()
+    holder = GatewayAuthorizationMixin()
+    holder.adapters = {Platform.DISCORD: primary}
+    holder._profile_adapters = {"sat": {Platform.LOCAL: local}}
+    holder._is_shared_bot_satellite = lambda profile: True
+    resolved = GatewayAuthorizationMixin._adapters_for_profile(holder, "sat")
+    assert resolved[Platform.DISCORD] is primary and resolved[Platform.LOCAL] is local
+
+    # A satellite that connected a real platform is its own credential boundary: no borrowing.
+    holder._profile_adapters = {"sat": {Platform.LOCAL: local, Platform.TELEGRAM: object()}}
+    own = holder._profile_adapters["sat"]
+    assert GatewayAuthorizationMixin._adapters_for_profile(holder, "sat") is own

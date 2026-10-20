@@ -89,7 +89,10 @@ def _process_looks_like_pytest(proc: Any) -> bool:
 def _has_pytest_ancestor() -> bool:
     """True when an ancestor process is a pytest run: a child spawned with a
     rebuilt env loses PYTEST_* and the HERMES_HOME redirect together, ancestry
-    survives that. Fails open without psutil / on walk errors.
+    survives that. Fails open without psutil / on walk errors, but an
+    indeterminate walk is never memoized: a transient failure (e.g. one
+    unreadable ancestor) must not latch a False that disarms the guard for the
+    life of the process (#126766).
 
     ``_running_under_pytest`` reads ``PYTEST_*`` env vars, which a child spawned with a rebuilt environment
     loses at the same moment it loses the ``HERMES_HOME`` redirect: that child aims at the production DB
@@ -104,7 +107,11 @@ def _has_pytest_ancestor() -> bool:
         try:
             found = any(_process_looks_like_pytest(p) for p in psutil.Process().parents())
         except Exception:
-            found = False
+            # Indeterminate walk: keep the fail-open answer (guessing "test"
+            # the other way would refuse production opens) but return it
+            # without caching, so the next call retries instead of latching
+            # the disarm permanently.
+            return False
     _PYTEST_ANCESTOR = found
     return found
 

@@ -2642,9 +2642,9 @@ def _worker_terminal_timeout_env(
 
 
 @contextlib.contextmanager
-def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
-    """Bind an assigned profile's runtime scope (secrets + terminal policy, optionally home) for
-    one dispatch-side read or spawn-env build.
+def _worker_profile_scope(hermes_home: str):
+    """Bind an assigned profile's whole runtime scope (home, secrets, terminal policy) for one
+    dispatch-side read or spawn-env build.
 
     The dispatcher runs detached from any turn, so nothing binds a profile for it: ``load_config``,
     the toolset probes' ``get_secret`` reads and ``build_subprocess_env``'s passthrough resolution
@@ -2652,10 +2652,9 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     previously conditional on ``is_multiplex_active()``, so on a single-profile host a worker for
     profile B was built entirely from the dispatcher's own environment.
 
-    ``bind_home=False`` for the spawn-env build: which variables may cross into a child is the
-    DISPATCHER's ``terminal.env_passthrough`` policy (#109494, read through the home override) —
-    only their VALUES come from the assignee's scope, so that branch binds the secret scope alone.
-    Toolset resolution binds the home and the terminal policy, as it always has.
+    Home, secrets and terminal policy always move together: the spawned child only submits the
+    claim to the assignee's own gateway, which runs the turn (and, if the child starts it, gets
+    the assignee's own secrets from ``served_profile_child_env``).
 
     The secret mapping is never widened: a profile that is not this process's own home gets its own
     ``.env`` + external sources ONLY, while the launch home keeps its established
@@ -2671,12 +2670,12 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
     home_token = secret_token = terminal_token = None
     try:
-        home_token = set_hermes_home_override(str(home)) if bind_home else None
+        home_token = set_hermes_home_override(str(home))
         secret_token = set_secret_scope(
             launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home),
             profile_home=None if is_launch_home else str(home))
         terminal_token = install_profile_terminal_scope(
-            home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
+            home, env_overlay=launch_terminal_env() if is_launch_home else None)
         yield
     finally:
         if terminal_token is not None:
@@ -2832,8 +2831,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     routed = bool(profile_home) and _is_routed_home(profile_home)
     # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
     # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
-    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
-    with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
+    # on B's behalf (and raises under multiplex) — so bind B's whole scope around the build.
+    with (_worker_profile_scope(profile_home) if profile_home
           else contextlib.nullcontext()):
         env = build_subprocess_env(
             scrub_secrets=is_multiplex_active() or routed,

@@ -23,8 +23,8 @@ def _tools(*names):
 
 
 def test_oneshot_hides_skill_manage_and_skill_authoring_coaching(oneshot, interactive_prompt, tmp_path):
-    """-q: no skill_manage tool and a skills prompt that neither asks to save/patch skills nor pushes process
-    skills; skill reading stays. The interactive prompt for the same skills dir is the control."""
+    """-q: no skill_manage tool and a skills prompt that neither asks to save/patch skills; skill reading
+    and the mandatory load contract stay. The interactive prompt for the same skills dir is the control."""
     kept = {t["function"]["name"] for t in oneshot_footprint.prune_oneshot_tools(
         _tools("skill_manage", "skill_view", "skills_list", "terminal"))}
     assert "skill_manage" not in kept and {"skill_view", "skills_list", "terminal"} <= kept
@@ -33,6 +33,18 @@ def test_oneshot_hides_skill_manage_and_skill_authoring_coaching(oneshot, intera
     assert "demo-skill" in prompt and "skill_view" in prompt
     assert "skill_manage" not in prompt and "offer to save as a skill" not in prompt
     assert "skill_manage" in interactive_prompt and "offer to save as a skill" in interactive_prompt
+
+
+def test_oneshot_keeps_the_interactive_skills_load_contract(oneshot, interactive_prompt, tmp_path):
+    """The one-shot variant drops authoring coaching, not discovery: the mandatory scan-and-load
+    language must be present in both prompt variants so they cannot silently diverge again."""
+    prompt = build_skills_system_prompt(available_tools={"skill_view", "skills_list"}, skills_dir_override=_skills_dir(tmp_path))
+    for variant in (prompt, interactive_prompt):
+        assert "Before replying, scan the skills below" in variant
+        assert "even partially relevant" in variant
+        assert "MUST load it with skill_view(name)" in variant
+        assert "load them even for tasks you already know how to do" in variant
+        assert "Only proceed without loading a skill if genuinely none are relevant" in variant
 
 
 def _skills_dir(tmp_path):

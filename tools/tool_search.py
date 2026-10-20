@@ -585,6 +585,31 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     return name, raw_args, None
 
 
+def directly_listed_target(args: dict[str, Any],
+                           tool_defs: list[dict[str, Any]]) -> Optional[tuple[str, dict[str, Any]]]:
+    """``(name, arguments)`` when a ``tool_call`` names a tool THIS session lists *directly*.
+
+    The intent is unambiguous there: the model reached for the bridge while the name it
+    wants is already callable, so the dispatcher runs the local call the model would have
+    made instead of spending an iteration on a refusal it then has to correct. Membership
+    is checked against the session's own ``tool_defs`` (the un-collapsed catalog), so the
+    bridge still cannot reach a tool the session lacks. ``None`` for every other malformed
+    shape — a deferred name, a connector name, a multi-entry local batch, an unknown name,
+    or a tool outside this session's grant — which keep their own corrections.
+    """
+    entries, err = normalize_tool_call_entries(args)
+    if err or len(entries) != 1:
+        return None
+    name = entries[0]["name"]
+    if is_connector_name(name) or is_deferrable_tool_name(
+        name, load_config_readonly().effective_defer_tools
+    ):
+        return None
+    if name not in frozenset(_tool_def_names(tool_defs)):
+        return None
+    return name, entries[0]["arguments"]
+
+
 __all__ = [
     "BRIDGE_TOOL_NAMES",
     "CONNECTOR_BATCH_SENTINEL",
@@ -599,6 +624,7 @@ __all__ = [
     "build_catalog",
     "build_catalog_listing_with_form",
     "classify_tools",
+    "directly_listed_target",
     "dispatch_tool_describe",
     "dispatch_tool_search",
     "estimate_tokens_from_schemas",

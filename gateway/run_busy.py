@@ -466,7 +466,15 @@ class GatewayBusySessionMixin:
         # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
         # messages arrived in ``busy_input_mode: queue``.
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        same_security_context = existing is not None and (
+        # A shared session key (``group_sessions_per_user: false``, or a shared thread) can hold
+        # follow-ups from several people. The merged turn is attributed to the head event's
+        # sender, so folding another sender's photo or caption into it would hand their input
+        # to someone else's identity. Different sender -> its own FIFO turn.
+        same_sender = existing is not None and (
+            getattr(getattr(existing, "source", None), "user_id", None)
+            == getattr(getattr(event, "source", None), "user_id", None)
+        )
+        same_security_context = existing is not None and same_sender and (
             getattr(existing, "internal", False) == getattr(event, "internal", False)
             and getattr(existing, "inherit_channel_pin", False) == getattr(event, "inherit_channel_pin", False)
             and getattr(existing, "allow_gateway_control", True)

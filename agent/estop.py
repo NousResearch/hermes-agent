@@ -116,7 +116,7 @@ def paused_reply() -> Optional[str]:
     if state is None:
         return None
     tag = f" ({state['reason']})" if state.get("reason") else ""
-    return f"⏸️ Hermes is paused{tag}. New work is on hold; run `hermes resume` to pick things back up."
+    return f"⏸️ Hermes is paused{tag}. New work is on hold; run `/pause off` to resume (or `hermes resume` from the terminal)."
 
 
 def check_paused(component: str, logger: logging.Logger) -> bool:

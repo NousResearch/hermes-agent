@@ -735,7 +735,7 @@ def _cron_doctor_issues_for_job(
     job: dict[str, Any], raw_job: Optional[dict[str, Any]] = None
 ) -> list[str]:
     issues: list[str] = []
-    if bad_skills := _skills_repr_strings(raw_job if raw_job is not None else job):
+    if _skills_repr_strings(raw_job if raw_job is not None else job):
         issues.append(
             "skills were stored as a stringified list (e.g. \"['x']\" instead of ['x']) — "
             "runs treat it as one bogus skill name and the skills never load. "

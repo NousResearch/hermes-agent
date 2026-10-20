@@ -218,9 +218,13 @@ class SharedRouteAdapters:
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
         thread_id = str(thread_id) if thread_id else None
+        parent_chat_id = target.get("parent_chat_id")
+        parent_chat_id = str(parent_chat_id) if parent_chat_id else None
         # A cron target carries no inbound guild anchor, so a route's guild_id is matched against
         # itself — the target-exact discriminators (chat_id/thread_id) authorize the send. Without
         # this the documented ``guild_id + chat_id`` Discord route never authorized cron output.
+        # ``parent_chat_id`` extends the same AND-semantics to a thread's parent channel: a route
+        # keyed on the parent authorizes its threads, exactly as it does for inbound routing.
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
@@ -228,6 +232,7 @@ class SharedRouteAdapters:
                 continue  # guild-only routes are not target-exact
             if route.matches(
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+                parent_chat_id=parent_chat_id,
             ):
                 return adapter
         return default

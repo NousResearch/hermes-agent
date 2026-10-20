@@ -379,6 +379,89 @@ class TestExtractMedia:
         # Without fileName, mime defaults to octet-stream but msg_type_str=="image" still wins
         assert mtypes == ["application/octet-stream"]
 
+class TestInboundMediaCaching:
+    """Inbound media must land in ``media_urls`` as local cache paths — gateway ingress
+    (``capture_native_media``) rejects remote URLs and bare codes with
+    ``RuntimeStoreError: invalid_params``, dropping the whole message (#141932)."""
+
+    def _adapter(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._robot_sdk = MagicMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_fetch_download_url_caches_locally(self, monkeypatch):
+        """A resolved download URL must be replaced by a local cache path, not handed through."""
+        import plugins.platforms.dingtalk.adapter as dt
+        adapter = self._adapter()
+        response = SimpleNamespace(body=SimpleNamespace(download_url="https://oss.example/dl?sig=1"))
+        monkeypatch.setattr(dt.DingTalkAdapter, "_sdk_call", AsyncMock(return_value=response))
+        monkeypatch.setattr(dt, "cache_image_from_url", AsyncMock(return_value="/tmp/hermes/cache/images/img_1.jpg"))
+        ext_content = {"downloadCode": "code-1"}
+        await adapter._fetch_download_url("code-1", "robot", "token", ext_content, "downloadCode", "image")
+        assert ext_content["downloadCode"] == "/tmp/hermes/cache/images/img_1.jpg"
+
+    @pytest.mark.asyncio
+    async def test_fetch_download_url_clears_entry_on_failure(self, monkeypatch):
+        """A failed download must clear the entry so no bare code/URL reaches ``media_urls``."""
+        import plugins.platforms.dingtalk.adapter as dt
+        adapter = self._adapter()
+        response = SimpleNamespace(body=SimpleNamespace(download_url="https://oss.example/dl?sig=1"))
+        monkeypatch.setattr(dt.DingTalkAdapter, "_sdk_call", AsyncMock(return_value=response))
+
+        async def _boom(url, ext=".jpg", retries=2):
+            raise ValueError("download failed")
+
+        monkeypatch.setattr(dt, "cache_image_from_url", _boom)
+        ext_content = {"downloadCode": "code-2"}
+        await adapter._fetch_download_url("code-2", "robot", "token", ext_content, "downloadCode", "image")
+        assert ext_content["downloadCode"] == ""
+
+    @pytest.mark.asyncio
+    async def test_resolve_media_codes_without_token_degrades_to_text(self, monkeypatch):
+        """No access token → media entries are cleared instead of crashing ingress later."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = self._adapter()
+        monkeypatch.setattr(DingTalkAdapter, "_get_access_token", AsyncMock(return_value=None))
+        msg = MagicMock()
+        msg.image_content = SimpleNamespace(download_code="code-3")
+        msg.rich_text_content = None
+        msg.message_type = "picture"
+        msg.extensions = {}
+        await adapter._resolve_media_codes(msg)
+        assert msg.image_content.download_code == ""
+
+    def test_collect_download_codes_reports_media_kind(self):
+        """collect_download_codes returns (container, key, kind) — kind routes the cache family."""
+        from plugins.platforms.dingtalk.inbound import collect_download_codes
+        msg = MagicMock()
+        msg.image_content = SimpleNamespace(download_code="code-img")
+        rich_list = [
+            {"type": "picture", "downloadCode": "code-pic"},
+            {"type": "voice", "downloadCode": "code-voice"},
+            {"type": "file", "downloadCode": "code-file"},
+        ]
+        msg.rich_text_content = SimpleNamespace(rich_text_list=rich_list)
+        msg.message_type = "richText"
+        msg.extensions = {}
+        kinds = {(id(obj), key): kind for obj, key, kind in collect_download_codes(msg)}
+        assert kinds[(id(msg.image_content), "download_code")] == "image"
+        assert kinds[(id(rich_list[0]), "downloadCode")] == "image"
+        assert kinds[(id(rich_list[1]), "downloadCode")] == "audio"
+        assert kinds[(id(rich_list[2]), "downloadCode")] == "file"
+
+    def test_collect_download_codes_file_message_kind(self):
+        from plugins.platforms.dingtalk.inbound import collect_download_codes
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.message_type = "file"
+        ext_content = {"downloadCode": "code-doc", "fileName": "report.pdf"}
+        msg.extensions = {"content": ext_content}
+        assert collect_download_codes(msg) == [(ext_content, "downloadCode", "file")]
+
+
 # ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)
 # ---------------------------------------------------------------------------

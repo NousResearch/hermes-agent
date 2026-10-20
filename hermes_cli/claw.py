@@ -427,9 +427,19 @@ def _cmd_cleanup(args):
         if dry_run:
             archive_path = _archive_directory(source_dir, dry_run=True)
             print_info(f"Would archive: {source_dir} → {archive_path}")
-        elif _confirm(auto_yes, f"Archive {source_dir}?", default=True, declined="Skipped.",
-                      non_tty=(f"Non-interactive session — would archive: {source_dir}",
-                               "To execute, re-run with: hermes claw cleanup --yes")):
+        elif _confirm(
+            auto_yes,
+            (
+                f"Archive {source_dir}? "
+                "(⚠ This will make OpenClaw unbootable until renamed back)"
+            ),
+            default=False,
+            declined="Skipped.",
+            non_tty=(
+                f"Non-interactive session — would archive: {source_dir}",
+                "To execute, re-run with: hermes claw cleanup --yes",
+            ),
+        ):
             try:
                 archive_path = _archive_directory(source_dir)
                 print_success(f"Archived: {source_dir} → {archive_path}")

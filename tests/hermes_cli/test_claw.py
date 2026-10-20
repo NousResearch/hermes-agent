@@ -267,6 +267,25 @@ class TestCmdCleanup:
         assert "Archived" in captured.out
         assert not custom_dir.exists()
 
+    def test_archive_prompt_defaults_to_no(self, tmp_path):
+        """Enter must not archive; the prompt warns OpenClaw becomes unbootable."""
+        custom_dir = tmp_path / "my-openclaw"
+        custom_dir.mkdir()
+        (custom_dir / "todo.json").write_text("{}", encoding="utf-8")
+
+        args = Namespace(source=str(custom_dir), dry_run=False, yes=False)
+        with (
+            patch.object(claw_mod.sys.stdin, "isatty", return_value=True),
+            patch.object(claw_mod, "prompt_yes_no", return_value=False) as prompt,
+        ):
+            claw_mod._cmd_cleanup(args)
+
+        prompt.assert_called_once()
+        assert prompt.call_args.args[0].endswith(
+            "(⚠ This will make OpenClaw unbootable until renamed back)"
+        )
+        assert prompt.call_args.kwargs["default"] is False
+        assert custom_dir.is_dir()
 
 
 

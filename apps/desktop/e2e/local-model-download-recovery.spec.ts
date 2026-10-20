@@ -44,7 +44,6 @@ async function openLocalModels(page: Page, expectResume = true): Promise<void> {
 
 for (const action of ['resume', 'discard'] as const) {
   test(`built UI pauses backoff and can ${action} a saved multi-file plan after app restart`, async () => {
-    const testInfo = test.info()
     test.setTimeout(180_000)
     const sandbox = createSandbox('download-recovery')
 
@@ -154,7 +153,6 @@ for (const action of ['resume', 'discard'] as const) {
       expect(original.done_bytes).toBe(BLOCK + fs.statSync(files.first).size)
       await page.getByRole('button', { name: 'Resume', exact: true }).click()
       await expect(page.getByText('Connection interrupted. Retrying automatically.')).toBeVisible({ timeout: 15_000 })
-      await page.screenshot({ path: testInfo.outputPath('retrying.png') })
       await page.getByRole('button', { name: 'Pause', exact: true }).click()
       await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeVisible({ timeout: 5_000 })
       await expect(page.getByText('Connection interrupted. Retrying automatically.')).toBeHidden()
@@ -163,7 +161,6 @@ for (const action of ['resume', 'discard'] as const) {
         timeout: 30_000
       })
       await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeEnabled()
-      await page.screenshot({ path: testInfo.outputPath('interrupted.png') })
       expect((await jobs(page))[0].done_bytes).toBe(original.done_bytes)
       expect(fs.existsSync(files.second)).toBe(false)
       expect(fs.existsSync(files.asset)).toBe(false)
@@ -186,7 +183,6 @@ for (const action of ['resume', 'discard'] as const) {
         const discard = page.getByRole('button', { name: 'Discard', exact: true })
         await discard.hover()
         await expect(page.getByRole('tooltip')).toContainText('Completed files will stay.')
-        await page.screenshot({ path: testInfo.outputPath('discard.png') })
         await discard.click()
         await expect.poll(() => jobs(page)).toEqual([])
         expect(fs.existsSync(files.part)).toBe(false)
@@ -214,7 +210,6 @@ for (const action of ['resume', 'discard'] as const) {
       await expect.poll(async () => (await jobs(page))[0].status, { timeout: 30_000 }).toBe('done')
       await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeHidden({ timeout: 10_000 })
       await expect(page.getByRole('button', { name: 'Resume', exact: true })).toBeHidden()
-      await page.screenshot({ path: testInfo.outputPath('completed.png') })
       expect(fs.readFileSync(files.second)).toEqual(payload)
       expect(fs.readFileSync(files.asset)).toEqual(companion)
       expect(fs.statSync(files.first).mtimeMs).toBe(firstTime)
@@ -222,7 +217,6 @@ for (const action of ['resume', 'discard'] as const) {
       expect(requests.some(row => row.path === '/complete')).toBe(false)
       const complete = (await jobs(page))[0]
       expect(complete.done_bytes).toBe(complete.total_bytes)
-      await testInfo.attach('transfer-requests', { body: JSON.stringify(requests), contentType: 'application/json' })
     } finally {
       await app?.close()
       stopBackend()

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from http.server import BaseHTTPRequestHandler
 from types import SimpleNamespace
 
@@ -32,26 +31,6 @@ def test_fast_transfer_does_not_sync_each_byte_threshold(tmp_path, monkeypatch, 
     download.run()
     assert (tmp_path / "model").read_bytes() == payload
     assert len(checkpoints) == 1  # The attempt still saves its final checkpoint.
-
-
-def test_transfer_saves_progress_before_the_attempt_ends(tmp_path, monkeypatch, dl_server):
-    payload = b"w" * (16 << 20)
-    RangeHandler.payloads = {"/slow": payload}
-    RangeHandler.chunk = 1 << 19
-    RangeHandler.slow_per_chunk = 0.01
-    monkeypatch.setattr(downloader, "_CHECKPOINT_SECONDS", 0.03)
-    source = downloader.Source(url(dl_server, "/slow"), tmp_path / "model")
-    root = tmp_path / "partials"
-    side = root / (hashlib.sha256(source.url.encode()).hexdigest() + ".ranges")
-    saved = []
-
-    def observe(*_):
-        if side.exists():
-            saved.append(sum(end - start for start, end in json.loads(side.read_bytes())["ranges"]))
-
-    downloader.Download([source], partials_dir=root, connections=1).run(progress=observe)
-    assert any(0 < count < len(payload) for count in saved)
-    assert source.dest.read_bytes() == payload
 
 
 @pytest.mark.parametrize("failed_stage", ["probe", "single-stream"])

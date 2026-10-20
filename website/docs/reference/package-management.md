@@ -132,44 +132,6 @@ hash, an interrupted transfer restarts instead of mixing different versions.
 The small `.locks/` files remain after completion so waiting processes use
 the same lock.
 
-Ranged transfers checkpoint new progress every five seconds during a long
-request and at the end of each attempt. The partial is synced before its
-coverage is saved atomically. Successful durable progress
-renews the transfer's retry budget; four attempts without further progress
-still stop a sustained outage. Metadata requests retain their existing retry
-limit and 30-second delay cap, as do non-resumable transfers. Retry backoff
-remains interruptible by Pause.
-Resumable transfers honor `Retry-After` waits up to five minutes; a longer
-server-requested wait stops automatic recovery and leaves the job resumable.
-
-An interrupted local-model job keeps its Resume action. Its saved download
-plan can also be rediscovered after restarting the backend, including split
-weights and companion assets. Resume checks the remote identity again and
-reuses completed files and valid coverage, never the preallocated file length.
-Saved model plans and their partial files stay eligible for resume for seven
-inactive days, measured from the latest plan or checkpoint activity. Other PM
-partials keep the existing six-hour retention. These files occupy disk space
-until `pm gc` removes them; seven days is not a scheduled deletion time.
-A running process holds the plan's ownership lock, so another process cannot
-restore it as an abandoned download. Paused model downloads offer **Discard**
-beside **Resume**, including setup interrupted during engine installation.
-Discard removes the pending plan and job and deletes partial files it can lock.
-Completed files and partials used by another transfer or saved plan remain
-untouched.
-Temporary engine-download failures also retain Resume and Discard. The PM
-worker preserves the download cause inside the package-install error, including
-all attempted source URLs, so recovery and cleanup use the same information.
-Saved setup intent also retains the selected build, backend, and profile. After
-an app/backend restart, Resume completes installation, starts the server, and
-sets the default model. Standalone engine installs also retain recovery controls.
-Plans are restored at backend startup and reconciled once a minute. Job status
-reads do not scan or change files. Desktop recovery messages use the selected
-language.
-Starting setup for a paused model download adopts its saved plan and retains
-the server-start and default-model steps.
-ETags remain representation validators, not expected SHA-256 hashes; the model
-catalog's existing optional-hash policy is unchanged.
-
 ## Optional Python dependencies and plugins
 
 A built-in feature requests a project extra through `pm.ensure_import`.
@@ -608,8 +570,6 @@ these waits up to 30 seconds. Resumable transfers renew their retry budget
 when they save new progress; four failures without new progress stop recovery.
 They honor `Retry-After` up to five minutes and pause for longer requested waits.
 Each retry logs its cause, delay and consecutive failures without progress.
-An unresolved host leaves a local-model job paused with manual Resume available.
-This does not add automatic retries for permanent name-resolution failures.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.

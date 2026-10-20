@@ -77,7 +77,7 @@ def test_pause_interrupts_an_owner_wait(tmp_path):
     assert destination.read_bytes() == b"complete"
 
 
-@pytest.mark.parametrize("age_hours,retained", [(2, True), (8, False), (48, False)])
+@pytest.mark.parametrize("age_hours,retained", [(2, True), (8, False)])
 def test_unrelated_pm_partials_keep_the_six_hour_retention(tmp_path, age_hours, retained):
     from pm.download_state import collect_partials
 

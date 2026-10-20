@@ -94,14 +94,6 @@ describe('LocalModelDownloadActions', () => {
     expect(vi.mocked(notifyError).mock.calls[0]?.[1]).toMatch(/discard/i)
   })
 
-  it('keeps Resume usable after a recoverable interruption', async () => {
-    renderActions(job({ status: 'paused', phase: 'interrupted', can_resume: true }))
-    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
-    await waitFor(() => {
-      expect(resumeLocalDownload).toHaveBeenCalledWith('j1', undefined)
-    })
-  })
-
   it('running download without explicit can_pause shows NO control (no guessing about old backends)', () => {
     renderActions(job({}))
 

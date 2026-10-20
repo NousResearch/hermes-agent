@@ -173,6 +173,10 @@ Select another provider if a dependency cannot run on your platform.
 
 ## Step 5: recommended config
 
+Keep provider keys in `~/.hermes/.env`. Put non-secret voice behavior in
+`~/.hermes/config.yaml`: record key, silence tuning, auto-TTS, and provider
+selection.
+
 ```yaml
 voice:
   record_key: "ctrl+b"

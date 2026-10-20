@@ -386,6 +386,18 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
 
+    # 3d. agent.redact snapshots ``HERMES_REDACT_SECRETS`` at import time
+    #     (``_REDACT_ENABLED``), and test modules import it at collection —
+    #     before step 2 can delete a launch shell's ``HERMES_REDACT_SECRETS=false``.
+    #     A worker shell (``chat -q`` of a profile with ``security.redact_secrets:
+    #     false``) exports the variable, so its pytest subprocesses inherit
+    #     redaction off for the whole run. Re-pin the secure default per test,
+    #     like 3b does for ``DEFAULT_DB_PATH``; tests that need redaction off
+    #     set the flag themselves after this fixture has run.
+    redact_mod = sys.modules.get("agent.redact")
+    if redact_mod is not None and hasattr(redact_mod, "_REDACT_ENABLED"):
+        monkeypatch.setattr(redact_mod, "_REDACT_ENABLED", True)
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

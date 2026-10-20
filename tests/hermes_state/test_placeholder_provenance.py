@@ -20,3 +20,20 @@ def test_placeholder_creator_remains_visible_after_gateway_routing(tmp_path):
         assert db.get_session("previous")["input_tokens"] == 5
     finally:
         db.close()
+
+
+def test_routing_label_local_is_not_creation_provenance(tmp_path):
+    """An upsert carrying the routing label ``local`` never stamps it, and a row that already holds
+    ``local`` (or the ``unknown`` placeholder) is repaired by the real creator."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.update_token_counts("placeholder", input_tokens=1)
+        db.create_session("placeholder", source="local")
+        assert db.get_session("placeholder")["created_source"] == "unknown"
+        db.create_session("frozen", source="local")
+        assert db.get_session("frozen")["created_source"] == "local"
+        for sid in ("placeholder", "frozen"):
+            db.create_session(sid, source="cli")
+            assert db.get_session(sid)["created_source"] == "cli", sid
+    finally:
+        db.close()

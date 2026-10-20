@@ -897,13 +897,13 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         # The managed worker's platform is the policy label (gui), not the in-process
         # agent surface (desktop). Stamp the same created_surface the insert uses.
         from gateway.session_policy import created_surface
+        from hermes_state_compression import _UNSET_CREATED_SQL, stamp_compression_ancestors
         surfaced = created_surface(source)
         if surfaced:
             conn.execute(
-                "UPDATE sessions SET created_source=? WHERE id=? "
-                "AND NULLIF(created_source, 'unknown') IS NULL",
+                "UPDATE sessions SET created_source=? WHERE id=? AND "
+                + _UNSET_CREATED_SQL.format(col="created_source"),
                 (surfaced, session_id))
-            from hermes_state_compression import stamp_compression_ancestors
             stamp_compression_ancestors(conn, session_id)
     return {'value': None}
 

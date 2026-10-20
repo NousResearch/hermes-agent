@@ -23,7 +23,7 @@ from hermes_state_common import (
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
-from hermes_state_compression import _CHAIN_CAP
+from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -279,10 +279,13 @@ _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
         "transport_profile", "git_repo_root", "origin_json", "display_name",
     )
 ) + ",\n" + (
-    # Accounting may insert before the creator: 'unknown' is not creation provenance.
-    # Once a real source is stamped, later routing/constructor writes must preserve it (#56439).
-    "                       created_source = COALESCE("
-    "NULLIF(sessions.created_source, 'unknown'), excluded.created_source)"
+    # Accounting may insert before the creator ('unknown') and a routing write carries 'local':
+    # neither is creation provenance (_UNSET_CREATED_SQL), so a later creator replaces them and
+    # 'local' never replaces anything. A real source, once stamped, is preserved (#56439).
+    "                       created_source = CASE WHEN "
+    + _UNSET_CREATED_SQL.format(col="sessions.created_source")
+    + " THEN COALESCE(NULLIF(excluded.created_source, 'local'), sessions.created_source)"
+    " ELSE sessions.created_source END"
 )
 
 

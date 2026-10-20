@@ -105,8 +105,11 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
     return chain
 
 
-# created_source values the creator upsert treats as unset (NULLIF(..., 'unknown')).
-_UNSET_CREATED_SOURCES = (None, "unknown")
+# created_source values that are not creation provenance: unset, the accounting placeholder
+# ``unknown`` and the routing label ``local`` (the store-side copy of session_policy._NOT_A_SURFACE).
+# The creator upsert, the managed-worker heal and the ancestor stamp may replace them, nothing else.
+_UNSET_CREATED_SOURCES = frozenset({None, "", "unknown", "local"})
+_UNSET_CREATED_SQL = "COALESCE({col}, '') IN ('', 'unknown', 'local')"
 _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE id = ?"
 # Is any ancestor unset, walking up parent_session_id through ancestors on the same surface?
 # One query, so a fully stamped chain is skipped without the per-hop validated walk below.
@@ -118,7 +121,7 @@ _UNSET_ANCESTOR_SQL = """
         WHERE s.created_source = ? AND up.n < ?
     )
     SELECT 1 FROM up JOIN sessions s ON s.id = up.pid
-    WHERE NULLIF(s.created_source, 'unknown') IS NULL
+    WHERE """ + _UNSET_CREATED_SQL.format(col="s.created_source") + """
     LIMIT 1
 """
 
@@ -130,8 +133,8 @@ def stamp_compression_ancestors(conn, session_id: str) -> None:
     the root's ``created_source``. Automatic compression publishes the child before any writer
     knows the surface, so the turn's usage write stamps only the tip. Stamping the chain here,
     in that same transaction, keeps the root matchable without a list-time chain walk. Each hop
-    must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` counts as
-    unset, as in the creator upsert. An ancestor already on the same surface is walked through
+    must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` and ``local``
+    count as unset, as in the creator upsert. An ancestor already on the same surface is walked through
     (a NULL root behind a stamped mid segment still gets stamped); another surface stops it.
     A chain with no unset ancestor returns after one query (``_UNSET_ANCESTOR_SQL``).
     """

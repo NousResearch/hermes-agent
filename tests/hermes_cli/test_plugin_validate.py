@@ -67,7 +67,7 @@ def test_portable_validation_fails_orphan_and_reports_availability(tmp_path: Pat
     )
     report = validate_plugin_dir(declared)
     assert any(
-        name == "server availability: worker" and ok and detail in {"missing_app", "unsupported_os"}
+        name == "server availability: worker" and ok and detail.partition(",")[0] in {"missing_app", "unsupported_os"}
         for name, ok, detail in report.checks
     )
 

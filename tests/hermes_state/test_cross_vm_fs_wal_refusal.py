@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 import hermes_state_wal
-from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, apply_wal_with_fallback
+from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, _mountinfo_fstype, apply_wal_with_fallback
 
 
 def _mountinfo(tmp_path, lines):
@@ -29,6 +29,7 @@ SPACE_VIRTIOFS = "615 25 0:55 / /mnt/my\\040share rw,relatime - virtiofs share r
 
 
 class TestDetectCrossVmFs:
+    @pytest.mark.platforms("linux")
     @pytest.mark.parametrize("path,expected", [
         ("/data/agent", True),          # fuse.virtiofs bind mount
         ("/mnt/host/db", True),         # 9p bind mount
@@ -41,16 +42,39 @@ class TestDetectCrossVmFs:
         mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_VIRTIOFS, BIND_9P, NESTED_EXT4, SPACE_VIRTIOFS])
         assert _detect_cross_vm_fs(path, mountinfo_path=mi) is expected
 
+    @pytest.mark.parametrize("path,fstype", [
+        ("/data/agent", "fuse.virtiofs"),
+        ("/mnt/host/db", "9p"),
+        ("/mnt/my share/db", "virtiofs"),
+        ("/home/user/.hermes", "ext4"),
+        ("/data/native/db", "ext4"),
+        ("/datastore", "ext4"),
+    ])
+    def test_mountinfo_parser_selects_the_owning_mount(self, tmp_path, path, fstype):
+        # Parsing supplied mount data is portable; only the live detector is Linux-specific.
+        mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_VIRTIOFS, BIND_9P, NESTED_EXT4, SPACE_VIRTIOFS])
+        assert _mountinfo_fstype(path, mi) == fstype
+
+    @pytest.mark.platforms("not linux")
+    def test_nonlinux_detector_does_not_read_linux_mountinfo(self, tmp_path, monkeypatch):
+        def unexpected_probe(*args):
+            pytest.fail("non-Linux hosts must not probe Linux mountinfo")
+        monkeypatch.setattr(hermes_state_wal, "_mountinfo_fstype", unexpected_probe)
+        assert _detect_cross_vm_fs(str(tmp_path)) is False
+
     @pytest.mark.parametrize("fstype", [
         "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay", "nfs", "nfs4", "cifs", "fuse.sshfs", "apfs", "f2fs",
     ])
     def test_ordinary_filesystems_never_flagged(self, tmp_path, fstype):
         # A false positive here would put every session on DELETE mode — the class bug this pins absent.
         mi = _mountinfo(tmp_path, [f"25 1 8:1 / / rw,relatime shared:1 - {fstype} /dev/sda1 rw"])
+        assert _mountinfo_fstype("/home/user/.hermes", mi) == fstype
         assert _detect_cross_vm_fs("/home/user/.hermes", mountinfo_path=mi) is False
 
     def test_missing_mountinfo_conservative_false(self, tmp_path):
-        assert _detect_cross_vm_fs("/data", mountinfo_path=str(tmp_path / "nope")) is False
+        missing = str(tmp_path / "nope")
+        assert _mountinfo_fstype("/data", missing) == ""
+        assert _detect_cross_vm_fs("/data", mountinfo_path=missing) is False
 
 
 class TestWalRefusalOnCrossVmFs:

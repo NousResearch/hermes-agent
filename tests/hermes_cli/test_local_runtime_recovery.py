@@ -427,9 +427,13 @@ def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner)
     from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-    router = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    script = "import time; print('ready', flush=True); time.sleep(60)"
+    holder = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+    router = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
     try:
+        # Framework Python execs its app binary before executing this script.
+        for proc in (holder, router):
+            assert proc.stdout.readline().strip() == "ready"
         holder_proc, router_proc = psutil.Process(holder.pid), psutil.Process(router.pid)
         supervisor.state_path().write_text(json.dumps({
             "base_url": "http://127.0.0.1:59997/v1", "api_key": "test-only",
@@ -453,6 +457,7 @@ def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner)
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+            proc.stdout.close()
 
 
 @pytest.mark.platforms("linux")

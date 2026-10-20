@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import shutil
 
+import pytest
+
 import hermes_state_registry as registry
+
+pytestmark = pytest.mark.usefixtures("private_db_no_foreign_holders")
 
 
 def _seed(path):

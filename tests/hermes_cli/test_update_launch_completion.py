@@ -288,8 +288,14 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
     root = tmp_path / "source"
     root.mkdir()
     (root / "checkout_only.py").write_text("value = 'from checkout'\n")
+    dependencies = tmp_path / "dependencies"
+    dependencies.mkdir()
+    (dependencies / "dependency_only.py").write_text("value = 'selected generation'\n")
+    (root / "hermes_bootstrap.py").write_text(
+        f"import sys; sys.path.insert(0, {str(dependencies)!r})\n")
     script = root / "entry.py"
-    script.write_text("import checkout_only, json, sys\nprint(json.dumps([checkout_only.value, sys.argv[1:]]))\n")
+    script.write_text("import checkout_only, dependency_only, json, sys\n"
+                      "print(json.dumps([checkout_only.value, dependency_only.value, sys.argv[1:]]))\n")
     argv = [str(script), "--profile", "name with spaces", "-c", "session"]
     orig = [sys.executable, *argv]
     module = None
@@ -302,7 +308,7 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
     command = venv_sync.relaunch_command(Path(sys.executable), root, argv, orig, module)
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == ["from checkout", argv[1:]]
+    assert json.loads(result.stdout) == ["from checkout", "selected generation", argv[1:]]
 
 
 @pytest.mark.parametrize("owner,argv", [(None, []), ("external", []), ("electron-updater", []), ("self", ["-p", "coder", "pm", "repair"])])
@@ -371,6 +377,7 @@ def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, co
 
 def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path):
     import zipfile
+    (tmp_path / "hermes_bootstrap.py").write_text("")
     launcher = tmp_path / "hermes.exe"
     with zipfile.ZipFile(launcher, "w") as archive:
         archive.writestr("__main__.py", "import json,sys; print(json.dumps([sys.argv[1:], sys.stdout.write_through, sys.flags.utf8_mode]))")

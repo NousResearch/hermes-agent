@@ -140,7 +140,7 @@ class TestCommandCodeFetchModelsPickerContract:
     """
 
 
-    def test_resolve_provider_full(self):
+    def test_resolve_provider_full(self, monkeypatch):
         """Both profiles must resolve through the model-switch path.
 
         Regression: ``resolve_provider_full`` only knew models.dev + overlay
@@ -150,14 +150,20 @@ class TestCommandCodeFetchModelsPickerContract:
         """
         from hermes_cli.providers import resolve_provider_full
 
+        # Exercise plugin-only resolution even after the catalog or built-in overlay adds it.
+        import hermes_cli.providers as provider_defs
+        monkeypatch.setattr("agent.models_dev.get_provider_info", lambda *args, **kwargs: None)
+        monkeypatch.delitem(provider_defs.HERMES_OVERLAYS, "commandcode", raising=False)
         chat = resolve_provider_full("commandcode", {}, [])
         assert chat is not None and chat.id == "commandcode"
         assert chat.transport == "openai_chat"
+        assert chat.source == "plugin-profile"
         assert "COMMANDCODE_API_KEY" in chat.api_key_env_vars
 
         anth = resolve_provider_full("commandcode-anthropic", {}, [])
         assert anth is not None and anth.id == "commandcode-anthropic"
         assert anth.transport == "anthropic_messages"
+        assert anth.source == "plugin-profile"
 
 
 # ── base_url endpoint override ───────────────────────────────────────────────

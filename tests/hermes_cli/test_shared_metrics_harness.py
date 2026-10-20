@@ -115,7 +115,11 @@ def test_foreground_terminal_commands_count_by_kind_and_outcome(direct_runtime, 
     results = [json.loads(terminal_tool(command, task_id="harness", timeout=timeout)) for command, timeout in (
         ("ls /definitely/not/here", 30), ("echo ok", 30), ("sh -c 'exit 124'", 30), ("sleep 5", 1),
     )]
-    assert [r["exit_code"] for r in results] == [2, 0, 124, 124]
+    # BSD ls returns 1 for this failure; GNU ls returns 2. The metric's
+    # contract is a nonzero file operation, not one implementation's status.
+    codes = [r["exit_code"] for r in results]
+    assert codes[0] != 0
+    assert codes[1:] == [0, 124, 124]
     terminal_tool("true", task_id="harness", _host_local=True)  # Hermes' own control plane: never counted
     rows = _rows(tmp_path, contract.TERMINAL_OUTCOME_METRIC, "backend", "command_kind", "outcome")
     assert rows == sorted([

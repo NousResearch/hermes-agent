@@ -20,6 +20,8 @@ logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with th
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
+# Git for Windows 2.56 moved x64 installations from mingw64 to ucrt64.
+_GIT_WINDOWS_PREFIXES = ("clangarm64", "ucrt64", "mingw64", "mingw32")
 
 # creationflags is folded in here so every ``**_GIT_TEXT_KW`` spawn (rev-parse label,
 # fork-bomb probe, EOL churn normalization) hides its console under the console-less
@@ -576,7 +578,9 @@ def _portable_git_candidates() -> list:
     from hermes_constants import get_default_hermes_root, get_hermes_home
     candidates = []
     with suppress(Exception):
-        candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
+        candidates += [root / "git" / prefix / "libexec" / "git-core" / "git.exe"
+                       for root in (get_default_hermes_root(), Path(get_hermes_home()))
+                       for prefix in _GIT_WINDOWS_PREFIXES]
     return candidates
 
 
@@ -592,7 +596,7 @@ def _locate_real_git() -> Optional[Path]:
     candidates = [
         Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
         for base in (r"C:\Program Files", r"C:\Program Files (x86)")
-        for arch in ("clangarm64", "mingw64", "mingw32")
+        for arch in _GIT_WINDOWS_PREFIXES
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 

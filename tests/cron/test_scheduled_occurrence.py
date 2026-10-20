@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
 from datetime import UTC
@@ -35,8 +34,11 @@ else:
         ack = home / (claim['execution_id'] + '.ready')
         payload.write_text(json.dumps({'job': claim, 'profile_home': str(home),
                                        'multiplex_active': False}))
-        subprocess.run([sys.executable, '-m', 'cron.scheduler',
-                        '--external-worker-file', str(payload), '--ack-file', str(ack)],
+        from hermes_cli._launchers import runtime_command
+        command = runtime_command(Path(scheduler.__file__).resolve().parents[1],
+                                  ['--external-worker-file', str(payload), '--ack-file', str(ack)],
+                                  module='cron.scheduler', home=home)
+        subprocess.run(command,
                        stdin=subprocess.DEVNULL, check=True, timeout=60)
         assert json.loads(ack.read_text())['pid'] != os.getpid()
 """
@@ -47,8 +49,10 @@ def _fire(home, mode):
            if not k.startswith(('HERMES_', '_HERMES_'))
            and not k.endswith(('_API_KEY', '_TOKEN'))}
     env['HERMES_HOME'] = str(home)
-    env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
-    result = subprocess.run([sys.executable, '-c', _FIRE, mode], env=env,
+    from hermes_cli._launchers import runtime_command
+
+    command = runtime_command(Path(__file__).resolve().parents[2], [mode], code=_FIRE, home=home)
+    result = subprocess.run(command, env=env,
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 

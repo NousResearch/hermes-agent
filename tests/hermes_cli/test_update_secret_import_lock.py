@@ -126,13 +126,17 @@ def test_update_probe_children_skip_external_secret_sources(tmp_path):
     (home / "config.yaml").write_text(
         f"secrets:\n  command:\n    enabled: true\n    command: 'touch {hit}'\n", encoding="utf-8",
     )
+    # The child selects a native PM runtime; don't inherit the unit parent's
+    # instruction to skip preparing that runtime's isolated dependency home.
+    probe_env = {**os.environ, "HERMES_HOME": str(home)}
+    probe_env.pop("HERMES_DISABLE_LAZY_INSTALLS", None)
     result = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.argv = ['hermes', 'update']\n"
          "from hermes_cli.update_cmd_validation import _validate_critical_modules_import\n"
          "print('PROBE=' + repr(_validate_critical_modules_import(__import__('os').getcwd())))"],
         capture_output=True, text=True, timeout=180, cwd=REPO_ROOT,
-        env={**os.environ, "HERMES_HOME": str(home)},
+        env=probe_env,
         check=False,
     )
     assert result.returncode == 0, result.stderr

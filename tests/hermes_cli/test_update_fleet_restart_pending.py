@@ -98,6 +98,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
 
     monkeypatch.setattr(update_custody, "run",
                         lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
+    # Darwin's watched ref writer uses Popen directly; fake Git at its common
+    # boundary instead of depending on the host's custody implementation.
+    monkeypatch.setattr(update_custody, "run_git",
+                        lambda git, args, **kw: run_side_effect([*git, *args], **kw))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()

@@ -16,6 +16,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 
+class RangeServer(HTTPServer):
+    # Eight parallel range clients can fill the default five-entry listen queue.
+    # macOS resets excess connects, making valid loopback transfers exhaust their retry budget.
+    request_queue_size = 32
+
+
 class RangeHandler(BaseHTTPRequestHandler):
     payloads: dict = {}
     ranges_seen: list = []           # (path, start, end) from real Range requests
@@ -110,7 +116,7 @@ def dl_server():
     RangeHandler.no_range = False
     RangeHandler.etags = True
     RangeHandler.chunk = 1 << 20
-    server = HTTPServer(("127.0.0.1", 0), RangeHandler)
+    server = RangeServer(("127.0.0.1", 0), RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

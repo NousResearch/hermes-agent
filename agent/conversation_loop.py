@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
@@ -907,10 +908,10 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     stored_sid = identity_line_value(prompt, "Session ID")
     if stored_sid and getattr(agent, "pass_session_id", False) and stored_sid != agent.session_id:
         return False
-    # Compare against resolve_agent_cwd() — the SAME resolver used to build the
-    # prompt — so TERMINAL_CWD sessions are not falsely rejected.
+    # The builder captures a physical cwd. Never re-resolve a historical alias: it may now
+    # point at another workspace. Legacy logical paths conservatively rebuild once.
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and stored_cwd != str(resolve_agent_cwd()):
+    if stored_cwd and Path(stored_cwd) != Path(resolve_agent_cwd()).resolve():
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
     # stored bytes, it only makes their interface section out of date, and that is corrected by

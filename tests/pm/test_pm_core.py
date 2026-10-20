@@ -772,7 +772,8 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
     (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python",
+                        lambda p: pytest.fail("Windows Python must not be macOS-signed"))
     get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
 
     assert not (staged / "vcruntime140_1.dll").exists()
@@ -786,7 +787,8 @@ def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
     staged.mkdir()
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python",
+                        lambda p: pytest.fail("Windows Python must not be macOS-signed"))
     get_package("python").stage(None, staged, "3.14.7", "win32-x64")
 
     assert (staged / "vcruntime140_1.dll").is_file()

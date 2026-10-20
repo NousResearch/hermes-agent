@@ -102,7 +102,7 @@ class HomeIOGuard:
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
-            if metadata and absolute in roots:
+            if metadata and self._root_metadata_allowed(absolute, roots):
                 return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
             # realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of
@@ -138,6 +138,19 @@ class HomeIOGuard:
                     self.refuse(value)
         finally:
             self.checking.active = False
+
+    @staticmethod
+    def _root_metadata_allowed(absolute, roots):
+        if absolute in roots:
+            return True
+        # macOS process scans stat every reported open file, including another
+        # install's code/venv. Metadata is not a byte read or a mutation. Never
+        # exempt a symlink escaping that code tree into profile state.
+        for root in roots:
+            checkout = os.path.join(root, "hermes-agent")
+            if _within(absolute, checkout):
+                return _within(_normcase(os.path.realpath(absolute)), checkout)
+        return False
 
     def _refuse_installed_app_change(self, value, absolute):
         """Fail on a change to an installed app (already normalized, literal and resolved);

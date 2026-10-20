@@ -1,6 +1,7 @@
 """Git trampoline recovery; branch updates use the real target-identity suite."""
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -106,13 +107,14 @@ class TestGitTrampolineSelfHeal:
         assert result == git_cmd
         run.assert_not_called()
 
-    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("prefix", ["mingw64", "ucrt64", "clangarm64", "mingw32"])
+    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch, prefix):
         # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
         # PortableGit tree lives under the SHARED root (monerostar review on
         # #88136). The candidate list must check get_default_hermes_root()
         # before the profile home.
         import hermes_constants
-        from hermes_cli.update_cmd_git import _portable_git_candidates
+        from hermes_cli import update_cmd_git
 
         root = tmp_path / "root"
         profile_home = root / "profiles" / "foo"
@@ -120,10 +122,14 @@ class TestGitTrampolineSelfHeal:
         monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
-        candidates = _portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
+        shared = root / "git" / prefix / "libexec" / "git-core" / "git.exe"
+        profile = profile_home / "git" / prefix / "libexec" / "git-core" / "git.exe"
+        for path in (shared, profile):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"fixture")
+        # Only these owned fixtures pass the probe; never select an installed host Git.
+        monkeypatch.setattr(update_cmd_git, "_probe_fork_bomb",
+                            lambda argv: False if Path(argv[0]) in (shared, profile) else None)
+        assert update_cmd_git._locate_real_git() == shared
+        shared.unlink()
+        assert update_cmd_git._locate_real_git() == profile

@@ -36,7 +36,8 @@ def fixture_tree(tmp_path, monkeypatch):
         "def main():\n"
         "    import selected_probe\n"
         "    print(json.dumps({'value': selected_probe.VALUE, 'argv': sys.argv[1:], "
-        "'home': os.environ.get('HERMES_HOME'), 'exe': sys.executable}))\n"
+        "'home': os.environ.get('HERMES_HOME'), 'exe': sys.executable, "
+        "'tool': os.environ.get('LAUNCHER_TEST_TOOL')}))\n"
         "    return 7\n"
         "if __name__ == '__main__':\n    sys.exit(main())\n"
     )
@@ -511,11 +512,17 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
             return original_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", without_config)
+    monkeypatch.delenv("LAUNCHER_TEST_TOOL", raising=False)
     store = home / "tools"
     for version in ("python-A", "python-B"):
         python = store / version / "bin/python3"
         python.parent.mkdir(parents=True)
-        python.symlink_to(interpreter)
+        # Record which store entry was actually executed: framework Python on
+        # macOS reports its base executable after following an interpreter alias.
+        python.write_text(
+            f'#!/bin/sh\nexport LAUNCHER_TEST_TOOL={version}\n'
+            f'exec {shlex.quote(str(interpreter))} "$@"\n', encoding="utf-8")
+        python.chmod(0o755)
         (store / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"python": {"entry": version}}}), encoding="utf-8")
         if version == "python-A":
             _launchers.mint_launcher("hermes", repo, out, python, None)
@@ -533,7 +540,9 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
                             capture_output=True, text=True, timeout=30, encoding="utf-8", check=False)
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "ready"
-    assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
+    receipt = json.loads(result.stdout)
+    assert receipt["tool"] == "python-B"
+    assert Path(receipt["exe"]).samefile(interpreter)
 
 def _torn_by_a_killed_merge(tmp_path, monkeypatch):
     """A git install whose update was killed mid-merge while git rewrote ``hermes_constants.py``.

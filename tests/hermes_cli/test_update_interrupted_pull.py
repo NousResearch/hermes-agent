@@ -21,8 +21,12 @@ from hermes_cli import update_cmd
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
-                          text=True, encoding="utf-8").stdout.strip()
+    try:
+        return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
+                              text=True, encoding="utf-8").stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        exc.add_note(exc.stderr)
+        raise
 
 
 _MULTI = "top = 1\nx = 0\ny = 0\nz = 0\nend = 1\n"
@@ -77,7 +81,7 @@ def checkout(tmp_path, monkeypatch):
     _git(origin, "update-index", "--chmod=+x", "tool.sh")
     _git(origin, "commit", "-qm", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    _git(tmp_path, "clone", "--no-local", "-q", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
     monkeypatch.setattr("hermes_cli.main.PROJECT_ROOT", root)
     return root, _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
@@ -288,7 +292,7 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
         (origin / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
     _git(origin, "commit", "-qam", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    _git(tmp_path, "clone", "--no-local", "-q", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
     pre, target = _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
     for i, name in enumerate(names[:150]):  # git got halfway

@@ -79,7 +79,7 @@ def _init_repo(path, first_commit):
     (path / "main.py").write_text("print(1)\n")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-qm", first_commit], cwd=path, check=True)
-    return path
+    return path.resolve()
 
 
 
@@ -280,6 +280,107 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                  patch("agent.system_prompt.resolve_context_cwd", return_value=other):
                 moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
                 self.assertIn(f"- Root: {other}", build_system_prompt(moved))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_symlink_cwd_reuses_the_workspace_pin(self):
+        """A real directory alias must not refresh the snapshot during compression."""
+        import os, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-alias-")).resolve()
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            alias = tmp / "alias"
+            alias.symlink_to(repo, target_is_directory=True)
+            os.chdir(repo)
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    original = build_system_prompt(agent)
+                self.assertIn("Status: clean", original)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    self.assertEqual(build_system_prompt(agent), original)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_resume_accepts_a_persisted_cwd_alias(self):
+        """A prompt built via an alias captures physical identity and survives a resume."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent import prompt_builder as pb
+        from agent.conversation_loop import _restore_or_build_system_prompt
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-resumed-alias-")).resolve()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            alias = tmp / "alias"
+            alias.symlink_to(repo, target_is_directory=True)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints",
+                       side_effect=lambda: "\n\n".join(pb._local_host_hints())), \
+                 patch("agent.prompt_builder.resolve_agent_cwd", return_value=alias):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    stored = build_system_prompt(self._pin_agent())
+                self.assertIn(f"Current working directory: {repo}\n", stored)
+                self.assertIn("Status: clean", stored)
+                (repo / "untracked.txt").write_text("wip\n")
+                db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                resumed = self._pin_agent(
+                    _cached_system_prompt=None, _session_db=db, tools=[], _use_prompt_caching=False,
+                    _build_system_prompt=lambda _: self.fail("equivalent cwd must restore the stored prompt"),
+                )
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=repo), \
+                     patch("agent.conversation_loop.resolve_agent_cwd", return_value=repo):
+                    _restore_or_build_system_prompt(resumed, None, [{"role": "user", "content": "continue"}])
+                    self.assertIs(resumed._cached_system_prompt, stored)
+                    invalidate_system_prompt(resumed)
+                    self.assertEqual(build_system_prompt(resumed), stored)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_retargeted_alias_does_not_reuse_the_previous_workspace(self):
+        """A historical alias must not be resolved against its new target at resume."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent import prompt_builder as pb
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-retargeted-alias-")).resolve()
+        try:
+            first = _init_repo(tmp / "first", "first workspace")
+            second = _init_repo(tmp / "second", "second workspace")
+            alias = tmp / "current"
+            alias.symlink_to(first, target_is_directory=True)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints",
+                       side_effect=lambda: "\n\n".join(pb._local_host_hints())), \
+                 patch("agent.prompt_builder.resolve_agent_cwd", return_value=alias), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                stored = build_system_prompt(self._pin_agent())
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+            for current in (alias, second):
+                with self.subTest(current=current), \
+                     patch("agent.conversation_loop.resolve_agent_cwd", return_value=current), \
+                     patch("agent.system_prompt.resolve_context_cwd", return_value=current):
+                    self.assertFalse(_stored_prompt_matches_runtime(self._pin_agent(), stored))
+                    legacy = stored.replace(f"Current working directory: {first}",
+                                            f"Current working directory: {alias}")
+                    self.assertFalse(_stored_prompt_matches_runtime(self._pin_agent(), legacy))
+                    db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                    resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                    rebuilt = build_system_prompt(resumed)
+                    self.assertIn(f"- Root: {second}", rebuilt)
+                    self.assertNotIn("first workspace", rebuilt)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

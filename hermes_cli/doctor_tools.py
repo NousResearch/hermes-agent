@@ -408,6 +408,70 @@ def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     if _check_agent_browser(should_fix) and not _is_termux():
         _check_chromium()
     _check_lightpanda()
+    _check_retired_node_layout(should_fix)
+
+
+def _retired_node_path_links(hermes_home: Path) -> list[Path]:
+    """Hermes-owned PATH symlinks still pointing into the retired node layout (#126934).
+
+    Same ownership rule as ``uninstall.remove_node_symlinks``: only a symlink
+    resolving into THIS Hermes home's ``node`` tree counts — links the user
+    repointed elsewhere (nvm, fnm, ...) are theirs, not ours.
+    """
+    from hermes_constants import hermes_managed_node_tree_present
+
+    node_dir = (hermes_home / "node").resolve()
+    if not hermes_managed_node_tree_present(hermes_home):
+        return []
+    from hermes_cli.uninstall import _node_symlink_candidate_dirs
+
+    ours: list[Path] = []
+    for bin_dir in _node_symlink_candidate_dirs():
+        for name in ("node", "npm", "npx"):
+            link = bin_dir / name
+            try:
+                if not link.is_symlink():
+                    continue
+                target = link.resolve()
+                if target != node_dir and node_dir not in target.parents:
+                    continue
+                ours.append(link)
+            except OSError:
+                continue
+    return ours
+
+
+def _check_retired_node_layout(should_fix: bool) -> None:
+    """Flag (and with ``--fix``, offer removal of) install-era node links (#126934).
+
+    Report-only by default: the user's own global npm packages may live under
+    the old prefix (``~/.local`` via the retired npmrc), so removal stays an
+    explicit ``doctor --fix`` decision, never a surprise. Removal reuses the
+    uninstaller's ownership rule, so user-repointed links are never touched.
+    """
+    from hermes_cli.doctor import HERMES_HOME
+
+    links = _retired_node_path_links(HERMES_HOME)
+    if not links:
+        return
+    if should_fix:
+        from hermes_cli.uninstall import remove_node_symlinks
+
+        removed = remove_node_symlinks(HERMES_HOME)
+        remaining = [link for link in links if link.is_symlink()]
+        for link in removed:
+            check_ok(f"Removed retired node symlink {link}")
+        if remaining:
+            rendered = ", ".join(str(link) for link in remaining)
+            check_warn("Retired node layout still owns your PATH node/npm/npx", f"({rendered})")
+    else:
+        rendered = ", ".join(str(link) for link in links)
+        check_warn("Retired node layout still owns your PATH node/npm/npx", f"({rendered})")
+    check_info("These install-era symlinks point into the retired Hermes node tree, which is no "
+               "longer updated (PM serves its own Node). Global npm packages installed through "
+               "that Node keep depending on it.")
+    check_info("Run `hermes doctor --fix` to remove Hermes-owned links (only links resolving "
+               "into this install are touched), then make sure a current Node is on your PATH.")
 
 
 def _plural(n: int) -> str:

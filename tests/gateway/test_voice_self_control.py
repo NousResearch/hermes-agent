@@ -117,7 +117,7 @@ def test_unauthorized_user_refused(runner):
     adapter.leave_voice_channel.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kw", [{"platform": "telegram"}, {"cron": "1"}, {"user": ""}])
+@pytest.mark.parametrize("kw", [{"platform": "telegram"}, {"cron": "1"}, {"cron": "true"}, {"user": ""}])
 def test_non_discord_or_cron_refused(runner, kw):
     runner.adapters[Platform.DISCORD] = _adapter(connected=True)
     tokens = _bind(**kw)
@@ -250,6 +250,23 @@ def test_server_channel_never_falls_back_to_another_server(runner):
     assert left["success"] is False
 
 
+def test_server_channel_without_guild_id_never_joins_the_home_server(runner, monkeypatch):
+    """The DM home-channel fallback is for DMs only; a group session with no guild id is refused."""
+    import tools.discord_voice_tool as tool
+    adapter = _adapter(connected=False)
+    runner.adapters[Platform.DISCORD] = adapter
+    fallback = MagicMock()
+    monkeypatch.setattr(tool, "_home_channel_source", fallback)
+    tokens = _bind(scope="", chat_type="group")
+    try:
+        out = _call(runner, "join")
+    finally:
+        clear_session_vars(tokens)
+    assert "error" in out
+    fallback.assert_not_called()
+    adapter.join_voice_channel.assert_not_awaited()
+
+
 def test_dm_with_two_voice_connections_is_refused(runner):
     adapter = _adapter(connected=True)
     adapter._voice_clients = {GUILD: _vc(), 555555555555555555: _vc()}
@@ -260,6 +277,20 @@ def test_dm_with_two_voice_connections_is_refused(runner):
     finally:
         clear_session_vars(tokens)
     assert "error" in out and "more than one server" in out["error"]
+
+
+def test_dm_with_numeric_scope_still_uses_dm_rules(runner):
+    """A DM session carrying a numeric scope id must not act on that id as a guild."""
+    adapter = _adapter(connected=True)
+    adapter._voice_clients = {GUILD: _vc(), 555555555555555555: _vc()}
+    runner.adapters[Platform.DISCORD] = adapter
+    tokens = _bind(chat="999", scope=str(GUILD), chat_type="dm")
+    try:
+        out = _call(runner, "leave")
+    finally:
+        clear_session_vars(tokens)
+    assert "error" in out and "more than one server" in out["error"]
+    adapter.leave_voice_channel.assert_not_awaited()
     adapter.leave_voice_channel.assert_not_awaited()
 
 

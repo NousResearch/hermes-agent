@@ -42,10 +42,11 @@ def _session_source():
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_context import get_session_env
+    from utils import is_truthy_value
 
     if get_session_env("HERMES_SESSION_PLATFORM", "") != "discord":
         return None
-    if get_session_env("HERMES_CRON_SESSION", "") == "1":
+    if is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
         return None
     chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
     user_id = get_session_env("HERMES_SESSION_USER_ID", "")
@@ -96,9 +97,13 @@ def _connected_guilds(adapter) -> list:
 async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
     from gateway.session import SessionSource
 
-    guild_id: Optional[int] = int(source.scope_id) if (source.scope_id or "").isdigit() else None
+    # A DM never names a guild, even if a scope id leaked into its session; DM rules always apply.
+    scoped = source.chat_type != "dm" and (source.scope_id or "").isdigit()
+    guild_id: Optional[int] = int(source.scope_id) if scoped else None
     if action == "join":
         if guild_id is None:
+            if source.chat_type != "dm":  # a server channel with no guild id never joins elsewhere
+                return {"error": "Could not determine this server; join from a server text channel."}
             fallback = _home_channel_source(adapter, source, home)
             if fallback is None:
                 return {"error": "Not in a server channel and DISCORD_HOME_CHANNEL is not resolvable."}
@@ -181,7 +186,7 @@ def discord_voice(action: str) -> str:
     try:
         result = fut.result(timeout=_TIMEOUT_S)
     except TimeoutError:
-        fut.cancel()  # a late join/leave must not land after the agent was told it failed
+        fut.cancel()  # best effort: stops a join/leave still awaiting; a completed step is not undone
         logger.warning("discord_voice %s timed out after %ss", action, _TIMEOUT_S)
         return tool_error(f"Voice {action} timed out after {_TIMEOUT_S}s.")
     except CancelledError:  # the gateway loop shut down underneath the action
@@ -204,8 +209,8 @@ def check_discord_voice_requirements() -> bool:
 DISCORD_VOICE_SCHEMA = {
     "name": "discord_voice",
     "description": (
-        "Join, leave, or check your own Discord voice-channel presence (same effect as the user typing "
-        "/voice join or /voice leave). 'join' joins the voice channel the requesting user is currently "
+        "Join, leave, or check your own Discord voice-channel presence (runs the same join/leave code as "
+        "/voice join and /voice leave). 'join' joins the voice channel the requesting user is currently "
         "in and binds it to this text chat, or to the home channel from a DM (spoken replies on). 'leave' "
         "asks the voice client to disconnect, turns voice replies off and stops listening (only when you are "
         "in voice in that server; otherwise it changes nothing). 'status' "

@@ -601,6 +601,28 @@ def _record_late(sink: Any, label: str, future: Any) -> None:
         logger.debug("MoA: late accounting sink failed for %s", label)
 
 
+def _preload_openai_chat_resources() -> bool:
+    """Import the OpenAI SDK chat/responses resource packages on this thread.
+
+    The SDK resolves ``client.chat`` and ``client.responses`` through lazy
+    ``cached_property`` bodies that import on first access; MoA fans that
+    first touch out on a ThreadPoolExecutor. Two threads first-touching
+    *different* properties at once form an import-lock cycle
+    (``openai.resources`` ↔ ``resources.beta`` ↔ ``resources.chat``), and
+    CPython aborts the loser with ``_DeadlockError: deadlock detected by
+    _ModuleLock('openai.resources.chat')`` (observed on /moa reference runs
+    under Python 3.14). Importing both subtrees once, single-threaded, turns
+    every later access into a plain attribute read with no module lock in
+    play. Returns False on failure so callers can fall back (best-effort).
+    """
+    try:
+        import openai.resources.chat  # noqa: F401
+        import openai.resources.responses  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _run_references_parallel(
     reference_models: list[dict[str, Any]], ref_messages: list[dict[str, Any]], *,
     temperature: float | None = None, max_tokens: int | None = None, progress_callback: Any = None,
@@ -623,8 +645,10 @@ def _run_references_parallel(
     # Propagate the turn's contextvars (approval callbacks, Nous conversation tag).
     from tools.thread_context import propagate_context_to_thread
     completed = 0
-    executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
     interrupted = False
+    # Warm the SDK chat resource on this thread before workers race client.chat.
+    _preload_openai_chat_resources()
+    executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
     cache_disabled, cache_ttl = _agent_cache_opts(agent)

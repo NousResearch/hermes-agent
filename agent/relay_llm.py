@@ -8,6 +8,7 @@ import contextvars
 import inspect
 import json
 import logging
+import threading
 from collections.abc import Callable, Iterator
 from functools import partial
 from types import SimpleNamespace
@@ -289,12 +290,24 @@ def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
     return True
 
 
-def _next_provider_chunk(callback: Callable[..., Any], raw_iterator: Any) -> tuple[Any, bool]:
-    """Read one synchronous provider chunk without leaking StopIteration through a Future."""
+def _next_provider_chunk(
+    callback: Callable[..., Any], raw_iterator: Any, finalizing: threading.Event,
+) -> tuple[Any, bool]:
+    """Read one synchronous provider chunk without leaking StopIteration through a Future.
+
+    Once the stream is finalizing, the thread that owns the running generator closes the
+    iterator here: the loop thread cannot close a generator that is still executing, and
+    cancelling this read does not stop this thread."""
     try:
         return callback(next, raw_iterator), False
     except StopIteration:
         return None, True
+    finally:
+        if finalizing.is_set():
+            close = getattr(raw_iterator, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
 
 
 class ManagedLlmStream(Iterator[Any]):
@@ -318,6 +331,7 @@ class ManagedLlmStream(Iterator[Any]):
         metadata: dict[str, Any] | None = None, defer_logical_completion: bool = False,
     ) -> None:
         self._defer_logical_completion = defer_logical_completion
+        self._provider_read_finalizing = threading.Event()
         # Only auxiliary calls report model/provider on their logical scope.
         auxiliary = str((metadata or {}).get("call_role") or "").startswith("auxiliary:")
         self._logical_model_name, self._logical_provider_name = (model_name, name) if auxiliary else (None, None)
@@ -363,7 +377,9 @@ class ManagedLlmStream(Iterator[Any]):
                 # Off the loop: Relay pulls the next provider chunk before it hands over the
                 # current one, so a blocking read here withholds each chunk until the provider
                 # sends the next. Text vanishes for every provider pause and a steer aborts it.
-                chunk, exhausted = await asyncio.to_thread(_next_provider_chunk, run_callback, raw_iterator)
+                chunk, exhausted = await asyncio.to_thread(
+                    _next_provider_chunk, run_callback, raw_iterator, self._provider_read_finalizing,
+                )
                 if exhausted:
                     break
                 if self._accept_chunk is not None and not run_callback(self._accept_chunk, chunk):
@@ -376,10 +392,25 @@ class ManagedLlmStream(Iterator[Any]):
             self._callback_error = exc
             raise
         finally:
+            # Hand the iterator's final close to whichever thread holds it last: the loop
+            # thread closes it here when it can, and a read still running on the executor
+            # thread (whose next() call cannot be cancelled) closes it when it finishes.
+            self._provider_read_finalizing.set()
             close = getattr(raw_stream, "close", None)
             if callable(close):
                 try:
                     run_callback(close)
+                except ValueError as exc:
+                    if "already executing" not in str(exc):
+                        self._close_error = exc
+                        raise
+                    # The provider generator is still executing inside the executor thread's
+                    # next() call, so closing it from this thread is impossible; the flagged
+                    # read closes it on its own thread instead of failing ManagedLlmStream.close().
+                    logger.debug(
+                        "Provider stream still executing on its reader thread; deferring its close to that thread",
+                        exc_info=True,
+                    )
                 except BaseException as exc:
                     self._close_error = exc
                     raise

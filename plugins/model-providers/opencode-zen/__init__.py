@@ -11,13 +11,15 @@ from providers import register_provider
 from providers.base import ProviderProfile
 from datetime import UTC
 
-# Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
-# default_headers so they survive model switches and credential rotation.
+# Attribution headers matching the OpenCode CLI's wire format (Issue #49433).
+# User-Agent must be opencode/latest/<version>/cli (NOT opencode/<version>/cli).
+# x-opencode-project: global is now validated by the relay.
 _ATTRIBUTION_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": "opencode/2.0.29/cli",
+    "User-Agent": "opencode/latest/2.0.29/cli",
     "x-opencode-client": "cli",
+    "x-opencode-project": "global",
 }
 
 

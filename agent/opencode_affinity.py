@@ -127,7 +127,14 @@ def opencode_session_headers(
         # OpenCode relay requires ses_<12hex><14base62> format; Hermes session IDs
         # (e.g. 20261019_230516_9ca28e) are rejected with FreeTierError 403.
         key = _generate_opencode_session_id()
-    return {OPENCODE_SESSION_HEADER: key}
+    # The relay checks x-opencode-session, x-opencode-session-id, x-session-affinity
+    # and x-session-id — all must carry the SAME ses_ value (Issue #49433).
+    return {
+        OPENCODE_SESSION_HEADER: key,
+        "x-opencode-session-id": key,
+        "x-session-affinity": key,
+        "x-session-id": key,
+    }
 
 
 def custom_provider_session_affinity_headers(

@@ -228,6 +228,40 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); vi.useRealTimers() }
   })
 
+  it('declares clarify batching only to an owner whose runtime.describe advertises clarify-batch-v1', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+
+    for (const [capabilities, expected] of [[['durable-admission-v1', 'clarify-batch-v1'], true], [['durable-admission-v1'], false], [undefined, false]] as const) {
+      const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+      const events: any[] = []
+      gw.on('event', event => events.push(event))
+
+      try {
+        gw.start(); gw.drain()
+        await vi.advanceTimersByTimeAsync(0)
+        const socket = FakeWebSocket.instances.at(-1)!
+        socket.open()
+        await vi.advanceTimersByTimeAsync(0)
+
+        const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
+          .find(frame => frame.method === 'runtime.describe')!
+
+        expect(gw.clarifyBatch).toBe(false)
+        socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+          session_create: { sources: ['tui'], parameters: ['source', 'request_id'] },
+          ...(capabilities ? { capabilities } : {}) } }))
+        await vi.advanceTimersByTimeAsync(0)
+
+        expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1)
+        expect(gw.clarifyBatch).toBe(expected)
+      } finally { gw.kill() }
+    }
+
+    vi.useRealTimers()
+  })
+
   it('treats a failed runtime.describe as a transport failure: redial, re-describe, then ready (B2-21)', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL

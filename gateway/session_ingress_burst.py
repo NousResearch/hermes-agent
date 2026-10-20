@@ -182,18 +182,26 @@ def _undurable(adapter):
 async def when_returned_inputs_durable(adapter, persist):
     """Run ``persist()`` once every input a serial reader returned on is committed: a reader that
     saves its own receive cursor after the call returns (Buzz) must not advance it past a held burst,
-    or a restart in the hold window loses it. Inline when nothing is pending; otherwise in a tracked
-    task, so the reader reads on (a lost cursor write only replays inputs admission already holds).
-    ``persist`` must carry the cursor as of this call: by the time a deferred write runs, the reader
-    has already marked later inputs seen that are not committed yet."""
+    or a restart in the hold window loses it. Inline when nothing is pending; otherwise one tracked
+    task per adapter, so the reader reads on (a lost cursor write only replays inputs admission
+    already holds). ``persist`` carries the cursor as of this call; while that task waits, a newer
+    call replaces it, and the task picks the newest in the same step that saw nothing pending, so
+    an input that arrives during the write's I/O is never in it."""
+    if getattr(adapter, '_durable_persist', None) is not None:
+        adapter._durable_persist = persist
+        return
     if not _undurable(adapter):
         await persist()
         return
+    adapter._durable_persist = persist
 
     async def later():
-        while pending := _undurable(adapter):
-            await asyncio.wait(pending)
-        await persist()
+        try:
+            while pending := _undurable(adapter):
+                await asyncio.wait(pending)
+        finally:
+            latest = adapter.__dict__.pop('_durable_persist', None)
+        await latest()
     _track(adapter, asyncio.create_task(later()))
 
 

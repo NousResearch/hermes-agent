@@ -334,3 +334,25 @@ async def test_buzz_cursor_never_passes_an_uncommitted_input(monkeypatch):
     assert saved[0][0] == 1, saved
     # Every saved cursor names only events that had an admission row when it was written.
     assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved
+
+
+@pytest.mark.asyncio
+async def test_buzz_cursor_write_waiting_on_disk_skips_a_newer_held_burst(monkeypatch):
+    """e1's deferred write is due but waits behind a slow earlier write; meanwhile e2 arrives and is
+    held. The waiting write must still land the cursor as it was when e1 committed, not e2's."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    saved = []
+    monkeypatch.setattr(type(adapter), '_write_cursors', staticmethod(lambda path, payload: saved.append(
+        (payload['channels']['chan']['last_ts'], {row['request_id'] for row in _rows(owner.authority)}))))
+    await adapter._cursor_write_lock.acquire()  # the earlier write, still in its fsync
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'held')])
+    await async_wait_until(lambda: adapter._cursor_write_lock._waiters, timeout=15,
+                           what="e1's committed write to queue on the lock")
+    await adapter._handle_events('chan', state, [_buzz_event(2, 'next')])
+    assert owner.key in adapter._shared_bursts  # e2 is held, not committed
+    adapter._cursor_write_lock.release()
+    await async_wait_until(lambda: saved, timeout=15, what='the waiting cursor write')
+    assert saved[0][0] == 1, saved
+    assert await owner.settle(3) == [('held', 0), ('next', 0)]
+    assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved

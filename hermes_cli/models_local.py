@@ -667,11 +667,12 @@ def fetch_ollama_cloud_models(
     (freshest) merged with models.dev additions (deduped, live first) → stale cache → models.dev
     only → ``[]``. ``cache_only`` (GUI read path) never runs the 8s network probe and never writes
     the disk cache. Never None."""
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.models import fetch_api_models, _filter_retired_ollama_cloud
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
         if cached is not None:
-            return cached["models"]
+            # Pre-filter disk caches written before the retired-id filter existed.
+            return _filter_retired_ollama_cloud(cached["models"])
 
     api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
     base_url = base_url or os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
@@ -689,6 +690,7 @@ def fetch_ollama_cloud_models(
     for m in [*live_models, *(_strip_ollama_cloud_suffix(m) for m in mdev_models)]:
         if m and m not in merged:
             merged.append(m)
+    merged = _filter_retired_ollama_cloud(merged)
     if live_models:
         # Persist only a result that included the live catalog: writing the models.dev-only list here
         # (cache_only, or a failed probe) would stamp it fresh, drop the live-only ids, and make the
@@ -697,4 +699,4 @@ def fetch_ollama_cloud_models(
         return merged
 
     stale = _load_ollama_cloud_cache(ignore_ttl=True)
-    return stale["models"] if stale is not None else merged
+    return _filter_retired_ollama_cloud(stale["models"]) if stale is not None else merged

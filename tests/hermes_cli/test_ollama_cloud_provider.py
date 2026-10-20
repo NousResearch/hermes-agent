@@ -73,17 +73,17 @@ class TestOllamaCloudModelCatalog:
         mock_mdev = {
             "ollama-cloud": {
                 "models": {
-                    "qwen3.5:397b": {"tool_call": True},
+                    "qwen3.5-next": {"tool_call": True},
                     "glm-5": {"tool_call": True},
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5-next"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = provider_model_ids("ollama-cloud", force_refresh=True)
 
         assert len(result) > 0
-        assert "qwen3.5:397b" in result
+        assert "qwen3.5-next" in result
 
 
 # ── Model Picker (list_authenticated_providers) ──
@@ -99,12 +99,12 @@ class TestOllamaCloudModelPicker:
         mock_mdev = {
             "ollama-cloud": {
                 "models": {
-                    "qwen3.5:397b": {"tool_call": True},
+                    "qwen3.5-next": {"tool_call": True},
                     "glm-5": {"tool_call": True},
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5-next"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             providers = list_authenticated_providers(current_provider="ollama-cloud")
 
@@ -137,19 +137,19 @@ class TestOllamaCloudMergedDiscovery:
             "ollama-cloud": {
                 "models": {
                     "glm-5": {"tool_call": True},
-                    "kimi-k2.5": {"tool_call": True},
+                    "kimi-k2-flash": {"tool_call": True},
                     "nemotron-3-super": {"tool_call": True},
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5-next", "glm-5"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         # Live models first, then models.dev additions (deduped)
-        assert result[0] == "qwen3.5:397b"  # from live API
+        assert result[0] == "qwen3.5-next"   # from live API
         assert result[1] == "glm-5"          # from live API (also in models.dev)
-        assert "kimi-k2.5" in result         # from models.dev only
+        assert "kimi-k2-flash" in result     # from models.dev only
         assert "nemotron-3-super" in result  # from models.dev only
         assert result.count("glm-5") == 1    # no duplicates
 
@@ -254,26 +254,76 @@ class TestOllamaCloudSuffixStripping:
             "ollama-cloud": {
                 "models": {
                     "kimi-k2.6:cloud": {"tool_call": True},
-                    "glm-5.1:cloud": {"tool_call": True},
+                    "glm-5.2:cloud": {"tool_call": True},
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.1"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.2"]), \
              patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         assert result.count("kimi-k2.6") == 1
-        assert result.count("glm-5.1") == 1
+        assert result.count("glm-5.2") == 1
         assert "kimi-k2.6:cloud" not in result
-        assert "glm-5.1:cloud" not in result
+        assert "glm-5.2:cloud" not in result
 
 
-    def test_strip_suffix_helper(self):
-        """Unit test for the _strip_ollama_cloud_suffix helper."""
-        from hermes_cli.models_local import _strip_ollama_cloud_suffix
+# ── Retired-id Filtering ──
 
-        assert _strip_ollama_cloud_suffix("kimi-k2.6:cloud") == "kimi-k2.6"
-        assert _strip_ollama_cloud_suffix("glm-5.1:cloud") == "glm-5.1"
-        assert _strip_ollama_cloud_suffix("qwen3-coder:480b-cloud") == "qwen3-coder:480b"
-        assert _strip_ollama_cloud_suffix("nemotron-3-nano:30b") == "nemotron-3-nano:30b"
-        assert _strip_ollama_cloud_suffix("") == ""
+class TestOllamaCloudRetiredModels:
+    """ollama.com /v1/models keeps advertising ids the chat endpoint refuses with HTTP 410
+    ("was retired on <date>") — verified live 2026-10-19: deepseek-v4-flash[:0731], glm-5.1,
+    qwen3.5:397b (2026-09-25), kimi-k2.5, minimax-m2.5 (2026-07-31); clef:27b (400, serves
+    /v1/systemone only). Every catalog path must filter them so the picker never offers one."""
+
+    def test_live_and_mdev_merge_drops_retired_ids(self, tmp_path, monkeypatch):
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "kimi-k2.5": {"tool_call": True},           # retired 2026-07-31
+                    "deepseek-v4.1-flash": {"tool_call": True},  # alive
+                }
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models",
+                   return_value=["deepseek-v4-flash", "glm-5.1", "qwen3.5:397b",  # all 410
+                                 "glm-5.3-flash"]), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["glm-5.3-flash", "deepseek-v4.1-flash"]
+        # The persisted cache itself must not retain the dead ids either.
+        from hermes_cli.models_local import _load_ollama_cloud_cache
+        assert _load_ollama_cloud_cache(ignore_ttl=True)["models"] == result
+
+    def test_stale_disk_cache_filtered_on_load(self, tmp_path, monkeypatch):
+        """A cache written before the filter existed must not resurrect retired ids."""
+        import json as json_mod
+        import time as time_mod
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        (tmp_path / "ollama_cloud_models_cache.json").write_text(json_mod.dumps({
+            "models": ["minimax-m2.5", "clef:27b", "minimax-m2.7"],
+            "cached_at": time_mod.time() - 600,  # fresh inside the 1h TTL
+        }))
+
+        with patch("hermes_cli.models.fetch_api_models",
+                   side_effect=AssertionError("fresh cache hit must not probe")):
+            result = fetch_ollama_cloud_models()
+
+        assert result == ["minimax-m2.7"]
+
+    def test_filter_matches_case_insensitively(self):
+        """The filter matches regardless of id case and keeps living ids verbatim."""
+        from hermes_cli.models import _filter_retired_ollama_cloud
+
+        assert _filter_retired_ollama_cloud(["GLM-5.1", "GLM-5.2", "DEEPSEEK-V4-FLASH:0731"]) == ["GLM-5.2"]
+        assert _filter_retired_ollama_cloud(None) == []
+        assert _filter_retired_ollama_cloud([]) == []

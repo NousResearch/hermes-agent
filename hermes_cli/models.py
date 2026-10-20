@@ -1651,6 +1651,27 @@ _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
     {"ox-alpha-free", "deepseek-v4-flash-free", "x-preview-f-free"}
 )
 
+# Ollama Cloud's /v1/models keeps ADVERTISING ids its chat endpoint refuses: six ids returned
+# HTTP 410 "was retired" (verified live 2026-10-19: deepseek-v4-flash[:0731], glm-5.1,
+# qwen3.5:397b retired 2026-09-25; kimi-k2.5, minimax-m2.5 retired 2026-07-31), and clef:27b
+# is not retired but only serves a different endpoint (/v1/systemone), so every /chat call
+# 400s. The picker filters through this like _OPENCODE_FREE_EXCLUDED_MODELS so no source —
+# fresh live fetch, the fetcher's own 1h disk cache, or its stale fallback — can offer an id
+# the endpoint refuses.
+_OLLAMA_CLOUD_RETIRED_MODELS = frozenset({
+    "deepseek-v4-flash", "deepseek-v4-flash:0731",  # 410 retired 2026-09-25
+    "glm-5.1",                                       # 410 retired 2026-09-25
+    "qwen3.5:397b",                                  # 410 retired 2026-09-25
+    "kimi-k2.5",                                     # 410 retired 2026-07-31
+    "minimax-m2.5",                                  # 410 retired 2026-07-31
+    "clef:27b",                                      # 400 — decision model, /v1/systemone only
+})
+
+
+def _filter_retired_ollama_cloud(models):
+    """Drop ids ollama.com still lists but refuses to serve on /v1/chat/completions."""
+    return [m for m in (models or []) if str(m).lower() not in _OLLAMA_CLOUD_RETIRED_MODELS]
+
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.

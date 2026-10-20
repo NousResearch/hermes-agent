@@ -19,7 +19,8 @@ from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import (
-    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal,
+    structured_tool_result_failed)
 
 logger = logging.getLogger(__name__)
 
@@ -1042,21 +1043,28 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
         return True, f" [{_trim_error(str(err_msg))}]" if err_msg else t("display.failure.exit_code", code=exit_code)
 
     if isinstance(data, dict):
-        failed = data.get("success") is False
+        failed = structured_tool_result_failed(data)
         # Memory: distinguish "store full" from real errors.
-        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
+        if tool_name == "memory" and failed and "exceed the limit" in str(data.get("error") or ""):
             return True, t("display.failure.memory_full")
-        err = data.get("error") or data.get("message")
-        if err and (failed or "error" in data):
+        # The ENVELOPE decides whether the call failed; error text only decorates the
+        # suffix. Reading ``message`` as the error and gating on ``"error" in data`` made a
+        # success payload that carries an empty/null ``error`` key plus a ``message`` (a
+        # completed tool, ``{"ok": true, "error": null, "message": "complete"}``) read as a
+        # failed call, while ``{"success": false}`` with no error text read as success.
+        shape_err = shape_failure_error(data)
+        if not (failed or shape_err):
+            # A JSON object is judged by its top-level shape only. An ``error`` key nested
+            # inside a success payload is data the tool read (a page's own validation
+            # message inside browser_cdp's ``result``), not a failure of the call.
+            return False, ""
+        err = data.get("error") or data.get("message") or shape_err
+        if err:
             return True, f" [{_trim_error(str(err))}]"
-        if shape_err := shape_failure_error(data):
-            return True, f" [{_trim_error(shape_err)}]"
-        # A JSON object is judged by its top-level shape only. An ``error`` key nested
-        # inside a success payload is data the tool read (a page's own validation
-        # message inside browser_cdp's ``result``), not a failure of the call.
-        return False, ""
-    # Multimodal results (dicts) are successes; failures arrive as JSON-encoded strings.
-    if isinstance(result, str) and has_failure_marker(result):
+        return True, t("display.failure.generic")
+    # Unparseable text only: a payload that parsed to a non-dict (a JSON array of the
+    # words "error"/"failed") is data the tool read, never a failure of the call.
+    if data is None and isinstance(result, str) and has_failure_marker(result):
         return True, t("display.failure.generic")
     return False, ""
 

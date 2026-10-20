@@ -53,6 +53,45 @@ def checked_store(tmp_path, monkeypatch, served):
     return binaries, checks
 
 
+def test_store_first_path_keeps_bare_python_behind_an_existing_venv(tmp_path, monkeypatch):
+    engine = importlib.import_module("pm.install")
+    node_bin = tmp_path / "node" / "bin"
+    python_bin = tmp_path / "python" / "bin"
+    venv_bin = tmp_path / "venv" / "bin"
+    user_bin = tmp_path / "user" / "bin"
+    for directory in (node_bin, python_bin, venv_bin, user_bin):
+        directory.mkdir(parents=True)
+    (node_bin / "node").write_text("node", encoding="utf-8")
+    (python_bin / "python3").write_text("python", encoding="utf-8")
+    (venv_bin / "python3").write_text("venv-python", encoding="utf-8")
+    (venv_bin.parent / "pyvenv.cfg").write_text("home = /store\n", encoding="utf-8")
+    monkeypatch.setattr(engine, "_store_path_dirs", lambda: [str(node_bin), str(python_bin)])
+
+    result = pm.store_first_path(os.pathsep.join([str(user_bin), str(venv_bin), "/usr/bin"]))
+    parts = result.split(os.pathsep)
+
+    assert parts[0] == str(node_bin)
+    assert parts.index(str(venv_bin)) < parts.index(str(python_bin))
+    assert parts[parts.index(str(venv_bin)) + 1] == str(python_bin)
+    assert parts.index(str(python_bin)) < parts.index("/usr/bin")
+
+
+def test_store_first_path_hoists_python_when_no_venv_is_present(tmp_path, monkeypatch):
+    engine = importlib.import_module("pm.install")
+    node_bin = tmp_path / "node" / "bin"
+    python_bin = tmp_path / "python" / "bin"
+    user_bin = tmp_path / "user" / "bin"
+    for directory in (node_bin, python_bin, user_bin):
+        directory.mkdir(parents=True)
+    (node_bin / "node").write_text("node", encoding="utf-8")
+    (python_bin / "python3").write_text("python", encoding="utf-8")
+    monkeypatch.setattr(engine, "_store_path_dirs", lambda: [str(node_bin), str(python_bin)])
+
+    result = pm.store_first_path(os.pathsep.join([str(user_bin), "/usr/bin"]))
+
+    assert result.split(os.pathsep) == [str(node_bin), str(python_bin), str(user_bin), "/usr/bin"]
+
+
 def test_activate_moves_store_dirs_ahead_of_user_dirs(checked_store, monkeypatch):
     binaries, checks = checked_store
     store = [str(binary.parent) for binary in binaries]

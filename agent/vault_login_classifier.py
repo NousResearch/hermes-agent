@@ -74,6 +74,7 @@ class LoginControl:
     name: str
     type: str
     max_length: Optional[int] = None
+    group_index: Optional[int] = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
@@ -87,6 +88,7 @@ class LoginControl:
             name=str(raw.get("name") or ""),
             type=str(raw.get("type") or ""),
             max_length=int(max_length) if max_length is not None else None,
+            group_index=raw.get("groupIndex", raw.get("group_index")),
         )
 
 
@@ -131,17 +133,56 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
 
 _RE_OTP = re.compile(
     r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
-    r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
+    r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b|"
+    r"\benter\s+(?:(?:the|a)\s+)?[4-8]\s+digit\s+code\b"
 )
 
 
+_RE_POSITION = re.compile(r"\bdigit\s+(\d+)\s+of\s+(\d+)\b")
+_RE_POSITION_HINT = re.compile(r"\bdigit\s+\w+\s+of\b")
+_RE_NON_OTP_CODE = re.compile(r"\b(?:postal|postcode|zip|country|promo|promotion|coupon|discount|card|cvc|cvv|csc)\b")
+_RE_ENTER_CODE = re.compile(r"\benter\s+code\b")
+
+
+def _otp_position(control: LoginControl) -> Optional[tuple[int, int]]:
+    text = _normalize_text(control.label)
+    matches = list(_RE_POSITION.finditer(text))
+    if (len(matches) != 1 or control.type not in ("text", "tel", "number", "password", "")
+            or _RE_NON_OTP_CODE.search(_normalize_text(control.name + " " + control.label))
+            or not (_RE_OTP.search(text) or _RE_ENTER_CODE.search(text))):
+        return None
+    return tuple(map(int, matches[0].groups()))
+
+
+def _ordered_otp_boxes(controls: list[LoginControl]) -> list[LoginControl]:
+    """Only a complete contextual positional widget, never a partial/mixed group."""
+    boxes = sorted((c for c in controls if _RE_POSITION_HINT.search(_normalize_text(c.label))), key=lambda c: c.index)
+    positions = [_otp_position(c) for c in boxes]
+    n = len(boxes)
+    if not 4 <= n <= 8 or positions != [(i, n) for i in range(1, n + 1)]:
+        return []
+    forms = {c.form_index for c in boxes}
+    groups = {c.group_index for c in boxes}
+    if len(forms) != 1 or len(groups) != 1 or (forms == {None} and groups == {None}):
+        return []
+    if not all(b.index - a.index == 1 for a, b in itertools.pairwise(boxes)):
+        return []
+    return boxes
+
+
 def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginControl]:
-    """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
-    otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
-    the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
-    fill spreads the code across them."""
+    """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative
+    for ordinary fields; positional labels additionally require a complete, scoped widget.
+    Otherwise use name/label OTP heuristics on supported input types. Some sites split
+    the code into one input per digit: contextual ``digit N of M`` labels work even without
+    ``maxlength=1``. Inspection provides actual form/container identity, not class-name guesses."""
     out: list[ClassifiedLoginControl] = []
+    positional_indices = {c.index for c in _ordered_otp_boxes(controls)}
     for c in controls:
+        if _RE_POSITION_HINT.search(_normalize_text(c.label)):
+            if c.index in positional_indices:
+                out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+            continue
         tokens = c.autocomplete.lower().split()
         if "one-time-code" in tokens:
             out.append(ClassifiedLoginControl(c, 100, "one-time-code"))
@@ -227,17 +268,72 @@ INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> list[dict[str, Any]]:
     """One fill per box. Default: the single best-scoring code field takes the whole code.
 
-    Per-digit entry only when the page unmistakably uses it: exactly len(code) OTP controls that are all
-    ``maxlength=1``, all in the same form, and adjacent in DOM order (the classic N-box widget). Anything
-    looser (several code-like inputs scattered over a page) gets ONE field, never a digit sprayed across
-    unrelated inputs."""
+    Split only a complete ordered positional widget, or the classic adjacent ``maxlength=1``
+    boxes, with actual common form/group identity. Invalid positional widgets/length mismatches
+    fail closed; they must never receive a whole-code fallback. Ordinary non-positional inputs
+    retain the single best-field fallback."""
+    if not otp_controls or not code:
+        return []
+    controls = [c.control for c in otp_controls]
+    if any(_RE_POSITION_HINT.search(_normalize_text(c.label)) for c in controls):
+        positional = _ordered_otp_boxes(controls)
+        if not positional or len(positional) != len(code):
+            return []
+        return [{"index": b.index, "token": "one-time-code", "value": ch} for b, ch in zip(positional, code)]
     best = max(otp_controls, key=lambda c: c.score)
     boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
     if (len(boxes) == len(code)
             and len({b.control.form_index for b in boxes}) == 1
+            and len({b.control.group_index for b in boxes}) == 1
+            and (boxes[0].control.form_index is not None or boxes[0].control.group_index is not None)
             and all(b.control.index - a.control.index == 1 for a, b in itertools.pairwise(boxes))):
         return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
+
+
+def build_otp_probe_js() -> str:
+    """Read-only tab predicate using the same visibility/label rules as inspection."""
+    inspection = _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", "null")
+    template = """(() => {
+      const controls = JSON.parse(__INSPECTION__);
+      const pattern = new RegExp(__PATTERN__);
+      const positionPattern = new RegExp(__POSITION__, "g");
+      const positionHint = new RegExp(__POSITION_HINT__);
+      const excludedPattern = new RegExp(__EXCLUDED__);
+      const enterPattern = new RegExp(__ENTER__);
+      const norm = t => t.normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const positional = controls.filter(c => positionHint.test(norm(c.label))).sort((a,b) => a.index-b.index);
+      const n = positional.length;
+      const valid = n >= 4 && n <= 8 && positional.every((c,i) => {
+        const text = norm(c.label);
+        const matches = [...text.matchAll(positionPattern)];
+        return ["text", "tel", "number", "password", ""].includes(c.type)
+          && matches.length === 1 && Number(matches[0][1]) === i+1 && Number(matches[0][2]) === n
+          && !excludedPattern.test(norm(c.name + " " + c.label)) && (pattern.test(text) || enterPattern.test(text))
+          && c.formIndex === positional[0].formIndex && c.groupIndex === positional[0].groupIndex
+          && (c.formIndex != null || c.groupIndex != null)
+          && (i === 0 || c.index === positional[i-1].index+1);
+      });
+      return controls.some(c => {
+        if (positionHint.test(norm(c.label))) return valid;
+        if (c.autocomplete.toLowerCase().split(/\\s+/).includes("one-time-code")) return true;
+        if (!["text", "tel", "number", "password", ""].includes(c.type)) return false;
+        const text = [c.name, c.label].join(" ").normalize("NFKD").toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ").trim();
+        return pattern.test(text);
+      });
+    })()"""
+    replacements = {
+        "__INSPECTION__": inspection,
+        "__PATTERN__": json.dumps(_RE_OTP.pattern),
+        "__POSITION__": json.dumps(_RE_POSITION.pattern),
+        "__POSITION_HINT__": json.dumps(_RE_POSITION_HINT.pattern),
+        "__EXCLUDED__": json.dumps(_RE_NON_OTP_CODE.pattern),
+        "__ENTER__": json.dumps(_RE_ENTER_CODE.pattern),
+    }
+    for marker, value in replacements.items():
+        template = template.replace(marker, value)
+    return template
 
 
 def build_inspection_js(nonce: str) -> str:
@@ -248,7 +344,8 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   const elements = Array.from(document.querySelectorAll("input, select"));
   const forms = Array.from(document.forms);
-  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
+  const groups = [];
+  if (nonce !== null) elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
@@ -260,9 +357,17 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       .map((id) => { const n = document.getElementById(id); return n ? (n.textContent || "") : ""; })
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
+    let group = element.parentElement;
+    while (group && !["FORM", "BODY", "HTML"].includes(group.tagName)) {
+      if (group.querySelectorAll && group.querySelectorAll("input, select").length > 1) break;
+      group = group.parentElement;
+    }
+    if (group && ["FORM", "BODY", "HTML"].includes(group.tagName)) group = null;
+    if (group && !groups.includes(group)) groups.push(group);
     return [{
       autocomplete: element.autocomplete || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
+      groupIndex: group ? groups.indexOf(group) : null,
       index,
       maxLength: element.maxLength > 0 ? element.maxLength : null,
       label: [

@@ -1,0 +1,15 @@
+name: stripe
+repo: https://github.com/stripe/ai
+sha: 38d8933bffbdba219ba530803316bb3a4fbaee0d
+subdir: "providers/agent-plugins/plugin" 
+description: Stripe agent plugin with skills for Stripe integrations including best practices, API and SDK upgrade guidance, and a remote MCP server configuration.
+maintainer: stripe
+tier: community
+category: tools
+docs_url: "https://docs.stripe.com/agents/plugin"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

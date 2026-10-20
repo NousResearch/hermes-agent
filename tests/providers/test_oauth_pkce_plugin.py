@@ -255,6 +255,19 @@ def test_pasted_address_from_another_sign_in_is_refused_before_the_token_endpoin
     assert _listener_stopped(pasting.redirect_uri())
 
 
+def test_pasted_address_without_a_state_is_refused_before_the_token_endpoint(pasting, idp):
+    pasting.answers.append(lambda url: re.sub(r"[?&]state=[^&]*", "", idp.landing_address(url)))
+    with pytest.raises(AuthError) as excinfo:
+        pkce.login(PROVIDER, _config(idp))
+    assert excinfo.value.code == "oauth_state_mismatch" and idp.token_requests == []
+
+
+def test_a_fragment_the_idp_appends_to_the_pasted_address_is_ignored(pasting, idp):
+    """Some IdPs end the redirect with a fragment (``#_=_``), which the address bar keeps."""
+    pasting.answers.append(lambda url: idp.landing_address(url) + "#_=_")
+    assert pkce.login(PROVIDER, _config(idp))["access_token"]
+
+
 def test_an_ssh_tunnel_still_completes_the_sign_in_on_an_empty_line(pasting, idp):
     def browser_through_the_tunnel(authorize_url: str) -> str:
         with urlopen(authorize_url, timeout=5) as page:  # the IdP 302s to the loopback, which the tunnel reaches
@@ -358,6 +371,7 @@ _DENIED = {"code": None, "state": None, "error": "access_denied", "error_descrip
     (False, True, False, None, False),  # --no-browser on a desktop: the user opens the URL on this machine
     (False, True, True, False, True),  # a desktop browser that did not start
     (False, False, True, None, True),  # no graphical browser on this machine
+    (False, False, False, None, True),  # --no-browser on that machine: the browser is elsewhere
     (True, True, True, True, True),  # SSH with X11 forwarding: it asks; Enter takes what the loopback received
     (True, False, False, None, True),  # SSH, a cloud shell
 ])

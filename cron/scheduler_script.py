@@ -456,6 +456,7 @@ def _run_job_script(
         if argv is None:
             return False, err
         from tools.environments.local import build_subprocess_env
+        from cron.execution_identity import apply_cron_execution_env
         # Lossy decode only: keep the platform-default (locale) encoding — gating ``encoding=``
         # to win32 was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but
         # ``errors=`` must not stay 'strict': one stray non-UTF-8 byte in the script's stdout
@@ -483,11 +484,12 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
-        # The occurrence identity goes on LAST: the sanitizer inside build_subprocess_env
-        # strips Hermes-owned names (HERMES_CRON_*), so an overlay applied before it would
-        # vanish — the same reason env_overlay is applied here. ``identity`` is None for a
-        # caller with no fire (cron/monitor.py), which is not an error.
-        env.update(identity or {})
+        # The occurrence identity replaces, and does not merely merge over, whatever the base
+        # carried: that scrub does NOT strip HERMES_CRON_* (they pass through from the launching
+        # process, which here is itself often started by a cron fire), so a name this fire has no
+        # value for — an off-schedule fire's absent instant — must be DELETED, not inherited.
+        # ``identity`` is None for a caller with no fire (cron/monitor.py), which is not an error.
+        apply_cron_execution_env(env, identity)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent

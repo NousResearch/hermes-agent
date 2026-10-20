@@ -39,11 +39,25 @@ print(json.dumps(list_executions(job_id="env-probe")))
 """
 
 
-def _tick_no_agent_job(tmp_path, monkeypatch, job: dict) -> tuple[dict, dict[str, str]]:
+#: An identity the TICK process inherited from whatever launched it. This fleet starts Hermes
+#: from cron fires itself, so a scheduler's own ``os.environ`` routinely holds an older fire's
+#: identity — and the child-env scrub does NOT strip these names.
+_STALE_IDENTITY = {
+    "HERMES_CRON_JOB_ID": "launcher-job",
+    "HERMES_CRON_EXECUTION_ID": "launcher-exec",
+    "HERMES_CRON_SCHEDULED_INSTANT": "2020-01-01T00:00:00+00:00",
+    "HERMES_CRON_SOURCE": "builtin",
+}
+
+
+def _tick_no_agent_job(tmp_path, monkeypatch, job: dict,
+                       parent_identity: dict[str, str] | None = None) -> tuple[dict, dict[str, str]]:
     """Fire *job* through a real tick; return its ledger row and the env its script received.
 
-    The script is a separate process, which also covers the overlay's ORDER: the subprocess
-    sanitizer strips Hermes-owned names, so an overlay applied before it would arrive empty.
+    The script is a separate process, which is what makes this an end-to-end check of the env
+    the harness really hands the child. ``parent_identity`` seeds the TICK process's own
+    environment with an identity it did not create — the launcher's, which is not necessarily
+    absent just because the child is a fresh process.
     """
     home = tmp_path / "home"
     (home / "cron").mkdir(parents=True)
@@ -56,6 +70,8 @@ def _tick_no_agent_job(tmp_path, monkeypatch, job: dict) -> tuple[dict, dict[str
            if not k.startswith(("HERMES_", "_HERMES_"))
            and not k.endswith(("_API_KEY", "_TOKEN"))}
     env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+    if parent_identity is not None:
+        env.update(parent_identity)
     result = subprocess.run([sys.executable, "-c", _TICK], env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -123,3 +139,48 @@ def test_manual_fire_omits_the_absent_occurrence(tmp_path, monkeypatch):
     assert exported["HERMES_CRON_JOB_ID"] == "env-probe"
     assert exported["HERMES_CRON_EXECUTION_ID"] == execution["id"]
     assert exported["HERMES_CRON_SOURCE"] == execution["source"] == "builtin"
+
+
+def test_export_clears_an_identity_the_base_env_already_carries():
+    """``apply_cron_execution_env`` DELETES an absent name instead of leaving it inherited.
+
+    Omission is not enough: the child-env builder copies the launching process's environment
+    and does not scrub ``HERMES_CRON_*``, so a name this fire has no value for would otherwise
+    stay, carrying the launcher's occurrence into a child of a different fire.
+    """
+    from cron.execution_identity import apply_cron_execution_env
+
+    env = dict(_STALE_IDENTITY, PATH="/usr/bin")
+    apply_cron_execution_env(env, {"HERMES_CRON_JOB_ID": "job-1",
+                                   "HERMES_CRON_EXECUTION_ID": "exec-1"})
+
+    assert env["HERMES_CRON_JOB_ID"] == "job-1"
+    assert env["HERMES_CRON_EXECUTION_ID"] == "exec-1"
+    # Not this fire's → gone, not the launcher's value.
+    assert "HERMES_CRON_SCHEDULED_INSTANT" not in env
+    assert "HERMES_CRON_SOURCE" not in env
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_manual_fire_inside_a_launched_process_does_not_inherit_its_occurrence(tmp_path, monkeypatch):
+    """An off-schedule fire clears the launcher's occurrence instead of passing it on as its own."""
+    job = _no_agent_job()
+    job["manual_run_at"] = job["next_run_at"]
+    execution, exported = _tick_no_agent_job(tmp_path, monkeypatch, job,
+                                             parent_identity=_STALE_IDENTITY)
+
+    assert execution["scheduled_instant"] is None
+    assert "HERMES_CRON_SCHEDULED_INSTANT" not in exported
+    assert exported["HERMES_CRON_EXECUTION_ID"] == execution["id"]
+    assert exported["HERMES_CRON_EXECUTION_ID"] != _STALE_IDENTITY["HERMES_CRON_EXECUTION_ID"]
+
+
+def test_scheduled_fire_overrides_the_launcher_identity_verbatim(tmp_path, monkeypatch):
+    """A scheduled fire's own occurrence wins over the launcher's, value for value."""
+    execution, exported = _tick_no_agent_job(tmp_path, monkeypatch, _no_agent_job(),
+                                             parent_identity=_STALE_IDENTITY)
+
+    assert exported["HERMES_CRON_JOB_ID"] == "env-probe"
+    assert exported["HERMES_CRON_EXECUTION_ID"] == execution["id"]
+    assert exported["HERMES_CRON_SCHEDULED_INSTANT"] == execution["scheduled_instant"]
+    assert exported["HERMES_CRON_SCHEDULED_INSTANT"] != _STALE_IDENTITY["HERMES_CRON_SCHEDULED_INSTANT"]

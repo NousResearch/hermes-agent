@@ -515,7 +515,8 @@ from cron.jobs import (
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron import store_health
-from cron.execution_identity import cron_execution_env, enter_cron_execution, exit_cron_execution
+from cron.execution_identity import (apply_cron_execution_env, cron_execution_env,
+                                     enter_cron_execution, exit_cron_execution)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -3701,8 +3702,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
     worker_env = systemd_user_bus_env(worker_env)
     # The worker is a fresh process adopting this execution: it needs the occurrence identity
     # for the same reason a script does, and it cannot re-derive it (see
-    # cron/execution_identity.py). Applied after the sanitizer, like the PYTHONPATH pin below.
-    worker_env.update(cron_execution_env(job))
+    # cron/execution_identity.py). Applied after the sanitizer, like the PYTHONPATH pin below —
+    # and through the helper, so a name this fire has no value for is cleared rather than
+    # inherited from whatever launch started the scheduler.
+    apply_cron_execution_env(worker_env, cron_execution_env(job))
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the
     # child (`_is_interactive_cli`, sudo prompting, `check_cronjob_requirements`) believe a

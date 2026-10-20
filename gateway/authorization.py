@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import math
+import types
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Generic, Never, Protocol, TypeVar, runtime_checkable
+from typing import Any, Never, Protocol, TypeVar, runtime_checkable
 
 
 _MAX_IDENTITY_LENGTH = 256
@@ -114,7 +114,7 @@ class TrustedPrincipalIssuer:
         parent: VerifiedPrincipal,
         scopes: Iterable[str],
     ) -> VerifiedPrincipal:
-        if not isinstance(parent, VerifiedPrincipal):
+        if type(parent) is not VerifiedPrincipal:
             raise TypeError("parent must be a VerifiedPrincipal")
         delegated_scopes = _validated_scopes(scopes)
         if not delegated_scopes.issubset(parent.scopes):
@@ -202,7 +202,7 @@ class AuthorizedEnvelope:
     authz_version: int
 
     def __post_init__(self) -> None:
-        if not isinstance(self.principal, VerifiedPrincipal):
+        if type(self.principal) is not VerifiedPrincipal:
             raise TypeError("envelope principal must be a VerifiedPrincipal")
         if type(self.authz_version) is not int:
             raise TypeError("envelope authz_version must be an exact int")
@@ -212,7 +212,14 @@ class AuthorizedEnvelope:
 
 @runtime_checkable
 class AuthorizationProvider(Protocol):
-    """Backend contract used by fail-closed authorization callers."""
+    """Trusted first-party, in-process authorization backend contract.
+
+    Methods must return native coroutines created for the current event loop and
+    perform only nonblocking work there. Implementations must be
+    cancellation-cooperative or independently bounded; providers that indefinitely
+    suppress cancellation are outside this contract. This in-process boundary cannot
+    guarantee availability against malicious code executing in the same interpreter.
+    """
 
     async def readiness(self) -> bool:
         """Return whether the backend can safely answer authorization checks."""
@@ -266,17 +273,19 @@ async def authorize_fail_closed(
     between zero and 60 seconds, inclusive. Invalid deadlines also deny before
     provider methods run.
 
-    Cancellation is cooperative in Python. A provider coroutine that suppresses
-    ``CancelledError`` cannot be forcibly terminated in-process, so timed-out or
-    caller-cancelled operations remain strongly tracked in a private quarantine
-    until they finish. Their eventual result is consumed and can never authorize the
-    request that already returned or was cancelled.
+    Provider methods are trusted first-party, nonblocking, current event loop code.
+    They must be cancellation-cooperative or independently bounded. Cancellation is
+    cooperative in Python, so finite cancellation suppression is strongly tracked in
+    a private quarantine until completion; the eventual result is consumed and can
+    never authorize a request that already returned or was cancelled. Providers that
+    indefinitely suppress cancellation are outside the contract. Malicious code in
+    the same interpreter can still defeat availability; this is not a Python sandbox.
 
     This boundary deliberately emits no logs. Callers may audit safe identifiers and
     reason codes, but must never log the protected message or tool payload here.
     """
 
-    if not isinstance(principal, VerifiedPrincipal):
+    if type(principal) is not VerifiedPrincipal:
         return PermissionDecision.DENY
     if not _is_valid_permission(permission):
         return PermissionDecision.DENY
@@ -293,6 +302,8 @@ async def authorize_fail_closed(
         return PermissionDecision.DENY
     try:
         readiness_coroutine = provider.readiness()
+        if type(readiness_coroutine) is not types.CoroutineType:
+            return PermissionDecision.DENY
         ready = await _await_with_deadline(readiness_coroutine, deadline_seconds)
         if ready is _DEADLINE_EXPIRED or ready is not True:
             return PermissionDecision.DENY
@@ -301,6 +312,8 @@ async def authorize_fail_closed(
             permission=permission,
             resource=resource,
         )
+        if type(authorization_coroutine) is not types.CoroutineType:
+            return PermissionDecision.DENY
         decision = await _await_with_deadline(
             authorization_coroutine,
             deadline_seconds,
@@ -342,66 +355,19 @@ def _cancel_and_quarantine(task: asyncio.Task[Any]) -> None:
         return
     _QUARANTINED_AUTHORIZATION_TASKS.add(task)
     task.add_done_callback(_consume_quarantined_task)
-    task.cancel()
+    try:
+        task.cancel()
+    except BaseException:
+        # Ownership and result consumption were established before cancellation.
+        # A one-shot cancellation failure must not escape the fail-closed boundary;
+        # the still-running task remains quarantined until it settles.
+        pass
 
 
 def _quarantined_task_count() -> int:
     """Return the owned-task quarantine size for focused invariant tests."""
 
     return len(_QUARANTINED_AUTHORIZATION_TASKS)
-
-
-@dataclass(slots=True)
-class _OwnedOperation(Generic[_T]):
-    """Own an awaitable from provider return through terminal cleanup."""
-
-    awaitable: Awaitable[_T]
-    task: asyncio.Task[_T] | None = None
-    wrapper_started: bool = False
-    _direct_coroutine: bool = False
-    _original_closed: bool = False
-
-    async def _run_wrapped(self) -> _T:
-        self.wrapper_started = True
-        return await self.awaitable
-
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Transfer ownership to a factory-independent task."""
-
-        if inspect.iscoroutine(self.awaitable):
-            self._direct_coroutine = True
-            coroutine = self.awaitable
-        else:
-            coroutine = self._run_wrapped()
-        try:
-            self.task = asyncio.Task(coroutine, loop=loop)
-        except BaseException:
-            coroutine.close()
-            if self._direct_coroutine:
-                self._original_closed = True
-            self._close_unstarted_original()
-            raise
-
-    def _close_unstarted_original(self) -> None:
-        if self._original_closed or self.wrapper_started or self._direct_coroutine:
-            return
-        self._original_closed = True
-        try:
-            close = getattr(self.awaitable, "close", None)
-            if callable(close):
-                close()
-        except BaseException:
-            pass
-
-    def cancel_and_cleanup(self) -> None:
-        self._close_unstarted_original()
-        if self.task is not None:
-            _cancel_and_quarantine(self.task)
-
-    def result(self) -> _T:
-        if self.task is None:
-            raise RuntimeError("owned operation was not started")
-        return self.task.result()
 
 
 def _expire_deadline(deadline: asyncio.Future[None]) -> None:
@@ -431,21 +397,20 @@ def _validated_timeout_seconds(value: object) -> int | float | None:
 
 
 async def _await_with_deadline(
-    awaitable: Awaitable[_T], timeout_seconds: object
+    coroutine: types.CoroutineType[Any, Any, _T], timeout_seconds: object
 ) -> _T | _DeadlineExpired:
-    """Race an operation against a deadline without trusting cancellation."""
+    """Race an owned native coroutine against a deadline."""
 
-    operation = _OwnedOperation(awaitable)
     deadline_seconds = _validated_timeout_seconds(timeout_seconds)
     if deadline_seconds is None:
-        operation.cancel_and_cleanup()
+        coroutine.close()
         return _DEADLINE_EXPIRED
 
     loop = asyncio.get_running_loop()
     try:
-        operation.start(loop)
+        operation = asyncio.Task(coroutine, loop=loop)
     except BaseException:
-        operation.cancel_and_cleanup()
+        coroutine.close()
         raise
     try:
         deadline = loop.create_future()
@@ -456,23 +421,21 @@ async def _await_with_deadline(
             _consume_task_result(deadline)
             raise
     except BaseException:
-        operation.cancel_and_cleanup()
+        _cancel_and_quarantine(operation)
         raise
 
     try:
-        if operation.task is None:
-            raise RuntimeError("owned operation was not started")
         done, _pending = await asyncio.wait(
-            (operation.task, deadline), return_when=asyncio.FIRST_COMPLETED
+            (operation, deadline), return_when=asyncio.FIRST_COMPLETED
         )
     except BaseException:
         _cancel_and_consume_deadline(deadline, handle)
-        operation.cancel_and_cleanup()
+        _cancel_and_quarantine(operation)
         raise
 
     if deadline in done:
         _cancel_and_consume_deadline(deadline, handle)
-        operation.cancel_and_cleanup()
+        _cancel_and_quarantine(operation)
         return _DEADLINE_EXPIRED
 
     _cancel_and_consume_deadline(deadline, handle)

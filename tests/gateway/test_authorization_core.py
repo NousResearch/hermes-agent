@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import pickle
+import types
 import warnings
 from collections.abc import Iterable, Set as AbstractSet
 from dataclasses import FrozenInstanceError, fields
@@ -175,6 +176,23 @@ def test_on_behalf_of_issuance_rejects_unverified_or_service_parent() -> None:
         )
 
 
+def test_on_behalf_of_issuance_rejects_verified_principal_subclass() -> None:
+    from gateway.authorization import VerifiedPrincipal
+
+    class ForgedPrincipal(VerifiedPrincipal):
+        pass
+
+    legitimate = _issuer().issue_user(
+        principal_id="telegram:123", authz_version=7, scopes={"agent.use"}
+    )
+    forged = object.__new__(ForgedPrincipal)
+    for field in fields(legitimate):
+        object.__setattr__(forged, field.name, getattr(legitimate, field.name))
+
+    with pytest.raises(TypeError, match="VerifiedPrincipal"):
+        _issuer().issue_on_behalf_of(parent=forged, scopes={"agent.use"})
+
+
 def test_authorized_envelope_is_frozen_and_contains_no_message_or_secret() -> None:
     from gateway.authorization import AuthorizedEnvelope
 
@@ -238,6 +256,21 @@ def test_authorized_envelope_rejects_unverified_principal() -> None:
             principal={"principal_id": "telegram:123", "authz_version": 7},
             authz_version=7,
         )
+
+
+def test_authorized_envelope_rejects_verified_principal_subclass() -> None:
+    from gateway.authorization import AuthorizedEnvelope, VerifiedPrincipal
+
+    class ForgedPrincipal(VerifiedPrincipal):
+        pass
+
+    legitimate = _issuer().issue_user(principal_id="telegram:123", authz_version=7)
+    forged = object.__new__(ForgedPrincipal)
+    for field in fields(legitimate):
+        object.__setattr__(forged, field.name, getattr(legitimate, field.name))
+
+    with pytest.raises(TypeError, match="VerifiedPrincipal"):
+        AuthorizedEnvelope(principal=forged, authz_version=7)
 
 
 def test_unavailable_provider_is_not_ready_and_denies_unknown_permissions() -> None:
@@ -472,6 +505,48 @@ def test_authorize_fail_closed_rejects_malformed_inputs_before_provider_access(
             principal=cast(Any, principal),
             permission=cast(Any, permission),
             known_permissions=cast(Any, known_permissions),
+        )
+    )
+
+    assert decision is PermissionDecision.DENY
+    assert provider_accesses == []
+
+
+def test_authorize_fail_closed_rejects_verified_principal_subclass_before_provider_access() -> None:
+    from gateway.authorization import (
+        PermissionDecision,
+        VerifiedPrincipal,
+        authorize_fail_closed,
+    )
+
+    class ForgedPrincipal(VerifiedPrincipal):
+        pass
+
+    legitimate = _issuer().issue_user(principal_id="telegram:123", authz_version=7)
+    forged = object.__new__(ForgedPrincipal)
+    for field in fields(legitimate):
+        object.__setattr__(forged, field.name, getattr(legitimate, field.name))
+
+    provider_accesses: list[str] = []
+
+    class Provider:
+        def __getattribute__(self, name: str) -> Any:
+            if name in {"readiness", "authorize"}:
+                provider_accesses.append(name)
+            return object.__getattribute__(self, name)
+
+        async def readiness(self) -> bool:
+            return True
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            return PermissionDecision.ALLOW
+
+    decision = asyncio.run(
+        authorize_fail_closed(
+            Provider(),
+            principal=forged,
+            permission="agent.use",
+            known_permissions={"agent.use"},
         )
     )
 
@@ -724,26 +799,121 @@ def test_authorize_fail_closed_bypasses_custom_task_factories(
     asyncio.run(scenario())
 
 
-def test_authorize_fail_closed_supports_non_coroutine_awaitables() -> None:
+def test_authorize_fail_closed_rejects_current_loop_future_and_task_without_touching_them() -> None:
     from gateway.authorization import PermissionDecision, authorize_fail_closed
 
-    class ValueAwaitable:
-        def __init__(self, value: object) -> None:
-            self.value = value
+    async def scenario() -> None:
+        release = asyncio.Event()
+        current_future = asyncio.get_running_loop().create_future()
+        current_task = asyncio.create_task(release.wait())
+        authorize_calls = 0
 
-        def __await__(self) -> Any:
-            async def resolve() -> object:
-                await asyncio.sleep(0)
-                return self.value
+        class Provider:
+            def __init__(self, returned: object) -> None:
+                self.returned = returned
 
-            return resolve().__await__()
+            def readiness(self) -> object:
+                return self.returned
+
+            async def authorize(self, **_kwargs: object) -> PermissionDecision:
+                nonlocal authorize_calls
+                authorize_calls += 1
+                return PermissionDecision.ALLOW
+
+        for returned in (current_future, current_task):
+            decision = await authorize_fail_closed(
+                cast(Any, Provider(returned)),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+            )
+            assert decision is PermissionDecision.DENY
+
+        assert authorize_calls == 0
+        assert not current_future.done()
+        assert not current_task.done()
+        assert not current_task.cancelling()
+        release.set()
+        await current_task
+        current_future.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_authorize_fail_closed_rejects_cross_loop_future_and_task() -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    other_loop = asyncio.new_event_loop()
+
+    async def completed() -> bool:
+        return True
+
+    cross_loop_future = other_loop.create_future()
+    cross_loop_future.set_result(True)
+    cross_loop_task = other_loop.create_task(completed())
+    other_loop.run_until_complete(cross_loop_task)
 
     class Provider:
-        def readiness(self) -> ValueAwaitable:
-            return ValueAwaitable(True)
+        def __init__(self, returned: object) -> None:
+            self.returned = returned
 
-        def authorize(self, **_kwargs: object) -> ValueAwaitable:
-            return ValueAwaitable(PermissionDecision.ALLOW)
+        def readiness(self) -> object:
+            return self.returned
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            raise AssertionError("authorize must not run")
+
+    try:
+        for returned in (cross_loop_future, cross_loop_task):
+            decision = asyncio.run(
+                authorize_fail_closed(
+                    cast(Any, Provider(returned)),
+                    principal=_issuer().issue_user(
+                        principal_id="telegram:123", authz_version=7
+                    ),
+                    permission="agent.use",
+                    known_permissions={"agent.use"},
+                )
+            )
+            assert decision is PermissionDecision.DENY
+    finally:
+        other_loop.close()
+
+
+def test_authorize_fail_closed_rejects_custom_awaitable_without_touching_methods() -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    touched: list[str] = []
+
+    class HostileAwaitable:
+        def __await__(self) -> Any:
+            touched.append("__await__")
+            raise AssertionError("authorization invoked __await__")
+
+        def cancel(self) -> None:
+            touched.append("cancel")
+            raise AssertionError("authorization invoked cancel")
+
+        def close(self) -> None:
+            touched.append("close")
+            raise AssertionError("authorization invoked close")
+
+        def result(self) -> object:
+            touched.append("result")
+            raise AssertionError("authorization invoked result")
+
+        def add_done_callback(self, _callback: object) -> None:
+            touched.append("add_done_callback")
+            raise AssertionError("authorization invoked add_done_callback")
+
+    class Provider:
+        async def readiness(self) -> bool:
+            return True
+
+        def authorize(self, **_kwargs: object) -> HostileAwaitable:
+            return HostileAwaitable()
 
     decision = asyncio.run(
         authorize_fail_closed(
@@ -756,7 +926,89 @@ def test_authorize_fail_closed_supports_non_coroutine_awaitables() -> None:
         )
     )
 
+    assert decision is PermissionDecision.DENY
+    assert touched == []
+
+
+def test_authorize_fail_closed_rejects_generator_based_coroutine_without_starting_or_closing_it() -> None:
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    lifecycle: list[str] = []
+
+    @types.coroutine
+    def generator_coroutine() -> Any:
+        lifecycle.append("started")
+        try:
+            yield
+        finally:
+            lifecycle.append("closed")
+
+    returned = generator_coroutine()
+
+    class Provider:
+        def readiness(self) -> object:
+            return returned
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            raise AssertionError("authorize must not run")
+
+    decision = asyncio.run(
+        authorize_fail_closed(
+            cast(Any, Provider()),
+            principal=_issuer().issue_user(
+                principal_id="telegram:123", authz_version=7
+            ),
+            permission="agent.use",
+            known_permissions={"agent.use"},
+        )
+    )
+
+    assert decision is PermissionDecision.DENY
+    assert lifecycle == []
+    cast(Any, returned).close()
+
+
+def test_authorize_fail_closed_uses_an_exact_owned_task_for_native_coroutines() -> None:
+    import gateway.authorization as authorization
+
+    from gateway.authorization import PermissionDecision, authorize_fail_closed
+
+    owned_types: list[type[object]] = []
+    original_wait = authorization.asyncio.wait
+
+    async def recording_wait(awaitables: Any, **kwargs: Any) -> Any:
+        operation = next(
+            awaitable
+            for awaitable in awaitables
+            if type(awaitable) is asyncio.Task
+        )
+        owned_types.append(type(operation))
+        return await original_wait(awaitables, **kwargs)
+
+    class Provider:
+        async def readiness(self) -> bool:
+            return True
+
+        async def authorize(self, **_kwargs: object) -> PermissionDecision:
+            return PermissionDecision.ALLOW
+
+    setattr(authorization.asyncio, "wait", recording_wait)
+    try:
+        decision = asyncio.run(
+            authorize_fail_closed(
+                Provider(),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+            )
+        )
+    finally:
+        setattr(authorization.asyncio, "wait", original_wait)
+
     assert decision is PermissionDecision.ALLOW
+    assert owned_types == [asyncio.Task, asyncio.Task]
 
 
 @pytest.mark.parametrize("phase", ["readiness", "authorize"])
@@ -868,65 +1120,6 @@ def test_authorize_fail_closed_closes_provider_coroutine_on_setup_failure(
         gc.collect()
 
 
-def test_authorize_fail_closed_closes_unstarted_non_coroutine_awaitable_once() -> None:
-    import gateway.authorization as authorization
-
-    from gateway.authorization import PermissionDecision, authorize_fail_closed
-
-    class CloseableAwaitable:
-        def __init__(self) -> None:
-            self.close_calls = 0
-            self.await_calls = 0
-
-        def __await__(self) -> Any:
-            self.await_calls += 1
-
-            async def resolve() -> bool:
-                return True
-
-            return resolve().__await__()
-
-        def close(self) -> None:
-            self.close_calls += 1
-
-    awaitable = CloseableAwaitable()
-
-    class Provider:
-        def readiness(self) -> CloseableAwaitable:
-            return awaitable
-
-        async def authorize(self, **_kwargs: object) -> PermissionDecision:
-            raise AssertionError("authorize must not run")
-
-    async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        original = loop.create_future
-
-        def injected_failure() -> Any:
-            raise RuntimeError("injected create_future failure")
-
-        setattr(loop, "create_future", injected_failure)
-        try:
-            decision = await authorize_fail_closed(
-                cast(Any, Provider()),
-                principal=_issuer().issue_user(
-                    principal_id="telegram:123", authz_version=7
-                ),
-                permission="agent.use",
-                known_permissions={"agent.use"},
-            )
-            await asyncio.sleep(0)
-        finally:
-            setattr(loop, "create_future", original)
-
-        assert decision is PermissionDecision.DENY
-
-    asyncio.run(scenario())
-
-    assert awaitable.await_calls == 0
-    assert awaitable.close_calls == 1
-
-
 def test_zero_deadline_tracks_suppress_then_finish_until_registry_drains() -> None:
     from gateway.authorization import (
         PermissionDecision,
@@ -984,50 +1177,90 @@ def test_zero_deadline_tracks_suppress_then_finish_until_registry_drains() -> No
     asyncio.run(scenario())
 
 
-def test_indefinite_cancellation_suppressor_remains_tracked_until_released() -> None:
+def test_cancel_failure_denies_keeps_task_owned_and_drains_cleanly() -> None:
+    import gateway.authorization as authorization
+
     from gateway.authorization import (
         PermissionDecision,
         _quarantined_task_count,
         authorize_fail_closed,
     )
 
+    class CancelFailure(BaseException):
+        pass
+
     async def scenario() -> None:
-        suppressed = asyncio.Event()
+        started = asyncio.Event()
         release = asyncio.Event()
+        unhandled: list[dict[str, object]] = []
+        cancel_calls = 0
+
+        class OneShotCancelFailureTask(asyncio.Task[Any]):
+            def cancel(self, msg: object = None) -> bool:
+                nonlocal cancel_calls
+                cancel_calls += 1
+                if cancel_calls == 1:
+                    raise CancelFailure("injected one-shot Task.cancel failure")
+                return super().cancel(msg)
 
         class Provider:
             async def readiness(self) -> bool:
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    suppressed.set()
-                    await release.wait()
-                    return True
-                raise AssertionError("readiness should only finish after cancellation")
+                started.set()
+                await release.wait()
+                return True
 
             async def authorize(self, **_kwargs: object) -> PermissionDecision:
-                raise AssertionError("late readiness ALLOW must be ignored")
+                raise AssertionError("late readiness must not authorize")
 
-        decision = await authorize_fail_closed(
-            Provider(),
-            principal=_issuer().issue_user(
-                principal_id="telegram:123", authz_version=7
-            ),
-            permission="agent.use",
-            known_permissions={"agent.use"},
-            timeout_seconds=0,
-        )
-        assert decision is PermissionDecision.DENY
-        await suppressed.wait()
-        await asyncio.sleep(0)
-        assert _quarantined_task_count() == 1
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        original_task_type = authorization.asyncio.Task
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        setattr(authorization.asyncio, "Task", OneShotCancelFailureTask)
+        tasks_before = asyncio.all_tasks()
+        try:
+            decision = await authorize_fail_closed(
+                Provider(),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+                timeout_seconds=0.001,
+            )
+            assert decision is PermissionDecision.DENY
+            assert started.is_set()
+            assert cancel_calls == 1
+            assert _quarantined_task_count() == 1
+            assert len(asyncio.all_tasks() - tasks_before) == 1
 
-        release.set()
-        for _ in range(3):
-            await asyncio.sleep(0)
+            release.set()
+            for _ in range(3):
+                await asyncio.sleep(0)
+        finally:
+            setattr(authorization.asyncio, "Task", original_task_type)
+            loop.set_exception_handler(previous_handler)
+
         assert _quarantined_task_count() == 0
+        assert asyncio.all_tasks() == tasks_before
+        assert unhandled == []
 
     asyncio.run(scenario())
+
+
+def test_provider_contract_excludes_indefinite_cancellation_suppression() -> None:
+    from gateway.authorization import AuthorizationProvider, authorize_fail_closed
+
+    contract = f"{AuthorizationProvider.__doc__}\n{authorize_fail_closed.__doc__}"
+
+    assert "trusted first-party" in contract
+    assert "current event loop" in contract
+    assert "nonblocking" in contract
+    assert "cancellation-cooperative" in contract
+    assert "independently bounded" in contract
+    assert "same interpreter" in contract
+    assert "availability" in contract
+    assert "indefinitely suppress" in contract
 
 
 def test_readiness_timeout_wins_when_provider_suppresses_cancellation() -> None:

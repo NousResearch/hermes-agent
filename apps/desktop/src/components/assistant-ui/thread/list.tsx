@@ -36,6 +36,7 @@ import {
   saveThreadScrollPosition,
   shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
+  threadScrollDistanceFromBottom,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
@@ -603,6 +604,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // scroll listener and ResizeObserver.
   const isRunningRef = useRef(isRunning)
   isRunningRef.current = isRunning
+  // True once the reader left the bottom band at any point during the current
+  // run — their own upward scrolling, not the layout churn a finishing turn
+  // causes. The end-of-turn re-pin below must not yank a history reader.
+  const leftBottomBandDuringRunRef = useRef(false)
   const clearanceRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
@@ -835,6 +840,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
       scrollToBottomUnlessSelecting()
     }
+
+    // The band check runs again below when isRunning flips, so a run that
+    // starts while the reader is up in history never re-pins at its end.
+    leftBottomBandDuringRunRef.current = Boolean(el && threadScrollDistanceFromBottom(el) > RUN_START_SNAP_THRESHOLD_PX)
   })
 
   // Live scroll state of the CURRENT session, updated on every scroll event
@@ -888,7 +897,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const update = () => {
       previousResizeMetrics = resizeMetrics()
+      trackBottomBandDuringRun(el)
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+    }
+
+    // The reader's own intent, not layout churn: once they are further than the
+    // run-start snap band above the end, this run is a history read.
+    const trackBottomBandDuringRun = (node: HTMLElement) => {
+      if (isRunningRef.current && threadScrollDistanceFromBottom(node) > RUN_START_SNAP_THRESHOLD_PX) {
+        leftBottomBandDuringRunRef.current = true
+      }
     }
 
     const onResize = () => {
@@ -912,6 +930,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
 
       previousResizeMetrics = nextResizeMetrics
+      trackBottomBandDuringRun(el)
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     }
 
@@ -1269,11 +1288,42 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [paneVisible, scrollRef, sessionLoading])
 
   // A thread can mount with a run already active, without a runStart event.
+  // The wasRunning latch also catches the run's END: a finishing turn
+  // re-renders its content (markdown settles, the loading indicator unmounts,
+  // reasoning disclosures flip) after isRunning drops, when every synchronous
+  // follow leg here is already gated off (isRunning) or disconnected (the
+  // restore RO dies on first user input). The library's next-frame follow is
+  // then the only writer left, and it no-ops if a clamp-induced scrollTop drop
+  // during that churn read as a scroll-up and escaped the lock — the finished
+  // reply lands below the viewport (#135583). A reader who never left the
+  // bottom band during the run was following the end: re-pin explicitly. A
+  // history reader (leftBottomBandDuringRunRef) keeps their position.
+  const wasRunningRef = useRef(false)
+  // eslint-disable-next-line no-restricted-syntax -- run-edge latch, not an atom mirror: the run's end must fire once, on the true→false edge only
   useEffect(() => {
     if (isRunning) {
+      wasRunningRef.current = true
+      // Geometry is only the reader's choice once the load has settled; an
+      // in-flight restore leaves it meaningless (mid-settle way-points).
+      leftBottomBandDuringRunRef.current =
+        loadSettledRef.current &&
+        scrollRef.current != null &&
+        threadScrollDistanceFromBottom(scrollRef.current) > RUN_START_SNAP_THRESHOLD_PX
       cancelRestoreRef.current?.()
+
+      return
     }
-  }, [hasGroups, isRunning, sessionKey])
+
+    if (!wasRunningRef.current) {
+      return
+    }
+
+    wasRunningRef.current = false
+
+    if (paneVisible && !leftBottomBandDuringRunRef.current) {
+      scrollToBottomUnlessSelecting('instant')
+    }
+  }, [hasGroups, isRunning, paneVisible, scrollRef, scrollToBottomUnlessSelecting, sessionKey])
 
   // A window request owns no position while in flight. Capture at application
   // time, when the reader may be somewhere else. A session/visibility change

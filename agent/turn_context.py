@@ -796,6 +796,73 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
     )
 
 
+def _apply_turn_model_selection(
+    agent: Any, *, turn_id: str, original_user_message: Any, conversation_history: Optional[list[Any]],
+) -> None:
+    """``select_turn_model`` plugins may move THIS turn to another model (per-message routing).
+
+    Runs before the system prompt is restored/built and before turn-start compaction, so the turn is
+    prepared end to end for the model that will serve it (``switch_model`` invalidates the cached
+    prompt; compaction sizes against the new window). The first result shaped
+    ``{"provider": str, "model": str}`` wins; anything else is ignored. The switch goes through the
+    same resolve -> ``agent.switch_model`` path as ``/model``, and it is fail-open: a hook error, a
+    rejected route or a failed swap leaves the current model in place. Fork turns (background
+    review, side questions) and persistence-disabled forks keep their parent's model.
+    """
+    if getattr(agent, "_turn_origin", None) or getattr(agent, "_persist_disabled", False):
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        results = _invoke_hook(
+            "select_turn_model",
+            session_id=agent.session_id,
+            turn_id=turn_id,
+            user_message=original_user_message,
+            is_first_turn=(not bool(conversation_history)),
+            model=agent.model,
+            provider=getattr(agent, "provider", None) or "",
+            platform=getattr(agent, "platform", None) or "",
+            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+            sender_id=getattr(agent, "_user_id", None) or "",
+        )
+    except Exception as exc:
+        logger.debug("select_turn_model hook failed: %s", exc)
+        return
+    choice = next((r for r in results or () if isinstance(r, dict)
+                   and isinstance(r.get("provider"), str) and r["provider"].strip()
+                   and isinstance(r.get("model"), str) and r["model"].strip()), None)
+    if choice is None:
+        return
+    provider, model = choice["provider"].strip(), choice["model"].strip()
+    if (provider, model) == ((getattr(agent, "provider", None) or "").strip(), (agent.model or "").strip()):
+        return
+    old = f"{getattr(agent, 'provider', None) or '?'}/{agent.model}"
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_cli.model_switch import switch_model as _resolve_switch
+        cfg = load_config() or {}
+        result = _resolve_switch(
+            raw_input=model, current_provider=getattr(agent, "provider", None) or "",
+            current_model=agent.model or "", current_base_url=getattr(agent, "base_url", None) or "",
+            current_api_key=getattr(agent, "api_key", None) or "", explicit_provider=provider,
+            user_providers=cfg.get("providers"), custom_providers=get_compatible_custom_providers(cfg),
+        )
+        if not result.success:
+            logger.warning("select_turn_model: %s/%s rejected (%s); staying on %s",
+                           provider, model, result.error_message, old)
+            return
+        agent.switch_model(
+            new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
+            base_url=result.base_url, api_mode=result.api_mode,
+            capabilities=getattr(result, "runtime_capabilities", None),
+        )
+    except Exception as exc:
+        logger.warning("select_turn_model: switch to %s/%s failed (%s); staying on %s", provider, model, exc, old)
+        return
+    logger.info("select_turn_model: %s -> %s/%s (%s)", old, result.target_provider, result.new_model,
+                str(choice.get("reason") or "plugin")[:120])
+
+
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
     messages: list[Any], conversation_history: Optional[list[Any]],
@@ -1137,6 +1204,12 @@ def build_turn_context(
             f"💬 Starting conversation: '{_preview_text[:60]}"
             f"{'...' if len(_preview_text) > 60 else ''}'"
         )
+
+    # Per-message routing BEFORE the prompt is built: a switch invalidates the cached prompt.
+    _apply_turn_model_selection(
+        agent, turn_id=turn_id, original_user_message=original_user_message,
+        conversation_history=conversation_history,
+    )
 
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:

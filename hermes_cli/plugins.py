@@ -108,6 +108,10 @@ VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # select_turn_model: once per user turn, before the system prompt is built. Return
+    # {"provider": str, "model": str, "reason"?: str} to serve THIS turn on that model (first valid
+    # result wins; resolved and swapped exactly like /model; fail-open), or None to keep the current one.
+    "select_turn_model",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",

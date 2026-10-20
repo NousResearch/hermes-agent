@@ -759,6 +759,31 @@ def register(ctx):
 
 ---
 
+### `select_turn_model`
+
+Fires **once per user turn**, before the system prompt is restored/built and before turn-start compaction. Return a model to serve **this turn** on it — per-message model routing.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, turn_id: str, user_message: str, is_first_turn: bool,
+                model: str, provider: str, platform: str, parent_session_id: str,
+                sender_id: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `user_message` | `str \| list` | The user's message for this turn (list of parts on a multimodal turn) |
+| `model` / `provider` | `str` | The model and provider the turn would run on |
+| `platform` | `str` | `"cli"`, `"telegram"`, `"discord"`, ... |
+| `parent_session_id` | `str` | Non-empty for delegated child agents |
+
+**Return value:** `{"provider": "...", "model": "...", "reason": "..."}` to switch, or `None` to keep the current model. The first valid result wins. The switch is resolved and applied exactly like `/model` (credentials, base URL, API mode, capabilities, context window); it is **fail-open** — a hook error, a route the resolver rejects, or a failed swap leaves the current model in place.
+
+**Fires:** in `agent/turn_context.py` before the system prompt block. Fork turns (background review, side questions) and persistence-disabled forks never fire it and keep their parent's model.
+
+**Prompt cache:** every switch rebuilds the system prompt and changes provider, so it costs that turn's prefix cache. Routers should be *sticky* — switch only on a clear change of task and stay — and return the model the session should be on, every turn (a cached gateway agent keeps the last switch; a rebuilt one starts from its configured model).
+
 ### `post_llm_call`
 
 Fires **once per turn**, after the tool-calling loop completes and the agent has produced a final response. Only fires on **successful** turns — does not fire if the turn was interrupted.

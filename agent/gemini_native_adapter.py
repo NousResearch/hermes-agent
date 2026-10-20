@@ -200,9 +200,13 @@ def is_native_gemini_base_url(base_url: str) -> bool:
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
     """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
-    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
-    unknown proxies get the legacy ``parameters`` subset."""
-    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
+    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto) and in the Vertex AI
+    Express ``v1beta1`` publishers/google surface it mirrors; other versions (including Vertex's
+    own ``v1``) and unknown proxies get the legacy ``parameters`` subset."""
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    if normalized.endswith("/v1beta"):
+        return True
+    return is_vertex_express_base_url(normalized) and "/v1beta1/" in normalized and normalized.endswith("/publishers/google")
 
 
 def probe_gemini_tier(
@@ -553,8 +557,9 @@ def _translate_response_format(response_format: Any, *, json_schema: bool = Fals
     """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
 
     Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
-    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
-    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    surface and the Vertex AI Express ``v1beta1`` publishers/google surface it mirrors (same gate
+    as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex's own ``v1`` and unknown proxies
+    take the OpenAPI-subset ``responseSchema`` path.
     """
     if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
         return {}

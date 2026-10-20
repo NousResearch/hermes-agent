@@ -222,6 +222,95 @@ class SessionCompressionMixin:
                 "compress and a later close is recorded (#106459)", session_id, reason, provenance)
         return reason
 
+    def resolve_compression_root(self, session_id: str) -> Optional[str]:
+        """Public API: resolve the lineage root for a given session ID.
+        
+        Given any session ID (including compression continuations), returns the root session ID
+        of its lineage. This follows parent_session_id links through compression ancestors
+        until reaching a session that is not ended by compression or has no parent.
+        
+        Args:
+            session_id: The session ID to resolve (can be any session in the lineage)
+            
+        Returns:
+            The root session ID of the lineage, or None if the session doesn't exist
+        """
+        if not session_id:
+            return None
+            
+        with self._read_ctx() as conn:
+            current = session_id
+            seen = set()
+            while current:
+                if current in seen:
+                    # Cycle detected, return current as root
+                    return current
+                seen.add(current)
+                
+                row = conn.execute(_ENDED_ROW_SQL, (current,)).fetchone()
+                if row is None:
+                    # Session doesn't exist, return None
+                    return None
+                    
+                if not _ended_by_compression(row):
+                    # Not a compression ancestor, this is the root
+                    return current
+                    
+                # Get parent session ID
+                parent_row = conn.execute(_CREATED_ROW_SQL, (current,)).fetchone()
+                if not parent_row or not parent_row["parent_session_id"]:
+                    # No parent, this is the root
+                    return current
+                    
+                current = parent_row["parent_session_id"]
+                
+            return None
+
+    def list_delegate_children(self, session_id: str, include_inactive: bool = True) -> List[Dict[str, Any]]:
+        """Public API: recursively list all delegated subagent sessions for a given session.
+        
+        Returns all sessions that were created as delegates of the given session, including
+        their own delegated children (recursive). This provides a complete view of the
+        subagent tree for provably complete lineage export.
+        
+        Args:
+            session_id: The parent session ID to find delegates for
+            include_inactive: Whether to include sessions that have ended
+            
+        Returns:
+            List of session dictionaries for all delegated children and their descendants
+        """
+        if not session_id:
+            return []
+            
+        result = []
+        
+        def _collect_delegates(parent_id: str):
+            with self._read_ctx() as conn:
+                # Find direct delegate children
+                delegate_children = conn.execute(
+                    """
+                    SELECT s.*
+                    FROM sessions s
+                    WHERE s.parent_session_id = ?
+                      AND {_sql_json_extract('s.model_config', '$._delegate_from')} IS NOT NULL
+                      {inactive_filter}
+                    """.format(
+                        inactive_filter="" if include_inactive else "AND s.ended_at IS NULL"
+                    ),
+                    (parent_id,)
+                ).fetchall()
+                
+                for child in delegate_children:
+                    # Add this delegate to results
+                    result.append(self._session_row_dict(child))
+                    
+                    # Recursively collect its delegates
+                    _collect_delegates(child["id"])
+        
+        _collect_delegates(session_id)
+        return result
+
     def stamp_legacy_compression_chains(self) -> int:
         """Stamp the unset ancestors of chains compressed before write-time stamping from their
         stamped segments, through ``stamp_compression_ancestors`` (same edge checks; a known value

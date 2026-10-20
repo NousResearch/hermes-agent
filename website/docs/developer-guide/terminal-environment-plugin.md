@@ -182,7 +182,7 @@ stdout left open. A plugin backend can opt in the same way:
    `None` when it can't right now. Hermes appends `bash -c <script>` as
    separate words, so the client must pass them through unchanged and the
    sandbox needs `bash`. `user` names the account to run as; ignore it if your
-   backend can't switch users.
+   backend can't switch users. Return a list, not a single command string.
 
 ```python
 class AcmeBoxEnvironment:
@@ -191,7 +191,10 @@ class AcmeBoxEnvironment:
 ```
 
 The sandbox image still needs the desktop stack (Xvnc, Xfce, Chromium,
-`cua-driver`); `nousresearch/hermes-sandbox:desktop` has it.
+`cua-driver`); `nousresearch/hermes-sandbox:desktop` has it. Bot Desktop and
+the browser keep their scratch files under the environment's
+`get_temp_dir()`. An environment that doesn't subclass `BaseEnvironment` and
+has no such method gets the same default `BaseEnvironment` uses.
 
 Both `exec_prefix()` and the `~` home resolution read the environment object
 itself, so they work only for plugins loaded in-process. Under

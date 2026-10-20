@@ -65,7 +65,20 @@ def _plugin_exec_prefix(env: BaseEnvironment, *, user: Optional[str], interactiv
         logger.warning("%s.exec_prefix() failed; treating the backend as unable to stream",
                        type(env).__name__, exc_info=True)
         return None
-    return [str(part) for part in prefix] if prefix else None
+    if not prefix:
+        return None
+    if not isinstance(prefix, (list, tuple)):
+        # A plain string would be split into one-character argv words.
+        logger.warning("%s.exec_prefix() returned %s, not a list of argv words; treating the backend as unable "
+                       "to stream", type(env).__name__, type(prefix).__name__)
+        return None
+    return [str(part) for part in prefix]
+
+
+def sandbox_temp_dir(env: BaseEnvironment) -> str:
+    """``env.get_temp_dir()``, or ``/tmp`` for a plugin environment that doesn't subclass ``BaseEnvironment``."""
+    get_temp_dir = getattr(env, "get_temp_dir", None)
+    return str(get_temp_dir()) if callable(get_temp_dir) else "/tmp"  # no-tmp: ok — sandbox-side temp dir
 
 
 def supports_streams(env: BaseEnvironment) -> bool:

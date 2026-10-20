@@ -182,6 +182,38 @@ def _spawn_host(argv: list, env: dict, cwd: str) -> Any:
                             stderr=subprocess.PIPE, env=env, cwd=cwd, bufsize=0)
 
 
+def run_no_fork(argv: list, env: dict, timeout: Optional[float] = None,
+                cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+    """``subprocess.run(..., stdin=DEVNULL, capture_output=True)`` through the same no-fork spawn
+    (:class:`_SpawnedHost`), for one-shot plugin-host children such as ``--extract-profiles``.
+    Both pipes drain on their own threads (a chatty child can't deadlock the reader), and on
+    timeout the child is killed before ``TimeoutExpired`` propagates."""
+    if os.name != "posix" or not hasattr(os, "posix_spawn"):
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
+                              cwd=cwd, timeout=timeout, check=False)
+    proc = _posix_spawn_host(argv, {**env, HOST_CWD_ENV: cwd} if cwd else env)
+    proc.stdin.close()
+    out_chunks: list = []
+    err_chunks: list = []
+    drain_out = threading.Thread(target=lambda: out_chunks.append(proc.stdout.read()), daemon=True)
+    drain_err = threading.Thread(target=lambda: err_chunks.append(proc.stderr.read()), daemon=True)
+    drain_out.start()
+    drain_err.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        drain_out.join()
+        drain_err.join()
+        raise subprocess.TimeoutExpired(argv, timeout, output=b"".join(out_chunks),
+                                        stderr=b"".join(err_chunks)) from None
+    drain_out.join()
+    drain_err.join()
+    return subprocess.CompletedProcess(argv, proc.returncode, b"".join(out_chunks),
+                                       b"".join(err_chunks))
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 

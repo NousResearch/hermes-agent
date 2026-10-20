@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.plugin_host import _spawn_host
+from hermes_cli.plugin_host import _spawn_host, run_no_fork
 
 REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -90,3 +90,23 @@ def test_spawn_host_kill_terminates_child(tmp_path):
     proc.kill()
     assert proc.wait(timeout=30) == -signal.SIGKILL
     assert proc.poll() == -signal.SIGKILL
+
+
+def test_run_no_fork_captures_streams_and_status(tmp_path):
+    done = run_no_fork([sys.executable, "-P", "-c",
+                        "import sys; sys.stdout.write('out'); sys.stderr.write('err'); "
+                        "sys.exit(3)"],
+                       _child_env(), cwd=str(tmp_path))
+    assert done.returncode == 3
+    assert done.stdout == b"out"
+    assert done.stderr == b"err"
+
+
+@pytest.mark.platforms("posix")
+def test_run_no_fork_timeout_kills_the_child(tmp_path):
+    import subprocess
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_no_fork([sys.executable, "-P", "-c",
+                     "import threading; threading.Event().wait()"],
+                    _child_env(), timeout=1, cwd=str(tmp_path))

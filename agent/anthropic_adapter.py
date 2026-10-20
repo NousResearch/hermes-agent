@@ -719,12 +719,64 @@ def build_anthropic_kwargs(
 _RESPONSES_ONLY_KWARGS = frozenset({"instructions", "input", "store", "parallel_tool_calls"})
 
 
-def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
+# OpenAI *chat.completions*-only body keys. Unlike ``_RESPONSES_ONLY_KWARGS`` these don't raise
+# locally: the SDK forwards ``extra_body`` verbatim, so on api.anthropic.com they come back as a hard,
+# non-retryable ``400 invalid_request_error: <key>: Extra inputs are not permitted`` (verified live
+# for every key below). Callers sharing one call site across providers legitimately pass them.
+_OPENAI_ONLY_EXTRA_BODY_KEYS = frozenset({
+    "response_format", "frequency_penalty", "presence_penalty", "logit_bias", "logprobs",
+    "top_logprobs", "n", "seed", "modalities", "prediction", "stream_options",
+    "max_completion_tokens", "parallel_tool_calls",
+})
+
+
+def _strip_openai_only_extra_body(api_kwargs: dict, *, base_url: Any = None, log_prefix: str = "") -> None:
+    """Drop OpenAI-chat-only ``extra_body`` keys on first-party api.anthropic.com calls only.
+    Anthropic-compatible gateways (Bedrock, Foundry, Kimi, DeepSeek, MiniMax, proxies) accept
+    vendor body fields deliberately and keep their passthrough."""
+    extra_body = api_kwargs.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return
+    if _is_third_party_anthropic_endpoint(
+        base_url if isinstance(base_url, str) else (str(base_url) if base_url else None)
+    ):
+        return
+    leaked = _OPENAI_ONLY_EXTRA_BODY_KEYS.intersection(extra_body)
+    if not leaked:
+        return
+    remaining = {k: v for k, v in extra_body.items() if k not in leaked}
+    if remaining:
+        api_kwargs["extra_body"] = remaining
+    else:
+        api_kwargs.pop("extra_body", None)
+    logger.debug(
+        "%sStripped OpenAI-only extra_body key(s) %s from a native Anthropic Messages call; "
+        "the API rejects them with 400 'Extra inputs are not permitted'.",
+        log_prefix, sorted(leaked),
+    )
+
+
+def _client_base_url(client: Any) -> Optional[str]:
+    """Best-effort base_url for an Anthropic SDK client (never raises)."""
+    try:
+        value = getattr(client, "base_url", None)
+        return str(value) if value else None
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "", base_url: Any = None) -> Any:
     """Drop Responses-API-only keys before an Anthropic Messages SDK call. Boundary guard for
     api_mode-flip races (a concurrent auxiliary call mutating a shared agent between kwargs build
     and dispatch): a Responses-shaped payload reaching ``messages.stream()`` dies with a
     non-retryable TypeError that takes the whole turn and fallback chain with it. Mutates and
-    returns ``api_kwargs``; logs a WARNING so the race stays visible."""
+    returns ``api_kwargs``; logs a WARNING so the race stays visible.
+
+    Also strips OpenAI-chat-only ``extra_body`` keys for first-party api.anthropic.com (hard 400
+    there). Omitted ``base_url`` means direct Anthropic, matching
+    ``_is_third_party_anthropic_endpoint``'s convention, so the default path is protected."""
+    if isinstance(api_kwargs, dict):
+        _strip_openai_only_extra_body(api_kwargs, base_url=base_url, log_prefix=log_prefix)
     leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs) if isinstance(api_kwargs, dict) else ()
     if leaked:
         for key in leaked:
@@ -867,7 +919,7 @@ def create_anthropic_message(
     streaming path: ``on_stream_event(event)`` lets liveness watchdogs see forward progress;
     ``on_response(httpx_response)`` exposes headers the parsed Message drops (Nous Portal's
     ``x-nous-credits-*`` balance family)."""
-    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix, base_url=_client_base_url(client))
     messages_api = getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):

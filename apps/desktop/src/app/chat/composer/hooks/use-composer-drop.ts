@@ -49,11 +49,20 @@ export function useComposerDrop({
   // connection on a shared filesystem keeps non-image OS drops as
   // original-path inline refs; remote / container / cross-filesystem
   // backends still stage. Mirrors uploadComposerAttachment's byte decision.
-  const osDropStaging = (): OsDropStagingContext => ({
-    backendCwd: cwd,
-    remote: isSessionRemote(sessionId),
-    terminalBackend: $terminalBackend.get()
-  })
+  const osDropStaging = (): OsDropStagingContext | undefined => {
+    // A fresh draft has no authoritative session.info yet. The global backend
+    // can still describe the previously selected profile; stage OS files until
+    // the owning session exists instead of assuming its filesystem is shared.
+    if (!sessionId) {
+      return undefined
+    }
+
+    return {
+      backendCwd: cwd,
+      remote: isSessionRemote(sessionId),
+      terminalBackend: $terminalBackend.get()
+    }
+  }
 
   const handleDragEnter = (event: ReactDragEvent<HTMLFormElement>) => {
     if (!onAttachDroppedItems || !dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {

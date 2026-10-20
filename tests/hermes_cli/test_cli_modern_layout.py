@@ -48,7 +48,12 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     assert any("Added multiply to calc.py." in line for line in rows)
 
 
-def test_one_line_reasoning_is_shown_once(monkeypatch):
+@pytest.mark.parametrize("reasoning", [
+    "scripted reasoning about gamma zeta-reason",
+    # Longer than the 72-char title cap: a shortened title would still repeat it.
+    "scripted reasoning about gamma zeta-reason that keeps going well past the title length cap here",
+])
+def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
     """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""
     from cli import HermesCLI
     import cli as climod
@@ -61,13 +66,14 @@ def test_one_line_reasoning_is_shown_once(monkeypatch):
     monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
     monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 100)
     monkeypatch.setattr(HermesCLI, "_scrollback_box_width", lambda self: 100)
-    cli._stream_reasoning_delta("scripted reasoning about gamma zeta-reason")
+    cli._stream_reasoning_delta(reasoning)
     cli._stream_delta("GAMMA answered.\n")
     cli._flush_stream()
 
-    text = "\n".join(emitted)
-    assert text.count("scripted reasoning about gamma zeta-reason") == 1, emitted
-    assert any(line.startswith("∴") for line in text.split("\n")), emitted
+    rows = "\n".join(emitted).split("\n")
+    assert sum(row.count(reasoning) for row in rows) == 1, emitted
+    thought = [row for row in rows if row.startswith("∴")]
+    assert len(thought) == 1 and "·" not in thought[0], thought
 
 
 @pytest.mark.parametrize("modern", [True, False])

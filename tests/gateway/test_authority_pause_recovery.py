@@ -7,7 +7,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_authority import LiveSession
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     get_session_admission, recover_session_inputs, register_worker_execution)
 
@@ -39,7 +39,7 @@ async def test_busy_head_keeps_api_waiter_until_the_worker_finish_answers_it(own
     assert get_session_admission(owner.db, admission_id=row['admission_id'])['status'] == 'queued'
     # Process identity is independent of this test's real receipt and scheduler path.
     monkeypatch.setattr('gateway.session_worker._claim', lambda *args: 'private')
-    connection = SimpleNamespace(authority=owner, actor=Principal('human', owner.profile_id,
+    connection = SimpleNamespace(authority=owner, actor=SessionActor('human', owner.profile_id,
                                  frozenset({'worker:adopt'}), 'worker-transport'))
     await worker_request(connection, ref, dict(profile_id=owner.profile_id, session_id='s',
         execution_id='worker', generation=0, pid=1, birth=1, secret='private', epoch=owner.epoch,

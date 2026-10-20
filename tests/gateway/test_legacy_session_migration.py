@@ -12,7 +12,7 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local_title import resolve_titled_session
     from hermes_state_local import local_receipt
     from hermes_state_runtime import RuntimeStoreError
@@ -34,8 +34,8 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
     caps = frozenset({'session:create', 'session:read', 'session:submit', 'session:control'})
-    remote = Principal('remote', str(tmp_path), caps, 'remote-socket')
-    native = Principal('native', str(tmp_path), caps, 'native-socket')
+    remote = SessionActor('remote', str(tmp_path), caps, 'remote-socket')
+    native = SessionActor('native', str(tmp_path), caps, 'native-socket')
     authority._native_legacy_transports = {native.transport_id: native}
     with pytest.raises(RuntimeStoreError, match='not_found'):
         resolve_titled_session(authority, remote, 'My retained work')
@@ -83,7 +83,7 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     assert local_receipt(db, ref.session_id)['policy'] == receipt['policy']
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await authority.attach(remote, ref)
-    foreign = Principal(native.subject, '/foreign', caps, native.transport_id)
+    foreign = SessionActor(native.subject, '/foreign', caps, native.transport_id)
     with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
         await authority.attach(foreign, ref)
     db._write_sql('UPDATE state_meta SET value=? WHERE key=?', ('{}', 'gateway.local_policy.v1:' + ref.session_id))
@@ -98,7 +98,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local_title import resolve_titled_session
     from hermes_cli.active_sessions import try_acquire_active_session, release_active_session
     from hermes_state_runtime import RuntimeStoreError
@@ -111,7 +111,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     db.create_session('foreign', source='cli', model='old', cwd=str(tmp_path), profile_name='other')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
-    native = Principal('native', str(tmp_path), frozenset({'session:read', 'session:create'}), 'socket')
+    native = SessionActor('native', str(tmp_path), frozenset({'session:read', 'session:create'}), 'socket')
     authority._native_legacy_transports = {native.transport_id: native}
     lease, refusal = try_acquire_active_session(session_id='old-live', surface='cli', registry_home=Path(db.db_path).parent, config={})
     assert lease is not None, refusal
@@ -135,7 +135,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     entry = dict(receipt['entry'], session_id='reset-tip')
     reset_local_target(db, epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
     from gateway.session_bot import _target
-    submitter = Principal(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
+    submitter = SessionActor(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
     assert (await _target(authority, submitter))[2].session_id == 'reset-tip'
 
 

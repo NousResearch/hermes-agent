@@ -7,6 +7,11 @@ export interface PetMetaResult {
   scale?: number
   slug?: string
   spritesheetRevision?: string
+  /**
+   * Terminal-surface-only gate from the gateway (display.pet.terminal_enabled).
+   * Undefined/absent on older gateways → read as "on". The desktop ignores it.
+   */
+  terminalEnabled?: boolean
 }
 
 interface PetUpdate<TCells> {

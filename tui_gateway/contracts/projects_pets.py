@@ -348,6 +348,9 @@ class PetInfoMetaResult(Result):
     displayName: str | None = None
     scale: float | None = None
     spritesheetRevision: str | None = None
+    # Terminal-surface-only gate: false → the TUI hides its half-block pet while the
+    # desktop (pet.info) keeps rendering. Absent on old gateways → read as True.
+    terminalEnabled: bool | None = None
 
 
 method("pet.info.meta", params=ProfileParams, result=PetInfoMetaResult,

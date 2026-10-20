@@ -225,7 +225,10 @@ export function usePet(): PetRender {
             frameRef.current = 0
           }
 
-          return !cache.current.has(`${slug}:${state}`)
+          // display.pet.terminal_enabled=false gates this surface only (the desktop
+          // keeps its pet via pet.info) — no frames to fetch, so never ask. Absent
+          // terminalEnabled on older gateways reads as "on".
+          return meta.terminalEnabled !== false && !cache.current.has(`${slug}:${state}`)
         })
 
         if (!update) {
@@ -233,6 +236,16 @@ export function usePet(): PetRender {
         }
 
         if (!update.meta.enabled) {
+          disablePet()
+
+          return
+        }
+
+        // display.pet.terminal_enabled=false hides the pixelated terminal pet while
+        // the desktop keeps its mascot (pet.info is untouched). The gateway already
+        // answers pet.cells with enabled:false for this selection, but skipping the
+        // fetch keeps the cosmetic poll cheap. Absent on old gateways → always on.
+        if (update.meta.terminalEnabled === false) {
           disablePet()
 
           return

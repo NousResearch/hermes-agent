@@ -38,12 +38,12 @@ ever touches the messages **after the newest user message**.
 
 ## Measured
 
-Replayed over 100 days of a live deployment (49,829 tool results, 917 sessions):
+Replayed over the full 78 days of history in `state.db` (49,875 tool results, 917 sessions):
 
 | | |
 |---|---|
 | tool content | 95.4M chars ≈ 31.8M tokens |
-| results over cap | 5,515 (11%) |
+| results over cap | 5,516 (11%) |
 | tokens never sent | **14.0M (44% of tool content)** |
 | prefix messages rewritten | **0 of 85,630** |
 | overhead | 0.56 µs median per result |

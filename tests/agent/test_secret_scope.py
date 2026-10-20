@@ -552,6 +552,89 @@ class TestSecretScopeAcrossExecutorThreads:
             ss.reset_secret_scope(token)
 
 
+class TestBulkSecretSourceRegression:
+    """Guard tests for the bulk (external) secret source path.
+
+    A credential delivered by a bulk secret source (``apply_all``: Bitwarden,
+    1Password, a command source) is NOT in the profile's ``.env``. It must
+    still resolve after the profile scope is built and bound, and the default
+    profile running in its own home must not be treated as a routed profile
+    (which would fail closed on every scoped miss).
+
+    Both tests are hermetic: an isolated home under ``tmp_path``, and no
+    access to the real ``~/.hermes``.
+    """
+
+    def test_bulk_source_key_absent_from_dotenv_resolves_after_scope_bind(
+        self, monkeypatch, tmp_path
+    ):
+        """A bulk-delivered key that is absent from ``.env`` resolves after the
+        scope bind — the scope composes the external source's snapshot over
+        the ``.env`` layer, so the provider credential resolves from it.
+        """
+        from hermes_cli import env_loader
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        home = tmp_path / "profile"
+        home.mkdir()
+        # The key is deliberately NOT in .env: it arrives only via the bulk source.
+        (home / ".env").write_text("SOME_OTHER_KEY=other-value\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("ALIBABA_CODING_PLAN_API_KEY", raising=False)
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+
+        bulk_key = "bws-bulk-delivered-key-1234"
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(home.resolve()),
+            {"ALIBABA_CODING_PLAN_API_KEY": bulk_key},
+        )
+
+        scope = ss.build_profile_secret_scope(home)
+        assert scope["ALIBABA_CODING_PLAN_API_KEY"] == bulk_key
+        assert "ALIBABA_CODING_PLAN_API_KEY" not in ss.load_env_file(home / ".env")
+
+        token = ss.set_secret_scope(scope, profile_home=str(home))
+        try:
+            # The scope serves the process's OWN home, so it is not a routed
+            # profile and scoped reads keep the single-profile overlay.
+            assert ss.serves_routed_profile() is False
+            resolved = resolve_api_key_provider_credentials("alibaba-coding-plan")
+            assert resolved["api_key"] == bulk_key
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_default_profile_running_in_own_home_is_not_routed(self, monkeypatch, tmp_path):
+        """The default profile running in its own home is not a routed profile:
+        ``serves_routed_profile()`` is False and a scoped miss falls through to
+        ``os.environ`` (systemd / ``op run`` credentials keep working) instead
+        of failing closed.
+        """
+        import hermes_constants
+        from hermes_constants import get_process_hermes_home
+
+        # Clear any pin left by an earlier test: the launch home is what
+        # "routed" is compared against, and a stale pin would make the own
+        # home look foreign.
+        monkeypatch.setattr(
+            hermes_constants, "_PINNED_PROCESS_HERMES_HOME", None, raising=False
+        )
+        own_home = get_process_hermes_home()
+        # The suite isolates the home under tmp_path — the real ~/.hermes is
+        # never read or written by this test.
+        assert str(own_home).startswith(str(tmp_path))
+
+        scope = ss.build_profile_secret_scope(own_home)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
+        token = ss.set_secret_scope(scope, profile_home=str(own_home))
+        try:
+            assert ss.serves_routed_profile() is False
+            # A scoped miss falls through to the process env (not fail-closed).
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
+        finally:
+            ss.reset_secret_scope(token)
+
+
 class TestUnscopedSecretErrorSignature:
     def test_named_secret_leads_the_user_sentence(self):
         err = ss.UnscopedSecretError("SURPLUS_API_KEY", "get_secret('SURPLUS_API_KEY') with no scope")

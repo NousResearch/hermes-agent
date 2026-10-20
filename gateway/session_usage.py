@@ -83,6 +83,31 @@ def usage_stats(agent) -> dict:
     return stats
 
 
+_PRICED_COST_STATUSES = frozenset({"actual", "estimated", "included"})
+
+
+def cost_fields(agent, *, before=0.0) -> dict:
+    """The priced cost a run's ``usage`` payload publishes, from the agent's own accounting.
+
+    Hermes already prices every API call (``agent/turn_usage.py``: ``estimate_usage_cost`` →
+    ``session_estimated_cost_usd``), but the API server's usage payload carried tokens only, so
+    a metering client could not see what a run cost. These keys close that gap without a second
+    pricing engine: ``cost_usd`` is the session accumulator as a delta against *before* (the
+    value at turn start), matching the adjacent token deltas for a retained agent.
+
+    Unknown pricing is OMITTED, never reported as a zero amount: a consumer that only knows
+    ``cost_usd`` must be able to tell "not priced" from "priced at $0" (an included
+    subscription route). ``cost_status`` always says which case this is.
+    """
+    amount = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+    status = str(getattr(agent, "session_cost_status", "unknown") or "unknown")
+    delta = max(0.0, amount - float(before or 0.0))
+    fields = {"cost_status": status}
+    if status in _PRICED_COST_STATUSES or delta > 0:
+        fields["cost_usd"] = delta
+    return fields
+
+
 def carried_compression_count(live, agent=None) -> int:
     """Compactions of this conversation: main's agent counted them on its compressor for the
     session's life. A canonical compress evicts the gateway's agent (a session boundary), so the

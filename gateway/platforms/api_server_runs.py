@@ -864,13 +864,16 @@ def _retarget_to_delivered_chat(self, launch: _RunLaunch, admitted) -> None:
         self._set_run_status(launch.run_id, "queued", session_id=delivered)
 
 
-def _run_usage(agent) -> dict[str, int]:
+def _run_usage(agent) -> dict[str, Any]:
     """Terminal ``usage`` payload from the agent's session counters; a missing or non-numeric
-    counter (test doubles, agents without cache accounting) reads as ``0``."""
+    counter (test doubles, agents without cache accounting) reads as ``0``. The run's priced
+    cost rides the same payload (``cost_usd``/``cost_status``) from Hermes' own accounting."""
     usage = {}
     for key, attr in _USAGE_FIELDS:
         value = getattr(agent, attr, 0)
         usage[key] = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    from gateway.session_usage import cost_fields
+    usage.update(cost_fields(agent))
     return usage
 
 

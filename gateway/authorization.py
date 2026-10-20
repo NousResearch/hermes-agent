@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Set as AbstractSet
+from collections.abc import Iterable, Mapping, Set as AbstractSet
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Mapping, Protocol, runtime_checkable
+from typing import Any, Awaitable, Never, Protocol, TypeVar, runtime_checkable
+
+
+_MAX_IDENTITY_LENGTH = 256
+_MAX_SCOPE_LENGTH = 256
+_T = TypeVar("_T")
+
+
+class _DeadlineExpired:
+    __slots__ = ()
+
+
+_DEADLINE_EXPIRED = _DeadlineExpired()
 
 
 class PrincipalKind(str, Enum):
@@ -24,12 +36,9 @@ class PermissionDecision(str, Enum):
     DENY = "deny"
 
 
-_PRINCIPAL_CONSTRUCTION_TOKEN = object()
-
-
 @dataclass(frozen=True, slots=True, init=False)
 class VerifiedPrincipal:
-    """Identity established by trusted gateway code, never by message payload."""
+    """Identity established by a trusted issuer, never by message payload."""
 
     principal_id: str
     kind: PrincipalKind
@@ -37,27 +46,80 @@ class VerifiedPrincipal:
     scopes: frozenset[str]
     initiating_principal_id: str | None = None
 
-    def __init__(
+    def __init__(self) -> None:
+        raise TypeError("VerifiedPrincipal requires a trusted issuer capability")
+
+
+class TrustedPrincipalIssuer:
+    """Non-serializable capability held and injected only by core bootstrap.
+
+    This is an in-process trust boundary, not a Python sandbox: arbitrary malicious
+    code already executing in this interpreter can subvert Python objects. Model,
+    message, and tool payloads cannot mint a principal unless trusted core code gives
+    them this capability. Never register an issuer as a tool or plugin API.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls) -> TrustedPrincipalIssuer:
+        raise TypeError("issuer capabilities are created only by core bootstrap")
+
+    def __reduce__(self) -> Never:
+        raise TypeError("issuer capabilities cannot be serialized")
+
+    def issue_user(
         self,
         *,
-        _construction_token: object,
         principal_id: str,
-        kind: PrincipalKind,
         authz_version: int,
-        scopes: Iterable[str],
-        initiating_principal_id: str | None = None,
-    ) -> None:
-        if _construction_token is not _PRINCIPAL_CONSTRUCTION_TOKEN:
-            raise ValueError("VerifiedPrincipal requires trusted gateway construction")
-        object.__setattr__(self, "principal_id", principal_id)
-        object.__setattr__(self, "kind", kind)
-        object.__setattr__(self, "authz_version", authz_version)
-        object.__setattr__(self, "scopes", frozenset(scopes))
-        object.__setattr__(self, "initiating_principal_id", initiating_principal_id)
+        scopes: Iterable[str] = (),
+    ) -> VerifiedPrincipal:
+        return self.__issue(
+            principal_id=principal_id,
+            kind=PrincipalKind.USER,
+            authz_version=authz_version,
+            scopes=scopes,
+        )
 
-    @classmethod
-    def _create(
-        cls,
+    def issue_service(
+        self,
+        *,
+        principal_id: str,
+        authz_version: int,
+        scopes: Iterable[str] = (),
+    ) -> VerifiedPrincipal:
+        return self.__issue(
+            principal_id=principal_id,
+            kind=PrincipalKind.SERVICE,
+            authz_version=authz_version,
+            scopes=scopes,
+        )
+
+    def issue_on_behalf_of(
+        self,
+        *,
+        parent: VerifiedPrincipal,
+        scopes: Iterable[str],
+    ) -> VerifiedPrincipal:
+        if not isinstance(parent, VerifiedPrincipal):
+            raise TypeError("parent must be a VerifiedPrincipal")
+        delegated_scopes = _validated_scopes(scopes)
+        if not delegated_scopes.issubset(parent.scopes):
+            raise ValueError("on-behalf-of scopes must be a subset of parent scopes")
+        if parent.kind is PrincipalKind.SERVICE:
+            raise ValueError("service principals cannot create on-behalf-of user contexts")
+        return self.__issue(
+            principal_id=parent.principal_id,
+            kind=PrincipalKind.ON_BEHALF_OF,
+            authz_version=parent.authz_version,
+            scopes=delegated_scopes,
+            initiating_principal_id=(
+                parent.initiating_principal_id or parent.principal_id
+            ),
+        )
+
+    def __issue(
+        self,
         *,
         principal_id: str,
         kind: PrincipalKind,
@@ -65,14 +127,58 @@ class VerifiedPrincipal:
         scopes: Iterable[str],
         initiating_principal_id: str | None = None,
     ) -> VerifiedPrincipal:
-        return cls(
-            _construction_token=_PRINCIPAL_CONSTRUCTION_TOKEN,
-            principal_id=principal_id,
-            kind=kind,
-            authz_version=authz_version,
-            scopes=scopes,
-            initiating_principal_id=initiating_principal_id,
+        principal_id = _validated_text(
+            principal_id, field_name="principal_id", max_length=_MAX_IDENTITY_LENGTH
         )
+        if type(authz_version) is not int:
+            raise TypeError("authz_version must be an exact int")
+        if authz_version < 0:
+            raise ValueError("authz_version must be non-negative")
+        validated_scopes = _validated_scopes(scopes)
+        if kind is PrincipalKind.ON_BEHALF_OF:
+            if initiating_principal_id is None:
+                raise ValueError("on-behalf-of principals require an initiating identity")
+            initiating_principal_id = _validated_text(
+                initiating_principal_id,
+                field_name="initiating_principal_id",
+                max_length=_MAX_IDENTITY_LENGTH,
+            )
+        elif initiating_principal_id is not None:
+            raise ValueError("direct principals cannot have an initiating identity")
+        principal = object.__new__(VerifiedPrincipal)
+        object.__setattr__(principal, "principal_id", principal_id)
+        object.__setattr__(principal, "kind", kind)
+        object.__setattr__(principal, "authz_version", authz_version)
+        object.__setattr__(principal, "scopes", validated_scopes)
+        object.__setattr__(
+            principal, "initiating_principal_id", initiating_principal_id
+        )
+        return principal
+
+
+def _validated_text(value: object, *, field_name: str, max_length: int) -> str:
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be an exact str")
+    if not value.strip():
+        raise ValueError(f"{field_name} must be non-empty and non-whitespace")
+    if len(value) > max_length:
+        raise ValueError(f"{field_name} exceeds maximum length {max_length}")
+    return value
+
+
+def _validated_scopes(scopes: object) -> frozenset[str]:
+    if isinstance(scopes, (str, bytes, Mapping)) or not isinstance(scopes, Iterable):
+        raise TypeError("scopes must be an iterable of strings, not text or a mapping")
+    return frozenset(
+        _validated_text(scope, field_name="scope", max_length=_MAX_SCOPE_LENGTH)
+        for scope in scopes
+    )
+
+
+def _bootstrap_principal_issuer() -> TrustedPrincipalIssuer:
+    """Create the capability for core bootstrap dependency injection only."""
+
+    return object.__new__(TrustedPrincipalIssuer)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +189,10 @@ class AuthorizedEnvelope:
     authz_version: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.principal, VerifiedPrincipal):
+            raise TypeError("envelope principal must be a VerifiedPrincipal")
+        if type(self.authz_version) is not int:
+            raise TypeError("envelope authz_version must be an exact int")
         if self.authz_version != self.principal.authz_version:
             raise ValueError("envelope authz_version must match its principal")
 
@@ -140,18 +250,16 @@ async def authorize_fail_closed(
     if permission not in known_permissions:
         return PermissionDecision.DENY
     try:
-        ready = await asyncio.wait_for(
-            provider.readiness(), timeout=timeout_seconds
-        )
-        if ready is not True:
+        ready = await _await_with_deadline(provider.readiness(), timeout_seconds)
+        if ready is _DEADLINE_EXPIRED or ready is not True:
             return PermissionDecision.DENY
-        decision = await asyncio.wait_for(
+        decision = await _await_with_deadline(
             provider.authorize(
                 principal=principal,
                 permission=permission,
                 resource=resource,
             ),
-            timeout=timeout_seconds,
+            timeout_seconds,
         )
     except Exception:
         return PermissionDecision.DENY
@@ -162,55 +270,39 @@ async def authorize_fail_closed(
     )
 
 
-def verified_user_principal(
-    *,
-    principal_id: str,
-    authz_version: int,
-    scopes: Iterable[str] = (),
-) -> VerifiedPrincipal:
-    """Create a verified user principal with a non-overridable USER kind."""
-
-    return VerifiedPrincipal._create(
-        principal_id=principal_id,
-        kind=PrincipalKind.USER,
-        authz_version=authz_version,
-        scopes=scopes,
-    )
+def _consume_task_result(task: asyncio.Future[Any]) -> None:
+    try:
+        task.result()
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
-def verified_service_principal(
-    *,
-    principal_id: str,
-    authz_version: int,
-    scopes: Iterable[str] = (),
-) -> VerifiedPrincipal:
-    """Create a verified service principal with a non-overridable SERVICE kind."""
+async def _await_with_deadline(
+    awaitable: Awaitable[_T], timeout_seconds: float
+) -> _T | _DeadlineExpired:
+    """Race an operation against a deadline without trusting cancellation."""
 
-    return VerifiedPrincipal._create(
-        principal_id=principal_id,
-        kind=PrincipalKind.SERVICE,
-        authz_version=authz_version,
-        scopes=scopes,
-    )
+    operation = asyncio.ensure_future(awaitable)
+    deadline = asyncio.create_task(asyncio.sleep(max(timeout_seconds, 0.0)))
+    try:
+        done, _pending = await asyncio.wait(
+            (operation, deadline), return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        operation.cancel()
+        deadline.cancel()
+        operation.add_done_callback(_consume_task_result)
+        deadline.add_done_callback(_consume_task_result)
+        raise
 
+    if deadline in done:
+        operation.cancel()
+        operation.add_done_callback(_consume_task_result)
+        return _DEADLINE_EXPIRED
 
-def attenuated_on_behalf_of_principal(
-    *,
-    parent: VerifiedPrincipal,
-    scopes: Iterable[str],
-) -> VerifiedPrincipal:
-    """Create a delegated user context whose scopes cannot exceed its parent."""
-
-    delegated_scopes = frozenset(scopes)
-    if not delegated_scopes.issubset(parent.scopes):
-        raise ValueError("on-behalf-of scopes must be a subset of parent scopes")
-    if parent.kind is PrincipalKind.SERVICE:
-        raise ValueError("service principals cannot create on-behalf-of user contexts")
-    initiating_principal_id = parent.initiating_principal_id or parent.principal_id
-    return VerifiedPrincipal._create(
-        principal_id=parent.principal_id,
-        kind=PrincipalKind.ON_BEHALF_OF,
-        authz_version=parent.authz_version,
-        scopes=delegated_scopes,
-        initiating_principal_id=initiating_principal_id,
-    )
+    deadline.cancel()
+    deadline.add_done_callback(_consume_task_result)
+    try:
+        return operation.result()
+    except asyncio.CancelledError:
+        return _DEADLINE_EXPIRED

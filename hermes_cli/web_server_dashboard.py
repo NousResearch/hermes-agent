@@ -970,8 +970,9 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         if target is None:
             return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
         host, dashboard_dir, api_file = target
-        from hermes_cli.web_server_plugin_profiles import run_hosted_request
-        query, headers = request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"]
+        from hermes_cli.web_server_plugin_profiles import _GATEWAY_CREDENTIAL_HEADERS, run_hosted_request
+        query = request.url.query
+        headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _GATEWAY_CREDENTIAL_HEADERS]
         body = await request.body()
         from hermes_cli.plugin_host_http_auth import hosted_admission
         authenticated, principal = hosted_admission(request)

@@ -234,3 +234,18 @@ def test_child_validates_what_arrives_and_tolerates_a_parent_that_sends_no_princ
             assert raw(authenticated=True, principal=value)["principal"] is None, value
     finally:
         host.shutdown()
+
+
+@pytest.mark.platforms("any")
+def test_gateway_credential_headers_never_reach_the_launch_profiles_host(daemon):
+    """The launch profile's hosted forward drops the same credential headers the secondary one does."""
+    secondary._install(daemon.launch, "launch-creds")
+    secondary._plugins(daemon.launch, enabled=["launch-creds"], isolation="host")
+    response = daemon.client.get("/api/plugins/launch-creds/ping", headers={
+        **daemon.owner, "Authorization": f"Bearer {BEARER}", "Cookie": "hermes_session_at=x", "X-Keep": "1"})
+
+    assert response.json() == {"hosted": True}
+    (call,) = daemon.calls
+    forbidden = {"x-hermes-gateway-ticket", web_server._SESSION_HEADER_NAME.lower(), "authorization", "cookie", "host"}
+    assert not call.headers & forbidden
+    assert "x-keep" in call.headers

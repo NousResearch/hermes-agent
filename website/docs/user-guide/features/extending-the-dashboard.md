@@ -764,7 +764,7 @@ delays only that profile's hosted plugin requests, and one with no answer after 
 
 In-process handlers can read the verified dashboard account from `request.state.session` when the
 dashboard runs with OAuth login. A handler served by the plugin host never receives the gateway's
-`Session` object. When the gateway admitted the
+`Session`, its tokens or the caller's `Authorization` / `Cookie` / gateway credential headers. When the gateway admitted the
 request as a verified account session, the host sets `request.state.verified_session_principal` to
 exactly `{"provider", "issuer", "org_id", "user_id"}` (all strings; `issuer` and `org_id` may be
 empty). It is absent for every other caller (Desktop's native ticket, the loopback session token,

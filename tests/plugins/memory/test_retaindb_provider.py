@@ -32,6 +32,73 @@ def test_write_queue_ignores_enqueue_after_shutdown(tmp_path):
     assert not queue._connections
 
 
+def test_second_queue_on_same_db_does_not_resend_rows_in_flight(tmp_path):
+    """A new provider's queue replays the shared db; rows another live writer holds are sent once."""
+    release, sent = retaindb.threading.Event(), []
+
+    class SlowClient:
+        def ingest_session(self, user_id, session_id, messages, timeout=15.0):
+            release.wait(10)
+            sent.append(messages[0]["content"])
+
+    db = tmp_path / "retaindb_queue.db"
+    first = retaindb._WriteQueue(SlowClient(), db)
+    for i in range(3):
+        first.enqueue("u", "s1", [{"role": "user", "content": f"turn-{i}"}])
+    second = retaindb._WriteQueue(SlowClient(), db)  # e.g. another gateway chat's agent initializing
+    release.set()
+    first.shutdown()
+    second.shutdown()
+
+    assert sorted(sent) == ["turn-0", "turn-1", "turn-2"]
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM pending").fetchone()[0] == 0
+
+
+def test_row_claimed_by_a_dead_writer_is_sent_once_its_lease_lapses(tmp_path, monkeypatch):
+    """A writer that died mid-ingest leaves a fresh claim; a replacement queue must not drop the
+    row for good but send it as soon as that claim lapses."""
+    monkeypatch.setattr(retaindb, "_CLAIM_LEASE_S", 0.3)
+    db = tmp_path / "retaindb_queue.db"
+    retaindb._WriteQueue(object(), db).shutdown()
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO pending (user_id, session_id, messages_json, created_at, claimed_at) "
+                 "VALUES ('u', 's', '[]', 'then', ?)", (retaindb.time.time(),))
+    conn.commit()
+    conn.close()
+    sent = retaindb.threading.Event()
+
+    class Client:
+        def ingest_session(self, user_id, session_id, messages, timeout=15.0):
+            sent.set()
+
+    replacement = retaindb._WriteQueue(Client(), db)
+    try:
+        assert sent.wait(5)
+    finally:
+        replacement.shutdown()
+
+
+def test_old_queue_db_whose_migration_fails_does_not_come_up(tmp_path, monkeypatch):
+    """Only a concurrent writer adding ``claimed_at`` first is a benign migration failure; any other
+    leaves a queue whose every claim fails, so it must surface instead."""
+    db = tmp_path / "retaindb_queue.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE pending (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, session_id TEXT, "
+                 "messages_json TEXT, created_at TEXT, last_error TEXT)")
+    conn.commit()
+    conn.close()
+    real_execute = retaindb._WriteQueue._execute
+
+    def execute(self, sql, params=()):
+        if sql.startswith("ALTER TABLE"):
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_execute(self, sql, params)
+
+    monkeypatch.setattr(retaindb._WriteQueue, "_execute", execute)
+    with pytest.raises(sqlite3.OperationalError):
+        retaindb._WriteQueue(object(), db)
+
+
 def test_prefetch_does_not_spawn_when_previous_batch_is_alive(monkeypatch):
     provider = RetainDBMemoryProvider()
     provider._client = object()

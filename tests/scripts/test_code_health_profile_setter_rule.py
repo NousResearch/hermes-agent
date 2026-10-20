@@ -28,6 +28,14 @@ def _hits(src: str) -> list[int]:
     ("from agent.runtime_scope import bind_profile_scope\nwith bind_profile_scope('/h'):\n    pass\n", False),
     ("def f(set_hermes_home_override):\n    set_hermes_home_override('/h')\n", False),
     ("from hermes_constants import reset_hermes_home_override\nreset_hermes_home_override(t)\n", False),
+    # relative imports inside the package: the AST cannot know the package, so a whole-component tail
+    ("from .secret_scope import set_secret_scope\nset_secret_scope({})\n", True),
+    ("from . import terminal_scope\nterminal_scope.install_profile_terminal_scope('/h')\n", True),
+    ("from .. import hermes_constants\nhermes_constants.set_hermes_home_override('/h')\n", True),
+    ("from .other_secret_scope import set_secret_scope\nset_secret_scope({})\n", False),
+    # a local object that merely shares the module's name is not the module
+    ("hermes_constants = Fake()\nhermes_constants.set_hermes_home_override('/h')\n", False),
+    ("def f(hermes_constants):\n    hermes_constants.set_hermes_home_override('/h')\n", False),
 ])
 def test_detects_direct_setter_calls(src, flagged):
     assert bool(_hits(src)) is flagged

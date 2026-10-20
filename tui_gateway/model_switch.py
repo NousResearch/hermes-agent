@@ -51,9 +51,9 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
-    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
-    return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True):
+    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) as one
+    change and return its token (``hermes_scope.StateToken``). The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
     ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
     source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
@@ -87,30 +87,15 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
         bound = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
                            env_overlay=launch_terminal_env() if multiplex else None,
                            home_override=multiplex, terminal=multiplex)
-    # bind_state released whatever it bound if a piece raised, so a raise here leaves nothing bound.
-    return _TurnScopes(scope=bound.scope, home=bound.home, secret=bound.secret, terminal=bound.terminal)
+    # bind_state computes every piece before installing any, so a raise here leaves nothing bound.
+    return bound
 
 
-def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
-    """Release terminal → secret → home → runtime scope. Each reset is independent: a failing terminal reset must
-    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
-    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
-    every scope has been released."""
-    if scopes is None:
-        return
-    from hermes_scope import reset_scope
-    from tools.terminal_scope import reset_terminal_scope
-    first_error: BaseException | None = None
-    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
-                         (scopes.home, reset_hermes_home_override), (scopes.scope, reset_scope)):
-        if token is None:
-            continue
-        try:
-            reset(token)
-        except Exception as exc:
-            first_error = first_error or exc
-    if first_error is not None:
-        raise first_error
+def _release_profile_runtime_scope_tokens(token) -> None:
+    """Undo ``_profile_runtime_scope_tokens``: home, secrets, terminal policy and runtime scope go
+    back together (one change), so no piece of the previous profile outlives the others."""
+    if token is not None:
+        token.reset()
 
 
 @contextlib.contextmanager

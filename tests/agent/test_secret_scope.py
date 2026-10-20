@@ -242,10 +242,9 @@ class TestScopeSetupRecovery:
         assert ss.current_secret_scope() is None
 
     def test_model_switch_bind_releases_partial_scopes_on_raise(self, monkeypatch, tmp_path):
-        """The scopes object never reaches the caller when the bind raises, so the
-        bind must release what it already bound (home override + secret scope).
-        Driven through ``server`` — the split module's functions run rebound on
-        server.py's globals (``bind_module``)."""
+        """The token never reaches the caller when the bind raises, so nothing may be left
+        bound (home override + secret scope). Driven through ``server`` — the split module's
+        functions run rebound on server.py's globals (``bind_module``)."""
         from tui_gateway import server
         from hermes_constants import get_hermes_home_override
 
@@ -255,7 +254,7 @@ class TestScopeSetupRecovery:
         def boom(home, env_overlay=None):
             raise RuntimeError("terminal policy unreadable")
 
-        monkeypatch.setattr("tools.terminal_scope.install_profile_terminal_scope", boom)
+        monkeypatch.setattr("tools.terminal_scope.profile_terminal_policy", boom)
         with pytest.raises(RuntimeError):
             server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
         assert get_hermes_home_override() is None

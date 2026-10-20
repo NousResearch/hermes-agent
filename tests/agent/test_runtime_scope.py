@@ -30,7 +30,12 @@ from hermes_scope import (
     TurnScope,
     current_scope,
 )
-from tools.terminal_scope import get_terminal_scope, install_profile_terminal_scope, reset_terminal_scope
+from tools.terminal_scope import (
+    get_terminal_scope,
+    install_profile_terminal_scope,
+    reset_terminal_scope,
+    set_terminal_scope,
+)
 
 
 def _profile(root: Path, name: str, backend: str) -> Path:
@@ -162,10 +167,125 @@ def test_legacy_setters_refuse_in_a_hosted_scope(two_profiles):
             with pytest.raises(ScopeSwitchRefused):
                 call()
         assert current_scope() == Scope("acme", "agent-7", Principal("u1"))
-        # Clearing the secret scope is not a switch.
-        reset_secret_scope(set_secret_scope(None))
 
 
 def test_hosted_scope_binds_no_directory_state():
     with bind_state(Scope("acme", "agent-7", Principal("u1"))):
         assert current_secret_scope() is None and get_terminal_scope() is None
+
+
+def test_a_local_bind_refuses_inside_a_hosted_scope(two_profiles):
+    _a, b = two_profiles
+    hosted = Scope("acme", "agent-7", Principal("u1"))
+    with bind_state(hosted):
+        with pytest.raises(ScopeSwitchRefused):
+            with bind_profile_scope(b):
+                pass
+        with pytest.raises(ScopeSwitchRefused):
+            bind_state(Scope("local", str(b), LOCAL_OWNER))
+        assert current_scope() == hosted and get_terminal_scope() is None
+
+
+# --- no public path splits a bound scope ---
+
+def test_a_raw_terminal_mapping_narrows_the_bound_scope_without_switching_it(two_profiles):
+    """A mapping names no profile: it narrows the bound scope's own policy (a session's frozen one),
+    and the scope keeps its home and secrets."""
+    a, _b = two_profiles
+    with bind_profile_scope(a):
+        token = set_terminal_scope({"TERMINAL_ENV": "ssh"})
+        assert _state() == (*_expect(a, "a", "local")[:3], "ssh")
+        assert current_scope() == Scope("local", str(a), LOCAL_OWNER)
+        reset_terminal_scope(token)
+        assert _state() == _expect(a, "a", "local")
+
+
+@pytest.mark.parametrize("clear", ["secrets", "terminal"])
+def test_clearing_one_piece_of_a_bound_scope_refuses(two_profiles, clear):
+    a, _b = two_profiles
+    with bind_profile_scope(a):
+        with pytest.raises(ScopeSwitchRefused):
+            set_secret_scope(None) if clear == "secrets" else set_terminal_scope(None)
+        assert _state() == _expect(a, "a", "local")
+
+
+def test_a_raw_terminal_mapping_refuses_inside_a_hosted_scope():
+    with bind_state(Scope("acme", "agent-7", Principal("u1"))):
+        with pytest.raises(ScopeSwitchRefused):
+            set_terminal_scope({"TERMINAL_ENV": "local"})
+        assert get_terminal_scope() is None
+
+
+# --- resets always land on a whole state ---
+
+def test_an_out_of_order_reset_keeps_the_later_whole_switch(two_profiles):
+    """Resetting an earlier same-profile token after a switch to B removes only that token's own
+    change: B's home, secrets and terminal policy stay together."""
+    a, b = two_profiles
+    with bind_profile_scope(a):
+        same = set_hermes_home_override(str(a))
+        other = set_hermes_home_override(str(b))
+        reset_hermes_home_override(same)
+        assert _state() == _expect(b, "b", "docker")
+        assert current_scope() == Scope("local", str(b), LOCAL_OWNER)
+        reset_hermes_home_override(other)
+        assert _state() == _expect(a, "a", "local")
+
+
+def test_resetting_an_outer_override_from_inside_a_scope_keeps_the_scope_whole(two_profiles):
+    """Removing an override set before the scope was bound drops only that override: the scope
+    bound on top of it stays bound, whole."""
+    a, b = two_profiles
+    before = _state()
+    outer = set_hermes_home_override(str(b))
+    with bind_profile_scope(a):
+        reset_hermes_home_override(outer)
+        assert _state() == _expect(a, "a", "local")
+    assert _state() == before
+
+
+def test_resetting_an_outer_bind_while_an_inner_one_is_bound_unwinds_both(two_profiles):
+    """The reviewer's resurrection case: resetting outer A while inner B is bound, then leaving B,
+    must not bring A back."""
+    a, b = two_profiles
+    before = _state()
+    outer = bind_state(Scope("local", str(a), LOCAL_OWNER), hydrate_secrets=False)
+    with bind_profile_scope(b):
+        outer.reset()
+        assert current_scope() is None and _state() == before
+    assert current_scope() is None and _state() == before
+
+
+def test_a_reset_in_a_copied_context_leaves_the_original_context_bound_and_releasable(two_profiles):
+    import contextvars
+    a, _b = two_profiles
+    before = _state()
+    token = bind_state(Scope("local", str(a), LOCAL_OWNER), hydrate_secrets=False)
+    contextvars.copy_context().run(token.reset)
+    assert _state() == _expect(a, "a", "local")  # the copy's reset changed only the copy
+    token.reset()
+    assert _state() == before and current_scope() is None
+
+
+def test_resets_are_idempotent(two_profiles):
+    a, _b = two_profiles
+    before = _state()
+    token = bind_state(Scope("local", str(a), LOCAL_OWNER), hydrate_secrets=False)
+    token.reset()
+    token.reset()
+    assert _state() == before
+
+
+def test_a_reset_cannot_leave_a_hosted_agent_from_inside_it(two_profiles):
+    """Inside a hosted activity, resetting the bind it was entered from would drop the hosted scope
+    (state made inside a scope goes with it); that refuses. Only the bind that entered it can."""
+    a, _b = two_profiles
+    local = bind_state(Scope("local", str(a), LOCAL_OWNER), hydrate_secrets=False)
+    hosted = Scope("acme", "agent-7", Principal("u1"))
+    with bind_state(hosted):
+        with pytest.raises(ScopeSwitchRefused):
+            local.reset()
+        assert current_scope() == hosted
+    assert current_scope() == Scope("local", str(a), LOCAL_OWNER)
+    local.reset()
+    assert current_scope() is None

@@ -14,6 +14,7 @@ import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
+import { enPluginUpdate } from './en_plugin_update'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -2158,13 +2159,7 @@ export const en: Translations = {
       pinnedProvenance: (sha: string) =>
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
-      updateToPin: (sha: string) => `Update to ${sha}`,
-      updateFailed: (name: string) => `Could not update ${name}`,
-      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
-      updateConsentTitle: (name: string) => `${name} asks for more`,
-      updateConsentBody: (name: string, sha: string) =>
-        `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
-      updateConsentConfirm: 'Apply update',
+      ...enPluginUpdate,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
       uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,

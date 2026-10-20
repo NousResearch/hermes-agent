@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -36,16 +35,18 @@ def _git_ignored(root: Path) -> frozenset[str]:
     """
     if not (root / ".git").exists():
         return frozenset()
+    # bounded_probe_run, not subprocess.run: on Windows run() waits without a bound for pipes
+    # that a git launcher's child still holds after the timeout, and this runs at every launch.
+    # surrogateescape keeps non-UTF-8 path bytes the same as os.fsdecode does.
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
-            cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=False)
-    except (OSError, subprocess.TimeoutExpired):
+    result = bounded_probe_run(
+        ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+        cwd=root, env=env, timeout=60, errors="surrogateescape")
+    if result is None or result.returncode != 0:
         return frozenset()
-    if result.returncode != 0:
-        return frozenset()
-    return frozenset(os.fsdecode(path).rstrip("/") for path in result.stdout.split(b"\0") if path)
+    return frozenset(path.rstrip("/") for path in result.stdout.split("\0") if path)
 
 
 def _member_filter(root: Path):

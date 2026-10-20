@@ -294,16 +294,22 @@ def test_git_ignored_member_files_are_not_build_inputs(tmp_path):
     )
     (plugin / ".gitignore").write_text("build/\nstate.json\n", encoding="utf-8")
     (plugin / "src" / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (plugin / "build").mkdir()
+    (plugin / "build" / "tracked.py").write_text("TRACKED = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=plugin, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-f", "build/tracked.py"], cwd=plugin, check=True, capture_output=True)
     stamp = workspace.members_stamp([plugin])
 
-    (plugin / "build" / "nested").mkdir(parents=True)
+    (plugin / "build" / "nested").mkdir()
     (plugin / "build" / "nested" / "out.js").write_text("built\n", encoding="utf-8")
     (plugin / "state.json").write_text("{}\n", encoding="utf-8")
     assert workspace.members_stamp([plugin]) == stamp
     member = workspace._workspace_member(plugin, tmp_path / "stage", identity=plugin)
-    assert (member / "src" / "core.py").is_file()
-    assert not (member / "build").exists() and not (member / "state.json").exists()
+    assert (member / "src" / "core.py").is_file() and (member / "build" / "tracked.py").is_file()
+    assert not (member / "build" / "nested").exists() and not (member / "state.json").exists()
 
+    (plugin / "build" / "tracked.py").write_text("TRACKED = 2\n", encoding="utf-8")
+    tracked = workspace.members_stamp([plugin])
+    assert tracked != stamp, "a tracked file stays an input even where an ignore rule matches it"
     (plugin / "src" / "new.py").write_text("VALUE = 2\n", encoding="utf-8")
-    assert workspace.members_stamp([plugin]) != stamp, "untracked, unignored source is still an input"
+    assert workspace.members_stamp([plugin]) != tracked, "untracked, unignored source is still an input"

@@ -140,6 +140,8 @@ let
           # must remain blocked.
           (final: prev: {
             hermes-agent = prev.hermes-agent.overrideAttrs (_old: {
+              # loadWorkspace reads the unfiltered root; build from the filtered source
+              src = pythonSrc;
               HERMES_NIX_BUILD = "1";
             });
           })
@@ -163,9 +165,8 @@ let
       editableOverlay
       (final: prev: {
         hermes-agent = prev.hermes-agent.overrideAttrs (old: {
-          # Re-bind build-time src to filtered pythonSrc; the rebuild-scope
-          # behavior is unchanged.
-          src = pythonSrc;
+          # point straight at the real source instead of the filtered nix store copy
+          src = workspaceRoot;
           nativeBuildInputs = old.nativeBuildInputs ++ final.resolveBuildSystem { editables = [ ]; };
         });
       })

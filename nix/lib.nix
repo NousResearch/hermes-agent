@@ -221,6 +221,8 @@ let
     # original semver overrides (EOVERRIDE). Drop them only from this offline
     # build manifest; the hook restores the repository manifest afterwards.
     package = builtins.removeAttrs rootPackageJson [ "overrides" ];
+    # read from the unfiltered root: npmDepsSrc is a derived path, invalid in read-only eval
+    inherit packageLock;
   };
 
   # Build a per-package npm source: workspace resolution files + the

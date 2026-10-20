@@ -73,9 +73,9 @@ def _uses_container_paths(task_id: str = "default") -> bool:
     try:
         from tools.terminal_tool import _is_container_backend
 
-        return _is_container_backend(env_type)
+        return env_type == "ssh" or _is_container_backend(env_type)
     except Exception:
-        return env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
+        return env_type == "ssh" or env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
 
 
 def container_backend_for_task(task_id: str = "default") -> str | None:
@@ -264,24 +264,33 @@ def _resolve_base_dir(
     return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path_for_task(
+    filepath: str, task_id: str = "default", backend_cwd: str | None = None
+) -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
     if _terminal_env_type_for_task(task_id) == "ssh":
         return _resolve_ssh_path(filepath, task_id)
     container_paths = _uses_container_paths(task_id)
-    return _anchor(_host_text(filepath, container_paths),
-                   lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+    text = _host_text(filepath, container_paths)
+    base = (
+        lambda: _normalize_without_host_deref(backend_cwd)
+        if backend_cwd
+        else _resolve_base_dir(task_id, container_paths=container_paths)
+    )
+    return _anchor(text, base, container_paths)
 
 
-def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_entry_for_task(
+    filepath: str, task_id: str = "default", backend_cwd: str | None = None
+) -> Path | PurePosixPath:
     """``_resolve_path_for_task`` for an operation on the directory entry itself (delete,
     rename): the parent is resolved, but a symlink in the last component is kept, since
     resolving it aims the operation at the file the link points to."""
     parent, name = split_entry(filepath)
     if name in ("", ".", "..") or (not parent and name.startswith("~")):
-        return _resolve_path_for_task(filepath, task_id)
-    return _resolve_path_for_task(parent or ".", task_id) / name
+        return _resolve_path_for_task(filepath, task_id, backend_cwd=backend_cwd)
+    return _resolve_path_for_task(parent or ".", task_id, backend_cwd=backend_cwd) / name
 
 
 

@@ -206,10 +206,12 @@ def notify_other_tool_call(task_id: str = "default"):
                     task_data[key].clear()
 
 
-def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+def _invalidate_dedup_for_path(
+    filepath: str, task_id: str, resolved_path: str | None = None
+) -> None:
     """Evict every dedup entry (all offset/limit ranges) and not-found entry for *filepath*
     after a write, so the next read returns fresh content. Acquires the lock itself."""
-    resolved = _resolved_or_none(filepath, task_id)
+    resolved = resolved_path or _resolved_or_none(filepath, task_id)
     if resolved is None:
         return
     with _read_tracker_lock:
@@ -224,15 +226,17 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         _pop_not_found("search", resolved, task_id)
 
 
-def _update_read_timestamp(filepath: str, task_id: str) -> None:
+def _update_read_timestamp(
+    filepath: str, task_id: str, resolved_path: str | None = None
+) -> None:
     """After a successful write: invalidate dedup and refresh the stored mtime so
     consecutive edits by the same task don't trigger false staleness warnings.
 
     Also invalidates the dedup cache for the written path so that subsequent reads return fresh content
     (fixes #13144).
     """
-    _invalidate_dedup_for_path(filepath, task_id)
-    resolved = _resolved_or_none(filepath, task_id)
+    _invalidate_dedup_for_path(filepath, task_id, resolved_path)
+    resolved = resolved_path or _resolved_or_none(filepath, task_id)
     if resolved is None:
         return
     try:
@@ -264,11 +268,18 @@ def _file_version(resolved: str) -> tuple | None:
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode):
                 return None
+            named_before = os.stat(resolved)
+            if (before.st_dev, before.st_ino) != (named_before.st_dev, named_before.st_ino):
+                return None
             digest = hashlib.file_digest(stream, "sha256").digest()
+            handle_after = os.fstat(stream.fileno())
             after = os.stat(resolved)
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        version = tuple(getattr(before, name) for name in fields)
-        if version == tuple(getattr(after, name) for name in fields):
+        # Windows may expose different ctime values through stat and fstat.
+        # Compare each source against itself while retaining path identity checks.
+        version = tuple(getattr(named_before, name) for name in fields)
+        handle_stable = all(getattr(before, name) == getattr(handle_after, name) for name in fields)
+        if handle_stable and version == tuple(getattr(after, name) for name in fields):
             return (*version, digest)
         return None
     except OSError:
@@ -379,10 +390,10 @@ def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: i
     return complete, entry["redacted"]
 
 
-def _read_mtime_drifted(filepath: str, task_id: str) -> bool:
+def _read_mtime_drifted(filepath: str, task_id: str, resolved_path: str | None = None) -> bool:
     """True when the file's mtime changed since this task last read it. False when
     never read, fresh, or unstattable (a deleted file is the write's problem)."""
-    resolved = _resolved_or_none(filepath, task_id)
+    resolved = resolved_path or _resolved_or_none(filepath, task_id)
     if resolved is None:
         return False
     with _read_tracker_lock:
@@ -396,9 +407,9 @@ def _read_mtime_drifted(filepath: str, task_id: str) -> bool:
         return False
 
 
-def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+def _check_file_staleness(filepath: str, task_id: str, resolved_path: str | None = None) -> str | None:
     """Warn (don't block) when the file's mtime changed since this task last read it."""
-    if _read_mtime_drifted(filepath, task_id):
+    if _read_mtime_drifted(filepath, task_id, resolved_path):
         return (
             f"Warning: {filepath} was modified since you last read it "
             "(external edit or concurrent agent). The content you read may be "

@@ -2897,10 +2897,25 @@ def _load_gateway_config(config_path: Path | None = None) -> dict:
 from gateway.session_worker_construct import checkpoint_agent_kwargs as _checkpoint_agent_kwargs
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
+def _resolve_gateway_model(config: dict | None = None, platform: str | None = None) -> str:
     """Read model from config.yaml (single source of truth), else temporary AIAgents (e.g. /compress)
-    use the hardcoded default, which fails under openai-codex."""
+    use the hardcoded default, which fails under openai-codex.
+
+    Opt-in: when ``platform`` is set and ``platform_models.<platform>`` names a model (bare string
+    or ``{default|model}``), that wins over ``model.default``. Callers that omit ``platform`` are
+    unchanged. Provider and credentials stay global, so the override must fit the active provider.
+    """
     cfg = config if config is not None else _load_gateway_config()
+    if platform:
+        platform_models = cfg.get("platform_models")
+        if isinstance(platform_models, dict):
+            override = platform_models.get(platform)
+            if isinstance(override, str) and override.strip():
+                return override.strip()
+            if isinstance(override, dict):
+                name = override.get("default") or override.get("model") or ""
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg

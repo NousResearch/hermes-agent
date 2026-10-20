@@ -12,6 +12,9 @@ class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None
 
+# Opt-in multi-profile credential fan-out mode (see EnvVarUpdate).
+PropagateMode = Literal["off", "dry_run", "apply"]
+
 class EnvVarUpdate(BaseModel):
     key: str
     value: str
@@ -22,6 +25,22 @@ class EnvVarUpdate(BaseModel):
     # Sent by the Desktop's provider-connection forms: a key a tool panel also asks for (Gemini,
     # xAI...) then still counts as a provider setup in shared metrics.
     provider_setup: bool = False
+    # Opt-in multi-profile fan-out for a ROTATED credential. Absent/"off" is byte-identical to
+    # the previous behaviour. "dry_run" writes nothing at all and returns the sibling profiles
+    # that still hold an older value ("pending" rows); "apply" performs the primary save AND
+    # updates those siblings, returning per-profile outcomes. A bare ``true`` means "apply".
+    propagate_to_profiles: PropagateMode = "off"
+
+    @field_validator("propagate_to_profiles", mode="before")
+    @classmethod
+    def _normalize_propagate(cls, value: Any) -> Any:
+        # Clients that treat the flag as a boolean must keep working: True is the explicit
+        # opt-in (apply), False/None is the default (off).
+        if value is True:
+            return "apply"
+        if value is False or value is None:
+            return "off"
+        return value
 
 class EnvVarDelete(BaseModel):
     key: str

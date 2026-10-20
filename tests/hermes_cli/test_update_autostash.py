@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as hermes_main, update_cmd
-from tests.hermes_cli.test_update_target_identity import git, update_tree
+from tests.hermes_cli.test_update_target_identity import git, intercept_update_commands, update_tree
 from datetime import UTC
 
 
@@ -36,8 +36,9 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
     monkeypatch.setattr(update_cmd, '_UPDATE_CRITICAL_MODULES', ())
     original = subprocess.run
     resets = []
+    refused = []
 
-    def fault(command, *args, **kwargs):
+    def fault(call, command, *args, **kwargs):
         if 'reset' in command and '--hard' in command:
             refs = original(['git', 'for-each-ref', '--format=%(objectname)',
                              'refs/hermes-update-backups/'], cwd=t.clone,
@@ -46,10 +47,11 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
             resets.append(command)
         if ((failure == 'ref' and 'update-ref' in command and '-d' not in command)
                 or (failure == 'reset' and 'reset' in command and '--hard' in command)):
+            refused.append(command)
             return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture I/O refusal')
-        return original(command, *args, **kwargs)
+        return call(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, 'run', fault)
+    intercept_update_commands(monkeypatch, fault)
     if failure == 'head':
         monkeypatch.setattr(update_cmd, '_capture_head_sha', lambda *_: None)
     if failure == 'reset':
@@ -65,6 +67,7 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
         assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
         assert (t.clone / 'untracked.txt').exists() is (not keep)
     assert len(resets) == 1
+    assert len(refused) == (1 if failure in {'ref', 'reset'} else 0)
     stashes = git(t.clone, 'stash', 'list')
     assert bool(stashes) is (keep or failure == 'reset')
     if stashes:

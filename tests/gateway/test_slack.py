@@ -4867,14 +4867,20 @@ class TestNativeTaskCardProgress:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "expiry_code",
+        ["message_not_in_streaming_state", "message_not_found"],
+        ids=["sealed", "reaped"],
+    )
     async def test_expired_stream_reopens_a_fresh_card_with_the_full_projection(
-        self, adapter
+        self, adapter, expiry_code
     ):
-        """Slack seals a native stream server-side after a few minutes of a long
-        turn; the next chat.appendStream fails with message_not_in_streaming_state.
-        The lane must not degrade to text: seal the dead stream, start a fresh
-        card in the same thread carrying the whole current task projection, and
-        report success so later updates continue on the new card."""
+        """Slack ends a native stream server-side after a few minutes of a long
+        turn; the next chat.appendStream fails with message_not_in_streaming_state
+        (sealed: the message survives) or message_not_found (reaped: Slack deleted
+        it). The lane must not degrade to text in either case: start a fresh card
+        in the same thread carrying the whole current task projection, and report
+        success so later updates continue on the new card."""
         client = adapter._app.client
         starts = 0
 
@@ -4884,7 +4890,7 @@ class TestNativeTaskCardProgress:
                 starts += 1
                 return {"ts": f"stream-{starts}"}
             if method == "chat.appendStream" and json["ts"] == "stream-1" and starts == 1 and json["chunks"][1]["status"] == "complete":
-                raise _StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+                raise _StreamExpiredError("expired", {"ok": False, "error": expiry_code})
             return {"ok": True}
 
         client.api_call.side_effect = api_call

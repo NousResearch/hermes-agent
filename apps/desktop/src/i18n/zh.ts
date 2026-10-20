@@ -3328,7 +3328,10 @@ export const zhOverrides = {
       '/platform': '暂停、恢复或列出故障的网关平台',
       '/version': '显示 Hermes Agent 版本',
       '/debug': '上传调试报告（系统信息与日志），并获取可分享链接',
-      '/model': '切换此会话的模型'
+      '/model': '切换此会话的模型',
+      // 桌面专有命令：英文原文在 desktop-slash-commands.ts 的 DESKTOP_COMMAND_SPECS 里，
+      // 这里补中文，让斜杠补全和 /help 也走中文。
+      '/skills': '查看待审批的技能写入与审批模式'
     },
     hotkeyDescs: {
       'composer.mention': '引用文件、文件夹、URL、git',

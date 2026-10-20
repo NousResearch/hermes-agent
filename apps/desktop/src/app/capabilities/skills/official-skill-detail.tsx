@@ -6,6 +6,7 @@ import { CountSkeleton } from '@/components/ui/skeleton'
 import { previewSkillHub, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
+import { skillCategoryLabel, skillDescription, skillDisplayName } from '@/lib/skill-localization'
 import type { OfficialSkillInfo } from '@/types/hermes'
 
 import { PanelPill } from '../../overlays/panel'
@@ -26,7 +27,7 @@ export function OfficialSkillDetail({
   profile?: ProfileScope
   skill: OfficialSkillInfo
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
   const previewQuery = useQuery({
     queryKey: ['official-skill-preview', skill.identifier, profileScopeKey(profile)],
@@ -43,14 +44,14 @@ export function OfficialSkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={skillDescription(skill.name, asText(skill.description), locale) || t.skills.noDescription}
         pills={
           <>
-            <PanelPill>{prettyName(skill.category)}</PanelPill>
+            <PanelPill>{prettyName(skillCategoryLabel(skill.category, locale))}</PanelPill>
             <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
           </>
         }
-        title={skill.name}
+        title={skillDisplayName(skill.name, locale)}
       />
       <div className="flex items-center gap-2">
         <Button disabled={installing} onClick={onInstall} size="xs" variant="textStrong">

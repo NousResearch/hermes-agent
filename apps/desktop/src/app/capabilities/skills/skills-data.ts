@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { getSkills, type ProfileScope, profileScopeKey } from '@/hermes'
+import { skillSearchText } from '@/lib/skill-localization'
 import { normalize } from '@/lib/text'
 import type { OfficialSkillInfo, SkillInfo } from '@/types/hermes'
 
@@ -32,7 +33,7 @@ export const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'nu
 export const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
 // Catalog rows have no usage yet — plain A–Z, with tags as searchable metadata.
-export function filteredOfficial(skills: OfficialSkillInfo[], query: string): OfficialSkillInfo[] {
+export function filteredOfficial(skills: OfficialSkillInfo[], query: string, locale = 'en'): OfficialSkillInfo[] {
   const q = normalize(query)
 
   return skills
@@ -42,20 +43,18 @@ export function filteredOfficial(skills: OfficialSkillInfo[], query: string): Of
         includesQuery(skill.name, q) ||
         includesQuery(skill.description, q) ||
         includesQuery(skill.category, q) ||
+        includesQuery(skillSearchText(skill, locale), q) ||
         skill.tags.some(tag => includesQuery(tag, q))
     )
     .sort((a, b) => asText(a.name).localeCompare(asText(b.name)))
 }
 
-export function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): SkillInfo[] {
+export function filteredSkills(skills: SkillInfo[], query: string, desc: boolean, locale = 'en'): SkillInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
 
   return skills
-    .filter(
-      skill =>
-        !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
-    )
+    .filter(skill => !q || includesQuery(skillSearchText(skill, locale), q))
     .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
 }
 

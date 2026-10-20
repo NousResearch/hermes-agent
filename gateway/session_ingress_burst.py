@@ -170,6 +170,31 @@ def _settle(burst, task):
         burst.done.set_result(None)
 
 
+def _undurable(adapter):
+    """Inputs the reader already returned on that are not committed yet: held bursts, burst commits
+    and busy inputs released before their commit (``session_ingress._hold_until_committed``)."""
+    pending = [burst.done for burst in adapter.__dict__.get('_shared_bursts', {}).values()]
+    pending += [*adapter.__dict__.get('_shared_burst_commits', {}).values(),
+                *adapter.__dict__.get('_uncommitted_inputs', ())]
+    return [future for future in pending if not future.done()]
+
+
+async def when_returned_inputs_durable(adapter, persist):
+    """Run ``persist()`` once every input a serial reader returned on is committed: a reader that
+    saves its own receive cursor after the call returns (Buzz) must not advance it past a held burst,
+    or a restart in the hold window loses it. Inline when nothing is pending; otherwise in a tracked
+    task, so the reader reads on (a lost cursor write only replays inputs admission already holds)."""
+    if not _undurable(adapter):
+        await persist()
+        return
+
+    async def later():
+        while pending := _undurable(adapter):
+            await asyncio.wait(pending)
+        await persist()
+    _track(adapter, asyncio.create_task(later()))
+
+
 def discard_busy_burst(adapter, session_key):
     """``/stop`` / ``/new`` drop a held burst as main dropped its debounce buffer; nothing was ACKed."""
     burst = adapter.__dict__.get('_shared_bursts', {}).pop(session_key, None)

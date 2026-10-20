@@ -68,6 +68,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
+from plugins.platforms.buzz.buzz_cursors import _SEEN_CAP, BuzzCursorMixin
 
 
 _CHAT_KIND = 9  # ``messages get`` also returns housekeeping kinds, never dispatched
@@ -96,9 +97,6 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
 
 
 _FETCH_LIMIT = 50  # events per poll / seed call
-_SEEN_CAP = 500  # per-channel de-dupe set bound (events)
-_CURSOR_STATE_SUBDIR = "buzz"  # per-channel cursors survive a restart under HERMES_HOME
-_CURSOR_STATE_FILENAME = "channel-cursors.json"
 _DM_DISCOVERY_EVERY = 5  # re-run DM discovery every N poll sweeps
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
@@ -510,11 +508,10 @@ _MEDIA_KIND_PRIORITY = (("image", MessageType.PHOTO), ("audio", MessageType.AUDI
 _ATTACHMENT_KIND_TYPES = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO, "document": MessageType.DOCUMENT}
 
 
-class BuzzAdapter(BasePlatformAdapter):
+class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
     """Buzz adapter (WebSocket push with poll fallback) for the BasePlatformAdapter interface."""
 
     serial_receive_loop = True  # WS listener and poll sweep both await each event batch before reading the next
-
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("buzz"))
         extra = getattr(config, "extra", {}) or {}
@@ -1234,67 +1231,6 @@ class BuzzAdapter(BasePlatformAdapter):
     def _new_channel_state(self, chat_type: str) -> dict:
         return {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
 
-    # ── Durable channel cursors ───────────────────────────────────────────
-
-    @staticmethod
-    def _cursor_path() -> Path:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / _CURSOR_STATE_SUBDIR / _CURSOR_STATE_FILENAME
-
-    def _load_cursors(self) -> None:
-        """Read persisted cursors; another identity/relay's file is ignored (ids collide), failures seed from history."""
-        self._restored_cursors = {}
-        try:
-            if not (path := self._cursor_path()).exists():
-                return
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            logger.debug("Buzz: could not read channel cursors", exc_info=True)
-            return
-        if not isinstance(data, dict) or data.get("identity") != self._self_pubkey or data.get("relay") != self.relay_url:
-            return
-        if not isinstance(channels := data.get("channels"), dict):
-            return
-        for channel_id, entry in channels.items():
-            if not isinstance(entry, dict):
-                continue
-            try:
-                last_ts = int(entry.get("last_ts") or 0)
-            except (TypeError, ValueError):
-                continue
-            raw_seen = entry.get("seen")
-            seen = [str(event_id) for event_id in raw_seen][-_SEEN_CAP:] if isinstance(raw_seen, list) else []
-            self._restored_cursors[str(channel_id)] = {"chat_type": str(entry.get("chat_type") or ""), "last_ts": last_ts, "seen": seen}
-
-    def _cursor_payload(self) -> dict:
-        """Snapshot of every watched channel's cursor (taken on the loop: ``_channel_state`` is loop-owned)."""
-        channels = {
-            channel_id: {
-                "chat_type": state.get("chat_type") or "group", "last_ts": int(state.get("last_ts") or 0),
-                "seen": list(state.get("seen") or ()),
-            }
-            for channel_id, state in self._channel_state.items()
-        }
-        return {"identity": self._self_pubkey, "relay": self.relay_url, "channels": channels}
-
-    def _save_cursors(self) -> None:
-        """Persist every watched channel's cursor.  Never raises."""
-        self._write_cursors(self._cursor_path(), self._cursor_payload())
-
-    @staticmethod
-    def _write_cursors(path: Path, payload: dict) -> None:
-        try:
-            from utils import atomic_json_write
-            atomic_json_write(path, payload, indent=None)
-        except Exception:
-            logger.debug("Buzz: could not persist channel cursors", exc_info=True)
-
-    @staticmethod
-    def _cursor_mark(state: dict) -> tuple:
-        """Cheap change detector for one channel's cursor."""
-        seen = state.get("seen") or ()
-        return int(state.get("last_ts") or 0), len(seen), (next(reversed(seen), None) if seen else None)
-
     def _restore_channel_state(self, channel_id: str, chat_type: str) -> bool:
         """Install a persisted cursor (True when one existed): seeding would mark downtime arrivals as seen.
 
@@ -1399,10 +1335,9 @@ class BuzzAdapter(BasePlatformAdapter):
         for event in events:
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
-        if self._cursor_mark(state) != before:
-            # The write fsyncs + renames, and on the WebSocket transport this runs once per inbound event.
-            async with self._cursor_write_lock:
-                await asyncio.to_thread(self._write_cursors, self._cursor_path(), self._cursor_payload())
+        if self._cursor_mark(state) != before:  # never past a busy input held uncommitted (serial reader)
+            from gateway.session_ingress_burst import when_returned_inputs_durable
+            await when_returned_inputs_durable(self, self._persist_cursors)
 
     @staticmethod
     def _parse_imeta_attachments(event: dict) -> tuple[list[dict], int]:

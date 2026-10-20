@@ -169,6 +169,24 @@ def add_conditional(ws, spec):
     ws.conditional_formatting.add(rng, rule)
 
 
+def validate_table_header(ws, rng):
+    min_col, min_row, max_col, _ = range_boundaries(rng)
+    if min_col is None or min_row is None or max_col is None:
+        raise ValueError(f"Invalid range for table: {rng}")
+    headers = []
+    for col in range(min_col, max_col + 1):
+        cell = ws.cell(row=min_row, column=col)
+        val = cell.value
+        if val is None or str(val).strip() == "":
+            col_letter = cell.column_letter
+            raise ValueError(f"Table header in cell {col_letter}{min_row} cannot be empty")
+        header_str = str(val).strip()
+        if header_str in headers:
+            raise ValueError(f"Duplicate table header column: '{header_str}' in range {rng}")
+        headers.append(header_str)
+    return headers
+
+
 def build_sheet(ws, spec):
     for row in spec.get("rows", []):
         values, styled = [], []
@@ -207,7 +225,9 @@ def build_sheet(ws, spec):
         dv.add(dv_spec["range"])
         ws.add_data_validation(dv)
     for t_spec in spec.get("tables", []):
-        table = Table(displayName=t_spec["name"], ref=t_spec["range"])
+        t_range = t_spec["range"]
+        validate_table_header(ws, t_range)
+        table = Table(displayName=t_spec["name"], ref=t_range)
         table.tableStyleInfo = TableStyleInfo(
             name=t_spec.get("style", "TableStyleMedium9"),
             showRowStripes=t_spec.get("row_stripes", True),

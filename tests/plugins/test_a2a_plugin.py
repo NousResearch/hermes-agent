@@ -1511,7 +1511,7 @@ class TestClientTenantAndDiscovery:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, _state = tools._send_task(
+        reply, _ctx, _state, _task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1"
         )
         assert reply == "ok"
@@ -1583,10 +1583,11 @@ class TestV1SpecRegressionFixes:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, state = tools._send_task(
+        reply, _ctx, state, task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1")
         assert reply == "ok"
         assert state == protocol.STATE_COMPLETED
+        assert task_id == "task-1"
         assert posted["body"]["method"] == "SendMessage"
         assert posted["body"]["params"]["tenant"] == "dev-team"
 

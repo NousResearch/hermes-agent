@@ -40,8 +40,14 @@ import type { BotMeta, RosterRow } from './types'
 const avatarFetchInflight = new Set<string>()
 const avatarPushInflight = new Set<string>()
 // Rows whose server avatar is only the plugin's own face raster: nothing to
-// paint, so the roster must not re-fetch it on every tick.
-const avatarFaceOnly = new Set<string>()
+// paint, so the roster must not re-fetch it on every tick. Keyed by the
+// server's `avatar_rev` so a later real upload is still picked up.
+const avatarFaceOnly = new Map<string, number | undefined>()
+// Server `avatar_rev` this window last painted per bot. A local image only
+// short-circuits the pull while the server still holds that same revision;
+// an avatar replaced elsewhere (another desktop, the CLI, an agent skill)
+// carries a new revision and is fetched once.
+const avatarRevPainted = new Map<string, number>()
 
 /** Asset RPC for a row of the ACTIVE source's roster (#102978, #99336, #102913). These rows
  *  came back from the active gateway's own `profiles.list`, which reads every
@@ -169,12 +175,18 @@ export function pullServerAvatars(roster: RosterRow[]) {
 
   for (const bot of roster) {
     const key = botMetaKey(bot)
+    const rev = typeof bot.avatar_rev === 'number' ? bot.avatar_rev : undefined
 
-    if (!bot.has_avatar || avatarFetchInflight.has(key) || avatarFaceOnly.has(key)) {
+    if (!bot.has_avatar || avatarFetchInflight.has(key)) {
       continue
     }
 
-    if ($botMeta.get()[key]?.image) {
+    if (avatarFaceOnly.has(key) && avatarFaceOnly.get(key) === rev) {
+      continue
+    }
+
+    // Older gateways send no `avatar_rev`: keep the original "local image wins" rule.
+    if ($botMeta.get()[key]?.image && (rev === undefined || avatarRevPainted.get(key) === rev)) {
       continue
     }
 
@@ -196,9 +208,13 @@ export function pullServerAvatars(roster: RosterRow[]) {
           // and remember the answer, or the empty image slot re-fetches the
           // same raster on every roster tick.
           if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
-            avatarFaceOnly.add(key)
+            avatarFaceOnly.set(key, rev)
 
             return
+          }
+
+          if (rev !== undefined) {
+            avatarRevPainted.set(key, rev)
           }
 
           $botMeta.set({
@@ -478,6 +494,7 @@ export async function deleteBot(bot: RosterRow) {
   rosterWatermarks.delete(botSelectionKey(bot))
   avatarFetchInflight.delete(botMetaKey(bot))
   avatarFaceOnly.delete(botMetaKey(bot))
+  avatarRevPainted.delete(botMetaKey(bot))
   avatarPushInflight.delete(botMetaKey(bot))
 
   if ($selectedBot.get() === botSelectionKey(bot)) {

@@ -63,7 +63,7 @@ def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool
     return own
 
 
-# Ledgers keyed by connection key (``tools.mcp_tool``); ``_server_scope_keys`` keeps its owner value.
+# Ledgers keyed by connection key (``tools.mcp_tool``).
 _KEYED_LEDGERS = (
     "_servers", "_server_scope_keys", "_server_tool_scopes", "_server_connect_errors",
     "_lazy_server_configs", "_lazy_server_fingerprints", "_lazy_server_tool_names",
@@ -77,6 +77,7 @@ def rekey_unscoped_connections(scope: str) -> None:
     """Move every bare-name connection under ``(scope, name)``. A single-profile process keys its
     connections by bare name; once it starts multiplexing, the launch profile's lookups resolve
     ``(launch scope, name)``, so without this its live servers read as disconnected until a restart."""
+    from tools.registry import registry
     with _core._lock:
         for attr in _KEYED_LEDGERS:
             ledger = getattr(_core, attr)
@@ -87,3 +88,15 @@ def rekey_unscoped_connections(scope: str) -> None:
             bare = {k for k in keys if isinstance(k, str)}
             keys.difference_update(bare)
             keys.update((scope, k) for k in bare)
+        # The owner and the tools follow the key: status, config pruning and /reload-mcp select by
+        # owner == scope, and teardown deregisters from the owner's overlay, not the global map.
+        tool_names = []
+        for key in [k for k, owner in _core._server_scope_keys.items() if owner is None and _key_scope(k) == scope]:
+            _core._server_scope_keys[key] = scope
+            tool_names += getattr(_core._servers.get(key), "_registered_tool_names", None) or ()
+        for key in [k for k in _core._lazy_server_tool_names if _key_scope(k) == scope]:
+            tool_names += _core._lazy_server_tool_names[key]
+        for key in set(_core._servers) | set(_core._lazy_server_tool_names):
+            if _key_scope(key) == scope:
+                _core._server_tool_scopes.setdefault(key, set()).add(scope)
+    registry.move_to_scope(tool_names, scope)

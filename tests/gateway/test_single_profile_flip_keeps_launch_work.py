@@ -117,7 +117,10 @@ async def test_default_profiles_mcp_connections_survive_the_flip(standalone_host
         with _profile_runtime_scope(home):           # the re-wired primary handler's scope
             assert check(), "default profile's live MCP server vanished after the flip"
     finally:
-        core._servers.pop(key, None)
+        for stale in (key, (hermes_constants.hermes_home_key(home), key)):
+            core._servers.pop(stale, None)
+            core._server_scope_keys.pop(stale, None)
+            core._server_tool_scopes.pop(stale, None)
 
 
 def test_default_cron_fire_and_kanban_tick_after_the_flip_keep_env_injected_credentials(standalone_host):
@@ -246,3 +249,59 @@ async def test_native_named_profile_turn_never_reads_the_launch_env(tmp_path, mo
     bot.mkdir(parents=True)
     seen = await _native_turn_across_activation(tmp_path, bot)
     assert seen[1] == "UnscopedSecretError", seen
+
+
+@pytest.mark.asyncio
+async def test_default_profiles_mcp_server_is_still_owned_after_the_flip(standalone_host):
+    """After the switch the default profile's live server reads connected, a config prune and
+    /reload-mcp (both select by owner) stop it, and its tools leave the registry."""
+    from tools import mcp_tool as core
+    from tools.mcp_tool_discovery import _adopt_server, get_mcp_status
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp_tool_registration import _register_server_tools
+    from tools.registry import registry
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import hermes_home_key
+    runner, home = standalone_host
+    cfg = {"url": "https://mcp.example/gh"}
+    closed = []
+
+    async def _shutdown():
+        closed.append("github")
+
+    tool = types.SimpleNamespace(name="t", description="d", inputSchema={"type": "object", "properties": {}},
+                                 annotations=None)
+    srv = types.SimpleNamespace(name="github", session=object(), _config=cfg, _tools=[tool], tool_timeout=30,
+                                initialize_result=None, _registered_tool_names=[], _sampling=None,
+                                _is_recycled_stdio=lambda: False, shutdown=_shutdown)
+    _adopt_server("github", srv)                    # single-profile discovery: bare key, owner None
+    srv._registered_tool_names = _register_server_tools("github", srv, cfg)
+    try:
+        _mkprofile(home, "daily-news-bot")
+        await runner.reconcile_served_profiles(reason="control-socket")
+        with _profile_runtime_scope(home):
+            from tools.mcp_tool import _mcp_registry_scope
+            scope = _mcp_registry_scope()
+            assert get_mcp_status({"github": cfg})[0]["status"] == "connected"
+            assert registry.get_entry("mcp__github__t") is not None
+            from tools import mcp_tool_loop as loop
+            loop._ensure_mcp_loop()
+            try:
+                shutdown_mcp_servers(scope=scope)   # /reload-mcp's teardown for this profile
+            finally:
+                loop._stop_mcp_loop()
+            srv_tools = list(srv._registered_tool_names)
+            from tools.mcp_tool_registration import _deregister_mcp_tool_all_scopes
+            for name in srv_tools:                  # the task's own _deregister_tools on shutdown
+                _deregister_mcp_tool_all_scopes(srv, name)
+        assert closed == ["github"], "the reload skipped the default profile's server"
+        assert (hermes_home_key(home), "github") not in core._servers
+        assert registry.get_entry("mcp__github__t", scope=hermes_home_key(home)) is None
+        assert "mcp__github__t" not in registry._tools
+    finally:
+        for key in [k for k in core._servers if (k[1] if isinstance(k, tuple) else k) == "github"]:
+            core._servers.pop(key, None)
+            core._server_scope_keys.pop(key, None)
+            core._server_tool_scopes.pop(key, None)
+        for slot in (None, hermes_home_key(home)):
+            registry.deregister("mcp__github__t", scope=slot)

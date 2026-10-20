@@ -16,6 +16,7 @@ import uuid
 from tools import approval_context as _ctx
 from tools.approval_detection import (
     _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
+from tools.approval_reasons import ApprovalReason
 
 logger = logging.getLogger("tools.approval")
 
@@ -44,7 +45,8 @@ def _match_user_deny_rule(command: str) -> str | None:
 
 def _user_deny_block_result(pattern: str) -> dict:
     """Build the standard block result for an ``approvals.deny`` match."""
-    return {"approved": False, "user_deny": True, "message": (
+    return {"approved": False, "user_deny": True,
+            "reason_code": ApprovalReason.USER_RULE_BLOCKED, "message": (
         f"BLOCKED: this command matches the user-defined deny rule "
         f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
         "executed via the agent — not even with --yolo, /yolo, or "
@@ -119,12 +121,13 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
                 "then run it: terminal(command=\"bash /path/script.sh\") or "
                 "\"python3 /path/script.py\". Do not retry inline."
             )
-    return {"approved": False, "hardline": True, "message": message}
+    return {"approved": False, "hardline": True,
+            "reason_code": ApprovalReason.HARDLINE_BLOCKED, "message": message}
 
 
 def _sudo_stdin_block_result(description: str) -> dict:
     """Build the standard block result for sudo stdin guard."""
-    return {"approved": False, "message": (
+    return {"approved": False, "reason_code": ApprovalReason.SUDO_STDIN_BLOCKED, "message": (
         f"BLOCKED: {description}. "
         "Do not pipe passwords to 'sudo -S' — this is a brute-force "
         "attack vector. Set SUDO_PASSWORD in your .env file if the "

@@ -43,7 +43,9 @@ async def _build_profile_authority(runner, name, home, *, register):
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = getattr(runner._session_db, '_db', runner._session_db)
-        if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        if db is None:
+            raise RuntimeError(_store_open_failure(runner, home))
+        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
         try:
@@ -54,6 +56,21 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise
     registry.replace(home, authority)
     return authority
+
+
+def _store_open_failure(runner, home):
+    """Why *home*'s ``state.db`` has no handle: the scoped handle caches answer None for a failed open
+    (and while they back off), so the park reason named an ownership mismatch over the real cause, a
+    legacy store that crashed its migration on every open (#141467). The reason is the exception the
+    failed open recorded; reopening here to learn it could create or migrate the store, and would skip
+    the caches' backoff."""
+    path = home / 'state.db'
+    caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
+              getattr(runner, '_session_db_handle_cache', None))
+    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    if error:
+        return f'{path} did not open: {error}'
+    return f'{path} is unavailable (its last open failed; retry pending)'
 
 
 def _park_reserved_profile(runner, name, home, exc):

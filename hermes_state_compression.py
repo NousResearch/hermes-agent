@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+    _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
+    is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -178,6 +179,8 @@ _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE
 # surface? One query, so a fully stamped chain is skipped without the per-hop validated walk below.
 # A parent that did not end by compression (a reset or branch source) is not a chain edge, so an
 # unset row behind one does not send every write down that walk.
+# CROSS JOIN keeps ``up`` the outer loop: without ANALYZE stats SQLite otherwise scans sessions
+# and probes ``up`` for each row, a full-table read on every stamped write.
 _UNSET_ANCESTOR_SQL = """
     WITH RECURSIVE up(pid, n) AS (
         SELECT parent_session_id, 1 FROM sessions WHERE id = ?
@@ -185,7 +188,7 @@ _UNSET_ANCESTOR_SQL = """
         SELECT s.parent_session_id, up.n + 1 FROM up JOIN sessions s ON s.id = up.pid
         WHERE s.end_reason = 'compression' AND s.created_source = ? AND up.n < ?
     )
-    SELECT 1 FROM up JOIN sessions s ON s.id = up.pid
+    SELECT 1 FROM up CROSS JOIN sessions s ON s.id = up.pid
     WHERE s.end_reason = 'compression' AND """ + _UNSET_CREATED_SQL.format(col="s.created_source") + """
     LIMIT 1
 """
@@ -220,6 +223,20 @@ def stamp_compression_ancestors(conn, session_id: str) -> None:
         if parent["created_source"] != surface:
             conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (surface, parent_id))
         current, parent_id = parent_id, parent["parent_session_id"]
+
+
+# Compression edges whose parent is unset and whose continuation child carries a real surface: what
+# a store from before write-time stamping still hides from ``sessions list --source``. A child
+# forked from that parent (branch, delegate or reset marker naming it) or a tool child is no
+# continuation (as in prune) and never matches. A stamped store, or one whose unset chains have no
+# stamped segment, answers with no rows after one scan of sessions. A stamped child the stamp walk
+# does not follow (a non-preferred sibling, or one with a fork marker inherited from an earlier row)
+# still matches; the walk stops at its first hop.
+_UNSTAMPED_EDGE_CHILD_SQL = f"""
+    SELECT child.id FROM sessions parent JOIN sessions child ON child.parent_session_id = parent.id
+    WHERE parent.end_reason = 'compression' AND {_UNSET_CREATED_SQL.format(col="parent.created_source")}
+      AND NOT {_UNSET_CREATED_SQL.format(col="child.created_source")}
+{_non_continuation_child_sql("child.", "parent.id")}"""
 
 
 class SessionCompressionMixin:
@@ -267,6 +284,20 @@ class SessionCompressionMixin:
                 "Session %s carried a stale %r end stamp while %s; cleared so the conversation can "
                 "compress and a later close is recorded (#106459)", session_id, reason, provenance)
         return reason
+
+    def stamp_legacy_compression_chains(self) -> int:
+        """Stamp the unset ancestors of chains compressed before write-time stamping from their
+        stamped segments, through ``stamp_compression_ancestors`` (same edge checks; a known value
+        is never replaced). One write transaction and idempotent, so the owner runs it on every
+        start: a store with nothing to repair pays one scan of sessions under the write lock, plus
+        a one-hop walk per stamped child of an unset compression parent that the walk does not
+        follow (a non-preferred sibling). Returns the rows stamped."""
+        def _do(conn):
+            before = conn.total_changes
+            for row in conn.execute(_UNSTAMPED_EDGE_CHILD_SQL).fetchall():
+                stamp_compression_ancestors(conn, row["id"])
+            return conn.total_changes - before
+        return self._execute_write(_do)
 
     def find_live_compression_child(self, parent_session_id: str) -> Optional[dict[str, Any]]:
         """The unique live direct child of a compression-ended session, else None. A stale

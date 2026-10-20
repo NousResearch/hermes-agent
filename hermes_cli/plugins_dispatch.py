@@ -676,7 +676,7 @@ class PluginDispatchMixin:
                 call_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key]),
                                original_key: _safe_copy(kwargs[original_key])}
             try:
-                ret = cb(**call_kwargs)
+                ret = cb(**self._hook_callback_kwargs(cb, call_kwargs))  # narrow signatures, as hooks
                 if ret is not None:
                     results.append(ret)
                     if _payload_key and isinstance(ret, dict) and isinstance(ret.get(_payload_key), dict):

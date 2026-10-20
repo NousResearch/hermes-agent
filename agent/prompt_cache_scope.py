@@ -37,10 +37,27 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
     return None
 
 
+def _tool_rotation_root(session_id: str, session_db: Any) -> str:
+    """Root of a ``--source tool`` run's compression chain. The lineage walk treats every ``tool`` row as a
+    fork, but rotation copies the parent's source onto its continuation, so climb only hops where both rows
+    are ``tool`` and the child is an unmarked continuation of a compression-ended parent. A ``tool`` fork of
+    another source's session keeps its own id."""
+    row, seen = session_db.get_session(session_id), {session_id}
+    while row and row.get("source") == "tool" and (parent_id := row.get("parent_session_id")) not in seen:
+        parent = session_db.get_session(parent_id) if parent_id else None
+        if not parent or parent.get("source") != "tool" or not session_db._is_compression_child_row(
+                {**row, "source": None}):
+            break
+        seen.add(parent_id)
+        row = parent
+    return row["id"] if row else session_id
+
+
 def conversation_id(agent: Any) -> str:
     """The id plugins key per-conversation state on: the compression-lineage root of ``agent.session_id``
-    (the cache scope's walk), so compression rotation keeps it while ``/new`` and ``/branch`` start a new
-    one. A delegated child or review fork reports its parent's, stamped at spawn. Memoized per physical id."""
+    (the cache scope's walk, plus ``--source tool`` rotations), so compression rotation keeps it while
+    ``/new`` and ``/branch`` start a new one. A delegated child or review fork reports its parent's, stamped
+    at spawn. Memoized per physical id."""
     inherited = getattr(agent, "_inherited_conversation_id", None)
     if isinstance(inherited, str) and inherited:
         return inherited
@@ -48,7 +65,13 @@ def conversation_id(agent: Any) -> str:
     memo = getattr(agent, "_conversation_id_memo", None)
     if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == sid:
         return memo[1]
-    root = _lineage_root(sid, getattr(agent, "_session_db", None)) if sid else None
+    db = getattr(agent, "_session_db", None)
+    root = _lineage_root(sid, db) if sid else None
+    if root == sid:
+        try:
+            root = _tool_rotation_root(sid, db)
+        except Exception:  # a worker store can neither read the parent row nor run the hop predicate
+            logger.debug("tool-source rotation walk failed", exc_info=True)
     if root is not None:
         agent._conversation_id_memo = (sid, root)
     return root or sid

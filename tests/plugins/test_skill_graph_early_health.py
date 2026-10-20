@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,95 @@ def _import_skill_graph():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _write_skill(root: Path, name: str, description: str = "Graph test skill") -> Path:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n",
+        encoding="utf-8",
+    )
+    return skill_path
+
+
+def _graph_connection(module, path: Path) -> sqlite3.Connection:
+    module._db_path = lambda: path
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA wal_autocheckpoint=400")
+    module._init_db(conn)
+    module._migrate_db(conn)
+    return conn
+
+
+def test_get_conn_configures_wal_autocheckpoint(tmp_path, monkeypatch):
+    module = _import_skill_graph()
+    db_path = tmp_path / "graph.db"
+    monkeypatch.setattr(module, "_db_path", lambda: db_path)
+
+    conn = module._get_conn()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+        assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 400
+    finally:
+        conn.close()
+
+
+def test_full_rebuild_checkpoints_after_embedding_rebuild(tmp_path, monkeypatch):
+    module = _import_skill_graph()
+    source_dir = tmp_path / "skills"
+    _write_skill(source_dir, "full-rebuild")
+    monkeypatch.setattr(module, "_find_all_skills_dirs", lambda: [source_dir])
+    events: list[str] = []
+    monkeypatch.setattr(module, "_rebuild_embeddings", lambda _conn: events.append("embeddings"), raising=False)
+    conn = _graph_connection(module, tmp_path / "full.db")
+    statements: list[str] = []
+    conn.set_trace_callback(lambda statement: statements.append(statement))
+
+    try:
+        assert module._full_rebuild(conn) == 1
+        checkpoint = "PRAGMA wal_checkpoint(TRUNCATE)"
+        assert "embeddings" in events
+        assert checkpoint in statements
+        assert events.index("embeddings") == 0
+        assert conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()[2] == 0
+    finally:
+        conn.close()
+
+
+def test_incremental_sync_checkpoints_after_embedding_rebuild(tmp_path, monkeypatch):
+    module = _import_skill_graph()
+    source_dir = tmp_path / "skills"
+    skill_path = _write_skill(source_dir, "incremental-sync")
+    monkeypatch.setattr(module, "_find_all_skills_dirs", lambda: [source_dir])
+    conn = _graph_connection(module, tmp_path / "incremental.db")
+    try:
+        module._full_rebuild(conn)
+        last_parsed = conn.execute(
+            "SELECT last_parsed FROM skill_nodes WHERE name = ?", ("incremental-sync",)
+        ).fetchone()[0]
+        skill_path.write_text(
+            "---\nname: incremental-sync\ndescription: Changed graph test skill\n---\n# Changed\n",
+            encoding="utf-8",
+        )
+        os.utime(skill_path, (last_parsed + 2, last_parsed + 2))
+        events: list[str] = []
+        monkeypatch.setattr(module, "_rebuild_embeddings", lambda _conn: events.append("embeddings"), raising=False)
+        statements: list[str] = []
+        conn.set_trace_callback(lambda statement: statements.append(statement))
+
+        assert module._incremental_sync(conn) == 1
+        assert "embeddings" in events
+        assert "PRAGMA wal_checkpoint(TRUNCATE)" in statements
+        assert events.index("embeddings") == 0
+        assert conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()[2] == 0
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])

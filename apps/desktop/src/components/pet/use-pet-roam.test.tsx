@@ -25,7 +25,13 @@ function installRaf() {
   return { cancel, request }
 }
 
-function RoamHarness({ isInteracting = () => false }: { isInteracting?: () => boolean }) {
+function RoamHarness({
+  isInteracting = () => false,
+  pauseWhenUnfocused
+}: {
+  isInteracting?: () => boolean
+  pauseWhenUnfocused?: boolean
+}) {
   const ref = useRef<HTMLDivElement | null>(null)
 
   usePetRoam({
@@ -35,6 +41,7 @@ function RoamHarness({ isInteracting = () => false }: { isInteracting?: () => bo
     isInteracting,
     loopMs: 1200,
     overlayOpen: false,
+    pauseWhenUnfocused,
     petH: 64,
     petW: 64
   })
@@ -98,14 +105,14 @@ describe('usePetRoam RAF scheduling', () => {
     expect(vi.getTimerCount()).toBe(1)
   })
 
-  it('keeps idle movement scheduled while unfocused and cleans up on unmount', () => {
+  it('pauses ordinary in-window roaming on blur and cleans up on unmount', () => {
     const raf = installRaf()
 
     mount.render(<RoamHarness />)
     expect(vi.getTimerCount()).toBe(1)
 
     act(() => window.dispatchEvent(new Event('blur')))
-    expect(vi.getTimerCount()).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
 
     act(() => window.dispatchEvent(new Event('focus')))
     expect(vi.getTimerCount()).toBe(1)
@@ -117,6 +124,26 @@ describe('usePetRoam RAF scheduling', () => {
       vi.advanceTimersByTime(2000)
       window.dispatchEvent(new Event('focus'))
     })
+    expect(raf.request).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps a non-focusable overlay roaming while unfocused', () => {
+    const raf = installRaf()
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+
+    mount.render(<RoamHarness pauseWhenUnfocused={false} />)
+    expect(vi.getTimerCount()).toBe(1)
+
+    act(() => window.dispatchEvent(new Event('blur')))
+    expect(vi.getTimerCount()).toBe(1)
+
+    windowState.emit({ isMinimized: true, isVisible: false })
+    expect(vi.getTimerCount()).toBe(0)
+    windowState.emit({ isMinimized: false, isVisible: true })
+    expect(vi.getTimerCount()).toBe(1)
+
+    mount.unmount()
     expect(raf.request).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })

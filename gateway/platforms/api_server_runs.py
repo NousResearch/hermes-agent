@@ -484,13 +484,16 @@ def _resolve_conversation_history(
 async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_error):
     """``_resolve_conversation_history`` with the chain's live session: a deleted chain moves to
     its next generation (an explicit body ``session_id`` still wins in the caller), and a store
-    that cannot answer is the retryable store verdict (``continued_session``)."""
+    that cannot answer is the retryable store verdict (``continued_session``). The last item is the
+    stored session the chain moved past (``walked_from``), else None."""
     from gateway.platforms.api_server_authority_runs import continued_session
-    history, instructions, stored_session_id, error = _resolve_conversation_history(
+    history, instructions, chain_root, error = _resolve_conversation_history(
         self, body, raw_input, _openai_error=_openai_error)
+    stored_session_id = chain_root
     if error is None:
-        stored_session_id, error = await continued_session(self, stored_session_id)
-    return history, instructions, stored_session_id, error
+        stored_session_id, error = await continued_session(self, chain_root)
+    return history, instructions, stored_session_id, error, (
+        chain_root if stored_session_id and stored_session_id != chain_root else None)
 
 
 def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> web.Response:
@@ -537,6 +540,7 @@ class _RunLaunch:
     browser_control_transport_family: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
+    walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
 
     @property
     def approval_session_key(self) -> str:
@@ -693,7 +697,7 @@ async def _admit_run_to_authority(
                 turn_author=launch.turn_author,
                 history_from_session=session_history_delivery,
                 session_history_delivery='1' if session_history_delivery else '',
-                bind_declared_conversation=_declared_selected,
+                bind_declared_conversation=_declared_selected, walked_from=launch.walked_from,
                 **launch.agent_kwargs)
     except Exception as exc:  # health: allow BLE001 -- answered below; a committed admission is kept
         # A storage failure after the admission committed (a later media-release write) still
@@ -746,7 +750,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
         return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
-    conversation_history, instructions, stored_session_id, history_err = await _resolve_chained_history(
+    conversation_history, instructions, stored_session_id, history_err, walked_from = await _resolve_chained_history(
         self, body, raw_input, _openai_error=_openai_error)
     if history_err is not None:
         return history_err
@@ -824,13 +828,14 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
     # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    _retarget_to_delivered_chat(self, launch, admitted)
     if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
         refused = await _admit_run_to_authority(
             self, launch, run_id, session_history_delivery, _declared_selected,
@@ -848,6 +853,15 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+
+
+def _retarget_to_delivered_chat(self, launch: _RunLaunch, admitted) -> None:
+    """The owner moved an API-held "Bot Chat" title aside and the turn landed in the local chat it
+    minted (MSG-21): the run record (and its idempotency replay) names that chat, not the old row."""
+    delivered = admitted[1].get("session_id") if admitted is not None else None
+    if delivered and delivered != launch.session_id:
+        launch.session_id = delivered
+        self._set_run_status(launch.run_id, "queued", session_id=delivered)
 
 
 def _run_usage(agent) -> dict[str, int]:

@@ -57,6 +57,7 @@ class SubagentMonitor:
         self.steer_draft = ''
         # ``cli_footer_tips.FooterTips`` while display.cli_footer_tips is on (install_dock).
         self.tips = None
+        self.detail = False  # the monitor's detail view is open (its tick fetches the gateway tail)
 
     @property
     def has_rows(self):
@@ -80,29 +81,27 @@ class SubagentMonitor:
         row = self.selected
         return row if row and row.get('kind') == 'process' else None
 
-    def _local_entries(self, now):
-        from tools.delegate_tool_registry import _list_payload, list_active_subagents
-        parent = getattr(self.cli, 'agent', None)
-        entries = _list_payload(parent)['subagents'] if parent is not None else []
-        # The scoped control-plane snapshot supplies authority and transcript paths;
-        # its matching public lifecycle record supplies the latest observed tool.
-        activity = {r['subagent_id']: r for r in list_active_subagents()} if entries else {}
-        for row in entries:
-            live = activity.get(row['subagent_id'], {})
-            row['elapsed'] = max(0, int(now - live.get('started_at', now)))
-            row['last_tool'] = live.get('last_tool') or ''
-            row['key'] = row['subagent_id']
-            row.pop('running_seconds', None)
-        return entries
+    def subagents(self):
+        """The subagent backend: the gateway session's view when its children run there (CLI-12),
+        else this process's own registry; both answer the same ``subagent_*`` calls."""
+        from hermes_cli.gateway_tools import LocalSubagents, process_view
+        view = process_view()
+        if view is not None:
+            return view
+        if getattr(self, '_local', None) is None:
+            self._local = LocalSubagents(self.cli)
+        return self._local
 
     def refresh(self, now=None):
-        from hermes_cli.gateway_tools import process_view
         now = time.time() if now is None else now
-        # A gateway-backed CLI runs its children in the gateway process, so the in-process
-        # registry is empty there: read the session's ``subagent.list`` snapshot instead.
-        view = process_view()
-        entries = view.subagent_rows(now) if view is not None else self._local_entries(now)
+        entries = self.subagents().subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
+        for row in entries:
+            row['elapsed'] = max(0, int(now - (row.get('started_at') or now)))
+            row['last_tool'] = row.get('last_tool') or ''
+            row['key'] = row['subagent_id']
+            row.pop('running_seconds', None)
         processes = procs.process_rows(now)
+        session_rows.sync_automation(self.cli)
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
@@ -135,6 +134,11 @@ class SubagentMonitor:
             # invalidate call, which reads the loop more than once.
             _run_on_app_loop(app, app.invalidate)
 
+    def poll_soon(self):
+        """Let the spinner thread's next tick poll the gateway, instead of the caller blocking the
+        UI loop on it."""
+        self._last_poll = 0
+
     def tick(self):
         now = time.monotonic()
         if now - self._last_poll < 1:
@@ -143,7 +147,7 @@ class SubagentMonitor:
         changed = self.refresh()
         if self.tips is not None and not self.has_rows and self.tips.due():
             changed = self.tips.rotate() or changed  # repaint only when the tip text changed
-        if changed:
+        if self._poll_tail() or changed:
             self.repaint()
 
     def repaint(self, *, now=False):
@@ -153,6 +157,16 @@ class SubagentMonitor:
             self.invalidate()
         elif callable(getattr(self.cli, '_invalidate', None)):
             self.cli._invalidate(min_interval=0) if now else self.cli._invalidate()
+
+    def _poll_tail(self):
+        """Off the render path (the spinner thread's tick): refresh the gateway tail the open detail
+        view paints from the cache. True when the text changed."""
+        row = self.selected
+        if not self.detail or row is None or row.get('kind') == 'process':
+            return False
+        backend = self.subagents()
+        before = backend.subagent_tail(row['subagent_id'])
+        return backend.subagent_tail(row['subagent_id'], fetch=True) != before
 
     def select(self, delta):
         roster = self.roster
@@ -170,12 +184,7 @@ class SubagentMonitor:
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
             return procs.kill(target)
-        from hermes_cli.gateway_tools import process_view
-        view = process_view()
-        if view is not None:
-            return view.control_subagent(action, target, message)
-        from tools.delegate_tool_registry import _handle_control_action
-        return json.loads(_handle_control_action(action, target, message, getattr(self.cli, 'agent', None)))
+        return self.subagents().subagent_control(action, target, message)
 
     def run_control(self, action, *, target, message=None, done):
         """``control`` on a worker thread: a gateway RPC (or a shell's shutdown grace) must never
@@ -248,41 +257,19 @@ def read_tail(path):
         return t('cli.subagents.transcript_unavailable')
 
 
+def subagent_tail(monitor, row):
+    """The child's transcript tail from the monitor's backend (the gateway's is fetched and filtered by
+    the monitor's tick, never here: the detail view calls this every frame)."""
+    text = monitor.subagents().subagent_tail(row['subagent_id'])
+    return t('cli.subagents.transcript_unavailable') if text is None else text
+
+
 def modal_prompt_active(cli):
+    """A prompt owns the composer (its text is an answer or a secret, never a chat message):
+    every composer shortcut stays off while one is open."""
     return any(getattr(cli, name, None) for name in (
         '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
-        '_secret_state', '_model_picker_state', '_command_palette_state'))
-
-
-def subagent_tail(row, cache, on_update=None):
-    """A child's transcript tail: its file in-process, ``subagent.tail`` when it runs in the gateway.
-    The RPC runs on a worker (at most one in flight, at most one a second) and this returns what the
-    last one fetched, so a slow gateway never stalls painting or Esc; ``on_update()`` fires when a
-    fetch lands."""
-    from agent.memory_provider import spawn_context_thread
-    from hermes_cli.gateway_tools import process_view
-    view = process_view()
-    if view is None or row.get('live_transcript'):
-        return read_tail(row.get('live_transcript'))
-    key, now = row['subagent_id'], time.monotonic()
-    if cache.get('key') != key:
-        cache.clear()
-        cache.update(key=key, at=0.0, text='', busy=False)
-    if not cache['busy'] and now - cache['at'] >= 1:
-        cache.update(busy=True, at=now)
-
-        def fetch():
-            text = None
-            try:
-                text = view.subagent_tail(key)  # answers None for a failed RPC
-            finally:
-                if cache.get('key') == key:
-                    cache.update(busy=False, text=''.join(c for c in text if c.isprintable() or c in '\n\t')
-                                 if text else t('cli.subagents.transcript_unavailable'))
-            if on_update is not None:
-                on_update()
-        spawn_context_thread(fetch, name='subagent-tail').start()
-    return cache['text']
+        '_secret_state', '_connection_state', '_model_picker_state', '_command_palette_state'))
 
 
 def build_monitor_application(monitor, *, detail_key=None, **kwargs):
@@ -296,8 +283,7 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.widgets import TextArea
 
-    state = {'detail': False, 'steering': False, 'confirm': False, 'notice': '', 'direct': False}
-    tail_cache = {}
+    state = {'steering': False, 'confirm': False, 'notice': '', 'direct': False}
     steer = TextArea(height=1, prompt=t('cli.subagents.steer_prompt'), multiline=False)
     tail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
 
@@ -334,7 +320,7 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
         elif row.get('kind') == 'process':
             text = procs.process_tail(row['id'])
         else:
-            text = subagent_tail(row, tail_cache, on_update=lambda: app.invalidate())
+            text = subagent_tail(monitor, row)
         if text != tail.text:
             following = tail.buffer.cursor_position == len(tail.text)
             position = tail.buffer.cursor_position
@@ -344,7 +330,7 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
     def header():
         row = monitor.selected
         title = f"{monitor._title()} · {monitor._counts(session=False)}"
-        if state['detail'] and row:
+        if monitor.detail and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
         return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
 
@@ -359,21 +345,28 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
             return t('cli.subagents.footer_steering_compact' if narrow else 'cli.subagents.footer_steering')
         steer = '' if process else t('cli.subagents.footer_steer_key')
         if narrow:
-            return (t('cli.subagents.footer_detail_compact', steer=steer) if state['detail']
+            return (t('cli.subagents.footer_detail_compact', steer=steer) if monitor.detail
                     else t('cli.subagents.footer_roster_compact'))
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
-        if state['detail']:
+        if monitor.detail:
             # Opened from the footer row: Esc goes back to the prompt, not to the roster.
             return t('cli.subagents.footer_detail_direct' if state['direct'] else 'cli.subagents.footer_detail',
                      steer=steer)
         return t('cli.subagents.footer_roster', steer=steer)
 
-    def show_result(result):
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+    def run_control(action, message, target):
+        """Steer/stop off the UI loop (``monitor.run_control``): a stalled gateway call (up to its
+        timeout) must not freeze the monitor's repaint, Esc or Ctrl+C. The answer lands in the
+        notice line when it arrives."""
+        state['notice'] = t('cli.subagents.control_pending')
+
+        def done(result):
+            state['notice'] = result.get('error') or result.get('note') or str(result)
+        monitor.run_control(action, target=target, message=message, done=done)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
-    listing = normal & Condition(lambda: not state['detail'])
+    listing = normal & Condition(lambda: not monitor.detail)
 
     @kb.add('up', filter=listing)
     def up(event):
@@ -386,7 +379,8 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
     @kb.add('enter', filter=listing)
     def detail(event):
         if monitor.selected:
-            state['detail'] = True
+            monitor.detail = True
+            monitor.poll_soon()  # the spinner thread's next tick fetches the tail
             update_tail()
             app.layout.focus(tail)
 
@@ -401,10 +395,10 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
     def send_steer(event):
         if not steer.text.strip():
             return
-        monitor.run_control('steer', target=state['target'], message=steer.text, done=show_result)
+        run_control('steer', steer.text, state['target'])
         steer.text = ''
         state['steering'] = False
-        app.layout.focus(tail if state['detail'] else roster)
+        app.layout.focus(tail if monitor.detail else roster)
 
     @kb.add('x', filter=normal)
     def stop(event):
@@ -414,16 +408,16 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        monitor.run_control('stop', target=state['target'], done=show_result)
+        run_control('stop', None, state['target'])
         state['confirm'] = False
 
     @kb.add('escape', eager=True)
     def back(event):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False
-            app.layout.focus(tail if state['detail'] else roster)
-        elif state['detail'] and not state['direct']:
-            state['detail'] = False
+            app.layout.focus(tail if monitor.detail else roster)
+        elif monitor.detail and not state['direct']:
+            monitor.detail = False
             app.layout.focus(roster)
         else:
             app.exit()
@@ -437,8 +431,8 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
 
     layout = Layout(HSplit([
         Window(FormattedTextControl(header), height=1),
-        ConditionalContainer(roster, filter=Condition(lambda: not state['detail'])),
-        ConditionalContainer(tail, filter=Condition(lambda: state['detail'])),
+        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail)),
+        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail)),
         ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
@@ -448,7 +442,7 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
         # first frame if a prompt won the race with in_terminal() acquisition.
         if modal_prompt_active(monitor.cli) and not app.is_done:
             app.exit()
-        elif state['detail']:
+        elif monitor.detail:
             update_tail()
 
     from prompt_toolkit.styles import Style
@@ -456,11 +450,12 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
     kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
     if detail_key is not None and any(monitor._key(r) == detail_key for r in monitor.roster):
         monitor.selected_id = detail_key
-        state['detail'] = state['direct'] = True
+        monitor.detail = state['direct'] = True
+        monitor.poll_soon()  # the spinner thread's next tick fetches the tail
         update_tail()
     app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
                       before_render=before_render, **kwargs)
-    if state['detail']:
+    if monitor.detail:
         app.layout.focus(tail)
     return app
 
@@ -477,12 +472,14 @@ def open_monitor(cli, key=None):
     async def run():
         try:
             async with in_terminal():
-                monitor.refresh()
+                # Paint the roster the dock's tick already holds; refreshing here would block the UI
+                # loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
+                monitor.poll_soon()
                 monitor.app = build_monitor_application(monitor, detail_key=key)
                 await monitor.app.run_async()
         finally:
             monitor.app = None
-            monitor.opening = False
+            monitor.detail = monitor.opening = False
             cli._invalidate()
 
     asyncio.get_running_loop().create_task(run())

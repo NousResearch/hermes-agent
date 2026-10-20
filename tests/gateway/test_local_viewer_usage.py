@@ -60,8 +60,15 @@ def test_each_api_step_publishes_usage_only_for_local_viewers(platform):
     turn._step_callback_sync(2, [])
     kinds = [kind for kind, _ in published]
     if platform == Platform.LOCAL:
-        usage = next(payload for kind, payload in published if kind == 'session.usage')
-        assert set(usage) == FIELDS and usage['api_calls'] == 2
+        from gateway.session_usage import usage_stats
+        from tui_gateway.contracts.registry import EVENTS
+        frame = next(payload for kind, payload in published if kind == 'session.usage')
+        # One frame, both views: the loose counters the classic CLI / TUI mirror reads, and the TUI
+        # view the Desktop status bar reads (without it its meters sit at the empty placeholder).
+        assert {key: value for key, value in frame.items() if key != 'usage'} == usage_stats(_agent())
+        assert frame['api_calls'] == 2
+        assert frame['usage']['calls'] == 2 and frame['usage']['avg_tps'] == 10.0
+        EVENTS['session.usage'].payload.model_validate(frame)
     else:
         assert 'session.usage' not in kinds
 
@@ -119,7 +126,53 @@ def test_local_viewer_turn_end_records_stats_for_the_completion():
         publish_usage(turn, _agent(), record=True)
     finally:
         execution_result.reset(token)
-    assert captured['session_usage'] == published[-1][1]
+    frame = published[-1][1]
+    # The captured stats stay the loose counters (``completion_payload`` maps them with
+    # ``tui_usage`` for ``message.complete``); only the published frame carries both views.
+    assert captured['session_usage'] == {key: value for key, value in frame.items() if key != 'usage'}
+    assert 'usage' in frame
+
+
+def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
+    """The Desktop status bar reads only ``payload.usage`` (``lib/statusbar.tsx``): a frame carrying
+    the session-cumulative counters alone leaves its context / cache-hit / tokens-per-second meters
+    at the empty placeholder for the whole turn, because the embedded backend's tick
+    (``server._start_usage_ticker``) is the only producer of the nested view."""
+    from gateway.session_usage import usage_frame, usage_stats
+    from tui_gateway.contracts.registry import EVENTS
+    frame = usage_frame(usage_stats(_agent()))
+    EVENTS['session.usage'].payload.model_validate(frame)
+    # The classic CLI / TUI mirror (``hermes_cli.gateway_agent.apply_session_usage``) reads these.
+    assert frame['tokens_per_s'] == 10.0 and frame['context_length'] == 128000
+    # The Desktop status bar reads these: context bar, cache-hit rate, throughput.
+    usage = frame['usage']
+    assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1
+    assert usage['avg_tps'] == 10.0 and usage['cache_hit_pct'] == 9 and usage['compressions'] == 1
+
+
+def _parity_agents():
+    yield pytest.param(_agent(), id='steady')
+    # A compressor that does not know its window yet: the ticker still reports its compactions.
+    unsized = _agent()
+    unsized.context_compressor.context_length = 0
+    yield pytest.param(unsized, id='unsized-compressor')
+    # Nothing measured yet: no context, cache, latency or throughput figures, never zeros.
+    yield pytest.param(SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
+                                       get_rate_limit_state=lambda: None), id='fresh')
+
+
+@pytest.mark.parametrize('agent', list(_parity_agents()))
+def test_published_usage_view_matches_the_embedded_ticker(agent):
+    """An older Desktop bundle reads only ``payload.usage`` off ``session.usage``, as the embedded
+    backend's ticker sends it (``{'usage': server._get_usage(agent)}``). The gateway frame's nested
+    view is that same object, computed from the same agent."""
+    from gateway.session_usage import publish_usage
+    from tui_gateway.server import _get_usage
+    published = []
+    publish_usage(_turn(Platform.LOCAL, published, agent), agent)
+    kind, frame = published[-1]
+    assert kind == 'session.usage'
+    assert frame['usage'] == _get_usage(agent)
 
 
 def test_turn_end_publishes_the_agents_banner_info():

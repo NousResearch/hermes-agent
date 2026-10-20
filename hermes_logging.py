@@ -476,6 +476,9 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         # so skip the write (the router re-routes the record) instead of a FileNotFoundError traceback.
         self._skip_write_when_dir_missing = False
         self.skipped_missing_dir = False
+        # Set by _ProfileRoutingFileHandler: once closed (router close, logging.shutdown, a released
+        # profile) never reopen. The stdlib reopens an append-mode file on emit after close.
+        self._never_reopen_after_close = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -530,6 +533,11 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
 
     def emit(self, record: logging.LogRecord) -> None:
         self.skipped_missing_dir = False
+        # Under this handler's own lock (Handler.handle), which close() also takes: a record that
+        # picked this handler before its router retired it is dropped, never written to a reopened
+        # file (on Windows that reopened file keeps the profile's logs/ locked until exit).
+        if self._never_reopen_after_close and getattr(self, "_closed", False):
+            return
         had_stream = self.stream is not None
         # The kernel caches inode metadata, so this stat is sub-microsecond on a hot file.
         file_exists = had_stream or os.path.exists(self.baseFilename)
@@ -649,6 +657,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self._backup_count = getattr(existing, "backupCount", 0)
         self._profile_handlers: dict[Path, _ManagedRotatingFileHandler] = {}
         self._profile_handlers_lock = threading.RLock()
+        self._router_closed = False  # under _profile_handlers_lock; close() is final
         # Home -> monotonic time of its last liveness check (see _PROFILE_LIVENESS_RECHECK_S).
         self._liveness_checked_at: dict[Path, float] = {}
         self.setFormatter(existing.formatter)
@@ -687,21 +696,51 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self.release_profile(home)
         return True
 
-    def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
+    def _handler_for_home(self, home: Path) -> Optional[_ManagedRotatingFileHandler]:
+        """The open handler for *home*; ``None`` once the router or that home is retired."""
         with self._profile_handlers_lock:
-            if home not in self._profile_handlers:
-                handler = _new_file_handler(
-                    home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
-                    backup_count=self._backup_count, formatter=self.formatter,
-                )
-                handler._skip_write_when_dir_missing = home != self._default_home
-                self._profile_handlers[home] = handler
-            return self._profile_handlers[home]
+            handler = self._profile_handlers.get(home)
+        if handler is not None:
+            return handler
+        # Built with no router lock held: ``Handler.__init__`` takes ``logging._lock``, and
+        # ``logging.shutdown`` (uvicorn's ``dictConfig``) holds that lock while it acquires each
+        # handler's lock and closes it (``close`` takes ``_profile_handlers_lock``). Holding
+        # either router lock here deadlocked the QueueListener against ``dictConfig`` (T23).
+        built = _new_file_handler(
+            home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
+            backup_count=self._backup_count, formatter=self.formatter,
+        )
+        built._skip_write_when_dir_missing = home != self._default_home
+        built._never_reopen_after_close = True
+        with self._profile_handlers_lock:
+            # Closed (logging.shutdown) or released while this was built: publishing now would leak
+            # the new handler's fd into a router nothing will close again.
+            retired = self._router_closed or (home != self._default_home and home not in self._profile_homes)
+            handler = None if retired else self._profile_handlers.setdefault(home, built)
+        if handler is not built:  # retired, or another thread opened it first
+            _quietly(built.close)
+        return handler
+
+    def handle(self, record: logging.LogRecord):
+        """``Handler.handle`` without this router's own I/O lock: each per-home handler takes its
+        own lock to write, and routing state has ``_profile_handlers_lock``. Holding ``self.lock``
+        across ``emit`` (which can open a handler, taking ``logging._lock``) inverted the order
+        ``logging.shutdown`` uses (module lock, then handler lock) (T23)."""
+        rv = self.filter(record)
+        if isinstance(rv, logging.LogRecord):
+            record = rv
+        if rv:
+            self.emit(record)
+        return rv
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             home = self._home_for_record(record)
             handler = self._handler_for_home(home)
+            if handler is None and home != self._default_home:  # released in flight
+                home, handler = self._default_home, self._handler_for_home(self._default_home)
+            if handler is None:  # the router is closed
+                return
             if home == self._default_home:
                 handler.handle(record)
                 return
@@ -718,12 +757,14 @@ class _ProfileRoutingFileHandler(logging.Handler):
             # default log either way (a live profile whose logs/ was removed by hand included).
             if handler.skipped_missing_dir:
                 self._release_if_deleted(home)
-                self._handler_for_home(self._default_home).handle(record)
+                if (fallback := self._handler_for_home(self._default_home)) is not None:
+                    fallback.handle(record)
         except Exception:
             self.handleError(record)
 
     def close(self) -> None:
         with self._profile_handlers_lock:
+            self._router_closed = True
             handlers = list(self._profile_handlers.values())
             self._profile_handlers.clear()
         for handler in handlers:

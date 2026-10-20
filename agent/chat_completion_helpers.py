@@ -702,6 +702,19 @@ def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     return timeout if explicit_env else cap_to_run_budget(agent, timeout)
 
 
+def _request_streams_gemini_thoughts(api_kwargs: dict) -> bool:
+    """True when the request asks Gemini to stream thought summaries (native ``thinking_config``
+    or the OpenAI-compat ``extra_body.google`` form). Such streams emit their first chunk early,
+    so a silent connection is dead long before the context-scaled stale timeout fires."""
+    extra = api_kwargs.get("extra_body") or {}
+    candidates = (
+        (extra.get("thinking_config") or {}).get("includeThoughts"),
+        (((extra.get("extra_body") or {}).get("google") or {}).get("thinking_config") or {}).get("include_thoughts"),
+        ((extra.get("google") or {}).get("thinking_config") or {}).get("include_thoughts"),
+    )
+    return any(value is True for value in candidates)
+
+
 def _bedrock_reasoning_stale_floor(model_id: object) -> float | None:
     """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
 
@@ -2724,6 +2737,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
+        # Pre-first-chunk deadline (<= the stale timeout); None until resolved.
+        self._first_chunk_stale_timeout = None
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
@@ -3828,7 +3843,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._stale_counted_attempts.add(attempt)
             _bump_stale_streak(self.agent)
 
-    def _kill_stale_stream(self, elapsed: float) -> None:
+    def _kill_stale_stream(self, elapsed: float, threshold: float | None = None) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
         client so the retry loop opens a fresh one. The shared client is never
         closed from this (stranger) thread — earlier stale-killed workers may
@@ -3837,7 +3852,8 @@ class _StreamingCall(StreamingWaitMonitor):
         _est_ctx = estimate_request_context_tokens(self.api_kwargs)
         logger.warning(
             "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
-            elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            elapsed, threshold if threshold is not None else self._stream_stale_timeout,
+            self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
         )
         self.agent._buffer_diagnostic_status(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
@@ -3895,8 +3911,26 @@ class _StreamingCall(StreamingWaitMonitor):
             self._stream_stale_timeout = _local_stream_stale_timeout_default()
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
-            return
-        self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
+        else:
+            self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
+        self._resolve_first_chunk_timeout()
+
+    def _resolve_first_chunk_timeout(self) -> None:
+        """Set ``_first_chunk_stale_timeout``, the stale threshold before the first chunk.
+        HERMES_STREAM_FIRST_CHUNK_TIMEOUT wins; otherwise a cloud Gemini request streaming
+        thoughts gets 90s (it emits early, so silence means a dead connection) unless the
+        operator pinned a stale timeout. Never exceeds the post-chunk stale timeout."""
+        stale = self._stream_stale_timeout
+        agent = self.agent
+        if "HERMES_STREAM_FIRST_CHUNK_TIMEOUT" in os.environ:
+            self._first_chunk_stale_timeout = min(env_float("HERMES_STREAM_FIRST_CHUNK_TIMEOUT", 90.0), stale)
+        elif (not (agent.base_url and is_local_endpoint(agent.base_url))
+              and get_provider_stale_timeout(agent.provider, agent.model) is None
+              and "HERMES_STREAM_STALE_TIMEOUT" not in os.environ
+              and _request_streams_gemini_thoughts(self.api_kwargs)):
+            self._first_chunk_stale_timeout = min(90.0, stale)
+        else:
+            self._first_chunk_stale_timeout = stale
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

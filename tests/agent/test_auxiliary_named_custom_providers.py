@@ -621,3 +621,9 @@ class TestAuxInheritsCustomProviderExtraBody:
         # A custom endpoint no entry describes gets nothing.
         stray = _build_call_kwargs("custom", "some-model", msgs, base_url="https://stray.example/v1")
         assert "user" not in (stray.get("extra_body") or {})
+
+def test_named_custom_api_key_ignores_unresolved_template(monkeypatch):
+    from agent.auxiliary_client import _named_custom_api_key
+
+    monkeypatch.setenv("OPENAI_API_KEY", "resolved-secret")
+    assert _named_custom_api_key({"api_key": "${OPENAI_API_KEY}"}, "cpa", "https://example.test") == "no-key-required"

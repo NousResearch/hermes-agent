@@ -28,58 +28,6 @@ export type PrimaryBackendStartupResult<RuntimeBackend, Connection, Attached = n
   | { kind: 'local'; backend: RuntimeBackend }
   | { kind: 'remote'; connection: Connection }
 
-interface ResolvedPrimaryRemote {
-  authMode?: 'oauth' | 'token'
-  baseUrl: string
-  connectionId?: string
-  headers?: Record<string, string>
-  remoteHermesVersion?: string
-  remoteHost?: string
-  remoteKind?: 'cloud' | 'ssh' | 'url'
-  source?: string
-  ssh?: {
-    effectiveConfigFingerprint?: string
-    host?: string
-    keyPath?: string
-    port?: number
-    remoteHermesPath?: string
-    remoteProfile?: string
-    user?: string
-  }
-  token: unknown
-  wsUrl: string
-}
-
-/**
- * Build the renderer-facing primary remote descriptor without dropping route
- * identity. Tests cross this same seam, so adding a field to the resolved
- * remote cannot silently disappear during primary startup.
- */
-export function createPrimaryRemoteConnection<State extends object>(
-  remote: ResolvedPrimaryRemote,
-  logs: string[],
-  windowState: State
-) {
-  return {
-    baseUrl: remote.baseUrl,
-    mode: 'remote' as const,
-    source: remote.source,
-    authMode: remote.authMode || 'token',
-    remoteHost: remote.remoteHost,
-    remoteKind: remote.remoteKind,
-    remoteHermesVersion: remote.remoteHermesVersion,
-    ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
-    ...(remote.ssh ? { ssh: remote.ssh } : {}),
-    // fetchJsonForBackend reads descriptor.headers for every REST call; the
-    // WebSocket header store is keyed by exact URL and cannot stand in for it.
-    headers: remote.headers,
-    token: remote.token,
-    wsUrl: remote.wsUrl,
-    logs,
-    ...windowState
-  }
-}
-
 export class FirstRunSetupResetError extends Error {
   readonly firstRunSetupReset = true
 

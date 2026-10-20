@@ -59,6 +59,25 @@ def hash_password(password: str) -> str:
     return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt_b64}${dk_b64}"
 
 
+def validate_password_hash(encoded: str) -> bool:
+    """Return whether ``encoded`` is a structurally valid Hermes scrypt password hash.
+
+    This is intentionally cheaper than password verification: it validates the persisted
+    credential before the provider is activated, so shell-mangled values fail loudly instead
+    of creating a dashboard credential that can never authenticate.
+    """
+    try:
+        scheme, n_s, r_s, p_s, salt_b64, dk_b64 = encoded.split("$")
+        n, r, p = int(n_s), int(r_s), int(p_s)
+        if scheme != "scrypt" or n <= 1 or n & (n - 1) or r <= 0 or p <= 0:
+            return False
+        salt = base64.b64decode(salt_b64, validate=True)
+        derived = base64.b64decode(dk_b64, validate=True)
+    except (ValueError, TypeError):
+        return False
+    return bool(salt) and bool(derived)
+
+
 def _verify_password(password: str, encoded: str) -> bool:
     """Constant-time scrypt verify. False on any malformed hash string."""
     try:
@@ -127,6 +146,11 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
             raise ValueError("username must be non-empty")
         if not password_hash:
             raise ValueError("password_hash must be non-empty")
+        if not validate_password_hash(password_hash):
+            raise ValueError(
+                "password_hash is malformed; expected "
+                "scrypt$n$r$p$<salt_b64>$<dk_b64>"
+            )
         if len(secret) < 16:
             raise ValueError("secret must be at least 16 bytes")
         self._username = username
@@ -246,6 +270,13 @@ def _settings() -> dict:
             "dashboard-auth-basic: hashed plaintext password in-memory. "
             "For production, precompute dashboard.basic_auth.password_hash "
             "and remove the plaintext password from config.")
+    if not validate_password_hash(password_hash):
+        raise SkipRegistration(
+            "dashboard.basic_auth.password_hash is malformed; expected "
+            "scrypt$n$r$p$<salt_b64>$<dk_b64>. If you generated the hash in a shell, "
+            "quote it so '$' characters are not expanded.",
+            level="warning",
+        )
     try:
         ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
     except ValueError:

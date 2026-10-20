@@ -53,7 +53,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
-| Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
+| Microsoft Teams | — | ✅ | — | ✅ | ✅ | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
 | Raft | — | — | — | — | — | — | — |

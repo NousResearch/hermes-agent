@@ -1,10 +1,9 @@
 /**
  * The curated Hermes plugin catalog as the Desktop sees it.
  *
- * The Capabilities → Plugins tab embeds the docs-site catalog page
- * (`CATALOG_PICKER_URL`) as a one-click picker; that page renders
  * `PLUGIN_CATALOG_URL` (`/docs/api/plugins.json`, generated from the repo's
- * `plugin-catalog/` directory at site build). A `hermes://plugin/install?catalog=<name>`
+ * `plugin-catalog/` directory at site build) is the catalog the Capabilities →
+ * Plugins card catalog browses. A `hermes://plugin/install?catalog=<name>`
  * deep link resolves against the SAME document so a link and an in-app pick
  * always agree on the repo, subdir and reviewed pin for a name.
  *
@@ -28,8 +27,10 @@ import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gatew
 import { $gatewayState } from '@/store/session'
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
-export const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
 export const PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
+export const PLUGIN_CATALOG_DOCS_URL = `${CATALOG_ORIGIN}/docs/user-guide/features/plugin-catalog`
+export const SKILLS_DOCS_URL = `${CATALOG_ORIGIN}/docs/skills/`
+export const SUBMIT_MOD_URL = 'https://github.com/NousResearch/hermes-agent/compare'
 
 /** Catalog names are directory names under `plugin-catalog/`; anything else is not a lookup key. */
 export const PLUGIN_CATALOG_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/

@@ -521,6 +521,7 @@ def test_client_resource_classification_is_bounded():
     assert client_install_method("Homebrew") == "homebrew"
     assert client_install_method("nix") == "nixos"
     assert client_install_method("apt") == "apt"
+    assert client_install_method("microsoft-store") == "microsoft-store"
 
     assert client_resource(
         "",
@@ -533,6 +534,19 @@ def test_client_resource_classification_is_bounded():
         architecture="unknown",
         install_method="unknown",
     )
+
+def test_microsoft_store_stamp_reports_its_own_install_method(tmp_path, monkeypatch):
+    """The Store build's stamp is the only place it is named; ``detect_install_method`` has no word for it."""
+    from hermes_cli.observability.shared_metrics_install import detect_client_install_method
+
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: tmp_path)
+    stamp = tmp_path / "install-stamp.json"
+    stamp.write_text(json.dumps({"updateMechanism": "microsoft-store"}), encoding="utf-8")
+    assert detect_client_install_method() == "microsoft-store"
+
+    stamp.write_text(json.dumps({"updateMechanism": "app-installer"}), encoding="utf-8")
+    assert detect_client_install_method() == "unknown"
+
 
 def test_package_schema_matches_the_client_resource_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))

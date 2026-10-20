@@ -243,6 +243,7 @@ def test_paste_prompt_asks_again_until_the_address_carries_a_code(pasting, idp):
                         lambda url: "?" + idp.landing_address(url).split("?", 1)[1]]  # the query part works too
     assert pkce.login(PROVIDER, _config(idp))["access_token"]
     assert len(pasting.prompts) == 3 and len(idp.token_requests) == 1
+    assert _listener_stopped(pasting.redirect_uri())
 
 
 def test_pasted_address_from_another_sign_in_is_refused_before_the_token_endpoint(pasting, idp):
@@ -251,6 +252,7 @@ def test_pasted_address_from_another_sign_in_is_refused_before_the_token_endpoin
     with pytest.raises(AuthError) as excinfo:
         pkce.login(PROVIDER, _config(idp))
     assert excinfo.value.code == "oauth_state_mismatch" and idp.token_requests == []
+    assert _listener_stopped(pasting.redirect_uri())
 
 
 def test_an_ssh_tunnel_still_completes_the_sign_in_on_an_empty_line(pasting, idp):
@@ -262,6 +264,34 @@ def test_an_ssh_tunnel_still_completes_the_sign_in_on_an_empty_line(pasting, idp
     pasting.answers.append(browser_through_the_tunnel)
     assert pkce.login(PROVIDER, _config(idp))["access_token"]
     assert [r["grant_type"] for r in idp.token_requests] == ["authorization_code"]
+    assert _listener_stopped(pasting.redirect_uri())
+
+
+def test_an_empty_line_waits_for_the_callback_the_loopback_is_still_writing(pasting, idp, monkeypatch):
+    """Enter lands while the loopback handler has stored the code but not yet the state: the sign-in must read
+    the finished callback, not a half-written copy."""
+    from hermes_cli import auth_device_flow
+
+    halfway, finish = threading.Event(), threading.Event()
+
+    class HeldQuery(dict):
+        def get(self, key, default=None):
+            if key == "state":  # the handler stores code, then state: hold it in between
+                halfway.set()
+                finish.wait(timeout=5)
+            return super().get(key, default)
+
+    monkeypatch.setattr(auth_device_flow, "parse_qs", lambda query: HeldQuery(parse_qs(query)))
+
+    def enter_while_the_callback_is_half_written(authorize_url: str) -> str:
+        threading.Thread(target=lambda: urlopen(authorize_url, timeout=10).close(), daemon=True).start()
+        assert halfway.wait(timeout=5)
+        threading.Timer(0.2, finish.set).start()  # the handler finishes after the prompt has returned
+        return ""
+
+    pasting.answers.append(enter_while_the_callback_is_half_written)
+    assert pkce.login(PROVIDER, _config(idp))["access_token"]
+    assert _listener_stopped(pasting.redirect_uri())
 
 
 def test_closed_input_at_the_paste_prompt_fails_and_frees_the_port(pasting, idp):
@@ -280,15 +310,18 @@ def test_ctrl_c_at_the_paste_prompt_cancels_and_frees_the_port(pasting, idp):
     assert "Login cancelled." in pasting.capsys.readouterr().out and _listener_stopped(pasting.redirect_uri())
 
 
-def test_a_pasted_refusal_ends_the_sign_in_as_denied(pasting, idp):
+@pytest.mark.parametrize("forged", [False, True], ids=["this-sign-in", "forged-state"])
+def test_a_pasted_refusal_ends_the_sign_in_as_denied(pasting, idp, forged):
+    """An address carrying ``error`` ends the sign-in as the loopback does; nothing is exchanged either way."""
     def refused(authorize_url: str) -> str:
-        state = parse_qs(urlparse(authorize_url).query)["state"][0]
+        state = "forged" if forged else parse_qs(urlparse(authorize_url).query)["state"][0]
         return "?" + urlencode({"error": "access_denied", "state": state})
 
     pasting.answers.append(refused)
     with pytest.raises(AuthError) as excinfo:
         pkce.login(PROVIDER, _config(idp))
     assert excinfo.value.code == "oauth_authorization_denied" and idp.token_requests == []
+    assert _listener_stopped(pasting.redirect_uri())
 
 
 @pytest.mark.parametrize("launch", [Mock(return_value=False), Mock(side_effect=OSError("no browser"))],
@@ -301,3 +334,37 @@ def test_a_browser_that_does_not_start_falls_back_to_pasting(pasting, idp, monke
     pasting.answers.append(idp.landing_address)
     assert pkce.login(PROVIDER, _config(idp))["access_token"]
     assert launch.call_count == 1 and pasting.prompts == ["Redirect address: "]
+    assert _listener_stopped(pasting.redirect_uri())
+
+
+_DENIED = {"code": None, "state": None, "error": "access_denied", "error_description": None}
+
+
+@pytest.mark.parametrize(("remote", "graphical", "open_browser", "opened", "asks"), [
+    (False, True, True, True, False),  # a desktop: the browser opens and the loopback answers
+    (False, True, False, None, False),  # --no-browser on a desktop: the user opens the URL on this machine
+    (False, True, True, False, True),  # a desktop browser that did not start
+    (False, False, True, None, True),  # no graphical browser on this machine
+    (True, True, True, True, True),  # SSH with X11 forwarding: it asks; Enter takes what the loopback received
+    (True, False, False, None, True),  # SSH, a cloud shell
+])
+def test_which_sign_ins_ask_for_the_address(idp, monkeypatch, remote, graphical, open_browser, opened, asks):
+    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: remote)
+    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: graphical)
+    launch = Mock(return_value=opened)
+    monkeypatch.setattr(pkce.webbrowser, "open", launch)
+    waited = []
+
+    def waiter(name):
+        def wait(server, *args, **kwargs):
+            waited.append(name)
+            server.server_close()
+            return dict(_DENIED)
+        return wait
+
+    monkeypatch.setattr(pkce, "_pasted_callback", waiter("paste"))
+    monkeypatch.setattr("hermes_cli.auth_device_flow._serve_loopback_callback", waiter("loopback"))
+    with pytest.raises(AuthError, match="access_denied"):
+        pkce.login(PROVIDER, _config(idp), open_browser=open_browser)
+    assert waited == (["paste"] if asks else ["loopback"])
+    assert launch.call_count == (1 if open_browser and graphical else 0)

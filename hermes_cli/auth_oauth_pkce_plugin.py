@@ -186,7 +186,8 @@ def _pasted_callback(server: Any, result: dict[str, Any], redirect_uri: str,
                 line = input("Redirect address: ").strip()
             except EOFError:
                 raise err("no redirect address was pasted.", "oauth_no_code") from None
-            callback = _redirect_params(line) if line else dict(result)
+            # The loopback's own dict, not a copy: shutdown() below waits for a handler still writing it.
+            callback = _redirect_params(line) if line else result
             if callback["code"] or callback["error"]:
                 return callback
             print("That address carries no authorization code; paste the whole address the browser ended on."
@@ -198,9 +199,10 @@ def _pasted_callback(server: Any, result: dict[str, Any], redirect_uri: str,
 
 
 def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> dict[str, Any]:
-    """Run the browser Authorization-Code + PKCE flow; returns the pool fields for the new grant. Where the
-    browser runs on another machine (SSH, a cloud shell, a headless server) or none starts here, the user
-    pastes back the address it ended on; elsewhere the loopback callback completes the flow on its own."""
+    """Run the browser Authorization-Code + PKCE flow; returns the pool fields for the new grant. In a remote
+    session (SSH, a cloud shell), without a graphical browser, or when opening one fails, the user pastes back
+    the address the browser ended on; otherwise the loopback callback completes the flow on its own, also with
+    ``open_browser=False``, where the user opens the URL on this machine."""
     from hermes_cli.auth_device_flow import (
         _bind_loopback_callback_server, _can_open_graphical_browser, _is_remote_session,
         _make_loopback_callback_handler, _pkce_code_challenge, _pkce_code_verifier, _serve_loopback_callback)
@@ -232,7 +234,7 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
             opened = bool(webbrowser.open(authorize_url))
         except Exception:
             print("Could not open the browser automatically; use the URL above.")
-    # The browser is on another machine, or none started here: the redirect has to come back by hand.
+    # A remote session, no graphical browser, or a launch that failed: the redirect has to come back by hand.
     paste = _is_remote_session() or not graphical or (open_browser and not opened)
     if not paste:
         print(f"Waiting for callback on {redirect_uri} (timeout {int(cfg.timeout_seconds)}s, Ctrl+C to cancel)...")

@@ -91,10 +91,11 @@ def test_other_bot_reaction_dropped():
     assert seen == []
 
 
-def test_missing_ids_drop():
-    a = _with_client(_adapter())
+@pytest.mark.parametrize("missing", ["user_id", "channel_id", "message_id"])
+def test_missing_ids_drop(missing):
+    a = _with_client(_adapter(), channel=SimpleNamespace(id=555))
     seen = _capture(a)
-    asyncio.run(a._on_platform_reaction_add(_payload(message_id=None)))
+    asyncio.run(a._on_platform_reaction_add(_payload(**{missing: None})))
     assert seen == []
 
 

@@ -26,7 +26,7 @@ def _like(value: str) -> str:
 
 
 def _cwd_prefix_filter(value: str) -> tuple[list[str], list]:
-    from hermes_state_sessions import _cwd_prefix_clause
+    from hermes_state_workspace_filters import _cwd_prefix_clause
     clause, params = _cwd_prefix_clause(value)
     return [clause], list(params)
 

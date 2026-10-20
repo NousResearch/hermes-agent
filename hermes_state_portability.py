@@ -287,15 +287,21 @@ class SessionPortabilityMixin:
                 run = cron_run_from_request(rows[0]["request_id"], rows[0]["policy_job"])
         return {"cron_job_id": run[0], "cron_execution_id": run[1]} if run else None
 
-    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[dict[str, Any]]:
+
+    def _get_session_rich_row(
+        self, session_id: str, compact_rows: bool = False, recall_scope: object = None,
+    ) -> Optional[dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
         ``compact_rows=True`` omits the ``system_prompt`` blob. Public alias:
         :meth:`get_session_rich_row` (web server hydration)."""
-        return self._get_session_rich_rows_batch([session_id], compact_rows=compact_rows).get(session_id)
+        return self._get_session_rich_rows_batch(
+            [session_id], compact_rows=compact_rows, recall_scope=recall_scope).get(session_id)
 
     get_session_rich_row = _get_session_rich_row
 
-    def _get_session_rich_rows_batch(self, session_ids, compact_rows: bool = False) -> dict[str, dict[str, Any]]:
+    def _get_session_rich_rows_batch(
+        self, session_ids, compact_rows: bool = False, recall_scope: object = None,
+    ) -> dict[str, dict[str, Any]]:
         """Enriched rows for many sessions in one query, keyed by id; missing ids are absent
         (a page of compression tips resolves in one round trip)."""
         ids = [sid for sid in session_ids if sid]
@@ -307,15 +313,23 @@ class SessionPortabilityMixin:
         if len(ids) > _CHUNK:
             result: dict[str, dict[str, Any]] = {}
             for start in range(0, len(ids), _CHUNK):
-                result.update(self._get_session_rich_rows_batch(ids[start:start + _CHUNK], compact_rows=compact_rows))
+                result.update(self._get_session_rich_rows_batch(
+                    ids[start:start + _CHUNK], compact_rows=compact_rows, recall_scope=recall_scope))
             return result
         # Same read-your-writes guarantee as list_sessions_rich.
         self.flush_token_counts()
+        scope_sql, scope_params = self._recall_scope_sql("s", recall_scope)
+        where = f"s.id IN ({','.join('?' for _ in ids)})"
+        if scope_sql:
+            where += f" AND {scope_sql}"
         query = _rich_select(
-            self._compact_session_cols() if compact_rows else "s.*", f"s.id IN ({','.join('?' for _ in ids)})",
+            self._compact_session_cols() if compact_rows else "s.*", where,
             prompt_select=None if compact_rows else f", {_PROMPT_RESOLVED_SQL}",
         )
-        return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
+        return {
+            s["id"]: s
+            for s in map(self._rich_row, self._read_rows(query, [*ids, *scope_params]))
+        }
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> list[dict[str, Any]]:
         """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway

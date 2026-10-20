@@ -50,7 +50,7 @@ _EXIT_REASON_PREFIX_EXPLANATIONS = tuple(
 )
 
 # ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full).
-_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk"})
+_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk", "io_error"})
 
 
 def _persistence_explanation_key(cause: Optional[str]) -> str:
@@ -263,7 +263,7 @@ class TurnExplainersMixin:
                 "home": display_hermes_home(), "profile_arg": profile_cli_selector(),
                 "recovery_docs": STORAGE_RECOVERY_DOCS_URL, "db_path": "", "backups_dir": "",
             }
-            if persistence_cause in ("corrupt", "fts_index"):
+            if persistence_cause in ("corrupt", "fts_index", "io_error"):
                 from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 

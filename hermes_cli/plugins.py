@@ -937,6 +937,12 @@ class PluginContext:
             "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
         )
 
+    def register_session_env(self, names, resolver: Callable[[str], Any]) -> PluginRegistration:
+        """Each session's tool subprocesses get ``resolver(session_id)``'s ``names``, resolved at spawn."""
+        from hermes_cli.plugins_session_env import register_session_env
+        release = register_session_env(self._manager.scope_key, names, resolver)
+        return self._track("session_env", getattr(resolver, "__qualname__", "resolver"), release)
+
     def _track_callback(
         self, kind: str, key: str, callback: Callable, mapping: dict[str, list[Callable]],
         valid: set[str],
@@ -1854,14 +1860,8 @@ def get_portable_mcp_server_names_nowait() -> set[str]:
 
 def _delivery_manager() -> PluginManager:
     """Active manager, lazily discovering if it never ran — delivery must not depend on WHICH
-    surface imported us (dashboards/TUI/cron never import model_tools). ``getattr`` default
-    ``True`` leaves test doubles untouched.
-
-    Hook/middleware delivery must not depend on WHICH surface imported us: dashboards, TUI slash workers,
-    query mode, and cron delivery paths never import ``model_tools`` (whose import side-effect is the
-    discovery trigger on the interactive CLI path), so hooks registered by user plugins were silently dead
-    on those surfaces (#50776, #67597, #67890, #50937; tracking #64178 — salvaged from PR #64188).
-    """
+    surface imported us (dashboards/TUI/cron never import model_tools: #50776, #64178).
+    ``getattr`` default ``True`` leaves test doubles untouched."""
     manager = get_plugin_manager()
     if not getattr(manager, "_discovered", True):
         _join_background_discovery()

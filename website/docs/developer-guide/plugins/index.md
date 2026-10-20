@@ -1644,6 +1644,29 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 - Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
 - Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
 
+### Give each session's commands its own environment variables
+
+Tools run in the process that serves the session. With the shared gateway, that is the gateway daemon, so a variable from the terminal or pane that shows a conversation is not in the environment of the commands the agent runs. `ctx.register_session_env(names, resolver)` closes that gap without a change to the commands:
+
+```python
+def pane_env(session_id):
+    pane = find_pane_showing(session_id)  # your plugin's own lookup
+    if pane is None:
+        return {}  # the commands keep the gateway's own values
+    return {"MY_PANE": pane.id, "MY_PANE_SOCKET": pane.socket or None}
+
+def register(ctx):
+    ctx.register_session_env(["MY_PANE", "MY_PANE_SOCKET"], pane_env)
+```
+
+- Hermes calls `resolver(session_id)` each time it starts a local process for a session: a foreground or background `terminal` command, a `terminal()` call from `execute_code`, and the other subprocesses that get the session's `HERMES_SESSION_*` variables. The value is read at that moment, so a change (the conversation moves to another pane) applies to the next command.
+- `session_id` is the session the process runs for. A subagent's commands get the subagent's id; map it to its parent session in your resolver when the parent's values must apply.
+- Return a map of declared names to strings. A value of `None` removes the name from the process environment. A name you leave out keeps the gateway's own value. Names you did not declare are ignored.
+- The declared names are never saved in the shared shell snapshot, so one session's value cannot reach a later command of another session, and an `export` of one of these names does not carry to the next command.
+- Names must be valid environment variable names. `HERMES_*` names are refused (they belong to core). Provider and Hermes credential names that the subprocess scrub removes are also removed from your values.
+- A resolver that raises is logged and contributes nothing; the command still runs. Keep it fast and local: it runs on every spawn.
+- Values apply on the local terminal backend only. Remote backends (Docker, SSH, Modal and other sandboxes) do not receive them.
+
 ### Register CLI commands
 
 Plugins can add their own `hermes <plugin>` subcommand tree:

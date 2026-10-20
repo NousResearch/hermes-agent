@@ -34,7 +34,12 @@ def is_transient(exc: Exception) -> bool:
     if isinstance(exc, (ssl.SSLEOFError, ssl.SSLZeroReturnError)):
         return True
     if isinstance(exc, ssl.SSLError):
-        return False
+        # A TLS exchange that timed out or was interrupted is the same flaky path a dropped
+        # connection is: a proxy that stalls mid-handshake raises "The handshake operation
+        # timed out", which is a bare SSLError and used to be classified permanent, so the
+        # download died on a transient network fault instead of retrying.
+        reason = str(exc.args[0] if exc.args else "").lower()
+        return "timed out" in reason or "timeout" in reason
     if isinstance(exc, socket.gaierror):
         return exc.errno == socket.EAI_AGAIN
     if isinstance(exc, (TimeoutError, ConnectionError, http.client.IncompleteRead)):

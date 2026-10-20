@@ -192,6 +192,28 @@ def test_unchanged_route_keeps_the_profile_credential_for_that_endpoint(monkeypa
         assert {r['auth'] for r in legacy.requests} == {'Bearer sk-profile-only'}
 
 
+@pytest.mark.parametrize('source', ['cli', 'tui', 'oneshot'])
+def test_billing_only_custom_endpoint_the_profile_moved_off_resumes_on_the_profile_route(monkeypatch, source):
+    """T21/F1: a pre-upgrade row whose only route is the ``billing_provider='custom'`` +
+    ``billing_base_url`` usage stamp, at an endpoint no configured entry serves any more (the server
+    moved; config.yaml now points elsewhere). The pre-merge resume ignored that bare ``custom`` stamp
+    and used the profile route; adoption must too, instead of freezing the dead endpoint into the
+    policy, where every turn retries until it gives up."""
+    with FakeLLMServer([Text('profile')], api_key='sk-profile-only') as profile, \
+            FakeLLMServer([Text('stale')]) as old:
+        home = Path(os.environ['HERMES_HOME'])
+        monkeypatch.setattr('gateway.run._hermes_home', home)
+        _write_profile(home, profile.base_url)  # no entry serves the old endpoint
+        policy, (model, runtime) = _adopt_and_resolve(home, {}, source=source, billing={
+            'billing_provider': 'custom', 'billing_base_url': old.base_url})
+        result = _run_turn(policy, model, runtime)
+        assert old.requests == []
+        assert result['final_response'] == 'profile'
+        assert runtime['base_url'].rstrip('/') == profile.base_url.rstrip('/')
+        assert {r['auth'] for r in profile.requests} == {'Bearer sk-profile-only'}
+        assert old.base_url not in policy.config_json
+
+
 @pytest.mark.parametrize('shape', ['desktop-custom', 'auto-base-url', 'stored-api-key', 'cli-billing-auto'])
 def test_v0_21_19_row_shapes_go_to_their_own_endpoint_with_its_own_key(monkeypatch, shape):
     """v0.21.19 row shapes beyond the TUI/CLI ones: a Desktop chat (tui_gateway with ``source='desktop'``,

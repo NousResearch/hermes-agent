@@ -3,7 +3,15 @@ import json
 import time
 from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
 
+# This store's own retired session (its profile is the store's). Written as ``own`` since the
+# shared routing index also carries other profiles' fences; a marker without ``own`` predates
+# that and still fences every route in the index.
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
+# A multiplexed secondary's retired session, in the routing index every served profile shares
+# (the launch home's state.db): ``<prefix><namespace>:<id>``, keyed by the ``agent:<namespace>:``
+# slot of that profile's routing keys. Only routing saves read it, so the launch profile's own
+# creates, binds and generation walks never see another profile's retirement.
+ROUTE_FENCE_PREFIX = 'gateway.retired_route.v1.'
 # A last viewer's close stored until the owner's idle point (gateway/session_viewer_close).
 VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
@@ -46,6 +54,22 @@ def first_generation(db, derive, *, pinned=None, spent=None):
             generation += 1
 
 
+def keep_passed_fences(conn, derive, session_id):
+    """Make permanent the fences a walk (``derive`` as for :func:`first_generation`) passed on its
+    way to *session_id*, inside the write that binds *session_id*: that successor now holds the
+    conversation, so a sweep marker aging out would send a later walk back to the passed
+    generation. False when a passed generation has lost its marker since the walk (a sweep's was
+    reclaimed): a walk now stops there, so *session_id* must not be bound as its successor."""
+    generation = 0
+    while (sid := derive(generation)) != session_id:
+        if not conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone():
+            return False
+        conn.execute("UPDATE state_meta SET value=json_remove(value, '$.expires') WHERE key=? AND json_valid(value)",
+                     (RETIRED_PREFIX + sid,))
+        generation += 1
+    return True
+
+
 def has_mutation_receipt(db, principal_id, session_id, request_id):
     for value in (principal_id, session_id, request_id):
         _text(value)
@@ -62,15 +86,15 @@ def _compact_result(conn, admission_id):
     """A retired result keeps the exact-retry outcome (final response, flags, usage/accounting)
     but not the transcript copies a turn result carries (cumulative ``messages``, reasoning, the
     settled ``_turn_user_row``)."""
-    from hermes_state_terminal import RESULT_PREFIX
+    from hermes_state_terminal import RESULT_PREFIX, encode_result, load_result
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()
     if saved is None:
         return
-    value = json.loads(saved[0])
+    value = load_result(saved[0])
     result = value.get('result')
     if isinstance(result, dict):
         value['result'] = {**{k: v for k, v in result.items() if k not in _TRANSCRIPT_FIELDS}, 'messages': []}
-    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(value), RESULT_PREFIX + admission_id))
+    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(encode_result(value)), RESULT_PREFIX + admission_id))
 
 
 def retire_terminal_receipts(conn, session_ids):
@@ -170,9 +194,13 @@ def retire_mutation_receipts(conn, session_ids):
 # Creation ids of the local conversations a gateway door derives and walks by generation
 # (``first_generation``): Bot Chat and A2A contexts.
 _DERIVED_LOCAL_PREFIXES = ('bot-chat:', 'a2a:')
-# Stored sources of the API sessions whose ids a door derives: the header-less chat and a
-# Responses/Runs chain (``api_server``) and a hosted-room member (``bot_room``).
-_DERIVED_SOURCES = ('api_server', 'bot_room')
+# The API sessions whose ids a door derives: a hosted-room member (``bot_room``), and the
+# ``api-<16 hex>`` ids of a header-less chat (``_derive_chat_session_id``) and of a deleted chat's or
+# Responses/Runs chain's next generation (``implicit_api_session``). A caller-named ``api_server`` id
+# (``POST /api/sessions``, ``X-Hermes-Session-Id``) is never derived. Matched on the id, not on a
+# binding-receipt field, so it also holds for rows an older release bound. Any id can root a
+# Responses/Runs chain: its fence becomes permanent once a chain moves past it (``keep_passed_fences``).
+_DERIVED_API_SQL = ("(source='bot_room' OR (source='api_server' AND id GLOB 'api-" + '[0-9a-f]' * 16 + "'))")
 
 
 def _local_conversations(conn):
@@ -199,10 +227,10 @@ def _local_conversations(conn):
 
 
 def _derived_api_sessions(conn, session_ids):
-    """The ids among *session_ids* whose stored source is a derived API session's."""
+    """The ids among *session_ids* of derived API sessions (``_DERIVED_API_SQL``)."""
     return {row[0] for row in conn.execute(
-        f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(_DERIVED_SOURCES))}) "
-        "AND id IN (SELECT value FROM json_each(?))", (*_DERIVED_SOURCES, json.dumps(list(session_ids))))}
+        f"SELECT id FROM sessions WHERE {_DERIVED_API_SQL} AND id IN (SELECT value FROM json_each(?))",
+        (json.dumps(list(session_ids)),))}
 
 
 def retire_prunable(conn, session_ids):
@@ -214,10 +242,11 @@ def retire_prunable(conn, session_ids):
 
     A sweep's markers age out at the retry horizon: housekeeping retires thousands of ids a pass
     (cron), and a permanent marker each would grow ``state_meta`` without bound. A derived id's
-    stays (Bot Chat, A2A context, header-less chat, Responses chain, hosted-room member): its
-    conversation resumes on the next generation, and the generation walk stops at the first
-    unfenced id, so an aged-out marker would send the next turn back to the swept generation. A
-    Bot Chat's mailbox receipts also outlive the horizon."""
+    stays (Bot Chat, A2A context, header-less chat, a chain's next generation, hosted-room
+    member): its conversation resumes on the next generation, and the generation walk stops at the
+    first unfenced id, so an aged-out marker would send the next turn back to the swept generation.
+    A Bot Chat's mailbox receipts also outlive the horizon. A caller-named API id is not derived:
+    its marker ages out, so the caller can use that id again, as for any other swept session."""
     swept, (conversations, derived) = set(session_ids), _local_conversations(conn)
 
     def removable(sid):
@@ -254,20 +283,31 @@ def entry_session_id(raw):
     return value.get('session_id') if isinstance(value, dict) else None
 
 
-def retire_routes(conn, session_ids, *, expiring=()):
-    # OR REPLACE: the marker is a fact, not a receipt; re-retiring an id that was recreated
+def _mark_retired(conn, key, *, expires, **fields):
+    # Replace: the marker is a fact, not a receipt; re-retiring an id that was recreated
     # beside its tombstone must not abort the delete that removes it again (and restarts its horizon).
-    # An ``expiring`` (sweep) marker ages out at the horizon and never shortens a permanent one.
+    # An ``expires`` (sweep) marker ages out at the horizon and never shortens a permanent one.
+    # A permanent marker without ``own`` (an earlier release's, maybe another profile's shared
+    # fence) stays unscoped: it is the only fence of that profile's route. An earlier release's
+    # sweep marker came only from this store's own sweep, so it is replaced as written.
+    value = {'retired_at': time.time(), **fields}
+    if expires:
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE '
+                     "SET value=excluded.value WHERE json_valid(state_meta.value) "
+                     "AND json_extract(state_meta.value, '$.expires')",
+                     (key, json.dumps({**value, 'expires': True})))
+    else:
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=CASE '
+                     "WHEN NOT json_valid(state_meta.value) THEN json_remove(excluded.value, '$.own') "
+                     "WHEN json_extract(state_meta.value, '$.own') IS NOT NULL "
+                     "OR json_extract(state_meta.value, '$.expires') THEN excluded.value "
+                     "ELSE json_remove(excluded.value, '$.own') END", (key, json.dumps(value)))
+
+
+def retire_routes(conn, session_ids, *, expiring=()):
     expiring = set(expiring)
     for sid in session_ids:
-        if sid in expiring:
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE '
-                         "SET value=excluded.value WHERE json_valid(state_meta.value) "
-                         "AND json_extract(state_meta.value, '$.expires')",
-                         (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time(), 'expires': True})))
-        else:
-            conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
-                         (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
+        _mark_retired(conn, RETIRED_PREFIX + sid, expires=sid in expiring, own=True)
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)
@@ -277,14 +317,102 @@ def retire_routes(conn, session_ids, *, expiring=()):
                          (row['scope'], row['session_key']))
 
 
+def route_namespace(session_key):
+    """The ``<ns>`` slot of an ``agent:<ns>:...`` routing key (``main`` for the launch profile, else
+    the profile's ``_session_key_namespace`` slot); ``main`` for a key outside that shape."""
+    parts = str(session_key or '').split(':')
+    return parts[1] if len(parts) > 2 and parts[0] == 'agent' and parts[1] else 'main'
+
+
+def route_fence_key(namespace, session_id):
+    return f'{ROUTE_FENCE_PREFIX}{namespace}:{session_id}'
+
+
+# True when a routing save must skip an entry, checked only against the profile the route belongs
+# to: this store's own marker for a launch (``main``) route, that profile's fence for a secondary's.
+# A launch-keyed route to an id this store holds no session of can only name another profile's
+# session, so a secondary's fence covers it too (``fence_shared_routes``). A sweep's fence stops
+# fencing at the horizon by itself: only the owner's own store sweeps the owner's marker, and nothing
+# guarantees the launch profile ever sweeps this one. A delete's fence (no ``expires``) never does:
+# its age test is NULL, which ``coalesce`` reads as not expired. An unscoped marker (no ``own``: an
+# earlier release's, written for either) still fences every route. So does a marker or fence that is
+# not valid JSON (no writer stores one): ``json_extract`` raises ``malformed JSON`` on it even behind
+# ``json_valid(...) AND``, so each JSON read sits in a ``CASE WHEN json_valid(...)`` branch.
+# Bound by name (``route_retired_params``): :entry is the route's JSON, :ns its key's
+# ``route_namespace``, :now the save's time.
+ROUTE_RETIRED_SQL = """(
+    EXISTS (SELECT 1 FROM state_meta m
+             WHERE m.key = :retired_prefix || json_extract(:entry, '$.session_id')
+               AND (:ns = 'main' OR NOT CASE WHEN json_valid(m.value)
+                                             THEN json_extract(m.value, '$.own') IS NOT NULL ELSE 0 END))
+    OR EXISTS (SELECT 1 FROM state_meta f
+                WHERE f.key = :fence_prefix || :ns || ':' || json_extract(:entry, '$.session_id')
+                  AND NOT CASE WHEN json_valid(f.value)
+                               THEN coalesce(json_extract(f.value, '$.expires')
+                                             AND json_extract(f.value, '$.retired_at') < :now - :horizon, 0)
+                               ELSE 0 END
+                  AND (:ns != 'main' OR NOT EXISTS (
+                          SELECT 1 FROM sessions s WHERE s.id = json_extract(:entry, '$.session_id')))))"""
+
+
+def route_retired_params(session_key, entry_json, now):
+    """The named parameters of ``ROUTE_RETIRED_SQL`` for one routing entry saved at *now*."""
+    return {'entry': entry_json, 'ns': route_namespace(session_key), 'now': now, 'horizon': RETRY_HORIZON_S,
+            'retired_prefix': RETIRED_PREFIX, 'fence_prefix': ROUTE_FENCE_PREFIX}
+
+
+def route_retired(db, session_key, entry_json):
+    """A routing save (or the legacy sessions.json import) must skip this entry."""
+    with db._read_ctx() as conn:
+        return bool(conn.execute('SELECT ' + ROUTE_RETIRED_SQL,
+                                 route_retired_params(session_key, entry_json, time.time())).fetchone()[0])
+
+
+def expiring_retirements(db, session_ids):
+    """The ids among *session_ids* whose own marker in *db* is a sweep's (ages out at the horizon)."""
+    with db._read_ctx() as conn:
+        return {key[len(RETIRED_PREFIX):] for (key,) in conn.execute(
+            "SELECT key FROM state_meta WHERE key IN (SELECT ? || value FROM json_each(?)) "
+            "AND json_valid(value) AND json_extract(value, '$.expires')",
+            (RETIRED_PREFIX, json.dumps(list(session_ids))))}
+
+
+def fence_shared_routes(conn, namespace, session_ids, *, expiring=()):
+    """In the shared routing index (*conn*), fence the routes of *session_ids*, retired in the
+    profile whose routing keys use *namespace*, and drop them. The fence is keyed by (profile, id)
+    and copies the owner's marker: permanent for a delete, aging out with an *expiring* sweep's.
+    Unless this store holds a session of that id, the launch (``main``) namespace is fenced too: a
+    launch-keyed route to it names the retired session. The sweep fences that aged out here are
+    reclaimed in the same write, so the owner's prunes bound them without the launch profile's sweep."""
+    _reclaim_expired(conn, ROUTE_FENCE_PREFIX, time.time() - RETRY_HORIZON_S)
+    expiring, owned = set(expiring), {}
+    for sid in session_ids:
+        names = {namespace}
+        if not conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone():
+            names.add('main')
+        for name in names:
+            _mark_retired(conn, route_fence_key(name, sid), expires=sid in expiring)
+        owned[sid] = names
+    for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
+        if route_namespace(row['session_key']) in owned.get(entry_session_id(row['entry_json']), ()):
+            conn.execute('DELETE FROM gateway_routing WHERE scope=? AND session_key=?',
+                         (row['scope'], row['session_key']))
+
+
 RETRY_HORIZON_S = 7 * 86400  # exact-retry horizon: a retry within it gets the byte-exact settled reply
 _EXPIRED = "json_valid(value) AND json_extract(value, '$.retired_at') < ?"
+
+
+def _reclaim_expired(conn, prefix, cutoff):
+    """Drop the sweep (``expires``) markers under *prefix* retired before *cutoff*."""
+    conn.execute(f"DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED} AND json_extract(value, '$.expires')",
+                 (prefix + '*', cutoff))
 
 
 def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     """Reclaim deletion tombstones retired more than *older_than* seconds ago: the terminal admission
     with its identity pointer and compacted result, terminal workers and a sweep's (``expires``)
-    retired-session marker. A user delete's marker is the deletion fence itself and is never
+    retired-session marker or shared routing fence. A user delete's marker is the deletion fence itself and is never
     reclaimed: it holds only ``retired_at``, and without it a deleted id could be recreated,
     re-admitted or reissued as a Bot Chat generation.
     Tombstones written before ``retired_at`` existed are stamped now and age from this pass."""
@@ -301,5 +429,5 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
         conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
                      identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))
     conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (WORKER_PREFIX + '*', cutoff))
-    conn.execute(f"DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED} AND json_extract(value, '$.expires')",
-                 (RETIRED_PREFIX + '*', cutoff))
+    for prefix in (RETIRED_PREFIX, ROUTE_FENCE_PREFIX):
+        _reclaim_expired(conn, prefix, cutoff)

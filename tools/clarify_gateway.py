@@ -111,6 +111,16 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
         return True
 
 
+def get_pending(clarify_id: str) -> Optional[_ClarifyEntry]:
+    """The entry for ``clarify_id`` while it is still awaiting an answer, else None (unknown,
+    answered, timed out or cleared). Read-only: adapters rendering native choice cards compare it
+    by identity with the entry they rendered and read ``session_key`` / ``choices`` /
+    ``multi_select`` from it; answering goes through ``resolve_gateway_clarify``."""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        return entry if entry is not None and not entry.event.is_set() else None
+
+
 def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False) -> Optional[_ClarifyEntry]:
     """Oldest pending entry awaiting free text (open-ended, or after "Other");
     ``include_choice_prompts=True`` returns the oldest unresolved entry of any kind (user

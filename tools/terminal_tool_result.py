@@ -167,7 +167,7 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _redact_spill_file(path, total_chars, command, capped: bool = False) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -187,6 +187,15 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         with _quiet("spill unlink"):
             Path(path).unlink()
         return []
+    if capped:
+        # The spill file hit its hard cap (or an I/O failure truncated it):
+        # it holds only a prefix of the stream, not the full output (#109757).
+        note = ("Output exceeded the capture window and the saved spill file hit its "
+                f"hard cap, so it holds only a capped prefix of the {total_chars:,}-char "
+                f"stream: {path} — treat it as partial output when searching it with "
+                "search_files or paging it with read_file.")
+        return [("output_total_chars", total_chars), ("full_output_path", path),
+                ("full_output_capped", True), ("truncation_note", note)]
     note = ("Output exceeded the capture window (head+tail shown). "
             f"Full output ({total_chars:,} chars) saved to {path} — search it with "
             "search_files or page it with read_file instead of re-running the command.")
@@ -261,7 +270,8 @@ def finalize_foreground_result(
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command,
+                            capped=bool(result.get("full_output_capped"))),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),

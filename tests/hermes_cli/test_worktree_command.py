@@ -177,6 +177,29 @@ def test_new_refused_by_the_gateway_never_claims_the_tools_moved(repo):
     assert "session_busy" in out and t("cli.commands.worktree.tools_in_worktree") not in out
     assert os.path.realpath(os.getcwd()) == os.path.realpath(str(repo))
     assert "TERMINAL_CWD" not in os.environ and cli_mod._active_worktree is None
+    assert not (repo / ".worktrees" / "busy").exists()  # not left on disk, unlisted, until quit
+
+
+@requires_git
+def test_new_whose_shell_cannot_follow_says_the_session_moved(repo, monkeypatch):
+    """The gateway accepted the move, so the session's tools run in the tree; only this process stays
+    behind. Say that, instead of "could not enter it" for a session that did move."""
+    real_chdir = os.chdir
+
+    def chdir(path):
+        if ".worktrees" in str(path):
+            raise PermissionError("denied")
+        real_chdir(path)
+    stub, _client, conn = _gateway_stub()
+    monkeypatch.setattr(os, "chdir", chdir)
+    try:
+        out = _run(stub, "/worktree new stuck")
+    finally:
+        conn.close()
+    wt = repo / ".worktrees" / "stuck"
+    assert t("cli.session.cwd_enter_failed", path=str(wt), error="denied") in out
+    assert t("cli.commands.worktree.tools_in_worktree") in out and cli_mod._active_worktree["path"] == str(wt)
+    assert "TERMINAL_CWD" not in os.environ
 
 
 @requires_git

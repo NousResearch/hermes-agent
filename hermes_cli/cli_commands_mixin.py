@@ -1141,12 +1141,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         # Same keep-if-unpushed cleanup as `hermes -w`. Only one tree is "active" per process;
         # an earlier one keeps its own atexit registration (explicit info arg).
         atexit.register(_cli._cleanup_worktree, wt_info)
-        from hermes_cli.gateway_client import GatewayClientError
-        from hermes_cli.gateway_session_store import move_cli_workspace
-        try:
-            move_cli_workspace(self, wt_info)  # the gateway session's tools, then this process
-        except (GatewayClientError, OSError) as e:
-            return print(f"  {_t('worktree.enter_failed', error=e)}")
+        from hermes_cli.cli_commands_worktree import enter_new_worktree
+        if not enter_new_worktree(self, wt_info):
+            return
         _cli._active_worktree = wt_info
         _pr(f"  {_t('worktree.ready', path=wt_info['path'])}",
             f"  {_t('worktree.branch', branch=wt_info['branch'])}", f"  {_t('worktree.tools_in_worktree')}")

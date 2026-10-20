@@ -763,6 +763,7 @@ class CLIStreamMixin:
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            self._forget_tool_label(function_name)
             self._turn_summary_record(
                 function_name, kwargs.get("result"), kwargs.get("is_error", False))
             # Focus view: count the hidden scrollback line for the post-turn recovery report.
@@ -810,7 +811,7 @@ class CLIStreamMixin:
             self._invalidate()
             return
         if event_type != "tool.started":
-            return
+            return self._show_tool_progress(event_type, function_name, preview, kwargs.get("percent"))
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_preview_max_len, tool_row_emoji
             label = preview or function_name
@@ -818,10 +819,29 @@ class CLIStreamMixin:
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
+            self.__dict__.setdefault("_running_tool_labels", {}).setdefault(function_name, []).append(self._spinner_text)
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {})
+            self._invalidate()
+
+    def _forget_tool_label(self, function_name) -> None:
+        labels = self.__dict__.get("_running_tool_labels", {})
+        if labels.get(function_name):
+            labels[function_name].pop(0)
+            if not labels[function_name]:
+                del labels[function_name]
+
+    def _show_tool_progress(self, event_type, function_name, message, percent) -> None:
+        """Live MCP progress rides the spinner line: ``<tool label> · 42% · message``. The CLI has one
+        spinner, so progress shows only while exactly one call of that tool runs and nothing else does:
+        with parallel calls the label could belong to another call (tool.started carries no call id)."""
+        labels = self.__dict__.get("_running_tool_labels", {})
+        running = labels.get(function_name) or []
+        if event_type == "tool.progress" and len(running) == 1 and sum(map(len, labels.values())) == 1:
+            parts = [running[0]] + ([f"{percent}%"] if percent is not None else []) + ([message] if message else [])
+            self._spinner_text = " · ".join(parts)
             self._invalidate()
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):

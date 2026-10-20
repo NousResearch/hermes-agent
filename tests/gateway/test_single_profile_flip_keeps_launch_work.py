@@ -140,3 +140,51 @@ async def test_activation_does_not_run_once_shutdown_began(standalone_host):
     runner._running = False            # stop() flips this first
     await runner.reconcile_served_profiles(reason="control-socket")
     assert not is_multiplex_active(), "a shutting-down gateway armed fail-closed secrets"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rescans_keep_the_new_profiles_reservation(standalone_host, monkeypatch):
+    """A watcher tick and a creator's rescan both start the switch. The slower preflight resuming
+    while the faster rescan is still serving the bot must not reset the reservation to just the
+    default home (routing and cron would then miss a bot whose authority is live)."""
+    from gateway import run_profile_reconcile as rpr
+    runner, home = standalone_host
+    preflights = []
+    housekeeping = runner._run_housekeeping_in_executor
+
+    async def run_housekeeping(func, *args):
+        if func is rpr._added_profile_blocker:
+            preflights.append(func)
+            if len(preflights) > 1:
+                await reserved_bot.wait()  # resumes while the first rescan is mid-serve
+                return None
+        return await housekeeping(func, *args)
+
+    serve = runner._serve_profile_runtime
+    reserved_bot = asyncio.Event()
+
+    async def slow_serve(name, path):
+        reason = await serve(name, path)
+        reserved_bot.set()
+        for _ in range(20):          # adapters still connecting: the other rescan gets the loop
+            await asyncio.sleep(0)
+        return reason
+
+    runner._run_housekeeping_in_executor = run_housekeeping
+    runner._serve_profile_runtime = slow_serve
+    bot = _mkprofile(home, "daily-news-bot").resolve()
+    await asyncio.gather(runner.reconcile_served_profiles(reason="control-socket"),
+                         runner.reconcile_served_profiles(reason="watcher"))
+    reserved = {name: path for name, path in runner.config._runtime_profile_homes}
+    assert reserved.get("daily-news-bot") == bot, reserved
+
+
+@pytest.mark.asyncio
+async def test_activation_rechecks_shutdown_after_the_preflight(standalone_host, monkeypatch):
+    from agent.secret_scope import is_multiplex_active
+    from gateway import run_profile_reconcile as rpr
+    runner, home = standalone_host
+    monkeypatch.setattr(rpr, "_added_profile_blocker", lambda _launch: setattr(runner, "_running", False))
+    _mkprofile(home, "daily-news-bot")
+    await runner.reconcile_served_profiles(reason="control-socket")
+    assert not is_multiplex_active(), "stop() began during the preflight, yet fail-closed secrets were armed"

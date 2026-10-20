@@ -348,43 +348,50 @@ class GatewayProfileReconcileMixin:
             record_multiplex_decision, recorded_standalone_reason)
         from hermes_cli.profiles import profiles_to_serve
         from hermes_constants import get_default_hermes_root, get_process_hermes_home
-        if not self._running or getattr(self, "_draining", False):
-            return False  # shutdown began: never arm fail-closed secrets under drain-time work
-        if recorded_standalone_reason() not in (SINGLE_PROFILE_REASON, AUTO_MIGRATION_OPTED_OUT_REASON):
-            return False
-        launch = get_process_hermes_home().resolve()
-        if launch != get_default_hermes_root().resolve():
-            return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
-        if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
-            return False
-        blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
-        if blocker is not None:
-            if blocker != self._single_profile_blocker_logged:
-                logger.warning("[MULTIPLEX] A new profile exists but this gateway stays standalone: %s", blocker)
-                self._single_profile_blocker_logged = blocker
-            if blocker == AUTO_MIGRATION_OPTED_OUT_REASON:
-                # Published so `gateway ensure` refuses the new profile naming the opt-out (Desktop shows
-                # that detail) instead of "only one profile exists".
-                record_multiplex_decision(MultiplexDecision(False, "guard", blocker))
-            return False
-        from hermes_constants import hermes_home_key
-        from tools.mcp_tool_scope import rekey_unscoped_connections
-        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
-        activate_multi_profile_hosting()
-        rekey_unscoped_connections(hermes_home_key(launch))
-        self.config.multiplex_profiles = True
-        self.config._runtime_profile_homes = (("default", launch),)
-        registry = getattr(self, "session_authorities", None)
-        if registry is not None:
-            registry.multiplexed = True
-        for adapter in list(self.adapters.values()):
-            adapter.set_message_handler(self._primary_message_handler())
-            adapter.set_busy_session_handler(self._primary_busy_session_handler())
-            adapter.set_platform_event_handler(self._primary_platform_event_handler())
-        self._record_served_profiles("default", [("default", launch)])
-        log_multiplex_decision(MultiplexDecision(True, "default", "a second profile was created"))
-        logger.info("[MULTIPLEX] A second profile exists; serving every profile from this process (no restart)")
-        return True
+        # Serialized with reconcile: a second rescan (watcher + creator) resuming mid-activation
+        # reset the reservation the first one's reconcile had already grown.
+        async with self._reconcile_lock():
+            if self._multiplex_on():
+                return True  # a concurrent rescan activated while this one waited
+            if not self._running or getattr(self, "_draining", False):
+                return False  # shutdown began: never arm fail-closed secrets under drain-time work
+            if recorded_standalone_reason() not in (SINGLE_PROFILE_REASON, AUTO_MIGRATION_OPTED_OUT_REASON):
+                return False
+            launch = get_process_hermes_home().resolve()
+            if launch != get_default_hermes_root().resolve():
+                return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
+            if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+                return False
+            blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
+            if blocker is not None:
+                if blocker != self._single_profile_blocker_logged:
+                    logger.warning("[MULTIPLEX] A new profile exists but this gateway stays standalone: %s", blocker)
+                    self._single_profile_blocker_logged = blocker
+                if blocker == AUTO_MIGRATION_OPTED_OUT_REASON:
+                    # Published so `gateway ensure` refuses the new profile naming the opt-out (Desktop shows
+                    # that detail) instead of "only one profile exists".
+                    record_multiplex_decision(MultiplexDecision(False, "guard", blocker))
+                return False
+            if not self._running or getattr(self, "_draining", False):
+                return False  # shutdown began during the preflight await
+            from hermes_constants import hermes_home_key
+            from tools.mcp_tool_scope import rekey_unscoped_connections
+            from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+            activate_multi_profile_hosting()
+            rekey_unscoped_connections(hermes_home_key(launch))
+            self.config.multiplex_profiles = True
+            self.config._runtime_profile_homes = (("default", launch),)
+            registry = getattr(self, "session_authorities", None)
+            if registry is not None:
+                registry.multiplexed = True
+            for adapter in list(self.adapters.values()):
+                adapter.set_message_handler(self._primary_message_handler())
+                adapter.set_busy_session_handler(self._primary_busy_session_handler())
+                adapter.set_platform_event_handler(self._primary_platform_event_handler())
+            self._record_served_profiles("default", [("default", launch)])
+            log_multiplex_decision(MultiplexDecision(True, "default", "a second profile was created"))
+            logger.info("[MULTIPLEX] A second profile exists; serving every profile from this process (no restart)")
+            return True
 
     async def _serve_profile_runtime(self, name: str, home: Path) -> Optional[str]:
         """Grow the reservation by *home* and build its session authority (boot's per-secondary

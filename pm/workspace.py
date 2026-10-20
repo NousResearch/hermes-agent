@@ -31,20 +31,29 @@ def _git_ignored(root: Path) -> frozenset[str]:
     """Untracked paths a member's own git work tree ignores, ignored directories collapsed.
 
     Build output, caches and runtime state are not build inputs; hashing them made every
-    launch rebuild the environment (#122349). Without a usable git, nothing extra is skipped.
+    launch rebuild the environment (#122349). When git cannot run, times out or fails, the
+    reason is logged at debug and nothing extra is skipped (the full walk).
     """
     if not (root / ".git").exists():
         return frozenset()
     # bounded_probe_run, not subprocess.run: on Windows run() waits without a bound for pipes
     # that a git launcher's child still holds after the timeout, and this runs at every launch.
+    # Its spawner is stdlib-only, so it also runs in PM's isolated runtime (no psutil there).
     # surrogateescape keeps non-UTF-8 path bytes the same as os.fsdecode does.
+    import logging
     from hermes_cli._subprocess_compat import bounded_probe_run
 
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    result = bounded_probe_run(
-        ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
-        cwd=root, env=env, timeout=60, errors="surrogateescape")
+    try:
+        result = bounded_probe_run(
+            ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+            cwd=root, env=env, timeout=60, errors="surrogateescape", raise_on_spawn_failure=True)
+    except (OSError, ValueError, ImportError) as exc:
+        logging.getLogger(__name__).debug("member ignore probe did not start in %s: %r", root, exc)
+        return frozenset()
     if result is None or result.returncode != 0:
+        logging.getLogger(__name__).debug("member ignore probe in %s %s", root, "timed out" if result is None
+                                          else f"exited {result.returncode}: {result.stderr.strip()}")
         return frozenset()
     return frozenset(path.rstrip("/") for path in result.stdout.split("\0") if path)
 

@@ -284,8 +284,13 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
 
 
-def test_git_ignored_member_files_are_not_build_inputs(tmp_path):
-    """#122349: a member checkout's ignored output must not re-stale the environment each launch."""
+def test_git_ignored_member_files_are_not_build_inputs(tmp_path, monkeypatch):
+    """#122349: a member checkout's ignored output must not re-stale the environment each launch.
+
+    PM's isolated runtime installs no app dependencies, so the git probe must run without psutil.
+    """
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.delitem(sys.modules, "hermes_cli.local_runtime.processes", raising=False)
     plugin = tmp_path / "plugin"
     (plugin / "src").mkdir(parents=True)
     (plugin / "pyproject.toml").write_text(

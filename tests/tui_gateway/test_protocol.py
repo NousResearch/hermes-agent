@@ -2278,7 +2278,7 @@ def test_device_request_bridge_reports_a_client_that_cannot_answer(server):
     peer = _silent_ws()
     _ws_session(server, "s-desktop", peer)
     assert _device_request("s-desktop", "camera") == {
-        "success": False, "value": "", "denied": False,
+        "success": False, "value": "", "denied": False, "captures": [],
         "reason": "no attached client advertised that device capability"}
 
 
@@ -2302,7 +2302,8 @@ def test_device_request_bridge_returns_the_capability_answer(server):
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
                             "result": {"value": "{\"kind\":\"jpeg\"}", "denied": False}}) is None
     thread.join(timeout=5)
-    assert box["r"] == {"success": True, "value": '{"kind":"jpeg"}', "denied": False, "reason": None}
+    assert box["r"] == {"success": True, "value": '{"kind":"jpeg"}', "denied": False, "reason": None,
+                        "captures": []}
 
 
 def test_device_request_bridge_distinguishes_a_user_refusal(server):
@@ -2339,3 +2340,161 @@ def test_device_request_tool_is_registered():
     assert entry is not None, "device_request tool is not registered"
     assert entry.schema["properties"]["capability"]["enum"] == [
         "camera", "microphone", "location", "screen_capture", "notifications", "photo_library", "files"]
+
+
+def test_device_request_is_refused_at_once_for_a_session_with_no_client(server):
+    """A session with NO attached client (stdio/TUI, or a closed tab) used to wait out the whole
+    deadline: nothing had advertised, so the gate defaulted to True. It is refused now, because no
+    device client was ever seen for that session (#11911 F4)."""
+    from tui_gateway import server_requests
+
+    _ws_session(server, "s-no-client", None)
+    t0 = time.monotonic()
+    assert server_requests.send("device.request", "s-no-client", {"capability": "camera"}, timeout=30) is None
+    assert time.monotonic() - t0 < 1
+    assert server_requests.open_requests("s-no-client") == []
+
+
+def test_a_detached_phone_still_answers_within_the_seen_window(server):
+    """A phone that drops its socket (a reload, a network blip) still gets to answer the request the
+    agent just made — the reconnect replay picks it up — as long as it was seen recently."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "s-roam", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+    assert server._session_device_capable("s-roam", "camera") is True  # seeds the session's memory
+    server._sessions["s-roam"]["transport"] = None  # the phone drops its socket
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("r", server_requests.send(
+            "device.request", "s-roam", {"capability": "camera"}, timeout=5)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert req.params == {"capability": "camera"}
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "{\"kind\":\"jpeg\"}", "denied": False}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "{\"kind\":\"jpeg\"}", "denied": False}
+
+
+def test_a_detached_phone_is_refused_at_once_when_the_window_is_zero(server, monkeypatch):
+    """``device.client_seen_seconds: 0`` — an operator who does not want a reconnect replay to park a
+    turn gets an immediate refusal instead."""
+    from tui_gateway import server_requests
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: {"device": {"client_seen_seconds": 0}})
+    peer = _silent_ws()
+    _ws_session(server, "s-roam-off", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+    assert server._session_device_capable("s-roam-off", "camera") is True
+    server._sessions["s-roam-off"]["transport"] = None
+
+    t0 = time.monotonic()
+    assert server_requests.send("device.request", "s-roam-off", {"capability": "camera"}, timeout=30) is None
+    assert time.monotonic() - t0 < 1
+    assert server_requests.open_requests("s-roam-off") == []
+
+
+def test_device_advertisement_is_held_weakly(server):
+    """An abnormal close (no ``forget`` call, the object simply dies) must not keep offering a camera
+    that cannot answer: the advertisement is a weak key, not a strong reference (#11911 F5)."""
+    import gc
+    import weakref
+
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    server_requests.advertise_device(peer, ["camera"])
+    assert server_requests.device_capabilities(peer) == frozenset({"camera"})
+    alive = weakref.ref(peer)
+    del peer
+    gc.collect()
+    assert alive() is None
+    assert len(server_requests._device_capabilities) == 0
+
+
+def test_a_transport_that_cannot_be_weak_referenced_is_refused_not_crashed(server):
+    """The stdio transport has ``__slots__``; it never has a device behind it, so advertising is a
+    no-op rather than a TypeError inside the ``client.capabilities`` handler."""
+    from tui_gateway import server_requests
+
+    class _Slotted:
+        __slots__ = ()
+
+    server_requests.advertise_device(_Slotted(), ["camera"])  # must not raise
+    assert len(server_requests._device_capabilities) == 0
+
+
+def test_device_request_tool_is_offered_only_to_a_session_with_a_phone(server, monkeypatch):
+    """The tool is a property of the SESSION: a phone that advertised makes ``mobile_device`` part of
+    that session's toolsets (and ``device_request`` appear in its tool definitions); a desktop window
+    never does (#11911 F3)."""
+    from model_tools import get_tool_definitions
+    from tui_gateway.server import _load_enabled_toolsets
+
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "hermes-cli")
+    phone = _silent_ws()
+    desktop = _silent_ws()
+    _ws_session(server, "s-phone-tools", phone)
+    _ws_session(server, "s-desktop-tools", desktop)
+    _advertise(server, phone, server_requests=True, device_capabilities=["camera"])
+    _advertise(server, desktop, server_requests=True)
+
+    with_phone = _load_enabled_toolsets("tui", session_id="s-phone-tools")
+    without = _load_enabled_toolsets("tui", session_id="s-desktop-tools")
+    assert "mobile_device" in with_phone
+    assert "mobile_device" not in without
+    # session-less callers (a tools listing for a profile) never gain it either.
+    assert "mobile_device" not in _load_enabled_toolsets("tui")
+
+    def _names(toolsets):
+        return {tool["function"]["name"] for tool in get_tool_definitions(enabled_toolsets=toolsets)}
+
+    assert "device_request" in _names(with_phone)
+    assert "device_request" not in _names(without)
+    # Direct, not behind a tool_search stub: a phone session has exactly one device tool, and a
+    # deferral round trip to reach it would cost more than its schema.
+    from tools.tool_search import is_deferrable_tool_name
+    assert is_deferrable_tool_name("device_request") is False
+
+
+def test_device_request_bridge_passes_captures_through(server):
+    """The bridge is a pipe: the base64 bodies travel to the TOOL, which materialises them into the
+    media cache — nothing here decides what reaches the model."""
+    from tui_gateway import server_requests
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-capture", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", _device_request("s-capture", "camera")),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    answer = {"value": "", "denied": False,
+              "captures": [{"mime_type": "image/png", "data": "AAECAw==", "label": "screen"}]}
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": answer}) is None
+    thread.join(timeout=5)
+    assert box["r"]["captures"] == answer["captures"]
+
+
+def test_every_agent_callback_the_gateway_binds_is_accepted_by_the_agent(server):
+    """``_agent_cbs`` is splatted into ``AIAgent(...)``. A callback in that dict that the constructor
+    does not take fails EVERY gateway session at agent build with "unexpected keyword argument" — and
+    only a live turn shows it, because the unit suite never builds an agent. (#11911)"""
+    import inspect
+
+    from agent.agent_init import _CALLBACK_PARAMS, init_agent
+    from run_agent import AIAgent
+
+    bound = set(server._agent_cbs("s-callbacks"))
+    assert bound <= set(_CALLBACK_PARAMS)
+    # init_agent reads each callback out of its own locals, and run_agent's __init__ forwards its
+    # locals to init_agent: both signatures must carry every name.
+    assert set(_CALLBACK_PARAMS) <= set(inspect.signature(init_agent).parameters)
+    assert set(_CALLBACK_PARAMS) <= set(inspect.signature(AIAgent.__init__).parameters)

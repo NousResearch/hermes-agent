@@ -21,15 +21,8 @@ def _(rid, params: dict) -> dict:
     A capability is reported when ANY attached client advertised it — two windows on one session
     each contribute what they have.
     """
-    from tui_gateway import server_requests
-    from tui_gateway.ws import WSTransport
-
     sid = str(params.get("session_id") or "").strip()
-    union: set[str] = set()
-    for peer in _session_live_transports(_sessions.get(sid)):
-        if isinstance(peer, WSTransport):
-            union |= server_requests.device_capabilities(peer)
-    return _ok(rid, {"session_id": sid, "capabilities": sorted(union)})
+    return _ok(rid, {"session_id": sid, "capabilities": sorted(_session_device_capabilities(sid))})
 
 
 def register(server) -> None:

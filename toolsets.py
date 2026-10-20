@@ -70,6 +70,11 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # config: another surface lacking them made no configuration choice.
 CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui", "catalog"})
 
+# The one toolset gated on what a session's CLIENT can serve rather than on its platform: a handheld
+# that advertised device capabilities in ``client.capabilities``. Folded in per session
+# (tui_gateway/agent_factory.py::_device_toolsets), never part of a platform bundle.
+DEVICE_SURFACE_TOOLSET = "mobile_device"
+
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
@@ -145,6 +150,13 @@ TOOLSETS = {
     ),
     "onboarding": _ts("First-run onboarding cards; folded in only for the onboarding chat (tui_gateway/methods_onboarding.py)",
                       ["setup_beat"], platforms=frozenset({"desktop"})),
+    # Handheld client capabilities: folded into a session only when a client on it advertised one
+    # (tui_gateway/agent_factory.py::_device_toolsets). A desktop window, the TUI and the CLI have no
+    # device behind them, so this is never part of a platform bundle or _HERMES_CORE_TOOLS (#11911).
+    "mobile_device": _ts(
+        "Handheld device capabilities — camera frame, microphone clip, location fix, screen capture, "
+        "notifications, photo/file pick (mobile clients only)",
+        ["device_request"]),
     # ``platforms``: the session platforms this toolset exists for (TOOLSET_SESSION_PLATFORMS).
     "catalog": _ts(
         "Desktop catalog plugin/skill install requests through the approval card (GUI sessions only)",

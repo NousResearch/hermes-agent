@@ -41,6 +41,7 @@ import logging
 import threading
 import time
 import uuid
+import weakref
 from typing import Any, Callable, Iterable
 
 from tools.clarify_batch import settle_batch
@@ -148,10 +149,12 @@ def advertise(transport: Any, server_requests: bool) -> None:
             _answering_clients.discard(transport)
 
 
-# Client transports that advertised each device capability in ``client.capabilities`` — the same
-# lifetime rules as ``_answering_clients`` (ws.py forgets a peer on disconnect; a stdio transport
-# cannot be weak-referenced and never advertises device capabilities at all).
-_device_capabilities: dict = {}
+# Client transports that advertised each device capability in ``client.capabilities``. Keyed weakly:
+# a transport that dies without a close path (an abnormal disconnect, a dropped loop) must not keep
+# offering a camera it can no longer serve — ``ws.py`` forgets a peer on the normal path, and the
+# weak key covers the rest. A transport that cannot be weak-referenced (the stdio TUI, which has no
+# device behind it) is refused instead of tracked.
+_device_capabilities: weakref.WeakKeyDictionary[Any, frozenset[str]] = weakref.WeakKeyDictionary()
 
 
 def advertise_device(transport: Any, capabilities: Iterable[str] | None) -> None:
@@ -159,10 +162,14 @@ def advertise_device(transport: Any, capabilities: Iterable[str] | None) -> None
     "no device behind me" answer every desktop and TUI client sends; it is stored, not skipped, so
     a reconnect that never re-advertises does not inherit a stale phone."""
     with _lock:
-        if capabilities:
-            _device_capabilities[transport] = frozenset(str(c) for c in capabilities)
-        else:
+        if not capabilities:
             _device_capabilities.pop(transport, None)
+            return
+        try:
+            _device_capabilities[transport] = frozenset(str(c) for c in capabilities)
+        except TypeError:
+            logger.debug("device capabilities not tracked: transport %r cannot be weak-referenced",
+                         type(transport).__name__)
 
 
 def device_capabilities(transport: Any) -> frozenset[str]:

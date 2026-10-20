@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import threading
+import time
+
 from tui_gateway.method_ctx import bind_module
 
 # Leaf lock: callers may hold sessions/history locks, never acquire them here.
@@ -76,14 +78,72 @@ def _session_answering_clients(sid: str) -> list:
             if isinstance(peer, WSTransport) and server_requests.answers_requests(peer)]
 
 
-def _session_device_capable(sid: str, capability: str) -> bool:
-    """Whether a live WebSocket client attached to *sid* advertised *capability*. No attached client
-    is still True — the question waits in ``open_requests`` for the reconnect replay, exactly like a
-    server→client request from a build that predates them."""
+# A session whose device client detached — a phone that dropped its socket, a page reload — stays
+# answerable for ``device.client_seen_seconds``: the reconnect replay must still be able to answer a
+# request the agent just made. The memory lives ON the session dict, so it dies with the session and
+# a session that never had a phone is refused at once instead of parking the agent for the deadline.
+_DEFAULT_CLIENT_SEEN_SECONDS = 120.0
+
+
+def _device_client_seen_seconds() -> float:
+    """``device.client_seen_seconds``: how long a detached device client may still be waited for,
+    clamped to 0..3600. 0 disables the memory, so a detached session is always refused at once."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        seconds = float(cfg_get(load_config(), "device", "client_seen_seconds",
+                                default=_DEFAULT_CLIENT_SEEN_SECONDS))
+    except Exception:
+        return _DEFAULT_CLIENT_SEEN_SECONDS
+    return min(max(seconds, 0.0), 3600.0)
+
+
+def _remember_device_client(session: dict | None, capabilities: frozenset[str]) -> None:
+    """Remember what a session's device client advertised, so a reconnect can still answer."""
+    if session is not None:
+        session["_device_seen"] = (capabilities, time.monotonic())
+
+
+def _remembered_device_capabilities(session: dict | None) -> frozenset[str]:
+    """The capabilities a recently detached device client advertised for *session*; empty once expired."""
+    seen = (session or {}).get("_device_seen")
+    if not seen:
+        return frozenset()
+    capabilities, at = seen
+    return capabilities if time.monotonic() - at <= _device_client_seen_seconds() else frozenset()
+
+
+def _session_device_capabilities(sid: str) -> frozenset[str]:
+    """Union of the device capabilities the live WebSocket clients attached to *sid* advertised.
+
+    The honest "what can this session's client serve" answer: two windows contribute what each has,
+    a desktop window contributes nothing (``device.capabilities`` RPC, ``mobile_device`` toolset
+    fold-in).
+    """
     from tui_gateway import server_requests
     from tui_gateway.ws import WSTransport
-    clients = [peer for peer in _session_live_transports(_sessions.get(sid)) if isinstance(peer, WSTransport)]
-    return not clients or any(capability in server_requests.device_capabilities(peer) for peer in clients)
+
+    union: frozenset[str] = frozenset()
+    for peer in _session_live_transports(_sessions.get(sid)):
+        if isinstance(peer, WSTransport):
+            union |= server_requests.device_capabilities(peer)
+    return union
+
+
+def _session_device_capable(sid: str, capability: str) -> bool:
+    """Whether a live WebSocket client attached to *sid* advertised *capability*.
+
+    A session with no attached client is refused unless one advertised a device capability within
+    ``device.client_seen_seconds`` — a bare stdio/TUI session waits for no phone. Just detached
+    counts, so a reconnect replay still answers the request the agent just made.
+    """
+    session = _sessions.get(sid)
+    advertised = _session_device_capabilities(sid)
+    if advertised:
+        _remember_device_client(session, advertised)
+        return capability in advertised
+    if _session_live_transports(session):
+        return False  # a client is attached and advertised no device: refuse now, do not wait
+    return capability in _remembered_device_capabilities(session)
 
 
 def _warn_foreign_login(session: dict, transport) -> None:

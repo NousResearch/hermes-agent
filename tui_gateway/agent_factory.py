@@ -390,7 +390,38 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     return (built_in + mcp_valid) or False
 
 
-def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
+def _device_toolsets(session_id: str | None) -> list[str]:
+    """``mobile_device`` when a client on *session_id* advertised a device capability, else ``[]``.
+
+    The toolset IS the surface gate (``tools/AGENTS.md``): tools are fixed for the life of a
+    conversation (prompt caching), so the fold-in is decided when the session's agent is built — by
+    then the client has sent ``client.capabilities``, which it does on connect. A desktop window,
+    the TUI and the CLI advertise nothing and never see ``device_request``.
+    """
+    from toolsets import DEVICE_SURFACE_TOOLSET
+
+    if not session_id or DEVICE_SURFACE_TOOLSET in set(_load_disabled_toolsets() or []):
+        return []
+    try:
+        from tui_gateway import server as gateway_server
+    except Exception:
+        return []
+    # Published onto the server by ``bind_module`` at import (the split-module seam): read it there,
+    # not from ``session_transports``, whose own globals are not the bound ones.
+    capabilities_of = getattr(gateway_server, "_session_device_capabilities", None)
+    return [DEVICE_SURFACE_TOOLSET] if capabilities_of is not None and capabilities_of(session_id) else []
+
+
+def _load_enabled_toolsets(platform: str | None = None, session_id: str | None = None) -> list[str] | None:
+    """*_configured_toolsets* plus the toolset this session's CLIENT can serve (``mobile_device``)."""
+    enabled = _configured_toolsets(platform)
+    device = _device_toolsets(session_id)
+    if not device or enabled is None:  # None = every toolset, which already includes it
+        return enabled
+    return sorted(set(enabled) | set(device))
+
+
+def _configured_toolsets(platform: str | None = None) -> list[str] | None:
     """The agent's toolsets for this session (None = all): an explicit HERMES_TUI_TOOLSETS pin; else the
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
     else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them.
@@ -664,7 +695,8 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key),
+        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform, session_id=sid),
+                                              session_db, session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),

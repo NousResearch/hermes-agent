@@ -7134,7 +7134,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
+            edit_revision=self._edit_revision(message), timestamp=message.date)
+
+    @staticmethod
+    def _edit_revision(message) -> Optional[str]:
+        """``edit_date`` of an edited message (whole seconds), None for a new send."""
+        edit_date = getattr(message, "edit_date", None)
+        return str(int(edit_date.timestamp())) if hasattr(edit_date, "timestamp") else None
 
     # -- Message reactions (processing lifecycle) --
 

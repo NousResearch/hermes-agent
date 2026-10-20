@@ -5,6 +5,7 @@ Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remo
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
@@ -14,6 +15,7 @@ _read_chain = get_fallback_chain
 
 
 _MISSING_ACTIVE_PROVIDER = object()
+_ENV_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 def _identity(entry: dict[str, Any]):
@@ -35,7 +37,7 @@ def _format_entry(entry: dict[str, Any]) -> str:
 
 
 def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[dict[str, Any]]:
-    """Pull the ``{provider, model, base_url?, api_mode?}`` dict from a ``config["model"]`` snapshot."""
+    """Pull the ``{provider, model, base_url?, api_mode?, key_env?|api_key?}`` dict from a ``config["model"]`` snapshot."""
     if not isinstance(model_cfg, dict):
         return None
     provider = (model_cfg.get("provider") or "").strip()
@@ -44,6 +46,16 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[dict[str, Any]]
         return None
     entry: dict[str, Any] = {"provider": provider, "model": model}
     entry.update({key: value for key in ("base_url", "api_mode") if (value := (model_cfg.get(key) or "").strip())})
+    # ``resolve_entry_api_key`` returns ``api_key`` verbatim, so a ``${NAME}`` reference (what the
+    # custom-endpoint flow writes) must become ``key_env`` or the literal text is sent as the token.
+    api_key = str(model_cfg.get("api_key") or "").strip()
+    env_ref = _ENV_REF_RE.match(api_key)
+    if key_env := str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip():
+        entry["key_env"] = key_env
+    elif env_ref:
+        entry["key_env"] = env_ref.group(1)
+    elif api_key:
+        entry["api_key"] = api_key
     return entry
 
 

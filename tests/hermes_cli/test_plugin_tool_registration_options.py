@@ -22,10 +22,12 @@ def test_plugin_tool_uses_custom_result_cap_and_dynamic_schema():
             handler=lambda args: "ok",
             max_result_size_chars=4096,
             dynamic_schema_overrides=lambda: {"description": "runtime"},
+            execution_timeout=900,
         )
 
         assert handle is not None
         assert registry.get_max_result_size(name) == 4096
+        assert registry.get_entry(name, scope=scope).execution_timeout == 900
         assert registry.get_definitions({name}) == [
             {"type": "function", "function": {**schema, "description": "runtime"}}
         ]

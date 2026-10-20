@@ -885,9 +885,11 @@ def register(ctx):
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
-`ctx.register_tool()` also accepts `max_result_size_chars` to set that tool's result cap and
+`ctx.register_tool()` also accepts `max_result_size_chars` to set that tool's result cap,
 `dynamic_schema_overrides`, a zero-argument callback returning schema fields to merge when tool
-definitions are requested. Both use the same behavior as the built-in tool registry.
+definitions are requested, and `execution_timeout` (seconds) to raise the tool's dispatch deadline
+above the default for a tool that runs long bounded work. All three use the same behavior as the
+built-in tool registry.
 
 **Extending another tool's schema.** `ctx.extend_tool_schema(tool_name, extender)` changes what the
 model sees for a tool you don't own, built-in or from another plugin, so you don't need to register a

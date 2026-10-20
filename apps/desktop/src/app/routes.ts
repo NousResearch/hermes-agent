@@ -138,6 +138,26 @@ export interface SidebarNavContribution {
   tier?: InterfaceTier
 }
 
+// ── Contributed sidebar nav trailing slot — the `sidebar.nav.trailing` area ───
+// A RENDER contribution mounted at the trailing edge of ONE nav row: `data`
+// names the row (`navId`, the `sidebar.nav` contribution id) and `render()`
+// paints the chip. A render slot, not a `badge` string on the nav payload,
+// because the state it shows is live (the Kanban pause badge follows the board
+// payload): re-registering the row on every flip would tear the nav list down.
+export const SIDEBAR_NAV_TRAILING_AREA = 'sidebar.nav.trailing'
+
+/** Payload of a `sidebar.nav.trailing` render contribution. */
+export interface SidebarNavTrailingContribution {
+  /**
+   * `id` of the `sidebar.nav` contribution whose row this decorates, as the
+   * plugin wrote it: the registry namespaces contribution ids with the plugin
+   * (`kanban:nav`), so the plain `nav` a plugin declares is matched by suffix.
+   */
+  navId?: string
+  /** Route of the row to decorate — survives any id namespacing; preferred. */
+  navPath?: string
+}
+
 // ── Contributed profile-group header — the `sidebar.profileGroup.header` area ─
 // A RENDER contribution mounted at the top of each gateway/profile group in the
 // Sessions sidebar (above its session rows) while the group is expanded. The

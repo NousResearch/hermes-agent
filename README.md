@@ -241,3 +241,4 @@ for activation, daily use, dependency changes, and leaving the environment.
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+<!-- Keep this README focused on getting started with Hermes Agent. -->

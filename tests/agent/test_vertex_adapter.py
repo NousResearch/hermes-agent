@@ -301,3 +301,14 @@ def test_vertex_base_url_for_model_swaps_non_gemini_to_openai_compat():
     base = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
     assert vertex_base_url_for_model(base, "meta/llama-4-maverick") == (
         "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi")
+
+
+def test_vertex_base_url_for_model_swaps_openai_compat_back_to_gemini_native():
+    """Bidirectional: a config default built for a non-Gemini model (``…/endpoints/openapi``),
+    overridden with a Gemini model, must swap back to the native ``…/publishers/google`` base —
+    the OpenAI-compat endpoint doesn't serve Gemini's native tool/thinking surface."""
+    from agent.vertex_adapter import vertex_base_url_for_model
+
+    base = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    assert vertex_base_url_for_model(base, "google/gemini-2.5-pro") == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google")

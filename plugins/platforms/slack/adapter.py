@@ -2929,7 +2929,8 @@ class SlackAdapter(BasePlatformAdapter):
         for attempt in range(attempts):
             try:
                 result = await self._client_for(chat_id, metadata).files_upload_v2(
-                    channel=chat_id, **source, filename=filename, initial_comment=caption or "",
+                    channel=chat_id, **source, filename=filename,
+                    initial_comment=self.format_message(caption) if caption else "",
                     thread_ts=thread_ts)
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                 return SendResult(success=True, raw_response=result)

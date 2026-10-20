@@ -964,3 +964,53 @@ describe('useModelControls', () => {
     expect(getGlobalModelInfo).not.toHaveBeenCalled()
   })
 })
+
+// #142037: switching the model on a LIVE primary session updated only the global
+// `$currentModel` draft atom. The composer pill reads the per-session view's
+// `$model`, which for a live session is `primaryField(state => state.model,
+// $currentModel)` — i.e. the SESSION STATE's model, refreshed only when
+// session.info arrives. So the label kept showing the previous model until the
+// session was left and re-entered (a re-read). The focused-tile path already
+// paints its session state optimistically; the primary path must too.
+describe('useModelControls primary session paint (#142037)', () => {
+  beforeEach(() => {
+    SessionStates.$sessionStates.set({})
+    $activeSessionId.set(null)
+    $currentModel.set('')
+    $currentProvider.set('')
+    setCurrentModelSource('')
+    tile.delegate = null
+  })
+
+  afterEach(() => {
+    tile.delegate = null
+    SessionStates.$sessionStates.set({})
+    $activeSessionId.set(null)
+  })
+
+  it('paints the primary session state on switch so the composer pill follows', async () => {
+    SessionStates.$sessionStates.set({
+      'runtime-a': { model: 'old-model', provider: 'openai', reasoningEffortWire: 'high' }
+    } as never)
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('old-model')
+    setCurrentProvider('openai')
+
+    const painted: Record<string, unknown>[] = []
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        const state = (SessionStates.$sessionStates.get()[_id] ?? {}) as unknown as Record<string, unknown>
+        painted.push(update(state))
+      }
+    }
+
+    const { result } = renderHook(() =>
+      useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn(async () => ({}) as never) })
+    )
+
+    await act(() => result.current.selectModel({ model: 'new-model', provider: 'openai' }))
+
+    // The session state the pill reads must carry the new model, not the old one.
+    expect(painted.at(-1)).toMatchObject({ model: 'new-model' })
+  })
+})

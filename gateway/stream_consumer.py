@@ -240,8 +240,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     @property
     def accepts_tool_progress(self) -> bool:
-        """True only when native streaming is active (gates in-stream tool progress)."""
-        return self._use_native_streaming
+        """Whether native streaming is active and this adapter accepts progress overlays."""
+        if not self._use_native_streaming:
+            return False
+        return getattr(type(self.adapter), "SUPPORTS_NATIVE_TOOL_PROGRESS", True) is not False
 
     def on_tool_progress(self, line: str) -> None:
         """Thread-safe: overlay a tool-progress line in the native bubble until the next delta."""
@@ -388,12 +390,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         True (clarify) keeps native enabled so post-prompt output re-opens a fresh stream.
         Returns (Future, cancelled_flag); the Future resolves True once processed
         (cancelled_flag is legacy, no longer read).  Without native streaming returns a
-        bare, already-resolved Future."""
+        bare, already-resolved Future, unless an immutable fallback segment is pending."""
         loop = None
         with contextlib.suppress(RuntimeError):
             loop = asyncio.get_running_loop()
         boundary_future = loop.create_future() if loop else concurrent.futures.Future()
-        if not self._use_native_streaming:
+        pending_immutable = self._native_immutable_prefix() and self._fallback_final_send
+        if not self._use_native_streaming and not pending_immutable:
             boundary_future.set_result(True)
             return boundary_future
         # Instance attributes are race-free: boundaries are processed one at a time.
@@ -477,6 +480,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             boundary_ok = True
             if self._native_stream_opened:
                 boundary_ok = await self._finalize_boundary_stream(_reason)
+            elif self._native_immutable_prefix() and self._fallback_final_send:
+                boundary_ok = await self._recover_boundary_stream(
+                    self._accumulated or self._boundary_placeholder)
+            if not boundary_ok and self._native_immutable_prefix():
+                # Keep the undelivered segment and its receipt for final reconciliation.
+                self._degrade_native_to_buffered_send()
+                self._enter_fallback_mode(self._last_sent_text)
+                return
             if self._boundary_reopen:
                 # Clarify: keep native enabled (NOT buffer_only); the closed stream
                 # makes the next post-prompt delta re-open via the lazy re-seed.  The
@@ -504,12 +515,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         fails.  False only when both finalize and the fallback send failed."""
         finalize_text = self._accumulated or self._boundary_placeholder
         try:
-            if await self._send_frame(finalize_text, finalize=True):
+            if await self._send_frame(finalize_text, finalize=True, seal_boundary=True):
                 logger.debug("%s boundary: finalized stream (chat=%s, turn=%s)",
                              _reason, self.chat_id, self._turn_id)
                 return True
         except Exception as e:
             logger.warning("%s boundary: finalize failed: %s", _reason, e)
+        if self._native_immutable_prefix():
+            return await self._recover_boundary_stream(finalize_text)
         # Typing bubble may still show partial content; deliver via send().
         logger.warning("%s boundary: finalize not confirmed, "
                        "falling back to send() for pre-prompt text (chat=%s)",
@@ -640,6 +653,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                           exc_info=True):
                 self._native_stream_opened = True
                 self._use_draft_streaming = False
+                return
+            if self._native_immutable_prefix():
+                self._degrade_native_to_buffered_send()
                 return
             self._use_native_streaming = False
         self._use_draft_streaming = self._resolve_draft_streaming()
@@ -829,8 +845,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         display_text = self._accumulated
         if tick.is_interim:
             if self._use_native_streaming:
-                display_text = self._compose_frame_content()
-                if display_text and self.cfg.cursor:
+                display_text = (self._accumulated if self._native_immutable_prefix()
+                                else self._compose_frame_content())
+                if display_text and self.cfg.cursor and not self._native_immutable_prefix():
                     display_text += self.cfg.cursor
             else:
                 display_text += self.cfg.cursor

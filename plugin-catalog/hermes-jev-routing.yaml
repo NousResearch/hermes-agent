@@ -1,0 +1,23 @@
+name: hermes-jev-routing
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: ef98501c06dd13a067da3028e6ba303e2e7098e5
+subdir: public/hermes-jev-routing
+description: "Per-turn model routing that moves the live session, not only the request. Jev reads the turn, then switches the session onto the tier it deserves through the model-switch path, so the rest of the turn keeps running on that model. Shadow by default, with notify, confirm and auto modes, a confirm strip in the composer, and a cost ledger. Disclosure: sends the current message, a short history excerpt, the cwd, the context size and the spend snapshot to TypeSafe."
+maintainer: apoapostolov
+tier: community
+category: models
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/hermes-jev-routing
+version: "1.0.2"
+requires_hermes: ">=0.21.4"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/ef98501c06dd13a067da3028e6ba303e2e7098e5/public/hermes-jev-routing/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools:
+    - jev_route
+  provides_hooks:
+    - pre_llm_call
+    - post_api_request
+    - on_session_delete
+  provides_middleware:
+    - llm_request
+  requires_env: []

@@ -39,7 +39,7 @@ def test_running_child_transcript_is_served_in_order_with_its_session(receipt):
     assert live['available'] and live['running'] and live['child_session_id'] == 'live-child', live
     assert _texts(live) == [('user', 'live goal'), ('assistant', 'live step one')]
     assert [m['row_id'] for m in live['messages']] == rows[:2]
-    assert live['cursor'] == rows[1]
+    assert live['reset'] and isinstance(live['cursor'], str)
     # subagent.list now names the child's session, so a viewer need not guess it by goal text.
     [row] = receipt['list']['subagents']
     assert row['subagent_id'] == 'sa-0-live' and row['child_session_id'] == 'live-child', receipt['list']
@@ -48,7 +48,7 @@ def test_running_child_transcript_is_served_in_order_with_its_session(receipt):
 def test_cursor_returns_only_rows_written_after_it(receipt):
     after, caught_up = receipt['live_after'], receipt['live_caught_up']
     assert _texts(after) == [('assistant', 'live step two')], after
-    assert after['cursor'] == receipt['rows']['live-child'][2]
+    assert [m['row_id'] for m in after['messages']] == receipt['rows']['live-child'][2:3]
     assert caught_up['messages'] == [] and caught_up['cursor'] == after['cursor'], caught_up
 
 
@@ -71,7 +71,7 @@ def test_children_of_other_conversations_are_never_served(receipt):
     for name in ('sa-0-foreign', 'sa-0-branch', 'sa-9-unknown'):
         reply = receipt[name]
         assert reply == {'subagent_id': name, 'available': False, 'child_session_id': None, 'running': False,
-                         'messages': [], 'cursor': 0}, (name, reply)
+                         'messages': [], 'cursor': None, 'reset': True}, (name, reply)
     assert 'PRIVATE' not in json.dumps({k: v for k, v in receipt.items() if k != 'rows'})
 
 
@@ -87,3 +87,19 @@ def test_another_authenticated_viewer_reads_the_same_transcript(receipt):
 
 def test_runtime_advertises_the_method(receipt):
     assert 'subagent-transcript-v1' in receipt['capabilities']
+
+
+def test_polls_from_a_cursor_read_only_the_new_rows(receipt):
+    # The first read and the peer's are full; the cursored polls read only what was appended.
+    assert receipt['full_reads_while_polling'] == 0, receipt['full_reads_while_polling']
+    assert not receipt['live_after']['reset'] and not receipt['live_caught_up']['reset']
+
+
+def test_an_in_place_compaction_resets_the_viewer_instead_of_repeating_rows(receipt):
+    compacted = receipt['live_compacted']
+    assert compacted['reset'] and compacted['child_session_id'] == 'live-child', compacted
+    texts = _texts(compacted)
+    assert len(texts) == len(set(texts)) and ('user', 'live summary') in texts, compacted
+    assert {m['content'] for m in compacted['messages'] if m.get('archived')} == {'live goal', 'live step one'}
+    after = receipt['live_compacted_caught_up']
+    assert not after['reset'] and after['messages'] == [], after

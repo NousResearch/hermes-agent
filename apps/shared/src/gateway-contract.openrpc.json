@@ -43768,9 +43768,16 @@
             "type": "string"
           },
           "after": {
-            "default": 0,
-            "title": "After",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After"
           },
           "profile": {
             "anyOf": [
@@ -43794,7 +43801,7 @@
       },
       "SubagentTranscriptResult": {
         "additionalProperties": false,
-        "description": "``gateway/session_subagent_transcript.py``: one child of the session's conversation (live\nthrough the roster, finished through its stored row). ``messages`` are ``session.resume`` rows;\n``available`` is false for an unknown or foreign child. A changed ``child_session_id`` (the\nchild's compression rotated it) means reload from ``after: 0``.",
+        "description": "``gateway/session_subagent_transcript.py``: one child of the session's conversation (live\nthrough the roster, finished through its stored row). ``messages`` are ``session.resume`` rows;\n``available`` is false for an unknown or foreign child. With ``reset`` they are the whole\ntranscript and replace what the caller holds (the first read, and after the child compacted,\nrotated, rewound or rewrote a row); otherwise they are only the rows appended after ``after``.",
         "properties": {
           "subagent_id": {
             "title": "Subagent Id",
@@ -43827,8 +43834,19 @@
             "type": "array"
           },
           "cursor": {
-            "title": "Cursor",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "reset": {
+            "title": "Reset",
+            "type": "boolean"
           }
         },
         "required": [
@@ -43837,7 +43855,8 @@
           "child_session_id",
           "running",
           "messages",
-          "cursor"
+          "cursor",
+          "reset"
         ],
         "title": "SubagentTranscriptResult",
         "type": "object"

@@ -316,23 +316,26 @@ canonical_method("session.automation", params=SessionAutomationParams, result=Se
 class SubagentTranscriptParams(Params):
     session_id: str
     subagent_id: str
-    #: A ``row_id`` cursor: only rows after it (the previous reply's ``cursor``); 0 = from the start.
-    after: int = 0
+    #: The previous reply's ``cursor``: only rows written since, unless the reply says ``reset``.
+    after: str | None = None
     profile: str | None = None
 
 
 class SubagentTranscriptResult(Result):
     """``gateway/session_subagent_transcript.py``: one child of the session's conversation (live
     through the roster, finished through its stored row). ``messages`` are ``session.resume`` rows;
-    ``available`` is false for an unknown or foreign child. A changed ``child_session_id`` (the
-    child's compression rotated it) means reload from ``after: 0``."""
+    ``available`` is false for an unknown or foreign child. With ``reset`` they are the whole
+    transcript and replace what the caller holds (the first read, and after the child compacted,
+    rotated, rewound or rewrote a row); otherwise they are only the rows appended after ``after``."""
 
     subagent_id: str
     available: bool
     child_session_id: str | None
     running: bool
     messages: list[TranscriptMessage]
-    cursor: int
+    #: Opaque: pass it back as ``after``. None while the child is unavailable.
+    cursor: str | None
+    reset: bool
 
 
 canonical_method("subagent.transcript", params=SubagentTranscriptParams, result=SubagentTranscriptResult,

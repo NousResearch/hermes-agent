@@ -65,21 +65,25 @@ stored transcript, live or finished, for a viewer of its parent session:
 
 ```json
 {"subagent_id": "sa-0-1a2b3c4d", "available": true, "child_session_id": "20261017_104110_e10994",
- "running": true, "cursor": 42,
+ "running": true, "reset": true, "cursor": "42.2.0.20261017_104110_e10994",
  "messages": [{"role": "user", "content": "…", "row_id": 40, "timestamp": 1760697670.1},
               {"role": "assistant", "content": "…", "row_id": 42, "timestamp": 1760697674.8}]}
 ```
 
 `messages` are the same rows `session.resume` returns (`stored_history`), oldest first;
-rows the child's compression summarized away carry `archived: true`.
-`after` is a `row_id` cursor (default `0`, the whole transcript): pass the previous
-reply's `cursor` to receive only rows written since. When `child_session_id` changes
-(the child's own compression rotated it), reload with `after: 0`. A running child is
+rows the child's compression summarized away carry `archived: true`. `cursor` is opaque:
+pass it back as `after` to receive only the rows written since (`reset: false`, often
+none). When `reset` is true the messages are the whole transcript and replace what the
+caller holds: on the first read (no `after`), and whenever the rows the cursor covered
+changed (the child compacted in place, rotated to a new `child_session_id`, rewound or
+rewrote a row). A cursored poll costs a count and a keyset read of the new rows
+(`transcript_cursor_state`, `get_messages_as_conversation(after_id=...)`), not a transcript
+rebuild. A running child is
 the one the parent's roster names (the `subagent.list` rule, nested children included).
 A finished child is found through the `_subagent_id` stamped on its row at spawn, and
 only when its `parent_session_id` chain reaches this conversation through delegation and
 compression hops alone; a branch of the conversation does not lend its children. An
-unknown or foreign child answers `available: false` with no messages; an unknown session
+unknown or foreign child answers `available: false` with no messages and `cursor: null`; an unknown session
 is `not_found`. Runtimes that serve it advertise `subagent-transcript-v1` in
 `runtime.describe.capabilities`.
 

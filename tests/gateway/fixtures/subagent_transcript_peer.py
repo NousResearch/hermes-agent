@@ -80,6 +80,13 @@ async def probe():
         reply = await rpc(ws, 'subagent.transcript', session_id=sid, subagent_id=subagent_id, **extra)
         return reply.get('result', reply.get('error'))
 
+    from gateway import session_local_recovery
+    full_reads, full_read = [0], session_local_recovery.stored_history
+
+    def counted(*args, **kwargs):
+        full_reads[0] += 1
+        return full_read(*args, **kwargs)
+    session_local_recovery.stored_history = counted
     try:
         async with socket('owner') as ws, socket('peer_operator') as peer:
             created = await rpc(ws, 'session.create', request_id='transcript-owner', source='gui', toolsets=[])
@@ -105,9 +112,20 @@ async def probe():
                 # The child writes on while the viewer polls from the cursor it was handed.
                 receipt['rows']['live-child'].append(authority.db.append_message(
                     'live-child', role='assistant', content='live step two'))
+                polled_from = full_reads[0]
                 receipt['live_after'] = await transcript(ws, sid, 'sa-0-live', after=first['cursor'])
                 receipt['live_caught_up'] = await transcript(ws, sid, 'sa-0-live',
                                                              after=receipt['live_after']['cursor'])
+                receipt['full_reads_while_polling'] = full_reads[0] - polled_from
+                # The child compacts in place (the store write in-place compression commits): its id stays,
+                # the carried tail gets fresh row ids and the rows the viewer holds become archived.
+                authority.db.archive_and_compact('live-child', [
+                    {'role': 'user', 'content': 'live summary'}, {'role': 'assistant', 'content': 'live step two'}],
+                    tail_count=1)
+                receipt['live_compacted'] = await transcript(ws, sid, 'sa-0-live',
+                                                             after=receipt['live_caught_up']['cursor'])
+                receipt['live_compacted_caught_up'] = await transcript(
+                    ws, sid, 'sa-0-live', after=receipt['live_compacted']['cursor'])
             finally:
                 _unregister_subagent('sa-0-live', agent=running)
             # Ended: gone from the registry, still readable from the store.

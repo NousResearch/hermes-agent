@@ -49,7 +49,9 @@ def test_the_cursor_then_brings_the_result_and_the_answer(receipt):
     assert not after['running'] and [m['role'] for m in after['messages']] == ['tool', 'assistant'], after
     result, answer = after['messages']
     assert json.loads(result['content'])['output'] == 'LEAF_TOOL_DONE' and result['tool_name'] == 'terminal'
-    assert answer['content'] == 'LEAF_FINAL' and after['cursor'] == answer['row_id']
+    assert answer['content'] == 'LEAF_FINAL'
+    # A running child only appends: the poll stays on the cursor's delta read.
+    assert not after['reset'] and receipt['leaf_running']['reset'], after
     assert receipt['leaf_done']['messages'][-2:] == after['messages']
     # The orchestrator's own result row names how its nested child ended.
     [done] = json.loads(receipt['child_done']['messages'][-2]['content'])['results']

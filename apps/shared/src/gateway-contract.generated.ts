@@ -4916,17 +4916,18 @@ export interface SessionAutomationResult {
 export interface SubagentTranscriptParams {
   session_id: string
   subagent_id: string
-  after?: number
+  after?: string | null
   profile?: string | null
 }
-/** ``gateway/session_subagent_transcript.py``: one child of the session's conversation (live through the roster, finished through its stored row). ``messages`` are ``session.resume`` rows; ``available`` is false for an unknown or foreign child. A changed ``child_session_id`` (the child's compression rotated it) means reload from ``after: 0``. */
+/** ``gateway/session_subagent_transcript.py``: one child of the session's conversation (live through the roster, finished through its stored row). ``messages`` are ``session.resume`` rows; ``available`` is false for an unknown or foreign child. With ``reset`` they are the whole transcript and replace what the caller holds (the first read, and after the child compacted, rotated, rewound or rewrote a row); otherwise they are only the rows appended after ``after``. */
 export interface SubagentTranscriptResult {
   subagent_id: string
   available: boolean
   child_session_id: string | null
   running: boolean
   messages: TranscriptMessage[]
-  cursor: number
+  cursor: string | null
+  reset: boolean
 }
 export interface SessionDetachParams {
   session_id: string

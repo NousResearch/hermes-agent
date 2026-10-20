@@ -58,7 +58,7 @@ def format_message(content: str) -> str:
     text = _INVISIBLE_RE.sub("", text)
     # Collapse double spaces left over from stripped chars.
     text = re.sub(r"  +", " ", text)
-    for key, value in placeholders.items():
+    for key, value in reversed(list(placeholders.items())):
         text = text.replace(key, value)
     return text
 

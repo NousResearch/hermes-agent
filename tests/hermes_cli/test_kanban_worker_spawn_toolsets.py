@@ -138,6 +138,7 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
         "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n    - DISPATCHER_ONLY_TOKEN\n", encoding="utf-8")
     monkeypatch.setenv("DISPATCHER_ONLY_TOKEN", "dispatcher-secret")
     monkeypatch.setenv("SERVICE_INJECTED_SETTING", "dispatcher-setting")
+    monkeypatch.setenv("XDG_SERVICE_TOKEN", "dispatcher-xdg-secret")  # XDG_ is not a safe namespace
     # Host policy the cold-started gateway must share with the rest of the host.
     host = {"HERMES_GATEWAY_LOCK_DIR": str(tmp_path / "locks"), "XDG_STATE_HOME": str(tmp_path / "state"),
             "HERMES_DISABLE_LAZY_INSTALLS": "1"}
@@ -176,7 +177,7 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
     assert owner_env.get("MY_PASSTHROUGH_VAR") == "elias-value"
     assert owner_env["HERMES_HOME"] == str(profile)
     # A value only the dispatcher has never reaches the assignee: an overlay cannot remove it.
-    for name in ("DISPATCHER_ONLY_TOKEN", "SERVICE_INJECTED_SETTING"):
+    for name in ("DISPATCHER_ONLY_TOKEN", "SERVICE_INJECTED_SETTING", "XDG_SERVICE_TOKEN"):
         assert name not in captured["env"] and name not in owner_env, name
     for name, value in host.items():
         assert owner_env.get(name) == value, name

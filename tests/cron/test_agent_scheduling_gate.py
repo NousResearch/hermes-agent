@@ -42,6 +42,28 @@ class TestGateOffDefault:
         assert "cronjob" in disabled
 
 
+class TestSelfSchedulingPrompt:
+    def test_gate_off_keeps_hint_closed_without_scheduling_instruction(self, monkeypatch):
+        import cron.scheduler as scheduler
+        from cron.scheduler_prompt import _cron_hint
+
+        monkeypatch.setattr(scheduler, "load_config", lambda: {})
+        hint = _cron_hint()
+        assert "book this job's next run" not in hint
+        assert hint.endswith("]\n\n")
+
+    def test_gate_on_keeps_instruction_inside_important_frame(self, monkeypatch):
+        import cron.scheduler as scheduler
+        from cron.scheduler_prompt import _cron_hint
+
+        monkeypatch.setattr(scheduler, "load_config", lambda: {"cron": {"allow_agent_scheduling": True}})
+        hint = _cron_hint()
+        instruction = "book this job's next run"
+        assert instruction in hint
+        assert hint.index(instruction) < hint.rindex("]")
+        assert hint.endswith("]\n\n")
+
+
 class TestGateOn:
     def test_cronjob_dropped_from_denylist(self):
         cfg = {"cron": {"allow_agent_scheduling": True}}

@@ -205,10 +205,9 @@ class _TurnScopes:
 
     approval: Any = None
     session_tokens: list = dataclasses.field(default_factory=list)
-    home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
-    secret: Any = None
-    terminal: Any = None
-    scope: Any = None  # the runtime scope slot (hermes_scope); released with the home
+    # The turn's profile state (home, secrets, terminal policy, runtime scope) as ONE bind; released
+    # whole after post-turn housekeeping, which still runs under the session's own profile.
+    profile: Any = None
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -675,10 +674,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     # built from the env frozen at activation — get_secret() fails closed then, so an unscoped default
     # member's hosted-room turn otherwise died with UnscopedSecretError, and ambient TERMINAL_* a
     # secondary context poisoned must never become the launch turn's authority.
-    bound = _profile_runtime_scope_tokens(session.get("profile_home"))
-    if bound is not None:
-        scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
-        scopes.scope = bound.scope
+    scopes.profile = _profile_runtime_scope_tokens(session.get("profile_home"))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -1014,7 +1010,8 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
 
 
 def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
-    """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset scopes (not home)."""
+    """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset the
+    approval and session-context scopes. The profile scope stays bound, whole, for housekeeping."""
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
     history, run_kwargs = st.history, st.run_kwargs
@@ -1040,28 +1037,20 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
         if scopes.approval is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
-    if scopes.secret is not None:
-        reset_secret_scope(scopes.secret)
-    if scopes.terminal is not None:
-        from tools.terminal_scope import reset_terminal_scope
-        reset_terminal_scope(scopes.terminal)
     _clear_session_context(scopes.session_tokens)
 
 
 def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
     """Best-effort tail AFTER the turn settled: a slow trim must not hold the bookend (#131740)."""
-    try:  # while the profile HERMES_HOME override is still active (session's own config)
+    try:  # while the session's profile scope is still bound (its own config, secrets and policy)
         from hermes_cli.mem_trim import trim_memory
         # Every OTHER session must be idle (#58576).
         if _sessions_quiescent(exclude=sid):
             trim_memory(reason="tui turn completion")
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
-    if st.scopes.home is not None:
-        reset_hermes_home_override(st.scopes.home)
-    if st.scopes.scope is not None:
-        from hermes_scope import reset_scope
-        reset_scope(st.scopes.scope)
+    if st.scopes.profile is not None:
+        st.scopes.profile.reset()
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.

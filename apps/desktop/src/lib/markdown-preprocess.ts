@@ -6,6 +6,7 @@ import { mediaKind, mediaMarkdownHref } from '@/lib/media'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
+import { DIRECTIVE_WITH_BODY_RE } from '@/lib/transcript-directives'
 
 // Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
 // `scratchpad`/`analysis`.
@@ -113,10 +114,6 @@ const URL_LIKE_SPLIT_RE = /(<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>"'`*]+[^\s<>"'
 // literal tilde, so CJK ranges (`1~10`) and approximation prefixes (`~¥0.089`)
 // no longer pair up into a GFM strikethrough span.
 const LONE_TILDE_RE = /(?<![\\~])~(?!~)/g
-// Same shape as DIRECTIVE_LINE_RE, anchored to a single line: escapeLoneTildes
-// tests one line at a time and must not carry the shared regex's `g` flag
-// (stateful lastIndex would skip every other directive line).
-const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}[ \t]*$/
 // HTML-shaped prose tokens (`<tool_call>`, `<observation>`...) that are NOT
 // real inline elements get swallowed by the HTML-aware renderer (parse5 sees
 // an unclosed tag and consumes the rest of the message). Match unknown tag-like
@@ -224,14 +221,17 @@ const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 const FILE_LINK_RE =
   /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target>(?:<(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^>]*>)|(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*)\)/gi
 
-// A transcript directive on its own line: `::name{...}`. Attribute values are
-// prose the model wrote (a task brief, a question) and read as markdown to the
-// parser — `*by week*` becomes <em>, `a_b c_d` becomes <em>, `~/x` opens
-// strikethrough. Any of those splits the paragraph into element children, the
-// directive stops being text-only, and the raw line paints as the user's
-// message. Same shape as lib/transcript-directives.ts DIRECTIVE_RE.
-const DIRECTIVE_LINE_RE = /^([ \t]*)(::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\})[ \t]*$/gm
-const MARKDOWN_INLINE_META_RE = /[\\`*_~[\]<>]/g
+// Transcript directives (`::name{...}`) carry DATA in their attributes: a task
+// brief, a signed URL with `_`/`~`/`&` in its query. Every prose rewrite here
+// corrupts them (the URL autolinker wraps `url="https://…"` in `<…>`, currency
+// escaping leaves `\$`), and the parser reads what survives as markdown
+// (`*by week*` → <em>, `~/x` → strikethrough), splitting the paragraph so the
+// card is never claimed. So directives are lifted out before the rewrites and
+// put back with every inline metachar backslash-escaped; the parser consumes
+// the escapes and the renderer sees the directive byte-for-byte.
+const MARKDOWN_INLINE_META_RE = /[\\`*_~[\]<>$&]/g
+const DIRECTIVE_SLOT_RE = /\uE000(\d+)\uE001/g
+const DIRECTIVE_OR_CODE_RE = new RegExp(`(${DIRECTIVE_WITH_BODY_RE.source})|${INLINE_CODE_SPLIT_RE.source}`, 'g')
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -485,16 +485,7 @@ function escapeLoneTildes(text: string): string {
         return part
       }
 
-      // Directive lines are shielded verbatim further down the pipeline:
-      // shieldDirectiveLines backslash-escapes every inline metachar (`~`
-      // included) so the card value arrives as ONE text node. Escaping a `~`
-      // here would leave `\\~` after the shield doubles the backslash, and the
-      // parser then emits the stray `\` into the directive's rendered value
-      // (#50871 follow-up: `brief="Sync ~/notes to ~/backup nightly"`).
-      return part
-        .split('\n')
-        .map(line => (DIRECTIVE_LINE_ONLY_RE.test(line) ? line : line.replace(LONE_TILDE_RE, '\\~')))
-        .join('\n')
+      return part.replace(LONE_TILDE_RE, '\\~')
     })
     .join('')
 }
@@ -609,19 +600,31 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
 }
 
 /**
- * Backslash-escape markdown inline syntax inside directive lines so the parser
- * yields one text node. The escapes are consumed by the parser, so the
- * directive the renderer sees is byte-for-byte what the model wrote.
+ * Lift every directive outside inline code out of `text`, leaving a slot the
+ * prose rewrites cannot match. `restore` puts each back shielded: inline
+ * markdown backslash-escaped so the parser yields it as plain text.
  */
-export function shieldDirectiveLines(text: string): string {
-  if (!text.includes('::')) {
-    return text
+function liftDirectives(text: string): { text: string; restore: (rewritten: string) => string } {
+  const lifted: string[] = []
+
+  if (text.includes('::') && !text.includes('\uE000')) {
+    // One leftmost-wins scan: a code span that opens first keeps a directive
+    // inside it as code; a directive that opens first keeps the backticks in
+    // its attribute values (`brief="wrap the `run` command"`) as data.
+    text = text.replace(DIRECTIVE_OR_CODE_RE, (match, directive?: string) =>
+      directive ? `\uE000${lifted.push(directive) - 1}\uE001` : match
+    )
   }
 
-  return text.replace(
-    DIRECTIVE_LINE_RE,
-    (_match, indent: string, directive: string) => indent + directive.replace(MARKDOWN_INLINE_META_RE, '\\$&')
-  )
+  return {
+    text,
+    restore: rewritten =>
+      lifted.length === 0
+        ? rewritten
+        : rewritten.replace(DIRECTIVE_SLOT_RE, (_slot, index: string) =>
+            lifted[Number(index)].replace(MARKDOWN_INLINE_META_RE, '\\$&')
+          )
+  }
 }
 
 /**
@@ -1152,10 +1155,11 @@ export function preprocessMarkdown(text: string): string {
       // blocks stay intact. The HTML-depth clamp belongs here for the same
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
-      // Directive lines are shielded last, after the prose rewrites have had
-      // their look, so nothing re-introduces markdown into them.
-      return shieldDirectiveLines(
-        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)), sourceListIds))
+      // Directives sit out the rewrites entirely (see liftDirectives).
+      const { text: prose, restore } = liftDirectives(part)
+
+      return restore(
+        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(prose)), sourceListIds))
       )
     })
     .join('')

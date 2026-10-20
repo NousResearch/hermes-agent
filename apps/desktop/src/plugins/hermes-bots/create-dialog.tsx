@@ -191,6 +191,9 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
+  // Bumped by every discard: a profiles.create still in flight when the user
+  // cancels belongs to an abandoned draft and must not adopt the dialog.
+  const draftGenRef = useRef(0)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -294,16 +297,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // Create Agent it is a DRAFT. Cancelling the dialog deletes it, so
   // preconfigure-then-back-out leaves zero residue. Best-effort and
   // fire-and-forget: a failed cleanup surfaces a toast, never blocks close.
-  const discardDraft = () => {
-    const draft = createdRef.current
-
-    if (!draft) {
-      return
-    }
-
-    createdRef.current = null
-    flightRef.current = null
-
+  //
+  // A cancel that lands while profiles.create is still in flight orphaned the
+  // profile that flight mints: createdRef is only set once the RPC returns, so
+  // the discard saw nothing to delete and the draft survived as a bot
+  // (#141623). The flight now checks, on return, whether its draft was
+  // discarded meanwhile and deletes it itself.
+  const removeDraftProfile = (draft: string) => {
     const discard = remoteTarget
       ? requestForTarget('cli.exec', {
           argv: ['profile', 'delete', draft, '--yes']
@@ -320,6 +320,18 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         })
       )
       .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
+  }
+
+  const discardDraft = () => {
+    const draft = createdRef.current
+
+    draftGenRef.current += 1
+    createdRef.current = null
+    flightRef.current = null
+
+    if (draft) {
+      removeDraftProfile(draft)
+    }
   }
 
   const reset = () => {
@@ -454,6 +466,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       return Promise.resolve(null)
     }
 
+    const generation = draftGenRef.current
+
     const flight = singleFlight(flightRef, async () => {
       await requestForTarget('profiles.create', {
         name: slug,
@@ -482,6 +496,16 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
             }
           : {})
       })
+
+      // Discarded while the create was in flight: this dialog minted the
+      // profile and nobody will complete it, so delete it on the target it
+      // was created on and configure nothing.
+      if (generation !== draftGenRef.current) {
+        removeDraftProfile(slug)
+
+        return null
+      }
+
       createdRef.current = slug
 
       // Apply capability picks from the Advanced tabs (best-effort; the

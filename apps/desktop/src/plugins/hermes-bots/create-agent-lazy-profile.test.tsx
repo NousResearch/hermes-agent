@@ -312,6 +312,56 @@ describe('materializing the draft profile', () => {
   })
 })
 
+// #141623: the draft profile is minted before the dialog finishes. Cancelling
+// must delete the draft THIS dialog created, including one whose profiles.create
+// is still in flight when the user backs out — it used to survive as a bot.
+describe('cancelling New Bot discards its draft profile', () => {
+  it('deletes a draft that already exists', async () => {
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' }))
+    expect(mocks.createCanonicalChat).not.toHaveBeenCalled()
+  })
+
+  it('deletes the draft whose profiles.create was still in flight at cancel', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishCreate!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) =>
+      method === 'profiles.create'
+        ? new Promise(resolve => {
+            finishCreate = () => resolve({})
+          })
+        : base(method, params)
+    )
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    finishCreate()
+
+    await waitFor(() => expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' }))
+    // The abandoned draft is not configured or adopted as a finished bot.
+    expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+    expect(mocks.createCanonicalChat).not.toHaveBeenCalled()
+  })
+
+  it('never deletes a bot the dialog finished creating', async () => {
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+
+    // Reopened and cancelled without touching anything: nothing to discard.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(mocks.deleteBot).not.toHaveBeenCalled()
+  })
+})
+
 describe('provider readiness before the intro turn', () => {
   const notReady = { error: 'No usable credentials found for openrouter.', ok: false }
 

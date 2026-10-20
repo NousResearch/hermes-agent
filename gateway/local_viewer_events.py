@@ -135,6 +135,10 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
         _publish_subagent(turn, event_type, _subagent_payload(
             event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
         return
+    if event_type == "tool.progress":
+        from agent.tool_progress_relay import tool_progress_payload
+        turn._publish_execution(event_type, tool_progress_payload(name, preview, kwargs))
+        return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
     from gateway.session_cli_turn import classic_cli_turn

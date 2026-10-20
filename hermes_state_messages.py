@@ -1165,11 +1165,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         on one definition of a logical message; the live copy wins its group via the read
         path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
         first_id: dict[bytes, int] = {}
+        uid_identity: dict[str, bytes] = {}  # message_uid -> its first copy's identity (the carrier rule)
         last_id = 0
         while True:
             rows = conn.execute(
                 "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                "display_kind, display_metadata, display_order, display_identity "
+                "display_kind, display_metadata, display_order, display_identity, message_uid, _compressed_summary "
                 "FROM messages INDEXED BY idx_messages_session_id "
                 "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                 "ORDER BY id LIMIT 1000",
@@ -1179,6 +1180,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             for row in rows:
                 last_id = row["id"]
                 identity = self._display_identity(self._display_dedupe_key(row))
+                # Same rule as _dedupe_display_generations: a summary carrier is a copy of the message its uid names.
+                uid = row["message_uid"]
+                if uid and row["_compressed_summary"]:
+                    identity = uid_identity.get(uid, identity)
+                elif uid:
+                    uid_identity.setdefault(uid, identity)
                 # A row already holding this identity keeps its stored slot (an in-place prune changes a
                 # row's content, not its place); otherwise the slot is the identity's first row.
                 kept = row["display_order"] if row["display_identity"] == identity else None

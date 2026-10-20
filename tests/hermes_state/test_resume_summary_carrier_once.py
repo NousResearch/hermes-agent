@@ -34,7 +34,12 @@ def test_summary_carrier_does_not_show_its_message_twice(tmp_path):
         db.archive_and_compact("s", [stored[0], carried, *stored[2:]])
 
         shown = db.get_messages_as_conversation("s", include_ancestors=True, include_compacted=True)
-        assert sum(str(m.get("content")).count("REPLY-ONE") for m in shown) == 1, shown
-        # The other messages are untouched: each still shows exactly once.
-        for text in ("turn one", "turn two", "REPLY-TWO"):
-            assert sum(str(m.get("content")).count(text) for m in shown) == 1, (text, shown)
+        listed = db.get_messages("s", include_compacted=True)  # the SQL display read exports use
+        export = db.export_session("s", include_compacted=True)
+        assert export is not None
+        exported = export["messages"]
+        for read in (shown, listed, exported):
+            assert sum(str(m.get("content")).count("REPLY-ONE") for m in read) == 1, read
+            # The other messages are untouched: each still shows exactly once.
+            for text in ("turn one", "turn two", "REPLY-TWO"):
+                assert sum(str(m.get("content")).count(text) for m in read) == 1, (text, read)

@@ -39,6 +39,10 @@ export const zhHantChrome = {
 
   sidebar: {
     profileRail: '設定檔列',
+    resize: {
+      pinnedBoundary: '調整已釘選與工作階段的大小',
+      sessionsBottom: '調整工作階段的大小'
+    },
     markAllRead: '全部標示為已讀',
     filter: {
       grouping: '分組',

@@ -119,6 +119,8 @@ interface SidebarSessionsSectionProps {
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
+  /** Marks the root as `data-sidebar-section` so a SectionSash can measure it. */
+  sectionId?: string
   rootClassName?: string
   contentClassName?: string
   emptyState: React.ReactNode
@@ -209,6 +211,7 @@ export function SidebarSessionsSection({
   onNewSessionInWorkspace,
   onNewSessionSplit,
   pinned,
+  sectionId,
   rootClassName,
   contentClassName,
   emptyState,
@@ -624,7 +627,7 @@ export function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={rootClassName} data-sidebar-section={sectionId}>
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}

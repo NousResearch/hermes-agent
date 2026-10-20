@@ -3718,6 +3718,10 @@ export const deOverrides = {
       working: 'In Arbeit',
       done: 'Erledigt'
     },
+    resize: {
+      pinnedBoundary: 'Größe von „Angepinnt“ und „Sessions“ ändern',
+      sessionsBottom: 'Größe von „Sessions“ ändern'
+    },
     markAllRead: 'Alle als gelesen markieren'
   },
   composer: {

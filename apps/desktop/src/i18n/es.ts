@@ -3711,6 +3711,10 @@ export const esOverrides = {
       working: 'En progreso',
       done: 'Completado'
     },
+    resize: {
+      pinnedBoundary: 'Cambiar el tamaño de Fijadas y Sesiones',
+      sessionsBottom: 'Cambiar el tamaño de Sesiones'
+    },
     markAllRead: 'Marcar todo como leído'
   },
   composer: {

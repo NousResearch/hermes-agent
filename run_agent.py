@@ -23,6 +23,18 @@ if "hermes_cli.main" not in sys.modules:
     if _early_recovery.restore_interrupted_pull():
         _early_recovery.relaunch_after_restore()
 
+# One TLS authority, in force before anything below can import a provider SDK. Every
+# entry point (the `hermes` CLI, the `hermes-agent` console script, tui_gateway,
+# acp_adapter) installs the platform store at startup, but a process that embeds the
+# agent as a library (`from run_agent import AIAgent`, as this module's docstring
+# advertises) reaches none of them. Trust then landed lazily instead — after botocore
+# had already cached the pre-injection `ssl.SSLContext`, which left every later
+# `create_urllib3_context()` recursing until the stack ran out. Never raises; see
+# agent/ssl_verify.py.
+from agent.ssl_verify import install_truststore
+
+install_truststore()
+
 import json
 import logging
 logger = logging.getLogger(__name__)

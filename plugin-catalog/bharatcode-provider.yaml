@@ -1,8 +1,8 @@
 name: bharatcode-provider
 repo: https://github.com/thenabbu/bharatcode-hermes
-sha: 34f72f63b25551525008584678fd9d2c70f6bb77
+sha: f4cc1d1f2977963173b23b9ac6a19c3ca8851050
 subdir: model-providers/bharatcode
-description: "BharatCode AI (bharatcode.ai) OpenAI-compatible model provider — free student tier, native /model integration. Disclosure — model provider; prompts, tool schemas and BHARATCODE_API_KEY go to bharatcode.ai (BharatCode, India), which forwards them to third-party inference partners, some outside India; outside paid Pro plans BharatCode may retain prompt/response logs for debugging and abuse review."
+description: "BharatCode (bharatcode.ai) OpenAI-compatible model provider — free student tier, native /model integration. Disclosure — model provider; prompts, tool schemas and BHARATCODE_API_KEY go to bharatcode.ai (BharatCode, India), which processes prompts through third-party inference partners, some outside India; outside paid Pro (complimentary or referral Pro included) BharatCode may retain private prompt/response logs for debugging, abuse review and product quality, and even on paid Pro a flagged account can have a time-limited sample of up to 100 prompts and responses captured for security review."
 maintainer: thenabbu
 tier: community
 category: models

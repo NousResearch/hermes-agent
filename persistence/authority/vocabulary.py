@@ -36,10 +36,11 @@ CRON_PRINCIPAL_ID = "cron-owner"
 CRON_REQUEST_PREFIX = "cron:"
 
 #: Local surfaces whose unrouted rows are owner history the native resume adopts.
-LEGACY_LOCAL_SOURCES = frozenset({"cli", "tui", "gui", "desktop", "oneshot", "tool", "acp"})
+#: ``webui`` rows come from the Hermes relay APK (its signed-in Nous identity is a label, not an owner).
+LEGACY_LOCAL_SOURCES = frozenset({"cli", "tui", "gui", "desktop", "oneshot", "tool", "acp", "webui"})
 
 #: Legacy labels that are not creation sources of their own.
-LEGACY_CREATION_SOURCES = {"desktop": "gui"}
+LEGACY_CREATION_SOURCES = {"desktop": "gui", "webui": "gui"}
 
 #: Labels a routeless row can carry that never name a chat app: automation and recovery rows, a retired platform, and a third-party WebUI that runs its own agent on this store (its rows stay read-only).
 NOT_CLIENT_LABELS = frozenset({"cron", "subagent", "kanban", "bot_room", "a2a", "webhook", "api_server", "import", "recovered",

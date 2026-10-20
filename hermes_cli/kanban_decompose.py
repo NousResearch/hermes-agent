@@ -139,7 +139,7 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
     silently become the owner of work the card was assigned away from (#114294).
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get(key) or "").strip()
+    explicit = str(kanban_cfg.get(key) or "").strip()
     for candidate in (explicit, (fallback or "").strip()):
         if candidate:
             try:

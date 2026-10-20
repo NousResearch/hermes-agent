@@ -265,6 +265,10 @@ def prepare_background_review_run(
     review_session_id = str(
         session_id if session_id is not None else getattr(agent, "session_id", None) or ""
     )
+    if not review_session_id:
+        # An id-less guard owns its own slot, keyed by object as ``run_agent._review_queue_key``
+        # does: two such guards in one profile never collapse into ``(profile, '')``.
+        review_session_id = f"anon:{id(agent)}"
     try:
         from agent import review_admission
 

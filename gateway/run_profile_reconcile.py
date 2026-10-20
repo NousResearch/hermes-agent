@@ -348,6 +348,8 @@ class GatewayProfileReconcileMixin:
             record_multiplex_decision, recorded_standalone_reason)
         from hermes_cli.profiles import profiles_to_serve
         from hermes_constants import get_default_hermes_root, get_process_hermes_home
+        if not self._running or getattr(self, "_draining", False):
+            return False  # shutdown began: never arm fail-closed secrets under drain-time work
         if recorded_standalone_reason() not in (SINGLE_PROFILE_REASON, AUTO_MIGRATION_OPTED_OUT_REASON):
             return False
         launch = get_process_hermes_home().resolve()

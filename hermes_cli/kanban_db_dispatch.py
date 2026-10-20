@@ -2842,7 +2842,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # For another profile, host plumbing only: a gateway the client cold-starts gets this env plus the
     # assignee's secrets, which replace values but never remove one (kanban_worker_env).
     if routed:
-        env = worker_client_env(env)
+        env = worker_client_env(env, profile_home)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP

@@ -1,0 +1,18 @@
+name: true402-swap-guard
+repo: https://github.com/true402/hermes-swap-guard
+sha: c1ce7db477251ba70f41bf03fb76e7cd2bdfb562
+subdir: true402_swap_guard
+description: "Blocks token buys when true402 finds a honeypot or a rug in progress — one pre_tool_call hook in front of every trading tool, MCP server and terminal command (Base, Ethereum, BSC, Solana). Disclosure — for each token a tool call would buy, the token address and chain are sent to true402.dev; nothing about prompts, the trade or other tools. Optional paid checks (only with the TRUE402_PAYER_PRIVATE_KEY secret, read through Hermes's secret route) send a signed USDC payment that reveals the paying wallet's address to true402 and settle on Base; capped at $0.02 per check and 50 checks per UTC day. Stores one file, the day's paid-check count, in its plugin data directory. Blocks only on a definite danger verdict for a token being bought; a possible sale is sent to the approval gate instead, and an uncheckable token passes by default (configurable). No shell commands, background processes or telemetry."
+maintainer: true402
+tier: community
+category: tools
+title: true402 swap guard
+requires_hermes: ">=0.22.0"
+docs_url: https://true402.dev/integrations
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

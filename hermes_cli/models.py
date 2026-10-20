@@ -1981,10 +1981,10 @@ def _credential_fingerprint(provider: str) -> str:
         pcfg = PROVIDER_REGISTRY.get(provider)
         if pcfg is not None:
             for ev in getattr(pcfg, "api_key_env_vars", ()) or ():
-                parts.append(f"{ev}={_fp_env(ev, '')}")
+                parts.append(f"{ev}={_fp_env(ev)}")
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
-                parts.append(f"{bev}={_fp_env(bev, '')}")
+                parts.append(f"{bev}={_fp_env(bev)}")
     except Exception:
         pass
 
@@ -1996,7 +1996,7 @@ def _credential_fingerprint(provider: str) -> str:
         if profile is not None and profile.auth_type == "external_process":
             for ev in (*profile.process_command_env_vars, profile.process_args_env_var):
                 if ev:
-                    parts.append(f"{ev}={_fp_env(ev, '')}")
+                    parts.append(f"{ev}={_fp_env(ev)}")
     except Exception:
         pass
 

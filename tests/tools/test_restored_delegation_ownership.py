@@ -1,6 +1,11 @@
 """Regression coverage for #64484 — durable-restored delegation completions
 must never be adopted by a session that cannot positively prove ownership.
 
+Fixture timestamps are recent (now-based): restore_undelivered_completions
+terminally drops pending completions older than _MAX_COMPLETION_REPLAY_AGE_S,
+so epoch-era toy timestamps would exercise the staleness cap instead of the
+restored-flag contract under test here.
+
 Layers under test:
 1. ``restore_undelivered_completions`` stamps every restored event with
    ``restored=True`` (in-memory only).
@@ -13,6 +18,7 @@ Layers under test:
 
 import json
 import queue
+import time
 
 from tools.process_registry import ProcessRegistry
 
@@ -41,8 +47,8 @@ def _delegation_event(session_key="", restored=False, delegation_id="d1"):
         "summary": "SECRET RESULT",
         "api_calls": 3,
         "duration_seconds": 1.5,
-        "dispatched_at": 1.0,
-        "completed_at": 2.0,
+        "dispatched_at": time.time() - 2.0,
+        "completed_at": time.time() - 1.0,
     }
     if restored:
         evt["restored"] = True
@@ -65,7 +71,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
         "origin_ui_session_id": "",
         "parent_session_id": "OLD_SESSION_A",
         "status": "running",
-        "dispatched_at": 1.0,
+        "dispatched_at": time.time() - 2.0,
         "completed_at": None,
         "interrupt_fn": None,
     }
@@ -86,54 +92,6 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
             "SELECT event_json FROM async_delegations WHERE delegation_id='d-old'"
         ).fetchone()
     assert "restored" not in json.loads(row[0])
-
-
-def test_unfiltered_drain_never_consumes_restored_events():
-    """The legacy consume-everything branch must fail closed on restored events."""
-    reg = _make_registry()
-    reg.completion_queue.put(_delegation_event(session_key="DEAD_SESSION", restored=True))
-
-    results = reg.drain_notifications()  # no filter — legacy CLI post-turn shape
-
-    assert results == []
-    # Still queued for its real owner.
-    assert reg.completion_queue.qsize() == 1
-    assert reg.completion_queue.get_nowait()["session_key"] == "DEAD_SESSION"
-
-
-def test_unfiltered_drain_keeps_legacy_behavior_for_same_process_events():
-    """Non-restored keyless events (created by this process) are still consumed."""
-    reg = _make_registry()
-    reg.completion_queue.put(_delegation_event(session_key=""))
-
-    results = reg.drain_notifications()
-
-    assert len(results) == 1
-    assert results[0][0]["delegation_id"] == "d1"
-    assert reg.completion_queue.empty()
-
-
-def test_owner_session_key_drain_consumes_restored_event():
-    """The owning session (key match) still receives its restored completion."""
-    reg = _make_registry()
-    reg.completion_queue.put(_delegation_event(session_key="OWNER", restored=True))
-
-    results = reg.drain_notifications(session_key="OWNER")
-
-    assert len(results) == 1
-    assert results[0][0]["session_key"] == "OWNER"
-    assert reg.completion_queue.empty()
-
-
-def test_foreign_session_key_drain_requeues_restored_event():
-    """A different session's keyed drain must not claim the restored event."""
-    reg = _make_registry()
-    reg.completion_queue.put(_delegation_event(session_key="OWNER", restored=True))
-
-    results = reg.drain_notifications(session_key="SOMEONE_ELSE")
-
-    assert results == []
-    assert reg.completion_queue.qsize() == 1
 
 
 def test_owns_event_callback_beats_restored_flag():

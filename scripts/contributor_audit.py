@@ -24,14 +24,13 @@ from collections import defaultdict
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Import AUTHOR_MAP and resolve_author from the sibling release.py module
+# Import resolve_author from the release tooling's author map
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
-
-from release import resolve_author  # noqa: E402
-
 REPO_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.releases.authors import resolve_author
 
 # ---------------------------------------------------------------------------
 # AI assistants, bots, and machine accounts to exclude from contributor lists
@@ -49,7 +48,18 @@ IGNORED_PATTERNS = [
     re.compile(r"^dependabot", re.IGNORECASE),
     re.compile(r"^renovate", re.IGNORECASE),
     re.compile(r"^Hermes\s+(Agent|Audit)$", re.IGNORECASE),
+    re.compile(r"^nousbot(-eng)?$", re.IGNORECASE),
     re.compile(r"^Ubuntu$", re.IGNORECASE),
+    # v0.20.0 audit additions:
+    re.compile(r"^Blut-?Agent$", re.IGNORECASE),          # self-described AI agent account
+    re.compile(r".*\[bot\]$", re.IGNORECASE),             # any GitHub [bot] suffix (hermes-seaeye[bot] etc.)
+    re.compile(r"^TRON$", re.IGNORECASE),                 # AgentMail agent
+    re.compile(r"^Happy$", re.IGNORECASE),                # happy.engineering AI agent
+    re.compile(r"^Orca$", re.IGNORECASE),                 # Stably AI agent
+    # v0.21.0 audit additions:
+    re.compile(r"^Junie$", re.IGNORECASE),                # JetBrains Junie AI agent
+    re.compile(r"^GPT-[\d.]+\s*Codex$", re.IGNORECASE),   # OpenAI Codex model trailer
+    re.compile(r"^cursoragent$", re.IGNORECASE),          # Cursor AI GitHub account
 ]
 
 IGNORED_EMAILS = {
@@ -59,10 +69,18 @@ IGNORED_EMAILS = {
     "cursoragent@cursor.com",
     "hermes@nousresearch.com",
     "hermes-audit@example.com",
+    "nousbot@nousresearch.com",
     "hermes@habibilabs.dev",
     "omx@oh-my-codex.dev",
     "codex@openai.com",
     "noreply@commandcode.ai",
+    # v0.20.0 audit additions — AI-agent co-author trailers:
+    "tron-agent@agentmail.to",      # TRON (AgentMail agent)
+    "yesreply@happy.engineering",   # Happy (AI coding agent)
+    "help@stably.ai",               # Orca (Stably AI agent)
+    # v0.21.0 audit additions — AI-agent co-author trailers:
+    "junie@jetbrains.com",          # JetBrains Junie
+    "noreply@openai.com",           # GPT-x Codex model trailer
 }
 
 
@@ -85,8 +103,9 @@ def git(*args, cwd=None):
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"  [warn] git {' '.join(args)} failed: {result.stderr.strip()}", file=sys.stderr)
@@ -110,8 +129,9 @@ def gh_pr_list():
                 "--limit", "300",
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
+            check=False,
         )
         if result.returncode != 0:
             print(f"  [warn] gh pr list failed: {result.stderr.strip()}", file=sys.stderr)
@@ -271,8 +291,6 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
         pr_number = pr.get("number", "?")
 
         # Also credit the PR author
-        pr_author = pr.get("author", {})
-        pr_author_login = pr_author.get("login", "") if isinstance(pr_author, dict) else ""
 
         for pattern in SALVAGE_PATTERNS:
             for match in pattern.finditer(body):
@@ -299,7 +317,7 @@ def check_release_file(release_file, all_contributors):
         missing: set of handles NOT found in the file
     """
     try:
-        content = Path(release_file).read_text(encoding="utf-8")
+        content = Path(release_file).read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         print(f"  [error] Release file not found: {release_file}", file=sys.stderr)
         return set(), set(all_contributors)

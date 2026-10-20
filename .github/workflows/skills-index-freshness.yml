@@ -6,6 +6,10 @@ name: Skills Index Freshness Check
 # this workflow opens a GitHub issue so we hear about it before users do.
 #
 # Triggered every 4 hours so we catch a stuck cron within one tick.
+#
+# The check-catalog-cors job watches the same host from Hermes Desktop's side:
+# it fetches /docs/api/plugins.json with a browser's Origin header and files
+# its own issue when a browser would block the fetch.
 
 on:
   schedule:
@@ -19,9 +23,18 @@ permissions:
 jobs:
   check-freshness:
     if: github.repository == 'NousResearch/hermes-agent'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
+    environment: trusted-automation
     steps:
+      # `Get GitHub App token` below is a LOCAL composite action
+      # (./.github/actions/get-app-token), so the repository must be on disk
+      # before it can be resolved. Without this checkout the job dies with
+      # "Can't find 'action.yml' ... under .github/actions/get-app-token"
+      # every time the probe is non-ok — i.e. exactly when the watchdog is
+      # supposed to file its issue.
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+
       - name: Probe live index
         id: probe
         run: |
@@ -108,10 +121,18 @@ jobs:
             echo "Summary:      ${{ steps.probe.outputs.summary }}"
           fi
 
+      - name: Get GitHub App token
+        if: steps.probe.outputs.status != 'ok'
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'
         env:
-          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
         run: |
@@ -146,5 +167,76 @@ jobs:
             echo "Opening new watchdog issue"
             gh issue create --repo "${{ github.repository }}" \
               --title "$TITLE_PREFIX Skills index is stale or degraded ($STATUS)" \
+              --body "$BODY"
+          fi
+
+  check-catalog-cors:
+    # Desktop's hermes://plugin/install?catalog= links fetch /docs/api/plugins.json
+    # cross-origin. A browser rejects that fetch when any response in the redirect
+    # chain lacks Access-Control-Allow-Origin (#136483). The probe above uses
+    # curl -L, which never checks CORS, so it stays green while Desktop is blocked.
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    environment: trusted-automation
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+
+      - name: Fetch the plugin catalog the way Desktop does
+        id: probe
+        run: |
+          set +e
+          detail=$(python3 scripts/ci/check_catalog_cors.py)
+          code=$?
+          echo "$detail"
+          echo "detail=$detail" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "status=ok" >> "$GITHUB_OUTPUT" ;;
+            1) echo "status=blocked" >> "$GITHUB_OUTPUT" ;;
+            *) echo "status=unreachable" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Get GitHub App token
+        if: steps.probe.outputs.status != 'ok'
+        id: app-token
+        uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Open issue when Desktop cannot read the catalog
+        if: steps.probe.outputs.status != 'ok'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STATUS: ${{ steps.probe.outputs.status }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+        run: |
+          # Own title prefix, so these reports never land on a skills-index issue.
+          TITLE_PREFIX="[plugin-catalog-cors-watchdog]"
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --search "in:title \"$TITLE_PREFIX\"" \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("'"$TITLE_PREFIX"'")) | .number' \
+            | head -1)
+          BODY="Hermes Desktop cannot read the plugin catalog.
+
+          **Status:** \`$STATUS\`
+          **Detail:** $DETAIL
+
+          Desktop's \`hermes://plugin/install?catalog=\` links fetch \`/docs/api/plugins.json\` cross-origin.
+          A browser rejects that fetch when any response in the redirect chain, including the docs host's
+          redirect to GitHub Pages, lacks \`Access-Control-Allow-Origin\`. Every catalog install link then
+          shows \"Could not load the Hermes plugin catalog\". Background: #136483.
+
+          This issue was opened by \`.github/workflows/skills-index-freshness.yml\` (job \`check-catalog-cors\`). Close it once the header is back; the next probe will reopen it if it's still broken."
+          if [ -n "$existing" ]; then
+            echo "Appending to existing issue #$existing"
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Probe still failing at $(date -u +%FT%TZ): \`$STATUS\` — $DETAIL"
+          else
+            echo "Opening new watchdog issue"
+            gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE_PREFIX Desktop cannot read the plugin catalog ($STATUS)" \
               --body "$BODY"
           fi

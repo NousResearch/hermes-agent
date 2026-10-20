@@ -3,13 +3,16 @@
  * through the SAME registry schema as every other surface (statusbar, titlebar,
  * panes, layouts):
  *
- *   render areas (`render`):  composer.top      — banner strip above the input
- *                             composer.bottom   — row below the input grid
- *                             composer.leading  — inline after the "+" menu
- *                             composer.actions  — inline before the model pill
+ *   render areas (`render`):  composer.top       — banner strip above the input
+ *                             composer.bottom    — row below the input grid
+ *                             composer.underside — floating strip BELOW the
+ *                                                  whole composer (no chrome)
+ *                             composer.leading   — inline after the "+" menu
+ *                             composer.actions   — inline before the model pill
  *
- *   data kinds (`data`):      composer.middleware   (ComposerMiddleware)
- *                             composer.attachments  (ComposerAttachmentProvider)
+ *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
+ *                             composer.attachments   (ComposerAttachmentProvider)
+ *                             composer.microActions  (ComposerMicroActionProvider)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -17,17 +20,25 @@
  * draft, pass it through, or cancel the send by returning null.
  */
 
+import { useMemo } from 'react'
+
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
+import type { TodoItem } from '@/lib/todos'
 import type { ComposerAttachment } from '@/store/composer'
+import type { ComposerAction } from '@/store/composer-actions'
 
 export const COMPOSER_AREAS = {
   top: 'composer.top',
   bottom: 'composer.bottom',
+  underside: 'composer.underside',
   leading: 'composer.leading',
   actions: 'composer.actions',
   middleware: 'composer.middleware',
-  attachments: 'composer.attachments'
+  attachments: 'composer.attachments',
+  microActions: 'composer.microActions',
+  atCompletions: 'composer.atCompletions',
+  modelPill: 'composer.modelPill'
 } as const
 
 export interface ComposerDraft {
@@ -39,6 +50,33 @@ export interface ComposerDraft {
 export interface ComposerMiddleware {
   /** Rewrite (return a draft), pass through (same draft), or cancel (null). */
   handler: (draft: ComposerDraft) => ComposerDraft | null | Promise<ComposerDraft | null>
+}
+
+/** One row a `composer.atCompletions` source offers for the current query. */
+export interface ComposerAtCompletionItem {
+  /** Text inserted into the draft when picked (e.g. `@researcher`). */
+  insert: string
+  /** Row label; defaults to `insert`. */
+  display?: string
+  /** Secondary line (e.g. "Bot · Homelab"). */
+  meta?: string
+  /** Icon slug understood by the completion popover; defaults to 'simple'. */
+  icon?: string
+  /** Other `@handle` texts that resolve to the SAME target as `insert` —
+   *  e.g. a bot's raw profile name alongside the title slug it is listed
+   *  under. The `@` popover drops a gateway row whose handle is claimed
+   *  here, so one routable identity is never offered twice under two
+   *  labels. Only claim handles this row really owns. */
+  handles?: string[]
+}
+
+/** Payload of a `composer.atCompletions` data contribution — an extra source
+ *  merged into the composer's `@` popover ABOVE the path/reference results.
+ *  `query` is the text typed after `@` (no leading `@`). Sources must be
+ *  fast and synchronous-ish (called per keystroke after the debounce); slow
+ *  lookups belong behind the source's own cache. */
+export interface ComposerAtCompletionSource {
+  provide: (query: string) => ComposerAtCompletionItem[]
 }
 
 export interface ComposerAttachmentContext {
@@ -91,4 +129,99 @@ export function useComposerAttachmentProviders(): Array<ComposerAttachmentProvid
   return useContributions(COMPOSER_AREAS.attachments)
     .map(c => ({ key: `${c.source ?? 'core'}:${c.id}`, ...(c.data as ComposerAttachmentProvider) }))
     .filter(p => Boolean(p.label && p.run))
+}
+
+/**
+ * Payload of a `composer.microActions` data contribution — the pill strip at
+ * the top of the composer's overlay lane.
+ *
+ * `resolve` is called with the live session context and returns the badges to
+ * show right now, or `[]` for "nothing from me". Returning a list rather than
+ * a static badge is what lets a provider be conditional ("only while idle",
+ * "only with unfinished tasks") without a reactive `when()`, which the
+ * registry deliberately doesn't offer.
+ */
+export interface ComposerMicroActionProvider {
+  resolve: (ctx: ComposerMicroActionContext) => ComposerAction[]
+}
+
+/** What a micro-action provider gets to branch on. Deliberately small: every
+ *  field here is a standing compatibility promise to the plugins using it. */
+export interface ComposerMicroActionContext {
+  /** A turn is currently running in this session. */
+  busy: boolean
+  sessionId: string
+  /** Live todo list for the session (empty when there is none). */
+  todos: readonly TodoItem[]
+}
+
+/** Micro-action providers, memoised against the registry's own stable
+ *  snapshot — the strip re-resolves on every composer render, so a fresh array
+ *  here would defeat that. */
+export function useComposerMicroActionProviders(): ComposerMicroActionProvider[] {
+  const contributions = useContributions(COMPOSER_AREAS.microActions)
+
+  return useMemo(
+    () => contributions.map(c => c.data as ComposerMicroActionProvider).filter(p => typeof p?.resolve === 'function'),
+    [contributions]
+  )
+}
+
+/** What a model-pill label provider gets to branch on. Deliberately small:
+ *  every field here is a standing compatibility promise to the plugins using it. */
+export interface ComposerModelPillContext {
+  /** The model slug the pill would show. */
+  model: string
+  /** The session's live reasoning effort ('' when the model has none). */
+  reasoningEffort: string
+  /** Floating-composer mode renders only the chevron; providers are not consulted. */
+  compact: boolean
+}
+
+/** Payload of a `composer.modelPill` data contribution — the pill's label text.
+ *  Return the label to show, or `null` to let the next provider (then the core
+ *  label) win. The pill keeps its chrome and menu; only the label changes. */
+export interface ComposerModelPillProvider {
+  label: (ctx: ComposerModelPillContext) => null | string
+}
+
+/** The first provider-supplied pill label, or `null` for the core label. A
+ *  throwing provider is treated as declining — a broken plugin can't blank the
+ *  pill. */
+export function useComposerModelPillLabel({
+  compact,
+  model,
+  reasoningEffort
+}: ComposerModelPillContext): null | string {
+  const contributions = useContributions(COMPOSER_AREAS.modelPill)
+
+  // Memoised on the primitive fields (the caller builds a fresh ctx object
+  // every render) so providers run only when the registry or the pill's
+  // inputs actually change — a plugin's label() must not run per keystroke.
+  return useMemo(() => {
+    if (compact) {
+      return null
+    }
+
+    const ctx: ComposerModelPillContext = { compact, model, reasoningEffort }
+
+    for (const contribution of contributions) {
+      const provider = contribution.data as ComposerModelPillProvider | undefined
+
+      try {
+        const label = provider?.label?.(ctx)
+
+        // Only a non-empty string is a label. ModelPill renders the value
+        // straight into JSX with no error boundary, so an object/array/number
+        // from a plugin would throw and blank the composer — treat it as declining.
+        if (typeof label === 'string' && label.trim() !== '') {
+          return label
+        }
+      } catch {
+        // Decline on throw: the next provider, then the core label, wins.
+      }
+    }
+
+    return null
+  }, [contributions, compact, model, reasoningEffort])
 }

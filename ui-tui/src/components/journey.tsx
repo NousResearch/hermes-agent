@@ -2,11 +2,14 @@ import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdo
 import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import type { Translations } from '../i18n/types.js'
+import { useT } from '../i18n/useT.js'
 import { openInEditor } from '../lib/editor.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
 import type { Theme } from '../theme.js'
 
+import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
 interface MutationResult {
@@ -115,12 +118,14 @@ function ChartRow({ palette, row }: { palette: StarmapPalette; row: Run[] }) {
 }
 
 // Full-width selectable row, matching the /agents list treatment: the active
-// row inverts and collapses every segment onto the accent foreground.
+// row carries the shared selection chip (never `inverse`, which swaps against
+// the terminal's unknowable defaults) and collapses onto the chip ink.
 function ListRow({ active, cells, t }: { active: boolean; cells: Cell[]; t: Theme }) {
-  const fg = active ? t.color.accent : t.color.text
+  const row = listRowStyle(t, active)
+  const fg = active ? (row.color ?? t.color.accent) : t.color.text
 
   return (
-    <Text bold={active} color={fg} inverse={active} wrap="truncate-end">
+    <Text backgroundColor={row.backgroundColor} bold={active} color={fg} wrap="truncate-end">
       {cells.map((c, i) => (
         <Text color={active ? fg : (c.color ?? t.color.text)} key={i}>
           {c.text}
@@ -131,6 +136,7 @@ function ListRow({ active, cells, t }: { active: boolean; cells: Cell[]; t: Them
 }
 
 export function Journey({ gw, onClose, t }: JourneyProps) {
+  const T = useT()
   const { stdout } = useStdout()
   const cols = Math.max(40, (stdout?.columns ?? 90) - 3)
   const rows = Math.max(16, (stdout?.rows ?? 30) - 2)
@@ -216,13 +222,13 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       const detail = await gw.request<NodeDetail>('learning.detail', { id: node.id })
 
       if (!detail.ok || detail.content == null) {
-        return setNotice(detail.message || 'cannot edit')
+        return setNotice(detail.message || T.journey.notice.cannotEdit)
       }
 
       const edited = await openInEditor(detail.content, detail.kind === 'skill' ? '.md' : '.txt')
 
       if (edited == null || edited.trim() === detail.content.trim()) {
-        return setNotice('no changes')
+        return setNotice(T.journey.notice.noChanges)
       }
 
       const res = await gw.request<MutationResult>('learning.edit', { content: edited, id: node.id })
@@ -378,7 +384,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   if (err) {
     return (
       <Shell t={t}>
-        <Text color={t.color.error}>error: {err}</Text>
+        <Text color={t.color.error}>{T.journey.error(err)}</Text>
       </Shell>
     )
   }
@@ -386,7 +392,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   if (!data) {
     return (
       <Shell t={t}>
-        <Text color={t.color.muted}>assembling your learning map…</Text>
+        <Text color={t.color.muted}>{T.journey.loading}</Text>
       </Shell>
     )
   }
@@ -394,16 +400,14 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   if (!data.count) {
     return (
       <Shell t={t}>
-        <Text color={t.color.muted}>
-          No learning yet — your learned skills and memories will start mapping out here as you use Hermes.
-        </Text>
+        <Text color={t.color.muted}>{T.journey.empty}</Text>
       </Shell>
     )
   }
 
   // ── Item: a single memory, body scrolled via the shared ScrollBox ──
   if (mode === 'item' && activeBucket && activeNode) {
-    const body = activeNode.body ? activeNode.body.split(/\r?\n/) : ['No additional detail recorded yet.']
+    const body = activeNode.body ? activeNode.body.split(/\r?\n/) : [T.journey.noDetail]
 
     return (
       <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
@@ -435,7 +439,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
         <Footer>
           <StatusLines confirm={confirmDelete} label={activeNode.fullLabel || activeNode.label} notice={notice} t={t} />
-          <Hint t={t}>↑↓/jk scroll · PgUp/PgDn page · e edit · d delete · Esc/← back · q close</Hint>
+          <Hint t={t}>{T.journey.hint.item}</Hint>
         </Footer>
       </Box>
     )
@@ -453,9 +457,9 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       <Box flexDirection="column" marginBottom={1}>
         <Text wrap="truncate-end">
           <Text bold color={t.color.primary}>
-            ✦ Journey
+            ✦ {T.journey.title}
           </Text>
-          <Text color={t.color.muted}> learned skills &amp; memories over time</Text>
+          <Text color={t.color.muted}> {T.journey.subtitle}</Text>
         </Text>
         <Text wrap="wrap">
           {data.legend.map((item, i) => (
@@ -505,15 +509,37 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         />
         {!confirmDelete && !notice && data.summary.length ? <Hint t={t}>{data.summary.join(' · ')}</Hint> : null}
         <Hint t={t}>
-          ↑↓/jk move{activeNode?.body ? ' · Enter/→ open' : ''}
-          {activeNode ? ' · e edit · d delete' : ''} · g/G top/bottom · q close
+          {[
+            T.journey.hint.move,
+            activeNode?.body ? T.journey.hint.open : '',
+            activeNode ? T.journey.hint.edit : '',
+            activeNode ? T.journey.hint.delete : '',
+            T.journey.hint.topBottom,
+            T.journey.hint.close
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </Hint>
       </Footer>
     </Box>
   )
 }
 
+// Plural leaves are chosen here; packs translate each form separately.
+const countLabel = (one: (n: number) => string, other: (n: number) => string, n: number): string =>
+  n === 1 ? one(n) : other(n)
+
+const sliceMeta = (T: Translations, bucket: BucketRow): string => {
+  const { slice } = T.journey
+  const skills = countLabel(slice.skillsOne, slice.skillsOther, bucket.skills)
+  const memories = countLabel(slice.memoriesOne, slice.memoriesOther, bucket.memories)
+
+  return ` · ${skills} · ${memories}${bucket.category ? ` · ${bucket.category}` : ''}`
+}
+
 function TreeLine({ active, palette, row, t }: { active: boolean; palette: StarmapPalette; row: TreeRow; t: Theme }) {
+  const T = useT()
+
   if (row.kind === 'gap') {
     return <Text> </Text>
   }
@@ -526,10 +552,7 @@ function TreeLine({ active, palette, row, t }: { active: boolean; palette: Starm
         active={active}
         cells={[
           { color: bucket.color ? fadeHex(palette, bucket.color, 0.85) : t.color.label, text: bucket.label },
-          {
-            color: t.color.muted,
-            text: ` · ${bucket.skills} skills · ${bucket.memories} memories${bucket.category ? ` · ${bucket.category}` : ''}`
-          }
+          { color: t.color.muted, text: sliceMeta(T, bucket) }
         ]}
         t={t}
       />
@@ -552,20 +575,24 @@ function TreeLine({ active, palette, row, t }: { active: boolean; palette: Starm
 }
 
 function Shell({ children, t }: { children: React.ReactNode; t: Theme }) {
+  const T = useT()
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Text bold color={t.color.primary}>
-        ✦ Journey
+        ✦ {T.journey.title}
       </Text>
       {children}
-      <Text color={t.color.muted}>Esc/q close</Text>
+      <Text color={t.color.muted}>{T.journey.closeHint}</Text>
     </Box>
   )
 }
 
 function StatusLines({ confirm, label, notice, t }: { confirm: boolean; label: string; notice: string; t: Theme }) {
+  const T = useT()
+
   if (confirm) {
-    return <Text color={t.color.error}>delete {label}? y/N</Text>
+    return <Text color={t.color.error}>{T.journey.confirmDelete(label)}</Text>
   }
 
   if (notice) {

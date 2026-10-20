@@ -30,17 +30,19 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 registry.register(
     name="terminal",               # 唯一工具名称（用于 API schema）
     toolset="terminal",            # 该工具所属的 toolset
-    schema={...},                  # OpenAI function-calling schema（描述、参数）
+    schema={...},                  # 面向模型的 schema（描述、参数）
     handler=handle_terminal,       # 工具被调用时执行的函数
     check_fn=check_terminal,       # 可选：返回 True/False 表示是否可用
     requires_env=["SOME_VAR"],     # 可选：所需的环境变量（用于 UI 显示）
     is_async=False,                # handler 是否为异步协程
-    description="Run commands",    # 人类可读的描述
+    description="Run commands",    # 可选的 ToolEntry 注册表元数据
     emoji="💻",                    # 用于 spinner/进度显示的 emoji
 )
 ```
 
 每次调用都会创建一个 `ToolEntry`，以工具名称为键存储在单例 `ToolRegistry._tools` 字典中。若不同 toolset 之间出现名称冲突，会记录警告，后注册的条目覆盖前者。
+
+`schema["description"]` 是面向模型的权威描述。独立的 `description=` 参数用于填充 `ToolEntry.description`；省略该参数时，注册表元数据会回退到 schema 中的描述。`get_definitions()` 根据 `entry.schema` 构建 OpenAI function definition，并不会在 schema 缺少 `description` 时把 `entry.description` 复制进去。因此，只提供 `description=` 不会向模型描述该工具；如果两个值不同，模型看到的是 schema 中的值。除非某个注册表消费者确实需要不同的元数据，否则应只在 schema 中定义一次描述。
 
 ### 发现机制：`discover_builtin_tools()`
 
@@ -213,6 +215,7 @@ registry.dispatch(name, args, **kwargs)
 - singularity
 - modal
 - daytona
+- vercel_sandbox
 
 还支持：
 

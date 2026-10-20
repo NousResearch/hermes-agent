@@ -2,10 +2,12 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useT } from '../i18n/useT.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 44
@@ -39,7 +41,8 @@ const GLYPH: Record<string, string> = {
   enabled: '✓'
 }
 
-export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
+export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
+  const { list: L, plugins: T } = useT().hubs
   const [rows, setRows] = useState<PluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
   const [userCount, setUserCount] = useState(0)
@@ -50,7 +53,9 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the hub its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   const load = () => {
     gw.request<PluginsListResponse>('plugins.manage', { action: 'list' })
@@ -150,14 +155,14 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading plugins…</Text>
+    return <Text color={t.color.muted}>{T.loading}</Text>
   }
 
   if (err && !rows.length) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q close</OverlayHint>
+        <Text color={t.color.label}>{L.errorLine(err)}</Text>
+        <OverlayHint t={t}>{T.hintClose}</OverlayHint>
       </Box>
     )
   }
@@ -166,21 +171,23 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent}>
-          Plugins Hub
+          {T.title}
         </Text>
-        <Text color={t.color.muted}>no plugins installed</Text>
-        <Text color={t.color.muted}>install: hermes plugins install owner/repo</Text>
-        <OverlayHint t={t}>Esc/q close</OverlayHint>
+        <Text color={t.color.muted}>{T.empty}</Text>
+        <Text color={t.color.muted}>{T.installHint}</Text>
+        <OverlayHint t={t}>{T.hintClose}</OverlayHint>
       </Box>
     )
   }
 
   const labels = effectiveRows.map(r => {
-    const status = r.status ?? 'not enabled'
-    const glyph = GLYPH[status] ?? '○'
+    const status = r.status
+    const glyph = (status && GLYPH[status]) ?? '○'
     const ver = r.version ? ` v${r.version}` : ''
-    const src = effectiveScope === 'all' && r.source === 'bundled' ? ' [bundled]' : ''
-    const state = status === 'enabled' ? '' : ` (${status})`
+    const src = effectiveScope === 'all' && r.source === 'bundled' ? T.bundledTag : ''
+    // Status values come from the backend; only the known ones get a label.
+    const statusLabel = status == null ? T.status.notEnabled : status === 'disabled' ? T.status.disabled : status
+    const state = status === 'enabled' ? '' : ` (${statusLabel})`
 
     return `${glyph} ${r.name}${ver}${src}${state}`
   })
@@ -189,17 +196,17 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
 
   const scopeLabel =
     effectiveScope === 'user'
-      ? `${userCount} user plugin(s)${bundledCount ? ` · +${bundledCount} bundled (Tab)` : ''}`
-      : `all ${rows.length} plugins`
+      ? `${T.userScope(userCount)}${bundledCount ? T.bundledSuffix(bundledCount) : ''}`
+      : T.allScope(rows.length)
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Plugins Hub
+        {T.title}
       </Text>
 
       <Text color={t.color.muted}>{scopeLabel}</Text>
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{L.moreAbove(offset)}</Text>}
 
       {items.map((row, i) => {
         const lineIdx = offset + i
@@ -207,9 +214,8 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
 
         return (
           <Text
-            bold={active}
-            color={active ? t.color.accent : t.color.muted}
-            inverse={active}
+            color={t.color.muted}
+            {...chipRowProps(t, active)}
             key={effectiveRows[lineIdx]?.name ?? row}
             wrap="truncate-end"
           >
@@ -220,19 +226,20 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
       })}
 
       {offset + VISIBLE < labels.length && (
-        <Text color={t.color.muted}> ↓ {labels.length - offset - VISIBLE} more</Text>
+        <Text color={t.color.muted}>{L.moreBelow(labels.length - offset - VISIBLE)}</Text>
       )}
 
-      {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>updating…</Text> : null}
+      {err ? <Text color={t.color.label}>{L.errorLine(err)}</Text> : null}
+      {busy ? <Text color={t.color.accent}>{T.updating}</Text> : null}
 
-      <OverlayHint t={t}>↑/↓ select · Enter/Space toggle · Tab user/all · 1-9,0 quick · Esc/q close</OverlayHint>
+      <OverlayHint t={t}>{T.hintList}</OverlayHint>
     </Box>
   )
 }
 
 interface PluginsHubProps {
   gw: GatewayClient
+  maxWidth?: number
   onClose: () => void
   t: Theme
 }

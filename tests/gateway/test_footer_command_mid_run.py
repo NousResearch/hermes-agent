@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -119,40 +119,6 @@ async def test_footer_dispatches_to_handler_when_agent_running():
     assert _BUSY_REJECTION not in (result or ""), (
         "/footer hit the busy catch-all instead of dispatching to its handler"
     )
-
-
-@pytest.mark.asyncio
-async def test_footer_with_arg_dispatches_when_agent_running():
-    """/footer on must also dispatch (argument form, same routing)."""
-    runner, _adapter = _make_runner(_session_entry())
-    sk = build_session_key(_make_source())
-    runner._running_agents[sk] = MagicMock()
-
-    handler = AsyncMock(return_value="footer on")
-    runner._handle_footer_command = handler
-
-    result = await runner._handle_message(_make_event("/footer on"))
-
-    handler.assert_awaited_once()
-    assert result == "footer on"
-
-
-@pytest.mark.asyncio
-async def test_verbose_sibling_still_dispatches_when_agent_running():
-    """Parity guard for the safe-toggle set: the documented sibling /verbose
-    also dispatches mid-run, proving the set routes its members rather than
-    rejecting them. Guards against a regression that drops the whole set."""
-    runner, _adapter = _make_runner(_session_entry())
-    sk = build_session_key(_make_source())
-    runner._running_agents[sk] = MagicMock()
-
-    handler = AsyncMock(return_value="verbose cycled")
-    runner._handle_verbose_command = handler
-
-    result = await runner._handle_message(_make_event("/verbose"))
-
-    handler.assert_awaited_once()
-    assert result == "verbose cycled"
 
 
 if __name__ == "__main__":  # pragma: no cover

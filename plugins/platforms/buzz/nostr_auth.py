@@ -1,7 +1,8 @@
-"""Dependency-free Nostr signing (secp256k1 / BIP-340) for Buzz WebSocket authentication."""
+"""Dependency-free Nostr signing (secp256k1 / BIP-340) for Buzz authentication."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import secrets
@@ -167,11 +168,32 @@ def build_auth_event(
     tags: list[list[str]] = [["relay", relay_url], ["challenge", challenge]]
     if auth_tag_json.strip():
         tags.append(parse_auth_tag(auth_tag_json, "BUZZ_AUTH_TAG"))
+    return _build_signed_event(
+        private_key=private_key, kind=22242, tags=tags, content="", created_at=created_at,
+        auxiliary_randomness=auxiliary_randomness,
+    )
+
+
+def _build_signed_event(
+    *, private_key: str, kind: int, tags: list[list[str]], content: str,
+    created_at: Optional[int] = None, auxiliary_randomness: Optional[bytes] = None,
+) -> dict[str, Any]:
     pubkey = public_key_hex(private_key)
     timestamp = int(time.time()) if created_at is None else int(created_at)
-    serialized = json.dumps([0, pubkey, timestamp, 22242, tags, ""], separators=(",", ":"), ensure_ascii=False).encode()
+    serialized = json.dumps([0, pubkey, timestamp, kind, tags, content], separators=(",", ":"), ensure_ascii=False).encode()
     event_id = hashlib.sha256(serialized).digest()
     return {
-        "id": event_id.hex(), "pubkey": pubkey, "created_at": timestamp, "kind": 22242, "tags": tags, "content": "",
+        "id": event_id.hex(), "pubkey": pubkey, "created_at": timestamp, "kind": kind, "tags": tags, "content": content,
         "sig": schnorr_sign(event_id, private_key, auxiliary_randomness=auxiliary_randomness).hex(),
     }
+
+
+def build_blossom_get_auth_header(*, private_key: str, sha256: str) -> str:
+    """Sign a short-lived BUD-01 GET token for one blob, never the whole server."""
+    timestamp = int(time.time())
+    event = _build_signed_event(
+        private_key=private_key, kind=24242, content="Get media", created_at=timestamp,
+        tags=[["t", "get"], ["expiration", str(timestamp + 600)], ["x", sha256]],
+    )
+    encoded = base64.urlsafe_b64encode(json.dumps(event, separators=(",", ":")).encode()).decode().rstrip("=")
+    return f"Nostr {encoded}"

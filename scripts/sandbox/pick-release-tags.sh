@@ -7,7 +7,9 @@
 # newest release the day after it ships, and pins the "oldest" forever even
 # after it stops being a version anyone still runs.
 #
-# Selection: the newest tag, the oldest tag, and evenly spaced tags in between.
+# Selection: the newest tag strictly older than HEAD, the oldest tag, and evenly
+# spaced tags in between. A tag resolving to HEAD cannot exercise an update and
+# is excluded — especially important for release-tag-triggered workflow runs.
 # Newest catches "did the last release break updating?", oldest is the longest
 # upgrade jump anyone can still make, and the spread samples the migrations in
 # between (config-schema bumps, venv layout changes, dependency floors).
@@ -65,10 +67,17 @@ if [ -z "$REPO" ]; then
 fi
 
 # sort -V orders v2026.4.8 before v2026.4.13 (numeric), which a plain
-# lexicographic sort gets wrong.
+# lexicographic sort gets wrong. Exclude a release tag resolving to HEAD:
+# installing HEAD and then "updating" to HEAD is not an updater E2E and the
+# drivers correctly reject that no-op.
+head_commit="$(git -C "$REPO" rev-parse --verify 'HEAD^{commit}')"
 mapfile -t tags < <(
   git -C "$REPO" tag --list 'v*' \
     | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+    | while IFS= read -r tag; do
+        tag_commit="$(git -C "$REPO" rev-parse --verify "$tag^{commit}")"
+        [ "$tag_commit" = "$head_commit" ] || printf '%s\n' "$tag"
+      done \
     | sort -V
 )
 

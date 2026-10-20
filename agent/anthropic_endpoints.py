@@ -60,6 +60,28 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     return bool(m) and (m in _KIMI_FAMILY_EXACT_SLUGS or m.startswith(_KIMI_FAMILY_MODEL_PREFIXES))
 
 
+# MiniMax models whose Anthropic-compatible API implements the adaptive-thinking contract:
+# ``output_config.effort`` in low/medium/high/xhigh/max and thinking that CANNOT be disabled
+# (``thinking: {"type": "disabled"}`` -> HTTP 400 "requires adaptive thinking"). Documented for
+# ``MiniMax-M3.1-Flash`` (platform.minimax.io/docs/m-plan/hermes-agent); matched as the M3.1
+# release line so the retired ``-Preview`` identifier and the GA name both inherit it.
+# M3/M2.x keep budget_tokens: they accept a disable and default to thinking OFF.
+_MINIMAX_ADAPTIVE_MODEL_PREFIXES = ("minimax-m3.1", "minimax-m3-1")
+
+
+def _model_name_is_minimax_adaptive(model: str | None) -> bool:
+    """True for the MiniMax M3.1 line on the Anthropic-Messages wire.
+
+    The match is a release-line prefix (with an optional ``vendor/`` segment stripped), so
+    ``MiniMax-M3.1-Flash`` and ``MiniMax-M3.1-Flash-Preview`` both match while lookalikes such
+    as ``minimax-m3``, ``minimax-m3.10`` and ``minimax-m31`` do not.
+    """
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower().rsplit("/", 1)[-1]  # ``minimax/MiniMax-M3.1-...`` -> ``minimax-m3.1-...``
+    return any(m == prefix or m.startswith(prefix + "-") for prefix in _MINIMAX_ADAPTIVE_MODEL_PREFIXES)
+
+
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
     """Any Kimi / Moonshot Anthropic-Messages endpoint: the /coding endpoint, any api.kimi.com /
     moonshot.ai / moonshot.cn host, or any endpoint (e.g. a private gateway) whose *model* is in

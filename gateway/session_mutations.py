@@ -9,6 +9,7 @@ import logging
 from contextlib import nullcontext
 from functools import partial
 
+from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
 from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
@@ -78,8 +79,13 @@ def _owner_ref(authority, ref, params):
     listed id: its busy gate, generation fence and eviction are keyed by the session it writes, so
     authorizing it on the owner while writing the segment would bypass the owner's FIFO. A segment
     of a live owner therefore stays a named refusal for those, as on main. A delete of a messaging
-    conversation's later compression segment resolves to its lineage root, where its lane's
-    session lives (``messaging_owner_ref``, as resume does)."""
+    conversation's later compression segment, or a model/reasoning pick on it, resolves to its
+    lineage root, where its lane's session lives (``messaging_owner_ref``, as resume does)."""
+    if params.get('operation') in CHAT_PICKS:
+        # A messaging chat's picks are its lane's (route-keyed) overrides: a compression segment names
+        # the lineage root its lane is mounted on. Any other row keeps its id.
+        from gateway.session_route_recovery import messaging_owner_ref
+        return messaging_owner_ref(authority, ref)
     if params.get('operation') not in _OWNER_AUTHORIZED:
         return ref
     from gateway.session_contract import SessionRef
@@ -128,7 +134,7 @@ async def _owned_mutation(authority, actor, ref, params):
                 from gateway.session_deferred_pick import defer_pick
                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
                 return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
-    if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
+    if params.get('operation') in {*_POLICY, 'compress', 'reset'} and not is_chat_pick(live, params['operation']):
         authority._schedule(ref)
     return result
 
@@ -153,6 +159,11 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     if operation == 'branch' and 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
+    live = authority.sessions.get((owner or ref).session_id)
+    if is_chat_pick(live, operation):
+        # No frozen policy to commit into: the chat's own /model and /reasoning override (#141152).
+        from gateway.session_messaging_picks import apply_chat_pick
+        return await apply_chat_pick(authority, ref, owner or ref, live, params)
 
     def authorize_write(conn):
         from hermes_state_mutation_binding import authorize_history, import_history_control

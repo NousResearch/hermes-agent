@@ -201,7 +201,6 @@ describe('MessagingView Teams Playground', () => {
   })
 })
 
-
 describe('MessagingView profile scope', () => {
   it('names the active profile explicitly instead of sending an unscoped request', async () => {
     $settingsScopeOverride.set(null)

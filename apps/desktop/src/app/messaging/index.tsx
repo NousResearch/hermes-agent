@@ -782,7 +782,8 @@ function PlatformDetail({
         <section>
           <SectionTitle>Local Teams Playground</SectionTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            The Microsoft 365 Agents Playground is a local UI client. It sends Bot Framework activities to the configured bot endpoint; production Teams credentials are not used.
+            The Microsoft 365 Agents Playground is a local UI client. It sends Bot Framework activities to the
+            configured bot endpoint; production Teams credentials are not used.
           </p>
           <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
             {platform.playground.test_url && <div>Test URL: {platform.playground.test_url}</div>}
@@ -809,7 +810,9 @@ function PlatformDetail({
             className="mt-3"
             disabled={playgroundTesting}
             onClick={async () => {
-              if (playgroundTestingRef.current) return
+              if (playgroundTestingRef.current) {
+                return
+              }
               playgroundTestingRef.current = true
               setPlaygroundTesting(true)
               setPlaygroundMessage(null)

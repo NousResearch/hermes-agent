@@ -419,6 +419,26 @@ async def test_a_startup_restore_replay_keeps_the_origins_it_had(event, expected
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("event, expected", [
+    (_event("admitted durably", 1), ([_dict(1)], True)),
+    (MessageEvent(text="an event built without origins", source=SOURCE), ([], False)),
+], ids=["identified", "without-origins"])
+async def test_a_durably_admitted_message_keeps_the_origins_it_had(event, expected, tmp_path, monkeypatch):
+    """Native admission commits the event and its turn runs from that snapshot. An event without
+    origins commits the envelope it did before, so a retry of an older admission keeps its fingerprint."""
+    from gateway.run import GatewayRunner
+    from gateway.session_envelope import restore_native, snapshot_native
+
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    runner.adapters = {Platform.TELEGRAM: _make_telegram_adapter()}
+    runner._is_user_authorized_for_source = lambda source, **kwargs: True
+    payload = snapshot_native(runner, event)
+
+    assert ("source_origins" in payload["native_text_v1"]["event"]) is bool(event.source_origins)
+    assert await _hook_sees(tmp_path / "home", monkeypatch, restore_native(payload, runner)) == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("flush", ["pending", "overflow"])
 async def test_the_shutdown_spool_keeps_text_not_identity(flush, tmp_path, monkeypatch):
     """The spool's payload shape is unchanged and carries no identity: recovery appends the text to

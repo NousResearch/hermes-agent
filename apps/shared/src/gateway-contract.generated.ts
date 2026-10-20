@@ -5508,11 +5508,18 @@ export interface DeviceRequestParams {
 }
 /** Capability-specific knobs the client reads (``{quality: "high"}`` for a camera frame, …). Open by design: the capability vocabulary is closed, its options are not. */
 export type DeviceRequestOptions = Record<string, unknown>
-/** ``value`` is the JSON text the capability produced (a capture, a fix, a listing). ``denied`` is the user's refusal — a distinct outcome from an absent capability, so a tool can report it instead of surfacing a transport failure. */
+/** What the capability answered. ``denied`` is the user's refusal — a distinct outcome from an absent capability, so a tool can report it instead of surfacing a transport failure. ``value`` is the JSON text a non-binary capability produced (a location fix, a notification list, a picked file's metadata); it must stay small — it is a tool result. Binary bodies belong in ``captures``, which never reach the conversation as text. */
 export interface DeviceRequestResult {
   value?: string
   denied?: boolean
   reason?: string | null
+  captures?: DeviceCapture[]
+}
+/** One binary body a capability produced (a photo, a screen frame, a recording). Deliberately a separate field from ``value``: a capture is megabytes, and anything that reaches the model's tool result is re-sent on every later request of the conversation. The backend materialises ``data`` into the profile's media cache and the tool result carries the PATH (``vision_analyze`` reads it like any screenshot), so a frame costs a few hundred bytes of context instead of a whole base64 image (#11911). */
+export interface DeviceCapture {
+  mime_type: string
+  data: string
+  label?: string | null
 }
 export interface DisplayInstallSudoParams {
   session_id: string

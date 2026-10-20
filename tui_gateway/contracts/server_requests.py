@@ -377,14 +377,38 @@ class DeviceRequestParams(ServerRequestParams):
     options: DeviceRequestOptions | None = None
 
 
+class DeviceCapture(Params):
+    """One binary body a capability produced (a photo, a screen frame, a recording).
+
+    Deliberately a separate field from ``value``: a capture is megabytes, and anything that reaches
+    the model's tool result is re-sent on every later request of the conversation. The backend
+    materialises ``data`` into the profile's media cache and the tool result carries the PATH
+    (``vision_analyze`` reads it like any screenshot), so a frame costs a few hundred bytes of
+    context instead of a whole base64 image (#11911).
+    """
+
+    #: ``image/jpeg``, ``image/png``, ``image/webp``, ``audio/wav``, ``audio/mpeg``, ``audio/webm``;
+    #: anything else is refused by the backend rather than guessed at.
+    mime_type: str
+    #: The capture, base64 (the wire is JSON). Never echoed into a tool result.
+    data: str
+    #: Optional client-side label shown in the handle (``"rear camera"``, ``"screen"``).
+    label: str | None = None
+
+
 class DeviceRequestResult(Result):
-    """``value`` is the JSON text the capability produced (a capture, a fix, a listing). ``denied``
-    is the user's refusal — a distinct outcome from an absent capability, so a tool can report it
-    instead of surfacing a transport failure."""
+    """What the capability answered. ``denied`` is the user's refusal — a distinct outcome from an
+    absent capability, so a tool can report it instead of surfacing a transport failure.
+
+    ``value`` is the JSON text a non-binary capability produced (a location fix, a notification
+    list, a picked file's metadata); it must stay small — it is a tool result. Binary bodies belong
+    in ``captures``, which never reach the conversation as text.
+    """
 
     value: str = ""
     denied: bool = False
     reason: str | None = None
+    captures: list[DeviceCapture] = Field(default_factory=list)
 
 
 server_request("device.request", params=DeviceRequestParams, result=DeviceRequestResult,

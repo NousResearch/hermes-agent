@@ -1099,7 +1099,20 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
-_DEVICE_REQUEST_TIMEOUT_S = 60
+_DEFAULT_DEVICE_REQUEST_TIMEOUT_S = 60.0
+
+
+def _device_request_timeout_seconds() -> float:
+    """``device.request_timeout_seconds``: how long one ``device.request`` may wait, clamped to
+    5..300. A capture the user has to physically take needs real time; an unattended one must not
+    park the turn."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        seconds = float(cfg_get(load_config(), "device", "request_timeout_seconds",
+                                default=_DEFAULT_DEVICE_REQUEST_TIMEOUT_S))
+    except Exception:
+        return _DEFAULT_DEVICE_REQUEST_TIMEOUT_S
+    return min(max(seconds, 5.0), 300.0)
 
 
 def _device_request(sid: str, capability: str, options: dict | None = None) -> dict:
@@ -1110,25 +1123,30 @@ def _device_request(sid: str, capability: str, options: dict | None = None) -> d
     ``server_requests`` refuses it before a frame is written and this returns ``success: False``
     immediately instead of stalling the turn for the deadline.
 
-    Returns ``{"success", "value", "denied", "reason"}`` — ``denied`` is the user's own refusal
-    (distinct from "no client could do this"), ``value`` is the capability's JSON text.
+    Returns ``{"success", "value", "denied", "reason", "captures"}`` — ``denied`` is the user's own
+    refusal (distinct from "no client could do this"), ``value`` is the capability's JSON text and
+    ``captures`` the base64 bodies the tool materialises into the media cache. Nothing here decides
+    what reaches the model: that is the tool's job (``tools/device_tool.py``).
     """
     from tui_gateway import server_requests
 
     params: dict = {"capability": capability}
     if options:
         params["options"] = dict(options)
-    result = server_requests.send("device.request", sid, params, timeout=_DEVICE_REQUEST_TIMEOUT_S)
+    result = server_requests.send("device.request", sid, params,
+                                  timeout=_device_request_timeout_seconds())
     if not result:
-        return {"success": False, "value": "", "denied": False,
+        return {"success": False, "value": "", "denied": False, "captures": [],
                 "reason": "no attached client advertised that device capability"}
     if result.get("denied"):
-        return {"success": False, "value": "", "denied": True,
+        return {"success": False, "value": "", "denied": True, "captures": [],
                 "reason": result.get("reason") or "the user declined the request"}
     value = result.get("value") or ""
+    captures = result.get("captures") or []
     return {"success": True,
             "value": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False),
-            "denied": False, "reason": None}
+            "denied": False, "reason": None,
+            "captures": [dict(capture) for capture in captures if isinstance(capture, dict)]}
 
 
 

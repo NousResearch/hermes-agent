@@ -719,3 +719,36 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
 export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
   return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }
+
+export function clearSession(
+  id: string,
+  options?: { keep_last_n?: number; before_timestamp?: number },
+  profile?: ProfileScope
+): Promise<{ ok: boolean; session_id: string }> {
+  return hermesApi<{ ok: boolean; session_id: string }>({
+    ...sessionScoped(profile),
+    path: `/api/sessions/${encodeURIComponent(id)}/clear`,
+    method: 'POST',
+    body: {
+      ...(options?.keep_last_n !== undefined ? { keep_last_n: options.keep_last_n } : {}),
+      ...(options?.before_timestamp !== undefined ? { before_timestamp: options.before_timestamp } : {}),
+      ...(sessionScoped(profile).profile ? { profile: sessionScoped(profile).profile } : {})
+    }
+  })
+}
+
+export function deleteSessionMessages(
+  id: string,
+  messageIds: number[],
+  profile?: ProfileScope
+): Promise<{ ok: boolean; session_id: string; deleted: number }> {
+  return hermesApi<{ ok: boolean; session_id: string; deleted: number }>({
+    ...sessionScoped(profile),
+    path: `/api/sessions/${encodeURIComponent(id)}/messages/bulk-delete`,
+    method: 'POST',
+    body: {
+      message_ids: messageIds,
+      ...(sessionScoped(profile).profile ? { profile: sessionScoped(profile).profile } : {})
+    }
+  })
+}

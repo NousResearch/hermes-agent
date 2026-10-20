@@ -59,10 +59,10 @@ _BEARER_PROVIDERS: dict[str, tuple[str, ...]] = {
 }
 
 # Non-Authorization-header providers (v0.39 ``match_headers`` is case-insensitive).  ``aliases``
-# name the SAME credential and MUST collapse into one mapping: every rule is ``require: true`` and
-# two require-rules on one host would reject each other's requests; the sandbox gets the token
-# under every name.  Authorization is also matched for Anthropic/Azure (SDKs may send Bearer);
-# Gemini's ``?key=<token>`` style is covered by match_query.
+# name the SAME credential and MUST collapse into one mapping: one proxy token swaps one upstream
+# credential, and the sandbox gets the token under every name.  Authorization is also matched
+# for Anthropic/Azure (SDKs may send Bearer); Gemini's ``?key=<token>`` style is covered by
+# match_query.
 # Providers whose API authenticates with a NON-Authorization header. iron-proxy v0.39's
 # ``secrets.replace.match_headers`` targets arbitrary header names (case-insensitive; confirmed by the
 # iron-proxy author on PR #30179 and verified in the pinned v0.39.0 source — ``swapHeaders`` +
@@ -442,14 +442,20 @@ def build_proxy_config(
         if h not in hosts:
             hosts.append(h)
     deny_cidrs = list(_DEFAULT_UPSTREAM_DENY_CIDRS if upstream_deny_cidrs is None else upstream_deny_cidrs)
-    # Query scan covers ``?key=<token>`` SDKs; body inspection deliberately off.  ``require`` fails
-    # closed: an allowlisted-host request WITHOUT the proxy token is rejected, so a real key sent
-    # directly can't cross the boundary.
+    # Query scan covers ``?key=<token>`` SDKs; body inspection deliberately off.  ``require`` is
+    # deliberately false: iron-proxy v0.39 evaluates it against the synthetic, header-less CONNECT
+    # used for tunnel policy — a request that can never carry the proxy token — so ``require: true``
+    # rejects every mapped-host tunnel pre-MITM (403, rejected_by secrets) and the swap never fires
+    # (#81281; upstream ironsh/iron-proxy#222, same defect class the aws_auth fix already solved).
+    # Secret hygiene does not depend on it: real credentials live only in iron-proxy's env, the
+    # swap fires only when the proxy token is present, and an unswapped request reaches the
+    # upstream credential-less.  Flip back to true once iron-proxy enforces ``require`` on the
+    # post-MITM request only.
     secrets_rules = [{
         "source": {"type": "env", "var": m.real_env_name},
         "replace": {
             "proxy_value": m.proxy_token, "match_headers": list(m.match_headers or ("Authorization",)),
-            "match_query": True, "match_body": False, "require": True,
+            "match_query": True, "match_body": False, "require": False,
         },
         "rules": [{"host": h} for h in m.upstream_hosts],
     } for m in mappings]

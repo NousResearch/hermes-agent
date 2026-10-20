@@ -115,8 +115,9 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert task.model_override not in captured["cmd"]
 
-def test_default_spawn_under_multiplex_hands_the_assignee_owner_its_own_value(monkeypatch, tmp_path):
-    """Under multiplex, a worker spawn with ``terminal.env_passthrough`` configured must not crash on
+@pytest.mark.parametrize("multiplex", [True, False])
+def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch, tmp_path, multiplex):
+    """A worker spawn with ``terminal.env_passthrough`` configured must not crash on
     an unscoped read (#109494), and the assignee's owner, if the spawned client has to start it, must
     run with the assignee's own value rather than the dispatcher's ambient one.
 
@@ -128,12 +129,15 @@ def test_default_spawn_under_multiplex_hands_the_assignee_owner_its_own_value(mo
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"
     profile.mkdir(parents=True)
-    root.joinpath("config.yaml").write_text(
-        "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n", encoding="utf-8")
     profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     profile.joinpath(".env").write_text("MY_PASSTHROUGH_VAR=elias-value\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("MY_PASSTHROUGH_VAR", "dispatcher-value")
+    # Injected into the dispatcher only (systemd, op run): one on its passthrough list, one not.
+    root.joinpath("config.yaml").write_text(
+        "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n    - DISPATCHER_ONLY_TOKEN\n", encoding="utf-8")
+    monkeypatch.setenv("DISPATCHER_ONLY_TOKEN", "dispatcher-secret")
+    monkeypatch.setenv("SERVICE_INJECTED_SETTING", "dispatcher-setting")
 
     from agent.secret_scope import set_multiplex_active
     from hermes_cli import kanban_db as kb
@@ -155,7 +159,7 @@ def test_default_spawn_under_multiplex_hands_the_assignee_owner_its_own_value(mo
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    set_multiplex_active(True)
+    set_multiplex_active(multiplex)
     try:
         pid = kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
     finally:
@@ -166,6 +170,9 @@ def test_default_spawn_under_multiplex_hands_the_assignee_owner_its_own_value(mo
     owner_env = served_profile_child_env(base=captured["env"], target_home=str(profile), inherit_credentials=True)
     assert owner_env.get("MY_PASSTHROUGH_VAR") == "elias-value"
     assert owner_env["HERMES_HOME"] == str(profile)
+    # A value only the dispatcher has never reaches the assignee: an overlay cannot remove it.
+    for name in ("DISPATCHER_ONLY_TOKEN", "SERVICE_INJECTED_SETTING"):
+        assert name not in captured["env"] and name not in owner_env, name
 
 
 def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tmp_path, monkeypatch):

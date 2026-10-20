@@ -306,3 +306,26 @@ def test_mailbox_lock_refuses_a_dir_another_uid_owns_when_chmod_is_denied(tmp_pa
         with mailbox._locked(tmp_path):
             pass
 
+
+def test_authority_delivery_dials_from_a_thread_with_a_running_loop(tmp_path, monkeypatch):
+    """A gateway-hosted message_agent call runs on a thread that already has a running loop;
+    the authority request must still execute rather than die in asyncio.run() before dialing."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from hermes_cli import gateway_runtime
+
+    probed = []
+
+    def discover(home, timeout):
+        probed.append(Path(home))
+        return SimpleNamespace(state="stopped", endpoint=None)
+
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", discover)
+
+    async def tool_call_on_loop():
+        return mailbox.authority_delivery(tmp_path, {"id": "0" * 64, "message": "probe"})
+
+    with pytest.raises(ValueError, match="profile authority is not ready"):
+        asyncio.run(tool_call_on_loop())
+    assert probed == [tmp_path.resolve()]

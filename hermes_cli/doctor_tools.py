@@ -519,12 +519,21 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
+    # A toolset the operator disabled (or never opted into for the CLI) is a config
+    # choice, not a fault; its row would hand out remediation advice for something
+    # deliberately turned off (#137529). Unresolvable config fails open: keep every row.
+    enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     for item in unavailable:
+        if (
+            enabled_toolsets is not None
+            and str(item.get("name") or "") not in enabled_toolsets
+        ):
+            continue
         env_vars = item.get("missing_vars") or item.get("env_vars") or []
         detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
         check_warn(item["name"], detail)
-    # Only toolsets enabled for the CLI count toward the summary; default-off or
-    # disabled toolsets may warn above but must not pollute it.
+    # Only toolsets enabled for the CLI count toward the summary; disabled ones are
+    # already omitted from the rows above and must not pollute it either.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
     if api_disabled or any(status != "ok" for status, _, _ in web_rows):
         f.issues.append("Run 'hermes setup' to configure missing API keys for full tool access")

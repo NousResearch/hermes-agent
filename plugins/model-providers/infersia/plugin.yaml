@@ -1,0 +1,5 @@
+name: infersia-provider
+kind: model-provider
+version: 1.0.0
+description: Infersia — open-weight inference with published quantisation
+author: Infersia (@infersia)

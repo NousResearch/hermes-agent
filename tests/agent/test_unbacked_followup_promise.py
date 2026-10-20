@@ -37,15 +37,13 @@ class TestPromiseDetector:
         "Kicked off the build. I'll let you know when it's done.",
         "I will check again tomorrow.",
         "I will report back in ten minutes.",
-        # "if you" that does not make the follow-up wait on the user.
-        "I will report back when it finishes, if you are busy.",
-        "I'll report back when it finishes, if you want to continue working.",
-        "I'll report back when it finishes; you do not need to paste anything.",
-        # A sign-off after the promise does not resolve it.
+        # A closing courtesy after the promise does not resolve it.
         "I'll report back when it finishes. Thanks!",
         "I'll report back when it finishes. Let me know if you need anything else.",
         "I'll report back when it finishes.\nThanks!",
-        "I'll report back when it finishes. I am watching it.",
+        "I'll report back when it finishes. No action needed.",
+        # A semicolon that only continues the plan.
+        "Not stalled. I'll check again in ~10 minutes; if it hasn't advanced by then I'll steer it.",
         # A colon or quotes around part of the model's own promise.
         "Status: I'll report back when it finishes.",
         "The build is running: I'll report back when it finishes.",
@@ -79,6 +77,18 @@ class TestPromiseDetector:
         "```text\nI will report back when it finishes.\n```",
         "The example reply is: I will report back when it finishes.",
         "I'll report back when it finishes: it finished successfully.",
+        # Any later statement might report the outcome: silent, even when it does not.
+        "I'll report back when it finishes. It crashed.",
+        "I'll report back when it finishes. It timed out.",
+        "I'll report back when it finishes. It was cancelled.",
+        "I'll report back when it finishes. The build is complete; all checks are green.",
+        "I'll report back when it finishes. I am watching it.",
+        "I'll report back when it finishes; thanks for the earlier results.",
+        # Anything that might make it wait on, or be offered to, the user: silent.
+        "I'll report back when it finishes. Send me the output first.",
+        "If you want me to, I'll report back when it finishes.",
+        "If you like, I'll report back when it finishes.",
+        "I will report back when it finishes, if you are busy.",
         "",
     ])
     def test_ignores_non_promises(self, text):
@@ -180,7 +190,11 @@ class TestWakeSources:
 
     @pytest.mark.parametrize("job,armed", [
         ({"executed": True, "execution_mode": "background"}, True),    # outcome re-enters the conversation
+        # An inline run of a one-shot: its outcome is already in this turn and nothing is left to run.
         ({"executed": True, "execution_success": False, "state": "completed", "next_run_at": None}, False),
+        # An inline run of a recurring job: this occurrence is done, the next one is still armed.
+        ({"executed": True, "execution_mode": None, "enabled": True, "state": "scheduled",
+          "next_run_at": "2026-10-20T16:22:24+11:00"}, True),
     ])
     def test_cron_run_counts_only_when_its_outcome_is_still_coming(self, registry, job, armed):
         result = json.dumps({"success": True, "job": job})

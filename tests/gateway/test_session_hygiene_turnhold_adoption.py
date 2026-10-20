@@ -430,3 +430,198 @@ async def test_turn_hold_without_watermark_fence_still_cancels(
     # Legacy path still records the flat retry-after immediately.
     assert fake_db.record_compression_failure_cooldown.called
     assert not fake_db.increment_hygiene_failure_streak.called
+
+
+@pytest.mark.asyncio
+async def test_turn_hold_deferred_adoption_resets_stored_prompt_count(
+    monkeypatch, tmp_path
+):
+    """A deferred (turn-hold, watermark-fenced) adoption commits AFTER the released
+    turn ended. That turn's end-of-turn write stored the pre-compaction prompt
+    count, which priced the replaced transcript: the adoption callback must zero
+    the stored count, like the inline adoption path does.
+    """
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    committed = threading.Event()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+
+    class FencedLateCommitAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", "sess-97963")
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(
+            self, messages, *_args, commit_fence=None, **_kwargs
+        ):
+            if commit_fence is not None:
+                commit_fence.mark_commit_watermark_fenced()
+            worker_started.set()
+            _spin_started = time.monotonic()
+            while not release_worker.is_set():
+                if time.monotonic() - _spin_started > 20:
+                    return (messages, None)
+                if commit_fence is not None:
+                    commit_fence.touch_progress()
+                time.sleep(0.01)
+            if commit_fence is not None and not commit_fence.begin_commit():
+                return (messages, None)
+            try:
+                self._session_db.archive_and_compact(
+                    self.session_id,
+                    [{"role": "assistant", "content": "summary"}],
+                    watermark=6,
+                )
+                self._last_compaction_in_place = True
+                committed.set()
+                return ([{"role": "assistant", "content": "summary"}], None)
+            finally:
+                if commit_fence is not None:
+                    commit_fence.finish_commit()
+
+    gateway_run = importlib.import_module("gateway.run")
+    _write_turnhold_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, FencedLateCommitAgent)
+
+    adapter = _CaptureAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db)
+
+    result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
+    assert result == "ok"
+    assert worker_started.is_set()
+
+    # The released turn ended (and stored its pre-compaction reading) BEFORE the
+    # commit; the late commit is then adopted.
+    release_worker.set()
+    await asyncio.wait_for(asyncio.to_thread(committed.wait, 5), timeout=6)
+    assert committed.is_set()
+    fake_db.archive_and_compact.assert_called_once()
+
+    # The adoption must zero the stored prompt count (no activity touch), exactly
+    # like the inline adoption path's ``session_entry.last_prompt_tokens = 0``.
+    for _ in range(100):
+        if any(
+            c.kwargs.get("last_prompt_tokens") == 0 and c.kwargs.get("touch_activity") is False
+            for c in runner.session_store.update_session.call_args_list
+        ):
+            break
+        await asyncio.sleep(0.05)
+    assert any(
+        c.kwargs.get("last_prompt_tokens") == 0 and c.kwargs.get("touch_activity") is False
+        for c in runner.session_store.update_session.call_args_list
+    ), (
+        "deferred adoption must reset the stored prompt count: the committed "
+        f"summary replaced the transcript the count priced, got: "
+        f"{runner.session_store.update_session.call_args_list}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_ending_after_deferred_commit_discards_stale_prompt_count(
+    monkeypatch, tmp_path
+):
+    """Reverse ordering: the deferred worker commits WHILE the released turn is
+    still running. That turn's prompt count prices the pre-compaction transcript,
+    so the end-of-turn write must discard it once instead of re-staling the count.
+    """
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    committed = threading.Event()
+    fake_db = MagicMock()
+    fake_db.get_compression_failure_cooldown.return_value = None
+
+    class FencedMidTurnCommitAgent:
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", "sess-97963")
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(
+            self, messages, *_args, commit_fence=None, **_kwargs
+        ):
+            if commit_fence is not None:
+                commit_fence.mark_commit_watermark_fenced()
+            worker_started.set()
+            _spin_started = time.monotonic()
+            while not release_worker.is_set():
+                if time.monotonic() - _spin_started > 20:
+                    return (messages, None)
+                if commit_fence is not None:
+                    commit_fence.touch_progress()
+                time.sleep(0.01)
+            if commit_fence is not None and not commit_fence.begin_commit():
+                return (messages, None)
+            try:
+                self._session_db.archive_and_compact(
+                    self.session_id,
+                    [{"role": "assistant", "content": "summary"}],
+                    watermark=6,
+                )
+                self._last_compaction_in_place = True
+                committed.set()
+                return ([{"role": "assistant", "content": "summary"}], None)
+            finally:
+                if commit_fence is not None:
+                    commit_fence.finish_commit()
+
+    gateway_run = importlib.import_module("gateway.run")
+    _write_turnhold_config(tmp_path)
+    _install_fakes(monkeypatch, gateway_run, tmp_path, FencedMidTurnCommitAgent)
+
+    adapter = _CaptureAdapter()
+    runner = _build_runner(gateway_run, adapter, fake_db)
+
+    async def _run_turn_on_replaced_transcript(**_kwargs):
+        # The released turn runs on the pre-compaction transcript while the
+        # deferred worker commits; it must observe the commit before returning
+        # its (stale) prompt count.
+        release_worker.set()
+        await asyncio.wait_for(asyncio.to_thread(committed.wait, 5), timeout=6)
+        return {
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 89000,
+        }
+
+    runner._run_agent = AsyncMock(side_effect=_run_turn_on_replaced_transcript)
+
+    result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
+    assert result == "ok"
+    assert committed.is_set()
+    fake_db.archive_and_compact.assert_called_once()
+
+    # The end-of-turn write must store 0, not the turn's pre-compaction reading:
+    # hygiene would otherwise treat the stale count as "actual" and compress the
+    # fresh summary again on the next turn.
+    assert not any(
+        c.kwargs.get("last_prompt_tokens") == 89000
+        for c in runner.session_store.update_session.call_args_list
+    ), (
+        "end-of-turn write stored a prompt count priced on the replaced transcript: "
+        f"{runner.session_store.update_session.call_args_list}"
+    )
+    assert any(
+        c.kwargs.get("last_prompt_tokens") == 0 and c.kwargs.get("touch_activity") is True
+        for c in runner.session_store.update_session.call_args_list
+    ), (
+        "end-of-turn write after a deferred commit must discard the stale reading once: "
+        f"{runner.session_store.update_session.call_args_list}"
+    )

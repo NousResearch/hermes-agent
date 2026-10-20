@@ -1950,6 +1950,45 @@ class TestCompletedOneshotRetentionSweep:
         get_due_jobs()
         assert get_job(old_id) is not None
 
+    def _exhausted_recurring(self, age_days: float):
+        """A recurring job whose repeat limit is reached (state=completed), backdated."""
+        job = create_job(prompt="Twice", schedule="every 1h", repeat=2)
+        mark_job_run(job["id"], success=True)
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["state"] == "completed"
+        stamp = (datetime.now(UTC) - timedelta(days=age_days)).isoformat()
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_run_at"] = stamp
+        save_jobs(jobs)
+        return job["id"]
+
+    def test_sweep_prunes_old_recurring_job_whose_repeat_limit_is_reached(self, tmp_cron_dir):
+        """A finished repeat-limited recurring job never runs again: it is pruned like a one-shot."""
+        old_id = self._exhausted_recurring(age_days=30)
+        get_due_jobs()
+        assert get_job(old_id) is None
+
+    def test_sweep_keeps_recent_recurring_job_whose_repeat_limit_is_reached(self, tmp_cron_dir):
+        recent_id = self._exhausted_recurring(age_days=1)
+        get_due_jobs()
+        assert get_job(recent_id)["state"] == "completed"
+
+    def test_sweep_ignores_paused_recurring_jobs(self, tmp_cron_dir):
+        """Only state=completed is terminal; a paused recurring job is kept whatever its age."""
+        from cron.jobs import pause_job
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        pause_job(job["id"])
+        stamp = (datetime.now(UTC) - timedelta(days=365)).isoformat()
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_run_at"] = stamp
+        save_jobs(jobs)
+        get_due_jobs()
+        assert get_job(job["id"]) is not None
+
     def test_recurring_jobs_unaffected_by_retention_change(self, tmp_cron_dir):
         """A recurring job still cycles normally alongside retained one-shots."""
         recurring = create_job(prompt="Recurring", schedule="every 1h")

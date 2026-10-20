@@ -256,7 +256,7 @@ _THREAD_ORIGIN = dict(chat_id='222', chat_type='thread', user_id='42', user_name
                       auto_thread_created=True, auto_thread_initial_name='Initial thread title')
 
 
-async def _thread_native_owner(tmp_path, monkeypatch):
+async def _thread_native_owner(tmp_path, monkeypatch, second_turn_overrides=None):
     """A thread session whose origin (creation-time title + auto-thread flags) is committed
     first and whose latest native admission carries the renamed title without the flags."""
     from gateway.session_ingress_context import native_callback, register_transport_home
@@ -268,10 +268,10 @@ async def _thread_native_owner(tmp_path, monkeypatch):
     register_transport_home(runner, None, tmp_path)
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     origin = adapter.build_source(**_THREAD_ORIGIN)
-    for message_id, overrides in (
-            ('human-1', {}),
-            ('human-2', {'chat_name': 'Renamed thread title', 'auto_thread_created': False,
-                         'auto_thread_initial_name': None})):
+    if second_turn_overrides is None:
+        second_turn_overrides = {'chat_name': 'Renamed thread title', 'auto_thread_created': False,
+                                 'auto_thread_initial_name': None}
+    for message_id, overrides in (('human-1', {}), ('human-2', second_turn_overrides)):
         turn = {**_THREAD_ORIGIN, **overrides}
         human = MessageEvent(text=f'human {message_id}', message_id=message_id,
                              source=adapter.build_source(**turn, message_id=message_id))
@@ -289,6 +289,22 @@ async def test_native_completion_wake_admits_when_thread_metadata_drifts(tmp_pat
     the latest committed native admission carries the renamed title and no flags (#139135); the
     completion wake built from that origin must admit instead of looping on silent defers."""
     _runner, authority, adapter, origin, metadata = await _thread_native_owner(tmp_path, monkeypatch)
+    try:
+        event = MessageEvent(text='notice', source=origin, internal=True, metadata=dict(metadata))
+        receipt = await authority.admit_automation(adapter, event, 'notice')
+        assert (await authority.admit_automation(adapter, event, 'notice')).admission_id == receipt.admission_id
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_admits_when_only_chat_name_drifts(tmp_path, monkeypatch):
+    """Independent production corroboration on #139135: a lone chat_name difference between the
+    persisted origin and the latest native admission (auto-thread flags and every other identity
+    field unchanged) is already enough to strand the wake, so chat_name alone must stay outside
+    the identity comparison."""
+    _runner, authority, adapter, origin, metadata = await _thread_native_owner(
+        tmp_path, monkeypatch, second_turn_overrides={'chat_name': 'Renamed thread title'})
     try:
         event = MessageEvent(text='notice', source=origin, internal=True, metadata=dict(metadata))
         receipt = await authority.admit_automation(adapter, event, 'notice')

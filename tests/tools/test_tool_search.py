@@ -725,6 +725,95 @@ class TestDeferredCallSchemaProbe:
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
 
+    def test_flattened_tool_call_is_repaired_and_dispatches(self):
+        """End-to-end: a model-emitted *flattened* tool_call (no `arguments` wrapper,
+        params at the entry root) must dispatch to the underlying MCP tool with the
+        harvested args instead of failing 'missing required argument(s)'.
+
+        Reproduces the failure mode reported for cheap/free models (e.g.
+        poolside/laguna-s-2.1:free) on the `tool_call` bridge.
+        """
+        import model_tools
+        from tools.registry import registry
+
+        calls = []
+
+        def _handler(args, task_id=None, **kw):
+            calls.append(args)
+            return json.dumps({
+                "ok": True,
+                "query": args.get("query"),
+                "search_depth": args.get("search_depth"),
+            })
+
+        registry.register(
+            name="mcp_flatten_search",
+            handler=_handler,
+            schema={
+                "name": "mcp_flatten_search",
+                "description": "flattened-call probe",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query."},
+                        "search_depth": {"type": "string", "description": "Depth."},
+                    },
+                    "required": ["query"],
+                },
+            },
+            toolset="mcp-flatten",
+        )
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            # Deliberately FLATTENED: no "arguments" wrapper; params at root, plus
+            # envelope noise ("type") that must be stripped, not forwarded.
+            function_args={
+                "name": "mcp_flatten_search",
+                "type": "function",
+                "query": "poolside laguna s 2.1 free endpoint",
+                "search_depth": "advanced",
+            },
+            enabled_toolsets=["mcp-flatten"],
+        ))
+
+        assert result.get("ok") is True
+        assert result.get("query") == "poolside laguna s 2.1 free endpoint"
+        assert result.get("search_depth") == "advanced"
+        assert calls == [{
+            "query": "poolside laguna s 2.1 free endpoint",
+            "search_depth": "advanced",
+        }]
+
+    def test_normalize_harvests_flattened_arguments(self):
+        """Unit: a flattened entry repairs surplus top-level keys into arguments and
+        strips envelope/meta keys."""
+        from tools.tool_search_validation import normalize_tool_call_entries
+        entries, err = normalize_tool_call_entries({
+            "name": "mcp__flatten_probe",
+            "type": "function",
+            "query": "poolside laguna s 2.1 architecture",
+            "search_depth": "advanced",
+            "_internal_meta": "ignored",
+        })
+        assert err is None
+        assert entries == [{
+            "name": "mcp__flatten_probe",
+            "arguments": {
+                "query": "poolside laguna s 2.1 architecture",
+                "search_depth": "advanced",
+            },
+        }]
+
+    def test_normalize_meta_only_flattened_resolves_to_empty(self):
+        """Unit: a flattened entry carrying only envelope/meta keys (no real params)
+        and no `arguments` resolves to {} rather than inventing bogus arguments."""
+        from tools.tool_search_validation import normalize_tool_call_entries
+        entries, err = normalize_tool_call_entries(
+            {"calls": [{"name": "mcp__meta_only_probe", "type": "function"}]})
+        assert err is None
+        assert entries == [{"name": "mcp__meta_only_probe", "arguments": {}}]
+
     def test_invalid_enum_is_blocked_before_dispatch(self):
         import model_tools
 

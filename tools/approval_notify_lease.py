@@ -7,10 +7,23 @@ _leases = WeakSet()  # Guarded by approval._lock; does not keep completed worker
 
 
 class NotifyLease:
-    def __init__(self, session_key, callback):
+    def __init__(self, session_key, callback, cancelled=None):
         self.session_key = session_key
         self.callback = callback
-        self.active = True
+        self._active = True
+        self.cancelled = cancelled
+        self.canonical_owner = None
+
+    @property
+    def active(self):
+        return self._active and not (self.cancelled is not None and self.cancelled.is_set())
+
+    @active.setter
+    def active(self, value):
+        self._active = value
+
+    def permits(self, request_id):
+        return self.active and (self.canonical_owner is None or self.canonical_owner.permits(request_id))
 
     def notify(self, data):
         from tools import approval
@@ -36,14 +49,25 @@ class NotifyLease:
                 approval._gateway_queues.pop(self.session_key, None)
 
 
-def acquire(session_key):
+def acquire(session_key, dispatch_id=None, *, cancelled=None):
     from tools import approval
     with approval._lock:
         callback = approval._gateway_notify_cbs.get(session_key)
+        factory = getattr(callback, "acquire_background", None)
         callback = getattr(callback, "background_notify", callback)
-        lease = NotifyLease(session_key, callback)
+        lease = NotifyLease(session_key, callback, cancelled)
         _leases.add(lease)
-        return lease
+    # Minting takes the stream lock: never call it under the tools lock.
+    if factory is not None:
+        try:
+            callback = factory(lease, dispatch_id)
+            with approval._lock:
+                if lease.active:
+                    lease.callback = callback
+        except Exception:
+            lease.release()
+            raise
+    return lease
 
 
 def revoke_session_locked(session_key):

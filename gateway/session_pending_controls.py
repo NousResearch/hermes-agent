@@ -14,8 +14,9 @@ class PendingControls:
         self.events = events
         self.pending = {}
         self.remote_responders = {}
+        self.dispatch_owners = {}
 
-    def register(self, session_id, route, generation, data, *, timeout_s=None):
+    def register(self, session_id, route, generation, data, *, timeout_s=None, dispatch_owner=None):
         from gateway.run import _redact_approval_command
         with self.events.lock:
             prompt_id = data['request_id']
@@ -29,6 +30,10 @@ class PendingControls:
                       'command': _redact_approval_command(data.get('command', '')),
                       'description': _redact_approval_command(data.get('description', '')),
                       'choices': choices}
+            if dispatch_owner is not None:
+                del prompt['execution_generation']
+                prompt['dispatch_owner'] = dispatch_owner.token
+                self.dispatch_owners[prompt_id] = dispatch_owner
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']
@@ -50,26 +55,34 @@ class PendingControls:
             self.pending[entry.clarify_id] = (entry, prompt)
             self.events.publish(session_id, prompt, event_type="clarify.request")
 
-    def snapshot(self, session_id, generation):
+    def snapshot(self, session_id, generation, *, only_prompt=None):
         with self.events.lock:
             for prompt_id, (route, prompt) in list(self.pending.items()):
+                if only_prompt is not None and prompt_id != only_prompt:
+                    continue
                 active = (prompt_id in self.remote_responders or
                           (not route.event.is_set() if prompt['kind'] == 'clarify' else
                            any(p['request_id'] == prompt_id for p in list_gateway_approvals(route))))
-                if prompt['execution_generation'] != generation or not active:
+                owner = self.dispatch_owners.get(prompt_id)
+                current = owner.valid() if owner is not None else prompt['execution_generation'] == generation
+                if not current or not active:
                     del self.pending[prompt_id]
                     self.remote_responders.pop(prompt_id, None)
+                    self.dispatch_owners.pop(prompt_id, None)
                     self.events.publish(session_id, {'prompt_id': prompt_id,
-                        'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
+                        **({'dispatch_owner': prompt['dispatch_owner']} if owner is not None else
+                           {'execution_generation': prompt['execution_generation']})}, event_type=prompt['kind'] + '.settled')
             return tuple(deepcopy(prompt) for _, prompt in self.pending.values())
 
     def respond(self, session_id, generation, prompt_id, response, *, kind="approval"):
         with self.events.lock:
-            self.snapshot(session_id, generation)
+            self.snapshot(session_id, generation, only_prompt=prompt_id)
             entry = self.pending.get(prompt_id)
             if entry is None:
                 return {'status': 'already_resolved', 'prompt_id': prompt_id}
             route, prompt = entry
+            if prompt_id in self.dispatch_owners and generation is not None:
+                raise RuntimeStoreError('stale_generation')
             if prompt['kind'] != kind:
                 raise RuntimeStoreError('invalid_params')
             if prompt_id in self.remote_responders:
@@ -90,12 +103,12 @@ class PendingControls:
                         or not isinstance(response['answer'], str)):
                     raise RuntimeStoreError('invalid_params')
                 resolved = resolve_gateway_clarify(prompt_id, response['answer'])
-                self.snapshot(session_id, generation)
+                self.snapshot(session_id, generation, only_prompt=prompt_id)
                 return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
             if not isinstance(response, dict) or set(response) != {'choice'} or response['choice'] not in prompt['choices']:
                 raise RuntimeStoreError('invalid_params')
             # The tools lock arbitrates native taps versus attached responders;
             # an exact request ID can never consume the next FIFO approval.
             resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id)
-            self.snapshot(session_id, generation)
+            self.snapshot(session_id, generation, only_prompt=prompt_id)
             return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}

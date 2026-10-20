@@ -2,7 +2,9 @@
 
 Reuse upstream authority-only value shapes; these overrides do not widen METHODS.
 """
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import RootModel, StrictInt, StringConstraints
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
@@ -91,10 +93,8 @@ class CanonicalPendingAdmission(AdmissionStatus):
     steering: bool | None = None
 
 
-class CanonicalPendingPrompt(Result):
-    kind: Literal['approval', 'clarify']
+class CanonicalPendingPromptFields(Result):
     prompt_id: str
-    execution_generation: int
     choices: list[str]
     command: str | None = None
     description: str | None = None
@@ -103,6 +103,20 @@ class CanonicalPendingPrompt(Result):
     multi_select: bool | None = None
     # Local viewer turns: the seconds the gateway waits before it gives up on this prompt.
     timeout_s: int | None = None
+
+
+class CanonicalForegroundPendingPrompt(CanonicalPendingPromptFields):
+    kind: Literal['approval', 'clarify']
+    execution_generation: StrictInt
+
+
+class CanonicalDispatchPendingPrompt(CanonicalPendingPromptFields):
+    kind: Literal['approval']
+    dispatch_owner: Annotated[str, StringConstraints(strict=True, min_length=1)]
+
+
+class CanonicalPendingPrompt(RootModel[CanonicalForegroundPendingPrompt | CanonicalDispatchPendingPrompt]):
+    """Pending control with exactly one owner, including resume snapshots."""
 
 
 class CanonicalSnapshotInfo(SessionInventoryFields):
@@ -248,9 +262,20 @@ class CanonicalCorrectionResult(Result):
     authority_epoch: int
 
 
-class CanonicalApprovalParams(CanonicalControlParams):
+class CanonicalForegroundApprovalParams(CanonicalSessionParams):
+    execution_generation: StrictInt
     prompt_id: str
     choice: str
+
+
+class CanonicalDispatchApprovalParams(CanonicalSessionParams):
+    dispatch_owner: Annotated[str, StringConstraints(strict=True, min_length=1)]
+    prompt_id: str
+    choice: str
+
+
+class CanonicalApprovalParams(RootModel[CanonicalForegroundApprovalParams | CanonicalDispatchApprovalParams]):
+    """Exactly one ownership variant; no generation may be borrowed for a dispatch."""
 
 
 class CanonicalEventsParams(CanonicalSessionParams):

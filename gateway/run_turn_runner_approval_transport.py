@@ -18,11 +18,8 @@ def approval_transport(turn):
         turn._approval_notify_sync(data)
 
     def background_notify(data):
-        # Canonical approvals are owned by a running execution generation, not
-        # by this dispatch lease. They cannot safely be projected/responded to
-        # after the parent settles (or into its successor). Until the authority
-        # supports dispatch-owned prompts, reject BEFORE sending any native card.
-        # Legacy messaging sessions without an authority retain off-turn delivery.
+        # Only acquire_background may mint canonical dispatch ownership. Refuse
+        # this legacy fallback for canonical sessions before any native delivery.
         if presenter._approval_owner is not None:
             raise RuntimeError(
                 "Background approval is unsupported for authority-owned sessions; "
@@ -30,7 +27,29 @@ def approval_transport(turn):
             )
         presenter._approval_notify_sync(data, background=True)
 
+    def acquire_background(lease, dispatch_id):
+        if presenter._approval_owner is None:
+            return background_notify
+        from gateway.session_dispatch_approvals import mint
+        owner = mint(turn, lease, dispatch_id)
+        lease.canonical_owner = owner
+        from dataclasses import replace
+        dispatch_presenter = TurnRunner(turn._runner, replace(origin, _run_still_current=owner.valid))
+        dispatch_presenter._dispatch_text_approval = True
+
+        def dispatch_notify(data):
+            owner.check()
+            # Existing native cards carry only a route, not an exact request ID.
+            # Use the typed control lane until an adapter implements exact binding.
+            dispatch_presenter._render_approval_sync(data, background=True)
+            owner.publish(data)
+        return dispatch_notify
+
+    # The waiter snapshots this before enqueue, before even pre-notify hooks can
+    # expose it to historical route-only callbacks. This is not dispatch ownership.
+    notify.requires_exact_request = turn._approval_owner is not None
     notify.background_notify = background_notify
+    notify.acquire_background = acquire_background
     return notify
 
 
@@ -51,12 +70,16 @@ def notify_approval(turn, approval_data: dict, *, background=False) -> None:
     desc = approval_data.get("description") or ea_default_reason_text()
     flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
     # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-    if _renders_exec_approval_buttons(type(adapter)):
+    exact_text = (getattr(turn, "_dispatch_text_approval", False) or
+                  (turn._approval_owner is not None and
+                   type(adapter).__dict__.get("supports_exec_approval_request_binding") is not True))
+    if _renders_exec_approval_buttons(type(adapter)) and not exact_text:
         try:
             fut = turn._schedule(
                 adapter.send_exec_approval(
                     chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                    description=desc, metadata=ctx._status_thread_metadata, **flags,
+                    description=desc, metadata={**(ctx._status_thread_metadata or {}),
+                        'approval_request_id': approval_data.get('request_id')}, **flags,
                 ),
                 "send_exec_approval scheduling error",
             )
@@ -116,6 +139,11 @@ def notify_approval(turn, approval_data: dict, *, background=False) -> None:
     # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
     # in Slack threads and reserved by Matrix clients.
     msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+    if exact_text or turn._approval_owner is not None:
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+        msg = (f"{cmd}\n{desc}\n"
+               f"{prefix}approve request:{approval_data['request_id']}\n"
+               f"{prefix}deny request:{approval_data['request_id']}")
     try:
         # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
         # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.

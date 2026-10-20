@@ -250,8 +250,14 @@ class GatewayChatView:
             expected = "approval" if command == "/approve" else "clarify"
             if not prompt or prompt["kind"] != expected:
                 raise GatewayClientError("No matching pending control; resume to refresh")
+            ownership = {k: prompt[k] for k in ('execution_generation', 'dispatch_owner') if k in prompt}
+            if (len(ownership) != 1 or
+                    ('dispatch_owner' in ownership and (expected != 'approval' or
+                     not isinstance(ownership['dispatch_owner'], str) or not ownership['dispatch_owner'])) or
+                    ('execution_generation' in ownership and type(ownership['execution_generation']) is not int)):
+                raise GatewayClientError("Invalid pending control ownership; resume to refresh")
             await self.client.rpc(expected + ".respond", session_id=self.session_id,
-                execution_generation=prompt["execution_generation"], prompt_id=prompt_id,
+                **ownership, prompt_id=prompt_id,
                 **({"choice": answer} if expected == "approval" else {"answer": answer}))
             return True
         if command == "/discard":

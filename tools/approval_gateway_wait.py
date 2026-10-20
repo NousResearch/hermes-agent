@@ -24,10 +24,11 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "owner", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "owner", "reason", "requires_exact_request", "result", "settle")
 
     def __init__(self, data: dict):
         self.owner = None
+        self.requires_exact_request = False
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
@@ -166,6 +167,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     keys = list(approval_data.get("pattern_keys") or [])
     entry = _ApprovalEntry(approval_data)
     entry.owner = owner
+    entry.requires_exact_request = getattr(notify_cb, "requires_exact_request", False) is True
 
     def _enqueue() -> None:
         register_prepared_approval(session_key, entry)
@@ -177,10 +179,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     # user still sees one prompt at a time (the answered leader is already off the queue).
     while True:
         with _approval._lock:
+            registered = _approval._gateway_notify_cbs.get(session_key)
+            entry.requires_exact_request |= getattr(registered, "requires_exact_request", False) is True
             leader = None
             if not preparing_terminal_approval():
                 leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                               if e.owner is owner and e.data.get("command") == approval_data.get("command")
+                               if e.owner is owner and e.requires_exact_request == entry.requires_exact_request
+                               and e.data.get("command") == approval_data.get("command")
                                and list(e.data.get("pattern_keys") or []) == keys), None)
             if leader is None:
                 _enqueue()

@@ -7816,45 +7816,16 @@
         "type": "object"
       },
       "CanonicalApprovalParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalForegroundApprovalParams"
           },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "execution_generation": {
-            "title": "Execution Generation",
-            "type": "integer"
-          },
-          "prompt_id": {
-            "title": "Prompt Id",
-            "type": "string"
-          },
-          "choice": {
-            "title": "Choice",
-            "type": "string"
+          {
+            "$ref": "#/components/schemas/CanonicalDispatchApprovalParams"
           }
-        },
-        "required": [
-          "session_id",
-          "execution_generation",
-          "prompt_id",
-          "choice"
         ],
-        "title": "CanonicalApprovalParams",
-        "type": "object"
+        "description": "Exactly one ownership variant; no generation may be borrowed for a dispatch.",
+        "title": "CanonicalApprovalParams"
       },
       "CanonicalAttachedImageResult": {
         "additionalProperties": false,
@@ -8859,6 +8830,155 @@
         "title": "CanonicalCreateParams",
         "type": "object"
       },
+      "CanonicalDispatchApprovalParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "dispatch_owner": {
+            "minLength": 1,
+            "title": "Dispatch Owner",
+            "type": "string"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "choice": {
+            "title": "Choice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "dispatch_owner",
+          "prompt_id",
+          "choice"
+        ],
+        "title": "CanonicalDispatchApprovalParams",
+        "type": "object"
+      },
+      "CanonicalDispatchPendingPrompt": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "edit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "multi_select": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Multi Select"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout S"
+          },
+          "kind": {
+            "const": "approval",
+            "title": "Kind",
+            "type": "string"
+          },
+          "dispatch_owner": {
+            "minLength": 1,
+            "title": "Dispatch Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt_id",
+          "choices",
+          "kind",
+          "dispatch_owner"
+        ],
+        "title": "CanonicalDispatchPendingPrompt",
+        "type": "object"
+      },
       "CanonicalEventsParams": {
         "additionalProperties": false,
         "properties": {
@@ -8957,6 +9077,156 @@
           "count"
         ],
         "title": "CanonicalEventsResult",
+        "type": "object"
+      },
+      "CanonicalForegroundApprovalParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "choice": {
+            "title": "Choice",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation",
+          "prompt_id",
+          "choice"
+        ],
+        "title": "CanonicalForegroundApprovalParams",
+        "type": "object"
+      },
+      "CanonicalForegroundPendingPrompt": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "edit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "multi_select": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Multi Select"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout S"
+          },
+          "kind": {
+            "enum": [
+              "approval",
+              "clarify"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt_id",
+          "choices",
+          "kind",
+          "execution_generation"
+        ],
+        "title": "CanonicalForegroundPendingPrompt",
         "type": "object"
       },
       "CanonicalListParams": {
@@ -9166,113 +9436,16 @@
         "type": "object"
       },
       "CanonicalPendingPrompt": {
-        "additionalProperties": false,
-        "properties": {
-          "kind": {
-            "enum": [
-              "approval",
-              "clarify"
-            ],
-            "title": "Kind",
-            "type": "string"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalForegroundPendingPrompt"
           },
-          "prompt_id": {
-            "title": "Prompt Id",
-            "type": "string"
-          },
-          "execution_generation": {
-            "title": "Execution Generation",
-            "type": "integer"
-          },
-          "choices": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Choices",
-            "type": "array"
-          },
-          "command": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Command"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Description"
-          },
-          "edit": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Edit"
-          },
-          "question": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Question"
-          },
-          "multi_select": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Multi Select"
-          },
-          "timeout_s": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Timeout S"
+          {
+            "$ref": "#/components/schemas/CanonicalDispatchPendingPrompt"
           }
-        },
-        "required": [
-          "kind",
-          "prompt_id",
-          "execution_generation",
-          "choices"
         ],
-        "title": "CanonicalPendingPrompt",
-        "type": "object"
+        "description": "Pending control with exactly one owner, including resume snapshots.",
+        "title": "CanonicalPendingPrompt"
       },
       "CanonicalProfileRow": {
         "additionalProperties": false,

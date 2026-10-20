@@ -160,14 +160,18 @@ def resolve_gateway_approval(session_key: str, choice: str,
             return 0
         if request_id:
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
-            queue.clear()
         else:
-            targets = [queue.pop(0)]
+            targets = queue[:1]
+        # A dispatch may be revoked or reset after sending. Never let a native
+        # route command bypass its canonical owner, even while publication waits.
+        targets = [entry for entry in targets
+                   if (not entry.requires_exact_request or bool(request_id))
+                   and (entry.owner is None or
+                        (entry.owner.permits(entry.data["request_id"]) and
+                         (entry.owner.canonical_owner is None or bool(request_id))))]
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's

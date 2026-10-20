@@ -4944,10 +4944,10 @@ export interface CanonicalPendingAdmission {
   controls?: ('steer' | 'replace')[] | null
   steering?: boolean | null
 }
-export interface CanonicalPendingPrompt {
-  kind: 'approval' | 'clarify'
+/** Pending control with exactly one owner, including resume snapshots. */
+export type CanonicalPendingPrompt = CanonicalForegroundPendingPrompt | CanonicalDispatchPendingPrompt
+export interface CanonicalForegroundPendingPrompt {
   prompt_id: string
-  execution_generation: number
   choices: string[]
   command?: string | null
   description?: string | null
@@ -4955,6 +4955,20 @@ export interface CanonicalPendingPrompt {
   question?: string | null
   multi_select?: boolean | null
   timeout_s?: number | null
+  kind: 'approval' | 'clarify'
+  execution_generation: number
+}
+export interface CanonicalDispatchPendingPrompt {
+  prompt_id: string
+  choices: string[]
+  command?: string | null
+  description?: string | null
+  edit?: Record<string, unknown> | null
+  question?: string | null
+  multi_select?: boolean | null
+  timeout_s?: number | null
+  kind: 'approval'
+  dispatch_owner: string
 }
 export interface CanonicalSnapshotInfo {
   provider?: string | null
@@ -5119,10 +5133,19 @@ export interface CanonicalModelOverride {
   model: string
   provider?: string | null
 }
-export interface CanonicalApprovalParams {
+/** Exactly one ownership variant; no generation may be borrowed for a dispatch. */
+export type CanonicalApprovalParams = CanonicalForegroundApprovalParams | CanonicalDispatchApprovalParams
+export interface CanonicalForegroundApprovalParams {
   profile?: string | null
   session_id: string
   execution_generation: number
+  prompt_id: string
+  choice: string
+}
+export interface CanonicalDispatchApprovalParams {
+  profile?: string | null
+  session_id: string
+  dispatch_owner: string
   prompt_id: string
   choice: string
 }

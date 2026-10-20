@@ -851,7 +851,7 @@ class SessionAuthority:
             self.check_approval_generation(session_id, generation)
             live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s)
 
-    async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval"):
+    async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval", dispatch_owner=None):
         capability = {"approval": "session:approve", "clarify": "session:respond"}.get(kind)
         if capability is None:
             raise RuntimeStoreError("invalid_params")
@@ -860,6 +860,11 @@ class SessionAuthority:
         with live.event_stream.lock:
             if actor not in live.subscribers.values():
                 raise RuntimeStoreError("permission_denied")
+            if dispatch_owner is not None:
+                if kind != "approval" or generation is not None:
+                    raise RuntimeStoreError("invalid_params")
+                from gateway.session_dispatch_approvals import respond
+                return respond(self, live, ref.session_id, dispatch_owner, prompt_id, response)
             if type(generation) is not int:
                 raise RuntimeStoreError("stale_generation")
             self.check_approval_generation(ref.session_id, generation)

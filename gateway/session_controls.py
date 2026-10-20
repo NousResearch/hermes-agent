@@ -762,10 +762,13 @@ class AuthorityConnection:
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
 
     async def respond(self, ref, params):
-        if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:
+        fields = {"session_id", "prompt_id", "choice"}
+        if set(params) not in (fields | {"execution_generation"}, fields | {"dispatch_owner"}):
             raise RuntimeStoreError("invalid_params")
-        return await self.authority.respond(self.actor, ref, params["execution_generation"],
-                                            params["prompt_id"], {"choice": params["choice"]})
+        if "dispatch_owner" in params and not isinstance(params["dispatch_owner"], str):
+            raise RuntimeStoreError("invalid_params")
+        return await self.authority.respond(self.actor, ref, params.get("execution_generation"),
+            params["prompt_id"], {"choice": params["choice"]}, dispatch_owner=params.get("dispatch_owner"))
 
     async def respond_clarify(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "answer"}:

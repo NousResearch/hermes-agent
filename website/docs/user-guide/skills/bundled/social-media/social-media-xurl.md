@@ -16,7 +16,7 @@ X/Twitter via xurl CLI: raw post search, posting, DM, media.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/social-media/xurl` |
-| Version | `1.1.3` |
+| Version | `1.1.4` |
 | Author | xdevplatform + openclaw + Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
@@ -30,14 +30,14 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # xurl — X (Twitter) API via the Official CLI
 
-`xurl` is the X developer platform's official CLI for the X API. It supports shortcut commands for common actions AND raw curl-style access to any v2 endpoint. All commands return JSON to stdout.
+`xurl` is the X developer platform's official CLI for the X API. It supports shortcut commands for common actions AND raw curl-style access to any v2 endpoint. API commands return JSON to stdout; use `--json` for chat reads.
 
 Use this skill for:
 - posting, replying, quoting, deleting posts
 - searching for raw posts (actual post JSON with IDs you can engage with) and reading timelines/mentions
 - liking, reposting, bookmarking
 - following, unfollowing, blocking, muting
-- direct messages
+- direct messages, including end-to-end encrypted XChat reads (default: `xurl chat`)
 - media uploads (images and video)
 - raw access to any X API v2 endpoint
 - multi-app / multi-account workflows
@@ -50,9 +50,10 @@ This skill replaces the older `xitter` skill (which wrapped a third-party Python
 
 Critical rules when operating inside an agent/LLM session:
 
-- **Never** read, print, parse, summarize, upload, or send `~/.xurl` to LLM context.
+- **Never** read, print, parse, summarize, upload, or send `~/.xurl`, anything under it, or copies to LLM context. `~/.xurl/keys.yml` contains private encryption keys.
+- **Never** pass recovery PINs via `--pin` or private-key blobs as arguments, or ask for them in chat. The user restores/imports keys through the CLI's hidden prompts outside the agent session.
 - **Never** ask the user to paste credentials/tokens into chat.
-- The user must fill `~/.xurl` with secrets manually on their own machine. In Docker, this must be the `~` seen by Hermes tool subprocesses; see the Docker note below.
+- The user must configure credentials manually on their own machine (`~/.xurl/auth.yml` in current releases). In Docker, this must be the `~` seen by Hermes tool subprocesses; see the Docker note below.
 - **Never** recommend or execute auth commands with inline secrets in agent sessions.
 - **Never** use `--verbose` / `-v` in agent sessions — it can expose auth headers/tokens.
 - To verify credentials exist, only use: `xurl auth status`.
@@ -60,7 +61,7 @@ Critical rules when operating inside an agent/LLM session:
 Forbidden flags in agent commands (they accept inline secrets):
 `--bearer-token`, `--consumer-key`, `--consumer-secret`, `--access-token`, `--token-secret`, `--client-id`, `--client-secret`
 
-App credential registration and credential rotation must be done by the user manually, outside the agent session. After credentials are registered, the user authenticates with `xurl auth oauth2` — also outside the agent session. Tokens persist to `~/.xurl` in YAML. Each app has isolated tokens. OAuth 2.0 tokens auto-refresh.
+App credential registration and credential rotation must be done by the user manually, outside the agent session. After credentials are registered, the user authenticates with `xurl auth oauth2` — also outside the agent session. Tokens persist to `~/.xurl/auth.yml` in current releases. Each app has isolated tokens. OAuth 2.0 tokens auto-refresh.
 
 ---
 
@@ -125,7 +126,7 @@ These steps must be performed by the user directly, NOT by the agent, because th
    xurl whoami
    ```
 
-After this, the agent can use any command below without further setup. OAuth 2.0 tokens auto-refresh.
+After this, API commands are authenticated. Encrypted chat also needs the one-time key setup below. OAuth 2.0 tokens auto-refresh.
 
 > **Common pitfall:** If you omit `--app my-app` from `xurl auth oauth2`, the OAuth token is saved to the built-in `default` app profile — which has no client-id or client-secret. Commands will fail with auth errors even though the OAuth flow appeared to succeed. If you hit this, re-run `xurl auth oauth2 --app my-app` and `xurl auth default my-app`.
 
@@ -162,8 +163,11 @@ After this, the agent can use any command below without further setup. OAuth 2.0
 | Following / Followers | `xurl following -n 20` / `xurl followers -n 20` |
 | Block / Unblock | `xurl block @handle` / `xurl unblock @handle` |
 | Mute / Unmute | `xurl mute @handle` / `xurl unmute @handle` |
-| Send DM | `xurl dm @handle "message"` |
-| List DMs | `xurl dms -n 10` |
+| Read messages (default: encrypted XChat) | `xurl chat read @handle --json --no-mark-read` |
+| List chat inbox | `xurl chat conversations --json` |
+| Chat key status | `xurl chat keys status` |
+| Send legacy DM | `xurl dm @handle "message"` |
+| List legacy DMs only | `xurl dms -n 10` |
 | Upload media | `xurl media upload path/to/file.mp4` |
 | Media status | `xurl media status MEDIA_ID` |
 | List apps | `xurl auth apps list` |
@@ -265,6 +269,45 @@ xurl unmute @annoying
 
 ### Direct Messages
 
+**Default to native `xurl chat` for message reads.** XChat messages are end-to-end
+encrypted; legacy `xurl dms` uses a different endpoint and cannot read them. Using
+it as the default can silently omit actual messages. Empty legacy results do not
+prove that the inbox or conversation is empty.
+
+Run these through `terminal` after completing chat setup below:
+
+```bash
+xurl chat conversations --json
+xurl chat read @someuser --json --no-mark-read -n 50
+```
+
+`read` and `listen` send read receipts by default. Always pass `--no-mark-read`
+for agent reads unless the user explicitly wants to mark the conversation read.
+Use `--json` for structured output. `-n` limits fetched events, not necessarily
+decrypted messages; a bounded read is not an exhaustive conversation export.
+
+**Chat setup and verification:**
+
+1. Through `terminal`, check `xurl --version`, `xurl chat --help`, and
+   `xurl auth status`. Use a current official release binary with chat support
+   (prebuilt support starts at v1.3.1 for macOS arm64/amd64 and Linux amd64).
+   A missing command or unsupported-build stub is a CLI capability problem, not
+   evidence that encrypted messages are unavailable through the API. Upgrade
+   through the installation method used; do not silently fall back to `dms`.
+2. Chat requires OAuth2 user auth with `dm.read` and `dm.write` scopes. Select
+   the intended app/account with `--app` / `--username` as needed, and check
+   `xurl chat keys status`. If keys are missing, have the user run
+   `xurl chat keys restore` or `xurl chat keys import` outside the agent session,
+   using the hidden PIN/blob prompt. Restore existing keys once; do not generate,
+   register, or rotate keys to troubleshoot a read failure.
+3. Inspect both decrypted JSON and stderr. Per-event decryption/signature warnings
+   are non-fatal: exit code 0 can accompany missing messages or even `null` output.
+   Report the read as **incomplete** if key lookup, signature verification, or
+   decryption fails; do not call it an empty inbox or complete history. Surface
+   the blocker rather than substituting legacy results or disabling verification.
+
+Legacy, unencrypted DMs only (not a fallback for encrypted reads):
+
 ```bash
 xurl dm @someuser "Hey, saw your post!"
 xurl dms -n 25
@@ -343,13 +386,13 @@ Force streaming on any endpoint with `-s`.
 
 ## Output Format
 
-All commands return JSON to stdout. Structure mirrors X API v2:
+API commands return JSON to stdout. Structure mirrors X API v2:
 
 ```json
 { "data": { "id": "1234567890", "text": "Hello world!" } }
 ```
 
-Errors are also JSON:
+API errors are also JSON; chat can additionally emit non-fatal warnings to stderr:
 
 ```json
 { "errors": [ { "message": "Not authorized", "code": 403 } ] }
@@ -395,7 +438,7 @@ xurl --app staging /2/users/me             # one-off against staging
 
 ## Error Handling
 
-- Non-zero exit code on any error.
+- Command failures normally exit non-zero; chat can skip events with stderr warnings and still exit 0. Check decrypted output and warnings, not just the exit code.
 - API errors are still printed as JSON to stdout, so you can parse them.
 - Auth errors → have the user re-run `xurl auth oauth2` outside the agent session.
 - Commands that need the caller's user ID (like, repost, bookmark, follow, etc.) will auto-fetch it via `/2/users/me`. An auth failure there surfaces as an auth error.
@@ -411,7 +454,7 @@ xurl --app staging /2/users/me             # one-off against staging
 5. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
 6. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
 7. Only the `xurl` command output (or the raw X API response) proves that a state-changing X action happened. Never report a write as done based on any other source — search results, summaries, or prior context.
-8. Use JSON output directly — every response is already structured.
+8. For message reads, follow **Direct Messages**: native `xurl chat` by default, `--json --no-mark-read`, and verify stderr as well as the returned events. Legacy `dms` cannot establish encrypted-chat completeness.
 9. Never paste `~/.xurl` contents back into the conversation.
 
 ---
@@ -438,7 +481,7 @@ xurl --app staging /2/users/me             # one-off against staging
 - **Token refresh:** OAuth 2.0 tokens auto-refresh. Nothing to do.
 - **Multiple apps:** Each app has isolated credentials/tokens. Switch with `xurl auth default` or `--app`.
 - **Multiple accounts per app:** Select with `-u / --username`, or set a default with `xurl auth default APP USER`.
-- **Token storage:** `~/.xurl` is YAML. In Docker, use the Hermes subprocess HOME (`/opt/data/home` in the official image) so tokens land under `/opt/data/home/.xurl`. Never read or send this file to LLM context.
+- **Token storage:** Current releases migrate the old `~/.xurl` YAML file to a directory containing `auth.yml`; chat private keys live in `keys.yml` (mode 600). Older binaries cannot use the migrated directory. In Docker, use the Hermes subprocess HOME (`/opt/data/home` in the official image). Never read or send these files to LLM context.
 - **Cost:** X API access is typically paid for meaningful usage. Many failures are plan/permission problems, not code problems.
 
 ---
@@ -447,4 +490,5 @@ xurl --app staging /2/users/me             # one-off against staging
 
 - Upstream CLI: https://github.com/xdevplatform/xurl (X developer platform team, Chris Park et al.)
 - Upstream agent skill: https://github.com/openclaw/openclaw/blob/main/skills/xurl/SKILL.md
-- Hermes adaptation: reformatted for Hermes skill conventions; safety guardrails preserved verbatim.
+- Native chat reference: https://github.com/xdevplatform/xurl/blob/v1.3.4/SKILL.md#encrypted-chat-xchat
+- Hermes adaptation: reformatted for Hermes skill conventions; safety guardrails preserved and extended for encrypted chat.

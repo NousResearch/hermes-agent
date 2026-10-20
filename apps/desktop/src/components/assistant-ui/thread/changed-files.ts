@@ -2,7 +2,7 @@
 // turn's file-edit tool parts into one row per file. No React/DOM.
 
 import {
-  countDiffLineStats,
+  diffLineStatsFromResult,
   fileEditBasename,
   fileEditPath,
   inlineDiffFromResult,
@@ -56,7 +56,7 @@ export function deriveChangedFiles(parts: readonly unknown[]): ChangedFile[] {
       continue
     }
 
-    const stats = countDiffLineStats(diff)
+    const stats = diffLineStatsFromResult(result)
     const existing = byPath.get(path)
 
     if (existing) {

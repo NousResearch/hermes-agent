@@ -4,6 +4,10 @@ export interface ToolResultMetadata {
   duration_s?: number
   error?: string | boolean
   inline_diff?: string
+  /** Exact +/- for the FULL edit diff (the inline_diff preview is
+   * budget-capped; prefer these when present). */
+  lines_added?: number
+  lines_removed?: number
   message?: string
   preview?: string
   summary?: string

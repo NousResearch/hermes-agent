@@ -64,6 +64,28 @@ export function countDiffLineStats(diff: string): DiffLineStats {
   return { added, removed }
 }
 
+function exactCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null
+}
+
+/**
+ * +/- for a file-edit result, preferring the backend's exact full-diff
+ * totals (`lines_added`/`lines_removed`) when present. The inline preview is
+ * budget-capped for display, so counting its lines under-reports any edit
+ * larger than the budget — older rows without totals keep that fallback.
+ */
+export function diffLineStatsFromResult(result: unknown): DiffLineStats {
+  const record = parseMaybeObject(result)
+  const added = exactCount(record.lines_added)
+  const removed = exactCount(record.lines_removed)
+
+  if (added !== null || removed !== null) {
+    return { added: added ?? 0, removed: removed ?? 0 }
+  }
+
+  return countDiffLineStats(inlineDiffFromResult(result))
+}
+
 export function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
   return (
     firstStringField(args, ['path', 'file', 'filepath']) ||

@@ -1422,10 +1422,6 @@ def _strip_auto_continue_noise(content: Any) -> Any:
         text = text[end + 1 :].lstrip()
     return text
 
-# Tools whose deliverable is a JSON payload with a local-file path field rather than a literal ``MEDIA:`` tag.
-_JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
-
-
 # Extension-anchored MEDIA: matcher (mirrors the dispatch site); a bare ``MEDIA:`` in prose never auto-appends.
 _TOOL_MEDIA_RE = re.compile(
     r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
@@ -1437,6 +1433,7 @@ _TOOL_MEDIA_RE = re.compile(
 
 # Shared with cron delivery and gateway background tasks; canonical names live in gateway.media_repair.
 from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id
+from gateway.run_tool_media import image_generate_media_paths
 
 
 def _collect_auto_append_media_tags(
@@ -1472,20 +1469,10 @@ def _collect_auto_append_media_tags(
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
-        # image_generate emits a JSON path field, not a MEDIA: tag; extract it: deterministic delivery.
+        # image_generate emits JSON path fields, not a MEDIA: tag; extract them: deterministic delivery.
         if tool_name == "image_generate" and "MEDIA:" not in content:
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    path = payload.get(field)
-                    if (isinstance(path, str)
-                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
-                        media_tags.append(f"MEDIA:{path}")
-                        break
+            media_tags.extend(f"MEDIA:{path}" for path in image_generate_media_paths(
+                content, lambda p: bool(_TOOL_MEDIA_RE.fullmatch(f"MEDIA:{p}")) and p not in history_media_paths))
             continue
         if "MEDIA:" not in content:
             continue
@@ -1529,16 +1516,7 @@ def _collect_history_media_paths(agent_history: list[dict[str, Any]]) -> set:
             continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
         if tool_name_by_call_id.get(cid) == "image_generate":
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    jp = payload.get(field)
-                    if isinstance(jp, str) and jp:
-                        paths.add(jp)
-                        break
+            paths.update(image_generate_media_paths(content))
     return paths
 
 def _home_target_env_var(platform_name: str) -> str:

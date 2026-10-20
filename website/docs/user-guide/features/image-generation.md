@@ -71,6 +71,19 @@ image_gen:
 
 `image_gen.provider` is the single selection key: `nous` routes through the managed Tool Gateway; a vendor name (`fal`, `openai`, `xai`, `krea`, ...) goes direct with your own key. The runtime always follows this stored selection — a `FAL_KEY` in `.env` is ignored while `provider: nous`, and `provider: fal` without `FAL_KEY` errors with `image_gen is configured to use fal (set via hermes tools), but FAL_KEY is not set. Run 'hermes tools' to change it.` rather than silently rerouting. Change providers via `hermes tools`, not by adding/removing keys. (The old `use_gateway` boolean is legacy — still read as `nous` when `true`, but never written anymore.)
 
+To get several images from one request, set `image_gen.fal.num_images` (each
+image is billed; models without a `num_images` input ignore it):
+
+```yaml
+image_gen:
+  fal:
+    num_images: 4   # default 1: unset keeps single-image requests
+```
+
+The equivalents are `image_gen.openrouter.n` and `image_gen.openai.n` (the latter also
+applies to a custom OpenAI-compatible endpoint). Every image is delivered:
+the first in the tool result's `image` field, the rest in `additional_images`.
+
 `max_parallel_requests` defaults to `4`. Hermes clamps it to at least one and
 to the global tool-worker limit, so image providers receive bounded parallel
 requests without allowing an image batch to bypass the agent's concurrency cap.
@@ -202,7 +215,11 @@ image_gen:
     model: gpt-image-2-medium
     base_url: http://localhost:18081/v1   # → OPENAI_BASE_URL → api.openai.com
     key_env: IMAGE_GATEWAY_TOKEN          # → OPENAI_API_KEY
+    n: 4                                  # optional: images per request (default 1)
 ```
+
+`n` is sent as-is; whether a gateway honours it (or serves the images itself
+by fanning out) is up to the gateway. Every image it returns comes back.
 
 Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
 or the process environment. Availability checks and

@@ -256,6 +256,10 @@ success_response(
 )
 ```
 
+A backend that returns several images in one request puts the first in `image` and the rest, in the same
+URL-or-absolute-path form, in `extra={"additional_images": [...]}`. The messaging gateway attaches every
+local path among them; the model is told to reference each one in its reply.
+
 **Error:**
 ```python
 error_response(

@@ -735,18 +735,20 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 f"{self._display} returned no image. Ensure the model '{model_id}' supports image output.",
                 "empty_response",
             ), "returned no image"
-        first = images[0]
         try:
-            if first.startswith("data:"):
-                b64 = first.split(",", 1)[1] if "," in first else ""
-                saved_path = save_b64_image(b64, prefix=f"{self._name}_gen")
-            else:
-                saved_path = save_url_image(first, prefix=f"{self._name}_gen")
+            saved = [str(self._save_chat_image(image)) for image in images]
         except Exception as exc:
             return fail(f"Could not save generated image: {exc}", "io_error"), None
         return success_response(
-            image=str(saved_path), model=model_id, prompt=prompt, aspect_ratio=aspect, provider=self._name,
+            image=saved[0], model=model_id, prompt=prompt, aspect_ratio=aspect, provider=self._name,
+            extra={"additional_images": saved[1:]} if len(saved) > 1 else None,
         ), None
+
+    def _save_chat_image(self, image: str) -> Path:
+        """Cache one chat-surface image (a ``data:`` URL or a remote URL)."""
+        if image.startswith("data:"):
+            return save_b64_image(image.split(",", 1)[1] if "," in image else "", prefix=f"{self._name}_gen")
+        return save_url_image(image, prefix=f"{self._name}_gen")
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,

@@ -7,7 +7,8 @@ One tool covers text-to-image and editing: ``image_url`` / ``reference_image_url
 route to the provider's edit endpoint, otherwise text-to-image. Mirrors
 ``agent/video_gen_provider.py``. Response dicts come from :func:`success_response`
 / :func:`error_response` (``success, image, model, prompt, aspect_ratio, modality,
-provider`` + ``error, error_type`` on failure).
+provider`` + ``error, error_type`` on failure). A multi-image result puts the rest
+of its images in ``extra={"additional_images": [...]}`` (URLs or absolute paths, like ``image``).
 """
 
 from __future__ import annotations

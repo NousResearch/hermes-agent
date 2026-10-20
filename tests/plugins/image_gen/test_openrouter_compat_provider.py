@@ -310,6 +310,18 @@ class TestGenerate:
         assert result["provider"] == "openrouter"
         mock_save.assert_called_once()
 
+    def test_every_chat_image_is_saved_and_returned(self):
+        """The chat surface bills every image a model returns; none may be dropped after the first."""
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_chat_response(
+                 [_PNG_DATA_URI, "https://cdn.example/b.png"])), \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/a.png")), \
+             patch("plugins.image_gen.openrouter.save_url_image", return_value=Path("/tmp/b.png")):
+            result = _openrouter().generate(prompt="two variations")
+
+        assert result["image"] == str(Path("/tmp/a.png"))
+        assert result["additional_images"] == [str(Path("/tmp/b.png"))]
+
 
     def test_empty_response(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \

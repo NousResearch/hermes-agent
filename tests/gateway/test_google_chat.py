@@ -1316,6 +1316,85 @@ class TestAttachmentSSRFGuard:
         assert path == str(tmp_path / "out.pdf")
         assert mime == "application/pdf"
 
+    @pytest.mark.asyncio
+    async def test_document_cache_uses_content_name_not_resource_id(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """``name`` is the attachment RESOURCE name (…/attachments/<id>); the original
+        filename lives in ``contentName``. Caching under the bare id left documents
+        extension-less, so read_file keyed on the extension and refused to parse the
+        PDF (#132200)."""
+        attachment = {
+            "source": "DRIVE_FILE",
+            "contentType": "application/pdf",
+            "name": "spaces/S/messages/M/attachments/A",
+            "contentName": "Quarterly Report.pdf",
+            "attachmentDataRef": {"resourceName": "spaces/S/messages/M/attachments/A"},
+        }
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            return b"%PDF-fake"
+
+        monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+        from plugins.platforms.google_chat import adapter as gc_mod
+        doc_cache = AsyncMock(return_value=str(tmp_path / "out.pdf"))
+        monkeypatch.setattr(gc_mod, "cache_document_from_bytes_async", doc_cache)
+
+        await adapter._download_attachment(attachment)
+        doc_cache.assert_awaited_once_with(b"%PDF-fake", "Quarterly Report.pdf")
+
+    @pytest.mark.asyncio
+    async def test_document_without_content_name_gets_extension_from_mime(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Old-style attachments without ``contentName`` must not stay extension-less
+        either: derive the extension from contentType so document extraction still runs."""
+        attachment = {
+            "source": "DRIVE_FILE",
+            "contentType": "application/pdf",
+            "name": "spaces/S/messages/M/attachments/A",
+            "attachmentDataRef": {"resourceName": "spaces/S/messages/M/attachments/A"},
+        }
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            return b"%PDF-fake"
+
+        monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+        from plugins.platforms.google_chat import adapter as gc_mod
+        doc_cache = AsyncMock(return_value=str(tmp_path / "out.pdf"))
+        monkeypatch.setattr(gc_mod, "cache_document_from_bytes_async", doc_cache)
+
+        await adapter._download_attachment(attachment)
+        cached_as = doc_cache.await_args.args[-1]
+        assert cached_as.endswith(".pdf")
+
+    @pytest.mark.asyncio
+    async def test_content_name_path_components_are_stripped(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """``contentName`` is user-controlled: never let it carry path components into
+        the cache filename (the document cacher sanitizes again, but the media ``ext``
+        probe happens before that)."""
+        attachment = {
+            "source": "DRIVE_FILE",
+            "contentType": "application/pdf",
+            "name": "spaces/S/messages/M/attachments/A",
+            "contentName": "../../etc/passwd.pdf",
+            "attachmentDataRef": {"resourceName": "spaces/S/messages/M/attachments/A"},
+        }
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            return b"%PDF-fake"
+
+        monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+        from plugins.platforms.google_chat import adapter as gc_mod
+        doc_cache = AsyncMock(return_value=str(tmp_path / "out.pdf"))
+        monkeypatch.setattr(gc_mod, "cache_document_from_bytes_async", doc_cache)
+
+        await adapter._download_attachment(attachment)
+        cached_as = doc_cache.await_args.args[-1]
+        assert "/" not in cached_as and cached_as == "passwd.pdf"
+
 
 # ===========================================================================
 # Outbound thread routing (anti-top-level fallback in DMs)

@@ -478,6 +478,25 @@ export const clearQueuedPromptDrainFailures = (key: string | null | undefined, i
   })
 }
 
+/** Drop the server-owned mark from one admitted row. The queue panel's
+ *  force-send withdraws the admission first, then hands the row to the local
+ *  send path — which only ever picks up rows it owns. */
+export const clearQueuedPromptServerStatus = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  return mutateSession(sid, queue => {
+    if (!queue.some(e => e.id === id && e.serverStatus)) {
+      return null
+    }
+
+    return queue.map(e => (e.id === id ? { ...e, serverStatus: undefined } : e))
+  })
+}
+
 export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
   const sid = sidOf(key)
 

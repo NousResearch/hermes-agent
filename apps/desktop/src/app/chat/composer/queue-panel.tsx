@@ -270,11 +270,12 @@ function renderEntryActions({
           </Button>
         </Tip>
       )}
-      {!entry.serverStatus && (
+      {entry.serverStatus !== 'unknown' && (
         <Tip label={busy ? c.queueSendNext : c.queueSend}>
           <Button
             aria-label={busy ? c.queueSendNext : c.queueSend}
             className="size-5 rounded-md"
+            data-slot="queue-force-send"
             disabled={isEditing}
             onClick={() => onSendNow(entry.id)}
             size="icon-xs"

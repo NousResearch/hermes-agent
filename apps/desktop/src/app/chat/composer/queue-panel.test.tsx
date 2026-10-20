@@ -42,6 +42,38 @@ async function renderExpandedPanel(entries: QueuedPromptEntry[]) {
   return view
 }
 
+// A row the gateway admits (server-owned) has no local text/order to edit or
+// steer, but "send now" still means something: withdraw the admission and let
+// the local send path deliver it. The affordance used to vanish entirely on
+// those rows, leaving only Delete.
+describe('QueuePanel force-send on server-owned rows', () => {
+  it('offers send-now on an admitted row and hides edit/steer', async () => {
+    const onSendNow = vi.fn()
+
+    const view = render(
+      <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
+        <QueuePanel
+          busy
+          editingId={null}
+          entries={[{ ...entry('admitted', 'Queued while busy'), serverStatus: 'queued' }]}
+          onDelete={vi.fn()}
+          onEdit={vi.fn()}
+          onResume={vi.fn()}
+          onSendNow={onSendNow}
+          parked={false}
+        />
+      </I18nProvider>
+    )
+
+    fireEvent.click(await view.findByRole('button', { name: /queued/i }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /next/i }))
+
+    expect(onSendNow).toHaveBeenCalledWith('admitted')
+    expect(screen.queryByRole('button', { name: /^edit$/i })).toBeNull()
+  })
+})
+
 // #45664: a long queued prompt was only ever readable as one truncated line
 // (or by loading it back into the composer). Long and multiline previews now
 // carry an expand/collapse toggle that reveals the full text in place.

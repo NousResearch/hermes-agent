@@ -1,0 +1,59 @@
+# Official Rive editor connection; catalog acceptance is decided by upstream review.
+# Contributed by Chris Mish (cygnostik), ProDyn https://prodyn.ai.
+manifest_version: 1
+name: rive
+description: Inspect and author interactive graphics in the Rive desktop editor.
+source: https://rive.app/docs/editor/ai/mcp
+transport:
+  type: http
+  url: http://127.0.0.1:9791/mcp
+auth:
+  type: none
+# Start with inspection, not mixed read/write commands. The checklist lets the
+# user explicitly enable authoring, script execution and export when needed.
+tools:
+  default_enabled:
+    - session_info
+    - list_artboards
+    - get_artboard_hierarchy
+    - query_objects
+    - query_property_keys
+    - query_property_values
+    - find_objects
+    - get_selection
+    - get_scripts
+    - script_diagnostics
+    - get_scripting_reference
+    - read_console
+suggest:
+  keywords: [rive]
+  applications: [Rive]
+  requires_app: true
+  examples:
+    - Inspect a Rive artboard and its animation state machines
+    - Author an interactive illustration in an approved Rive file
+post_install: |
+  This connects to Rive's official MCP server inside the macOS or Windows
+  desktop editor. Open the editor on the SAME machine as the Hermes backend,
+  then open the intended file. Linux can use exported Rive runtimes but does
+  not have the official desktop editor. This does not install or launch Rive.
+
+  The endpoint is loopback-only and has no authentication. Do not expose it
+  on the LAN. Rive documents are cloud-backed; local MCP does not make the
+  editor or connected model provider offline.
+
+  Disable unneeded server-initiated model requests and verify:
+    hermes config set mcp_servers.rive.sampling.enabled false
+    hermes config get mcp_servers.rive
+    hermes mcp test rive
+
+  Inspection tools are selected initially. Enable authoring tools deliberately:
+    hermes mcp configure rive
+
+  Companion workflow, when available in your release:
+    hermes skills install official/creative/rive-mcp
+
+  Confirm the exact file before edits. Script tests, simulation and exports
+  can have side effects. A successful connection is not authoring/export proof.
+  New tools require schema review; native MCP calls do not inherit the skill
+  helper's guards. Start a new session or explicitly use /reload-mcp if needed.

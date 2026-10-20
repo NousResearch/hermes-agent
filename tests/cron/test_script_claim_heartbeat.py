@@ -355,7 +355,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     monkeypatch.setattr(scheduler, "mark_job_run", mark_run)
 
     with patch("agent.secret_scope.set_secret_scope", return_value=None), \
-         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+         patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
          patch("agent.secret_scope.reset_secret_scope"):
         assert scheduler.run_one_job(job) is True
 
@@ -413,7 +413,7 @@ def _run_claimed_job_with_mid_run_action(
         claimed["execution_id"] = execution_id
 
         with patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"):
             assert scheduler.run_one_job(claimed) is expect_result
     return delivered, finished
@@ -680,7 +680,7 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     monkeypatch.setattr(scheduler, "finish_execution", finish)
 
     with patch("agent.secret_scope.set_secret_scope", return_value=None), \
-         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+         patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
          patch("agent.secret_scope.reset_secret_scope"):
         assert scheduler.run_one_job(job) is True
 

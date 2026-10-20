@@ -1957,23 +1957,14 @@ def _credential_fingerprint(provider: str) -> str:
     not discard an account-scoped catalog, while a real account switch must invalidate it.
     """
     import hashlib
+    from hermes_cli.config import get_env_value_prefer_dotenv
 
     # Resolve each env var the way the credential resolver does (dotenv
     # first, environ second), so the fingerprint identifies the same
     # credentials the API call will use — including keys that live only
-    # in ~/.hermes/.env. This allows the gateway to resolve models found
-    # by plugins.
-    try:
-        from hermes_cli.config import get_env_value_prefer_dotenv
-
-        def _fp_env(key: str) -> str:
-            try:
-                return get_env_value_prefer_dotenv(key) or ""
-            except Exception:
-                return os.environ.get(key, "")
-    except Exception:
-        def _fp_env(key: str) -> str:
-            return os.environ.get(key, "")
+    # in ~/.hermes/.env.
+    def _fp_env(key: str) -> str:
+        return get_env_value_prefer_dotenv(key) or ""
 
     parts: list[str] = []
     try:

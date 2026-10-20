@@ -1526,3 +1526,41 @@ class TestAzureFoundryPickerCatalog:
         monkeypatch.setattr(_models_mod, "_get_model_config_dict",
                             lambda: {"provider": "azure-foundry", "base_url": "https://b.openai.azure.com/openai/v1"})
         assert _models_mod._credential_fingerprint("azure-foundry") != fp_a
+
+
+class TestCredentialFingerprintEnvResolution:
+    """The fingerprint must read env vars through the credential resolver's reader
+    (``get_env_value_prefer_dotenv``) and must still tell distinct keys apart."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for ev in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+            monkeypatch.delenv(ev, raising=False)
+        self.env_file = tmp_path / ".env"
+
+    def test_distinct_environ_keys_give_distinct_fingerprints(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key-a")
+        fp_a = _models_mod._credential_fingerprint("anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key-b")
+        assert _models_mod._credential_fingerprint("anthropic") != fp_a
+
+    def test_distinct_dotenv_keys_give_distinct_fingerprints(self):
+        self.env_file.write_text("ANTHROPIC_API_KEY=sk-ant-key-a\n")
+        fp_a = _models_mod._credential_fingerprint("anthropic")
+        self.env_file.write_text("ANTHROPIC_API_KEY=sk-ant-key-b\n")
+        assert _models_mod._credential_fingerprint("anthropic") != fp_a
+
+    def test_dotenv_key_matches_environ_key_with_same_value(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key-a")
+        fp_environ = _models_mod._credential_fingerprint("anthropic")
+        monkeypatch.delenv("ANTHROPIC_API_KEY")
+        self.env_file.write_text("ANTHROPIC_API_KEY=sk-ant-key-a\n")
+        assert _models_mod._credential_fingerprint("anthropic") == fp_environ
+
+    def test_dotenv_key_wins_over_stale_environ_key(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key-a")
+        fp_a = _models_mod._credential_fingerprint("anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-stale")
+        self.env_file.write_text("ANTHROPIC_API_KEY=sk-ant-key-a\n")
+        assert _models_mod._credential_fingerprint("anthropic") == fp_a

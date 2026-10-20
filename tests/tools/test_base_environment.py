@@ -72,6 +72,54 @@ def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
         assert run.call_args.args[0] == "sudo -n true"
 
 
+@pytest.mark.parametrize(
+    ("supported", "returncode", "expected", "probed"),
+    [(True, 0, True, True), (True, 1, False, True), (False, 0, True, False)],
+)
+def test_sudo_binary_available_probes_backend_only_when_supported(
+    monkeypatch, supported, returncode, expected, probed
+):
+    env = _TestableEnv()
+    env._sudo_nopasswd_probe_supported = supported
+    run = MagicMock(return_value=object())
+    monkeypatch.setattr(env, "_run_bash", run)
+    monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": returncode}))
+
+    assert env._sudo_binary_available() is expected
+    assert run.called is probed
+    if probed:
+        assert run.call_args.args[0] == "command -v sudo"
+
+
+def test_sudo_binary_available_fails_open_on_probe_error(monkeypatch):
+    """A broken probe keeps the prompt path; only a positive "no sudo here" may skip it (#138514)."""
+    env = _TestableEnv()
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("backend round trip failed")
+
+    monkeypatch.setattr(env, "_run_bash", _boom)
+
+    assert env._sudo_binary_available() is True
+
+
+def test_prepare_command_skips_prompt_when_backend_has_no_sudo(monkeypatch):
+    """#138514: with no sudo binary in the backend the interactive prompt is skipped and the
+    command runs unchanged instead of stalling on a password that can never succeed."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    env = _TestableEnv()
+    monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda: False)
+    monkeypatch.setattr(env, "_sudo_binary_available", lambda: False)
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("interactive sudo prompt must not run without a sudo binary")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    assert env._prepare_command("sudo true") == ("sudo true", None)
+
+
 class TestBoundedOutputCollector:
     def test_large_stream_retains_bounded_head_and_tail(self):
         collector = _BoundedOutputCollector(1_000)

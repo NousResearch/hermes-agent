@@ -197,6 +197,13 @@ def terminal_run_status(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     fields: dict[str, Any] = {
         "completed": finished, "partial": bool(result.get("partial")), "interrupted": interrupted,
     }
+    if status == "failed":
+        from agent.error_surface import build_error_surface_from_result
+
+        surface = build_error_surface_from_result(result)
+        if surface is not None:
+            # Share the classifier verdict without forwarding provider detail or free-tier copy.
+            fields["error_surface"] = {key: surface[key] for key in ("layer", "code", "retryable")}
     if not finished and result.get("turn_exit_reason"):
         fields["turn_exit_reason"] = str(result["turn_exit_reason"])
     if result.get("pending_steer"):

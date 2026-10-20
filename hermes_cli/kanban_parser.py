@@ -312,6 +312,8 @@ _SPECS = [
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
+    _cmd("stop", [_TASK_ID, _reason("Why this task must stop"), _json_flag()],
+         help="Block one task and confirm its worker has exited (operator-only)"),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),

@@ -413,6 +413,11 @@ def _install_single_query_signal_handlers(cli):
         with suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes(now=True)
+        with suppress(Exception):
+            # os._exit bypasses terminal cleanup and the registry's atexit hook.
+            # Explicit stop must also reap background work, including persisted jobs.
+            from tools.process_registry import process_registry
+            process_registry.kill_all(source="kanban_worker_stop", consume_output=True)
         os._exit(0)
 
     def _signal_handler_q(signum, frame):

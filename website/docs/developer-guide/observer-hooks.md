@@ -122,6 +122,9 @@ Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `sender_id`, and the platform messages the turn was built from:
 `source_origins` and `source_origins_complete`
 ([turn origins](../user-guide/features/hooks.md#pre_llm_call)).
+Native admission preserves these origins through durable queue replay. A Telegram edit
+has its own admission revision and reports that edit's update ID and edit date, rather
+than the original send's identity.
 
 Common `post_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `assistant_response`, `conversation_history`, `model`, and

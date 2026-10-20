@@ -439,6 +439,44 @@ async def test_a_durably_admitted_message_keeps_the_origins_it_had(event, expect
 
 
 @pytest.mark.asyncio
+async def test_telegram_edit_admissions_restore_their_own_origins(tmp_path, monkeypatch):
+    """An edit needs both its distinct admission key and its origin after durable replay."""
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_envelope import restore_native
+    from hermes_state_runtime import list_session_admissions
+
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    adapter = _make_telegram_adapter()
+    adapter.gateway_runner, runner.adapters = runner, {Platform.TELEGRAM: adapter}
+    runner._is_user_authorized_for_source = lambda source, **kwargs: True
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="origins")
+    runner._wire_adapter_handlers(adapter)
+    message = _make_message()
+    message.date = datetime(2026, 1, 1, tzinfo=UTC)
+    original = adapter._build_message_event(message, MessageType.TEXT, update_id=7001)
+    message = _make_message(text="corrected")
+    message.date = original.timestamp
+    message.edit_date = datetime(2026, 1, 2, tzinfo=UTC)
+    edited = adapter._build_message_event(message, MessageType.TEXT, update_id=7002)
+    try:
+        first = await authority.admit_native(original)
+        second = await authority.admit_native(edited)
+        again = await authority.admit_native(edited)
+        assert first.admission_id != second.admission_id == again.admission_id
+        rows = list_session_admissions(authority.db, session_id=first.ref.session_id, pending_only=False)
+        assert len(rows) == 2
+        for index, (row, event) in enumerate(zip(rows, (original, edited))):
+            replay = restore_native(row["payload"], runner)
+            assert replay.edit_revision == event.edit_revision
+            assert await _hook_sees(tmp_path / f"turn-{index}", monkeypatch, replay) == (
+                [{"chat_id": "111", "message_id": "1001", "update_id": 7001 + index,
+                  "edit_date": None if index == 0 else 1767312000}], True)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("flush", ["pending", "overflow"])
 async def test_the_shutdown_spool_keeps_text_not_identity(flush, tmp_path, monkeypatch):
     """The spool's payload shape is unchanged and carries no identity: recovery appends the text to

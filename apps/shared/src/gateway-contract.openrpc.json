@@ -8518,6 +8518,19 @@
           "authority_epoch": {
             "title": "Authority Epoch",
             "type": "integer"
+          },
+          "delivered": {
+            "anyOf": [
+              {
+                "const": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivered"
           }
         },
         "required": [
@@ -10653,6 +10666,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ConnectionRequestPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "todo_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TodoState"
               },
               {
                 "type": "null"
@@ -43785,6 +43809,67 @@
         "title": "ToolOutputRiskPayload",
         "type": "object"
       },
+      "ToolProgressPayload": {
+        "additionalProperties": false,
+        "description": "``agent.tool_progress_relay.tool_progress_payload`` \u2014 an MCP server's\n``notifications/progress`` for a running call, throttled to one per 500 ms per call.",
+        "properties": {
+          "tool_id": {
+            "title": "Tool Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "number"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Percent"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          }
+        },
+        "required": [
+          "tool_id",
+          "name",
+          "progress"
+        ],
+        "title": "ToolProgressPayload",
+        "type": "object"
+      },
       "ToolShowRow": {
         "additionalProperties": false,
         "properties": {
@@ -49149,6 +49234,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolOutputRiskPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool.progress",
+      "summary": "Live progress of a running tool call (MCP notifications/progress).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ToolProgressPayload"
           }
         }
       ]

@@ -367,6 +367,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-ai-presenter-video',
                     'user-guide/skills/optional/creative/creative-anatomy',
                     'user-guide/skills/optional/creative/creative-archify',
+                    'user-guide/skills/optional/creative/creative-artlist',
                     'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
                     'user-guide/skills/optional/creative/creative-auteur',

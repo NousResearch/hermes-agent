@@ -26,7 +26,7 @@ from gateway.status import (
 from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_base_version, get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
@@ -522,7 +522,7 @@ async def get_status(profile: Optional[str] = None):
         auth = _auth_gate_status()
 
         status = {
-            "version": get_version_info().base_version, "release_date": __release_date__,
+            "version": get_base_version(), "release_date": __release_date__,
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,
@@ -595,7 +595,7 @@ async def get_system_stats():
         "arch": _platform.machine(), "hostname": _platform.node(),
         "python_version": _platform.python_version(),
         "python_impl": _platform.python_implementation(),
-        "hermes_version": get_version_info().base_version, "cpu_count": os.cpu_count()}
+        "hermes_version": get_base_version(), "cpu_count": os.cpu_count()}
 
     def _disk():
         du = psutil.disk_usage(str(get_hermes_home()))

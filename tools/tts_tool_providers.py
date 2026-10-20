@@ -596,8 +596,8 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
         try:
-            from hermes_cli.version_info import get_version_info
-            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
+            from hermes_cli.version_info import get_base_version
+            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_base_version()}"
         except Exception:
             headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
     response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers)

@@ -70,9 +70,9 @@ from gateway.session_transcript import TranscriptReadError
 logger = logging.getLogger(__name__)
 
 # AUTH_BIND / sign-token header values
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_base_version
 
-_APP_VERSION = _BOT_VERSION = get_version_info().base_version
+_APP_VERSION = _BOT_VERSION = get_base_version()
 _YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 

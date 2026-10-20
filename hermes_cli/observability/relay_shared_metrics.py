@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from agent import relay_runtime
 from agent.portal_tags import get_conversation_context
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_base_version
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
@@ -262,7 +262,7 @@ class _Runtime:
         self._snapshot_checked_ns: int | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
-            SharedMetricsStore(), get_version_info().base_version, runtime_id=self.host.runtime_id
+            SharedMetricsStore(), get_base_version(), runtime_id=self.host.runtime_id
         )
         self.relay.subscribers.register(self._subscriber_name, self.subscriber)
         self.host.retain_managed_execution(self._subscriber_name)

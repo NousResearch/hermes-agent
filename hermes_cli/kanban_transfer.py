@@ -155,7 +155,7 @@ def export_board(
         attachments = copy_regular_files(kb.attachments_root(slug), staged / "attachments") if include_attachments else 0
         logs = copy_regular_files(kb.worker_logs_dir(slug), staged / "logs") if include_logs else 0
 
-        from hermes_cli.version_info import get_version_info
+        from hermes_cli.version_info import get_base_version
 
         manifest = {
             "format": ARCHIVE_FORMAT,
@@ -163,7 +163,7 @@ def export_board(
             "board": slug,
             "board_name": meta.get("name") or slug,
             "exported_at": int(time.time()),
-            "hermes_version": get_version_info().base_version,
+            "hermes_version": get_base_version(),
             "includes": {"attachments": bool(include_attachments), "logs": bool(include_logs)},
             "counts": {**counts, "attachment_files": attachments, "log_files": logs},
         }

@@ -70,11 +70,11 @@ def request_surface() -> str:
 
 
 def user_agent() -> str:
-    from hermes_cli.version_info import get_version_info
+    from hermes_cli.version_info import get_base_version
     from hermes_platform.host.facts import os_family
 
     os_name = _OS_FAMILY.get(os_family(), "unknown")
-    return f"hermes-agent/{get_version_info().base_version} ({request_surface()}; {os_name})"
+    return f"hermes-agent/{get_base_version()} ({request_surface()}; {os_name})"
 
 
 def _send_consented() -> bool:

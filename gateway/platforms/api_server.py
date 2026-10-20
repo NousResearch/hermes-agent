@@ -211,8 +211,8 @@ async def _call_verifier(verifier, *args, **kwargs):
 
 def _hermes_version() -> str:
     """Canonical base version for API protocol and compatibility payloads."""
-    from hermes_cli.version_info import get_version_info
-    return get_version_info().base_version
+    from hermes_cli.version_info import get_base_version
+    return get_base_version()
 
 
 # Default settings

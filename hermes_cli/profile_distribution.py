@@ -314,7 +314,7 @@ def _has_cron_jobs(staged: Path) -> bool:
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
     from hermes_cli.profiles import _canon_valid, get_profile_dir
-    from hermes_cli.version_info import get_version_info
+    from hermes_cli.version_info import get_base_version
     staged, provenance = _stage_source(source, workdir)
     _reject_distribution_symlinks(staged)
     manifest = read_manifest(staged)
@@ -322,7 +322,7 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
         raise DistributionError(
             f"No {MANIFEST_FILENAME} found at the distribution root — this source is not a Hermes distribution."
         )
-    check_hermes_requires(manifest.hermes_requires, get_version_info().base_version)  # fail fast
+    check_hermes_requires(manifest.hermes_requires, get_base_version())  # fail fast
     canon = _canon_valid(override_name or manifest.name)
     if canon == "default":
         raise DistributionError(

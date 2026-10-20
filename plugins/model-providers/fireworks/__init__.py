@@ -3,7 +3,7 @@
 
 from typing import Any
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_base_version
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -36,7 +36,7 @@ fireworks = FireworksProfile(
     default_headers={
         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+        "User-Agent": f"HermesAgent/{get_base_version()}",
     },
     default_aux_model="accounts/fireworks/models/glm-5p2",
     # Picker safety net when the live catalog fetch fails.

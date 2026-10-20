@@ -130,7 +130,10 @@ class GatewayNotificationOwnershipMixin:
             if not isinstance(config, dict):
                 return "terminal", session_id, None
             if "_delegate_from" not in config:
-                verdict = "terminal" if row.get("source") == "subagent" else "deliver"
+                # ``source`` is live routing state (a subagent row can be relabeled to the chat
+                # platform); ``created_source`` is immutable provenance. A markerless subagent row is
+                # never a deliverable owner: a chat route must never be rebound onto one.
+                verdict = "terminal" if "subagent" in (row.get("source"), row.get("created_source")) else "deliver"
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:

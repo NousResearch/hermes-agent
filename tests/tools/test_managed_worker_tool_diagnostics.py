@@ -14,6 +14,7 @@ import model_tools
 import tools.delegate_tool  # registers delegate_task in the global registry
 from agent import runtime_session_store
 from agent.conversation_loop import _invalid_tool_name_error_content
+from tools import tool_search
 from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
 
@@ -42,3 +43,14 @@ def test_outside_a_worker_core_tool_guidance_follows_the_session(monkeypatch, to
     monkeypatch.setattr(runtime_session_store, "_worker_process", False)
     message = _bridge("clarify", toolsets)
     assert expected in message and "managed worker" not in message, message
+
+
+def test_a_deferred_tool_absent_from_the_session_is_not_sent_to_tool_search(monkeypatch):
+    """Deferral is a property of the tool, availability one of the session (``defer: [delegate_task]``)."""
+    monkeypatch.setattr(runtime_session_store, "_worker_process", False)
+    deferred = ToolSearchConfig.from_raw({"defer": ["delegate_task"]})
+    monkeypatch.setattr(tool_search, "load_config_readonly", lambda: deferred)
+    described = json.loads(model_tools.handle_function_call(
+        "tool_describe", {"names": ["delegate_task"]}, enabled_toolsets=["file"]))
+    for message in (_bridge("delegate_task", ["file"]), described["errors"]["delegate_task"]):
+        assert "not available in this execution context" in message and "tool_search" not in message, message

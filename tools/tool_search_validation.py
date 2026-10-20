@@ -231,6 +231,30 @@ def managed_worker_unavailable_reason(name: str) -> Optional[str]:
     return f"'{name}' is not offered in a managed worker turn: {reason}" if reason else None
 
 
+def unavailable_in_session_reason(name: str) -> str:
+    """Why a registered tool absent from THIS session cannot be reached, whatever its door.
+
+    Deferral is a property of the tool, availability one of the session: a deferred tool the
+    session does not carry (``defer: [delegate_task]`` in a worker) is no more findable through
+    ``tool_search`` than a stripped core tool is callable directly."""
+    return managed_worker_unavailable_reason(name) or (
+        f"'{name}' is not available in this execution context. "
+        "Don't retry it — state the assumption and proceed with the work.")
+
+
+def session_unavailable_error(name: str, session_tool_names: Optional[Iterable[str]]) -> Optional[str]:
+    """The unavailability message when a core tool is missing from the session's own tool list,
+    whether or not ``defer:`` moved it behind the bridge; None without session context, when
+    the session carries it, or for MCP/plugin/unregistered names (an absent one may be a stale
+    catalog that ``tool_search`` can still refresh). A missing GUI surface keeps its own reason."""
+    if session_tool_names is None or name in set(session_tool_names):
+        return None
+    from tools.tool_search import _core_tool_names, out_of_scope_reason  # late: imports this module
+    if name not in _core_tool_names() or _registry_entry(name) is None:
+        return None
+    return out_of_scope_reason(name) or unavailable_in_session_reason(name)
+
+
 def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] = None) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
@@ -248,9 +272,7 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
         if session_tool_names is not None and name not in set(session_tool_names):
-            return managed_worker_unavailable_reason(name) or (
-                f"'{name}' is not available in this execution context. "
-                "Don't retry it — state the assumption and proceed with the work.")
+            return unavailable_in_session_reason(name)
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"

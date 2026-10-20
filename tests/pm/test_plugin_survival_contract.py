@@ -421,7 +421,7 @@ def test_update_sync_survives_unreadable_secondary_profile(admission_env):
     workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
     assert "primary-dep" in (workspace / "pyproject.toml").read_text()
     assert broken.read_text(encoding="utf-8") == "plugins: [broken]\n"
-    assert str(broken.parent) in json.dumps(_latest_receipt(home).get("warnings"))
+    assert any(str(broken.parent) in w.get("message", "") for w in _latest_receipt(home).get("warnings", []))
     assert venv_is_current(project_root=core) is True
 
 

@@ -298,6 +298,16 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 import anyio
                 with anyio.CancelScope(shield=True):
                     await self.context.lock.acquire()
+            try:
+                # Close the inner (SDK) generator in THIS task, after the re-acquire above: it sits
+                # suspended inside ``async with self.context.lock`` at its ``yield``, so abandoned
+                # it is finalized by asyncio's asyncgen hook in a DIFFERENT task. With a task-affine
+                # primitive on ``context.lock`` that cross-task release strands the cached
+                # provider's lock for the life of the process (GH#101756); with the Semaphore it
+                # merely defers the SDK's teardown to GC. No-op when inner already finished/closed.
+                await inner.aclose()
+            except Exception as exc:  # best-effort: never mask the flow's own outcome
+                self._log_nonfatal("auth-flow inner teardown", exc)
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()

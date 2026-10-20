@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -480,13 +481,64 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+
+        # --- SO_PEERCRED cron-subprocess hardening (kernel-verified, POSIX only) ---
+        # Strengthens resident_guard.is_cron_session()'s SUBPROCESS detection path:
+        # instead of relying solely on the caller-asserted HERMES_CRON_SESSION=1 env
+        # var (spoofable by anything that can set its own environment), create an
+        # anonymous AF_UNIX socketpair HERE, in the scheduler process, pass one end's
+        # fd into the job's subprocess via pass_fds, and tell the child which fd via
+        # HERMES_CRON_PEER_FD. The child (resident_guard.verify_cron_peer_fd()) reads
+        # SO_PEERCRED on its inherited end: the kernel stamps that credential with
+        # the ACTUAL creating process's pid/uid/gid at socketpair() creation time —
+        # not something a malicious subprocess can forge by setting an env var,
+        # since it never had a hand in creating the socket. This is a SECOND,
+        # stronger detection path alongside the existing env-var check (never
+        # replaces it; see resident_guard.is_cron_session()'s fallback).
+        #
+        # Empirically verified (socketpair + fork/close-timing probe across
+        # hold-open, close-immediately, and close-immediately-plus-delay
+        # cases, including the creator process exiting before the child's
+        # read): SO_PEERCRED is latched by the kernel at
+        # socketpair() CREATION time and is NOT invalidated by closing the peer
+        # (scheduler's own) end afterward — confirmed across repeated runs,
+        # including with an added delay before the child's read, so it is safe
+        # (and avoids leaking an fd for the job's whole runtime) to close BOTH
+        # ends in the scheduler immediately after Popen() returns rather than
+        # holding the scheduler's end open for the job's duration.
+        _peer_sock = None
+        if sys.platform != "win32":
+            try:
+                _scheduler_sock, _child_sock = socket.socketpair(
+                    socket.AF_UNIX, socket.SOCK_STREAM)
+                _child_fd = _child_sock.fileno()
+                popen_kwargs["pass_fds"] = tuple(popen_kwargs.get("pass_fds", ())) + (_child_fd,)
+                env["HERMES_CRON_PEER_FD"] = str(_child_fd)
+                _peer_sock = (_scheduler_sock, _child_sock)
+            except OSError:
+                # Best-effort hardening only: never let a socketpair failure block
+                # a job from running. is_cron_session() falls back to the existing
+                # env-var/contextvar check unchanged when no fd is present.
+                _peer_sock = None
+
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
         # gateway sessions (#69396).
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            cwd=workdir or str(path.parent), env=env, **popen_kwargs)
+        try:
+            proc = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cwd=workdir or str(path.parent), env=env, **popen_kwargs)
+        finally:
+            # Close both ends in the scheduler right away (see empirical note above)
+            # — the child already has its own independent copy of the passed fd from
+            # the fork/exec, whether Popen succeeded or raised.
+            if _peer_sock is not None:
+                _scheduler_sock, _child_sock = _peer_sock
+                with contextlib.suppress(OSError):
+                    _child_sock.close()
+                with contextlib.suppress(OSError):
+                    _scheduler_sock.close()
         deadline = time.monotonic() + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,

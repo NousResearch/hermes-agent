@@ -12,7 +12,9 @@ import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
 import type * as GroupChatModule from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
+import { botsText } from './i18n'
 import { translateBots } from './i18n-test-helper'
+import { renderRosterToolbar } from './roster-pane-toolbar'
 import type { RosterRow } from './types'
 
 const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
@@ -383,4 +385,50 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect(pending.serverRooms.size).toBe(0)
   expect(openWorkspace).not.toHaveBeenCalled()
+})
+
+// The New… menu opens New Group Chat. It is offered only when the dialog can
+// seat two bots by the SAME rule the dialog's picker uses; counting the whole
+// roster opened a dialog with one checkbox and a Create button that never woke.
+it.each([
+  ['one seatable bot', ['alpha', 'default'], true],
+  ['two seatable bots', ['alpha', 'beta'], false]
+])('New Group Chat in the New… menu, with %s', async (_label, seatable, disabled) => {
+  const withParked: RosterRow[] = [...roster, { name: 'parked', connectionId: 'local' }]
+  answer({ driver: true, persistent_process: true, seatable_profiles: seatable })
+  const setGroupCreateOpen = vi.fn()
+
+  render(
+    renderRosterToolbar({
+      activeFilterCount: 0,
+      activeSourceRoster: withParked,
+      activityFilter: 'all',
+      activityToasts: false,
+      b: botsText(),
+      gatewayFilter: 'all',
+      gatewayOptions: [],
+      query: '',
+      roster: withParked,
+      rowKindFilter: 'all',
+      setActivityFilter: vi.fn(),
+      setCreateOpen: vi.fn(),
+      setGatewayFilter: vi.fn(),
+      setGroupCreateOpen,
+      setQuery: vi.fn(),
+      setRowKindFilter: vi.fn(),
+      setSectionDialog: vi.fn(),
+      showRosterFilters: false,
+      showRosterSearch: false,
+      showRosterTools: false
+    })
+  )
+
+  fireEvent.keyDown(screen.getByRole('button', { name: botsText().roster.newBotOrGroup }), { key: 'Enter' })
+  const item = await screen.findByRole('menuitem', { name: botsText().group.newTitle })
+
+  // Settles once the authority's seatable roster is in: all three bots are on
+  // this connection, but only the ones it will seat count.
+  await waitFor(() => expect(item.hasAttribute('data-disabled')).toBe(disabled))
+  fireEvent.click(item)
+  expect(setGroupCreateOpen).toHaveBeenCalledTimes(disabled ? 0 : 1)
 })

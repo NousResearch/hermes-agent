@@ -20,7 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
-  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -45,7 +44,13 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { groupCreationSource, groupExecutionMode, groupSeatableProfiles } from './canonical-group-capabilities'
+import {
+  groupCreationSource,
+  groupExecutionMode,
+  seatableGroupBots,
+  useGroupCapability
+} from './canonical-group-capabilities'
+import type { GroupCapabilityState } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
@@ -1220,13 +1225,6 @@ interface CreateGroupChatDialogProps {
   roster: RosterRow[]
 }
 
-type GroupCapabilityState = {
-  activationEpoch: number
-  mode: ReturnType<typeof groupExecutionMode>
-  seatable: null | Set<string>
-  source: string
-}
-
 async function revalidateGroupCreationMode(
   route: CanonicalGroupRoute,
   capability: GroupCapabilityState | null,
@@ -1262,14 +1260,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
-  const connectionId = useValue(host.state.connectionId)
-  const profile = useValue(host.state.profile)
-  const gateway = useValue(host.state.gateway)
-  const activationEpoch = gatewayActivationEpoch()
-  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
-  const observedRoute = connectionId ? { connectionId, profile } : null
-
-  const [capability, setCapability] = useState<GroupCapabilityState | null>(null)
+  const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open)
 
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
@@ -1286,77 +1277,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
   }, [open])
 
-  useEffect(() => {
-    let cancelled = false
-    setCapability(null)
-
-    if (!open || gateway !== 'open' || !connectionId) {
-      return
-    }
-
-    const route = { connectionId, profile }
-    const sourceCurrent = groupCreationSource(route, activationEpoch)
-
-    void canonicalGroupRequest<unknown>(route, 'groups.capabilities')
-      .then(result => {
-        if (!cancelled && sourceCurrent()) {
-          setCapability({
-            activationEpoch,
-            mode: groupExecutionMode(result),
-            seatable: groupSeatableProfiles(result),
-            source
-          })
-        }
-      })
-      .catch(() => {
-        if (!cancelled && sourceCurrent()) {
-          setCapability({
-            activationEpoch,
-            mode: 'unavailable',
-            seatable: null,
-            source
-          })
-        }
-      })
-
-    return () => { cancelled = true }
-  }, [activationEpoch, connectionId, gateway, open, profile, source])
-
-  const mode = capability?.source === source ? capability.mode : 'checking'
-  const seatable = capability?.source === source ? capability.seatable : null
-
-  const currentConnection = String(connectionId || '').trim()
-
-  const belongsToCurrentConnection = (bot: RosterRow) => {
-    if (!currentConnection) {
-      return false
-    }
-
-    if (bot.connectionId) {
-      return bot.connectionId === currentConnection &&
-        (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
-    }
-
-    return !bot.remoteSource && (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
-  }
-
-  // An outage placeholder preserves one selected owner's identity in the
-  // sidebar, but it is not a routable room member. Never offer it here.
-  const selectableRoster = roster.filter(bot => {
-    if (bot?.ghost) {
-      return false
-    }
-
-    if (mode === 'legacy') {
-      return true
-    }
-
-    // Canonical: the authority's own seatable roster wins over connection
-    // membership, so a parked or unseatable bot is never offered (#141178).
-    // The profile is the one createCanonicalGroup will send.
-    return belongsToCurrentConnection(bot) &&
-      (!seatable || seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))
-  })
+  // An outage placeholder or a bot the authority will not seat is never offered.
+  const selectableRoster = seatableGroupBots(roster, { connectionId, mode, seatable })
 
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)

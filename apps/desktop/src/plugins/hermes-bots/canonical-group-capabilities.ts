@@ -1,4 +1,8 @@
-import { gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
+import { gatewayActivationEpoch, host, useValue } from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+
+import { canonicalGroupRequest } from './canonical-groups'
+import type { RosterRow } from './types'
 
 export type GroupExecutionMode = 'canonical' | 'legacy' | 'unavailable'
 
@@ -54,4 +58,101 @@ export function groupCreationSource(route: { connectionId: string; profile: stri
   return () => gatewayActivationEpoch() === activationEpoch &&
     route.connectionId === host.state.connectionId.get() &&
     route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+}
+
+export interface GroupCapabilityState {
+  activationEpoch: number
+  mode: GroupExecutionMode
+  seatable: null | Set<string>
+  source: string
+}
+
+/** `groups.capabilities` for the active source while `active`, keyed by that
+ *  source so an answer from a source the window has left is never used. */
+export function useGroupCapability(active: boolean) {
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
+  const [capability, setCapability] = useState<GroupCapabilityState | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setCapability(null)
+
+    if (!active || gateway !== 'open' || !connectionId) {
+      return
+    }
+
+    const route = { connectionId, profile }
+    const sourceCurrent = groupCreationSource(route, activationEpoch)
+
+    const settle = (result: unknown, failed: boolean) => {
+      if (!cancelled && sourceCurrent()) {
+        setCapability({
+          activationEpoch,
+          mode: failed ? 'unavailable' : groupExecutionMode(result),
+          seatable: failed ? null : groupSeatableProfiles(result),
+          source
+        })
+      }
+    }
+
+    void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
+      result => settle(result, false),
+      () => settle(null, true)
+    )
+
+    return () => { cancelled = true }
+  }, [activationEpoch, active, connectionId, gateway, profile, source])
+
+  const current = capability?.source === source ? capability : null
+
+  return {
+    capability,
+    connectionId,
+    mode: current ? current.mode : ('checking' as const),
+    observedRoute: connectionId ? { connectionId, profile } : null,
+    seatable: current ? current.seatable : null,
+    source
+  }
+}
+
+/** The roster rows New Group Chat may seat: never an outage placeholder; in
+ *  legacy mode every bot, otherwise only bots on the current connection that
+ *  the authority's seatable roster names (#141178). The ONE predicate behind
+ *  both the dialog's picker and the menu item that opens it. */
+export function seatableGroupBots(
+  roster: RosterRow[],
+  { connectionId, mode, seatable }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
+): RosterRow[] {
+  const currentConnection = String(connectionId || '').trim()
+
+  const belongsToCurrentConnection = (bot: RosterRow) => {
+    if (!currentConnection) {
+      return false
+    }
+
+    if (bot.connectionId) {
+      return bot.connectionId === currentConnection &&
+        (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
+    }
+
+    return !bot.remoteSource && (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
+  }
+
+  return roster.filter(bot => {
+    if (bot?.ghost) {
+      return false
+    }
+
+    if (mode === 'legacy') {
+      return true
+    }
+
+    // The profile is the one createCanonicalGroup will send.
+    return belongsToCurrentConnection(bot) &&
+      (!seatable || seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))
+  })
 }

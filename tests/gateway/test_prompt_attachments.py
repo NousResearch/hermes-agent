@@ -27,7 +27,7 @@ async def _authority(tmp_path, monkeypatch, answer):
 
 @pytest.mark.asyncio
 async def test_submit_rejects_attachment_outside_profile_staging_dir(tmp_path, monkeypatch):
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     seen = []
@@ -37,7 +37,7 @@ async def test_submit_rejects_attachment_outside_profile_staging_dir(tmp_path, m
     authority = await _authority(tmp_path, monkeypatch, answer)
     outside = tmp_path / 'elsewhere.png'
     outside.write_bytes(_ONE_PX_PNG)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         await authority.submit(actor, Submission('r1', SessionRef('p', 's'),
             {'text': 'look', 'attachments': [{'path': str(outside), 'mime': 'image/png'}]}, 'queue'))
@@ -48,7 +48,7 @@ async def test_submit_rejects_attachment_outside_profile_staging_dir(tmp_path, m
 @pytest.mark.asyncio
 async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypatch):
     from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
 
     seen = []
     async def answer(event):
@@ -56,7 +56,7 @@ async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypat
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     staged = cache_image_from_bytes(_ONE_PX_PNG, '.png')
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     receipt = await authority.submit(actor, Submission('r2', SessionRef('p', 's'),
         {'text': 'look', 'attachments': [{'path': staged, 'mime': 'image/png'}]}, 'queue'))
     await authority.sessions['s'].task
@@ -77,7 +77,7 @@ async def test_lost_ack_retry_reconciles_a_queued_image_after_staging_is_gone(tm
     disposable staging file: the committed bytes and digest are the evidence. A changed payload
     under the same request id still conflicts, and a fresh request id still needs real staging."""
     from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_authority import SessionAuthority
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
@@ -86,7 +86,7 @@ async def test_lost_ack_retry_reconciles_a_queued_image_after_staging_is_gone(tm
     authority = await _authority(tmp_path, monkeypatch, answer)
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     staged = cache_image_from_bytes(_ONE_PX_PNG, '.png')
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     def submit(request_id, text='look', path=staged):
         return authority.submit(actor, Submission(request_id, SessionRef('p', 's'),
             {'text': text, 'attachments': [{'path': path, 'mime': 'image/png'}]}, 'queue'))
@@ -107,7 +107,7 @@ async def test_retry_with_the_same_image_restaged_under_a_new_name_replays(tmp_p
     same request re-staged under a new name replays the admission instead of conflicting, and
     different bytes under the same request id still conflict."""
     from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_authority import SessionAuthority
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
@@ -115,7 +115,7 @@ async def test_retry_with_the_same_image_restaged_under_a_new_name_replays(tmp_p
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
 
     def submit(path):
         return authority.submit(actor, Submission('r-same', SessionRef('p', 's'),
@@ -133,7 +133,7 @@ async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_pat
     """A turn lost across an owner restart and Discarded is terminal: its committed image bytes
     are released like a settled turn's, never left on disk for the life of the profile."""
     from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_authority import SessionAuthority
     import hermes_state_runtime as rt
 
@@ -143,7 +143,7 @@ async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_pat
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     from gateway import session_local_recovery
     monkeypatch.setattr(session_local_recovery, 'transcript_target', lambda authority, ref: ref.session_id)
-    actor = Principal('human', 'p', frozenset({'session:submit', 'session:control'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit', 'session:control'}), 't')
     receipt = await authority.submit(actor, Submission('img', SessionRef('p', 's'),
         {'text': 'look', 'attachments': [{'path': cache_image_from_bytes(_ONE_PX_PNG, '.png'),
                                           'mime': 'image/png'}]}, 'queue'))
@@ -165,14 +165,14 @@ async def test_refused_image_capture_is_released_without_masking_the_refusal(tmp
     from gateway import session_ingress_media
     from gateway.platforms.base import cache_image_from_bytes
     from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     async def answer(event):
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
 
     def submit(data):
         return authority.submit(actor, Submission('r-conflict', SessionRef('p', 's'), {'text': 'look', 'attachments': [

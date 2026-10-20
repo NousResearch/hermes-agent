@@ -38,6 +38,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_dispatch_substrate as kbs
 
 PKG = "substrate_probe_pkg"
 MISSING_SYMBOL = "PROBE_MISSING_SYMBOL"
@@ -181,7 +182,7 @@ def test_substrate_failure_text_names_importer_provider_and_head_verdict(tmp_pat
     expected_sha = hashlib.sha256(provider.read_bytes()).hexdigest()
     exc = _run_broken_import(tree)
 
-    line = kbd.describe_tree_import_failure(exc, tree=tree, task_id="t_abc123")
+    line = kbs.describe_tree_import_failure(exc, tree=tree, task_id="t_abc123")
 
     assert line is not None
     assert line.startswith("tree-import-inconsistency: ")
@@ -198,7 +199,7 @@ def test_substrate_failure_text_names_importer_provider_and_head_verdict(tmp_pat
     # answer for says so rather than silently reporting "no".
     (tree / PKG / "provider.py").write_text(
         f"{MISSING_SYMBOL} = 1\n", encoding="utf-8")
-    defined = kbd.describe_tree_import_failure(exc, tree=tree, task_id="t_abc123")
+    defined = kbs.describe_tree_import_failure(exc, tree=tree, task_id="t_abc123")
     assert "defines-it=yes" in defined
     assert "tree-self-consistent=yes" in defined
 
@@ -289,7 +290,7 @@ def test_foreign_tag_bytecode_is_never_selected(tmp_path):
     foreign_tags = _foreign_tags()
     for tag in foreign_tags:
         assert tag != sys.implementation.cache_tag
-        assert kbd._pyc_tag(f"provider.{tag}.pyc") == tag
+        assert kbs._pyc_tag(f"provider.{tag}.pyc") == tag
         # Payload that WOULD define the missing name / shadow the source symbol.
         (cache / f"provider.{tag}.pyc").write_bytes(
             b"\x00\x00\x00\x00" + b"\x00" * 12 + b"PROBE_NAME_HERE")
@@ -325,7 +326,7 @@ def test_sweep_reports_sourceless_and_nonzero_flag_pycs(tmp_path):
     for foreign in foreign_tags:
         (tree / "__pycache__" / f"mod.{foreign}.pyc").write_bytes(b"\x00" * 16)
 
-    report = kbd.sweep_tree_bytecode_pycs(tree)
+    report = kbs.sweep_tree_bytecode_pycs(tree)
 
     assert report["cache_tag"] == tag
     assert report["sourceless"] == ["loose.pyc"]
@@ -346,9 +347,9 @@ def test_classifier_keeps_other_failures_on_the_card(tmp_path):
     from tools.process_registry import RestartSafeScopeUnavailable
 
     tree = _make_scratch_tree(tmp_path)
-    assert kbd.classify_spawn_failure(RuntimeError("boom"), tree=tree) == "card"
-    assert kbd.classify_spawn_failure(ValueError("no assignee"), tree=tree) == "card"
-    assert kbd.classify_spawn_failure(
+    assert kbs.classify_spawn_failure(RuntimeError("boom"), tree=tree) == "card"
+    assert kbs.classify_spawn_failure(ValueError("no assignee"), tree=tree) == "card"
+    assert kbs.classify_spawn_failure(
         RestartSafeScopeUnavailable("host cannot place the worker"), tree=tree) == "host_capacity"
 
     # A missing third-party dependency: its provider is NOT under this tree.
@@ -357,21 +358,21 @@ def test_classifier_keeps_other_failures_on_the_card(tmp_path):
         # so no noqa directive is legal on this line.)
         import definitely_not_installed_pkg_xyz
     except ImportError as third_party:
-        assert kbd.classify_spawn_failure(third_party, tree=tree) == "card"
-        assert kbd.describe_tree_import_failure(third_party, tree=tree) is None
+        assert kbs.classify_spawn_failure(third_party, tree=tree) == "card"
+        assert kbs.describe_tree_import_failure(third_party, tree=tree) is None
 
-    assert kbd.classify_spawn_failure(_run_broken_import(tree), tree=tree) == "substrate_import"
+    assert kbs.classify_spawn_failure(_run_broken_import(tree), tree=tree) == "substrate_import"
 
 
 def test_threshold_follows_kanban_failure_threshold(kanban_home, monkeypatch):
     """D5: the lane actor's count uses ``kanban.failure_threshold`` — no new key."""
-    assert kbd._substrate_failure_threshold() == kbd.DEFAULT_FAILURE_LIMIT  # nothing configured
+    assert kbs._substrate_failure_threshold() == kbd.DEFAULT_FAILURE_LIMIT  # nothing configured
     (kanban_home / "config.yaml").write_text(
         "kanban:\n  failure_threshold: 5\n", encoding="utf-8")
-    assert kbd._substrate_failure_threshold() == 5
+    assert kbs._substrate_failure_threshold() == 5
     (kanban_home / "config.yaml").write_text(
         "kanban:\n  spawn_failure_threshold: 4\n", encoding="utf-8")
-    assert kbd._substrate_failure_threshold() == 4   # legacy alias honoured
+    assert kbs._substrate_failure_threshold() == 4   # legacy alias honoured
     (kanban_home / "config.yaml").write_text(
         "kanban:\n  failure_threshold: 0\n", encoding="utf-8")
-    assert kbd._substrate_failure_threshold() == kbd.DEFAULT_FAILURE_LIMIT
+    assert kbs._substrate_failure_threshold() == kbd.DEFAULT_FAILURE_LIMIT

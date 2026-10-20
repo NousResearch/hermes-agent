@@ -29,13 +29,43 @@ def _strip_ns(tag: str) -> str:
     return tag.split("}", 1)[1] if "}" in tag else tag
 
 
+# RSS feeds are external input — the URL is user-controlled, but the *bytes*
+# come from whoever serves the feed and can include a DOCTYPE / inline ENTITY
+# declaration designed to balloon parser memory (billion-laughs / quadratic
+# blow-up). Python's stdlib ET no longer resolves external entities by
+# default since 3.7.1, but inline DOCTYPE/ENTITY are still parsed and
+# counted toward expansion. defusedxml is the obvious dependency, but
+# pyproject.toml restricts dependency additions ("smallest possible blast
+# radius for the next supply-chain attack"), so guard with stdlib-only
+# pre-checks. Real RSS / Atom feeds never use these constructs.
+_MAX_FEED_BYTES = 5 * 1024 * 1024  # 5 MiB — comfortable for verbose feeds
+_FORBIDDEN_XML_CONSTRUCTS = (b"<!DOCTYPE", b"<!ENTITY", b"<?xml-stylesheet")
+
+
 def _parse_feed(xml_bytes: bytes):
     """Return a list of {id, title, url, summary} dicts.
 
     Handles both RSS 2.0 ``<item>`` and Atom ``<entry>``.
+
+    Rejects oversized payloads and prologue-level DOCTYPE / ENTITY
+    declarations before invoking the stdlib XML parser — these are not
+    present in legitimate RSS/Atom feeds and are the main XML-bomb vector.
     """
+    if len(xml_bytes) > _MAX_FEED_BYTES:
+        print(
+            f"watch_rss: feed too large ({len(xml_bytes)} > {_MAX_FEED_BYTES} bytes)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    for needle in _FORBIDDEN_XML_CONSTRUCTS:
+        if needle in xml_bytes:
+            print(
+                f"watch_rss: feed rejected: contains {needle!r}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     try:
-        root = ET.fromstring(xml_bytes)
+        root = ET.fromstring(xml_bytes)  # nosec B314  -- pre-checks above
     except ET.ParseError as e:
         print(f"watch_rss: invalid XML: {e}", file=sys.stderr)
         sys.exit(2)

@@ -475,6 +475,69 @@ def test_usage_forced_refresh_keeps_the_refreshed_pool_key_on_the_gateway(monkey
     assert (token, base_url) == ("fresh-gw-key", GW)
 
 
+
+def test_goal_judge_codex_pool_selection_respects_requested_model(monkeypatch):
+    """A cooldown for a different model cannot suppress valid goal-judge credentials."""
+    from agent import auxiliary_client as aux
+
+    seen = []
+    entry = SimpleNamespace(runtime_api_key=OPAQUE, runtime_base_url=GW)
+
+    class Pool:
+        def select(self, *, model=None):
+            seen.append(model)
+            return entry if model == "gpt-6-luna" else None
+
+    monkeypatch.setattr(aux, "_load_pool_with_credentials", lambda provider, note="": Pool())
+    monkeypatch.setattr(aux, "_codex_base_url_override", lambda: "")
+    token, base_url = aux._resolve_codex_credential_and_base(model="gpt-6-luna")
+
+    assert seen == ["gpt-6-luna"]
+    assert (token, base_url) == (OPAQUE, GW)
+
+
+def test_goal_judge_codex_builder_passes_requested_model(monkeypatch):
+    """The auxiliary goal judge must bind the requested model to pool selection."""
+    from agent import auxiliary_client as aux
+
+    seen = []
+    def get_credentials(model=None):
+        seen.append(model)
+        return OPAQUE, GW
+
+    monkeypatch.setattr(aux, "_resolve_codex_credential_and_base", get_credentials)
+    monkeypatch.setattr(aux, "_create_openai_client", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(aux, "_codex_cloudflare_headers", lambda *args, **kwargs: {})
+
+    client, selected_model = aux._build_codex_client("gpt-6-luna")
+
+    assert client is not None
+    assert selected_model == "gpt-6-luna"
+    assert seen == ["gpt-6-luna"]
+
+
+def test_raw_codex_branch_passes_requested_model(monkeypatch):
+    """Raw Responses client selection must use the same model-scoped cooldown contract."""
+    from agent import auxiliary_client as aux
+
+    seen = []
+    def get_credentials(model=None):
+        seen.append(model)
+        return OPAQUE, GW
+
+    monkeypatch.setattr(aux, "_resolve_codex_credential_and_base", get_credentials)
+    monkeypatch.setattr(aux, "_create_openai_client", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(aux, "_codex_cloudflare_headers", lambda *args, **kwargs: {})
+
+    req = SimpleNamespace(model="gpt-6-luna", provider="openai-codex", raw_codex=True)
+    client, selected_model = aux._resolve_openai_codex_branch(req)
+
+    assert client is not None
+    assert selected_model == "gpt-6-luna"
+    assert seen == ["gpt-6-luna"]
+
+
+
 def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_env(monkeypatch):
     """If route resolution itself fails, the fallback still honours only the routed profile's
     ``HERMES_CODEX_BASE_URL`` — never a multiplexed sibling's process env."""

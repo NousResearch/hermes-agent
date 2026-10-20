@@ -330,6 +330,8 @@ def test_watch_pending_bridges_first_hit_until_each_notice_is_settled(delivery, 
             assert registry.completion_queue.qsize() == 1
             assert rows()[proc.id]["notification_pending"] is True
             accepting = True
+            for queued in list(registry.completion_queue.queue):
+                queued.pop("_watch_next_retry_at", None)  # skip the refusal backoff instead of sleeping through it
             asyncio.run(runner._drain_watch_notifications(registry.completion_queue))
             assert registry.completion_queue.empty()
         assert rows()[proc.id]["notification_pending"] is False

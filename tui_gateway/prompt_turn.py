@@ -472,8 +472,12 @@ def _run_post_turn_followups(
         # are requeued and ours are routed, so the reapers never see an owner whose notice is in nobody's hands.
         with _session_profile_runtime_scope(session), drained_for(process_registry, owns) as mine:
             deferred = []
+            surfaced = [evt for evt in mine if should_surface_notification(evt)]
+            for evt in mine:
+                if not any(evt is kept for kept in surfaced):
+                    process_registry.settle_notification(evt)  # deliberately dropped: nothing is owed any more
             _notif_handle_ready(
-                sid, session, [evt for evt in mine if should_surface_notification(evt)],
+                sid, session, surfaced,
                 session.setdefault("_notification_emitted", set()), process_registry,
                 format_process_notification, deferred, owned=True)
             for event in deferred:

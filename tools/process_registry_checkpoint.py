@@ -121,6 +121,8 @@ class ProcessCheckpointMixin:
                     entry.get("session_id", "?"), pid)
                 continue
             if fate != "running":
+                from tools.process_registry_stopped import record_lost
+                record_lost(entry)  # a promised job that died while we were down must not vanish
                 systemd_unit = entry.get("systemd_unit", "")
                 if systemd_unit and not _stop_systemd_unit(systemd_unit):
                     logger.warning(

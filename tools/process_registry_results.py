@@ -84,10 +84,28 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         db.close()
 
 
-def load_completed_results(prefix: str = "") -> dict:
-    """Restore read-only snapshots; no process handles, watchers, or queue events."""
+def load_receipt(path):
+    """``(ProcessSession, exited_at)`` from one receipt file (mtime = when it was written, i.e. the
+    exit), or None when unreadable. A read-only snapshot: no handles, watchers or queue events."""
     from tools.process_registry import ProcessSession
 
+    try:
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
+        if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
+            return None
+        session = ProcessSession(
+            **{key: record[key] for key in _RESULT_FIELDS},
+            exited=True, output_buffer=record["output"],
+        )
+        session._completion_event.set()
+        return session, path.stat().st_mtime
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)
+        return None
+
+
+def load_completed_results(prefix: str = "") -> dict:
+    """Restore read-only snapshots; no process handles, watchers, or queue events."""
     from gateway.session_context import get_session_env
 
     owner = get_session_env("HERMES_SESSION_ID", "")
@@ -103,16 +121,11 @@ def load_completed_results(prefix: str = "") -> dict:
         if not path.stem.startswith(prefix):
             continue
         try:
-            record = json.loads(path.read_text(encoding="utf-8-sig"))
-            if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
+            if (loaded := load_receipt(path)) is None:
                 continue
-            if not _owns_result(owner, record.get("parent_session_id")):
+            session = loaded[0]
+            if not _owns_result(owner, session.parent_session_id):
                 continue
-            session = ProcessSession(
-                **{key: record[key] for key in _RESULT_FIELDS},
-                exited=True, output_buffer=record["output"],
-            )
-            session._completion_event.set()
             results[session.id] = session
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
             logger.debug("Skipping unreadable process result %s", path.name, exc_info=True)

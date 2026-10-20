@@ -735,8 +735,12 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     from tools.process_registry import process_registry
     from tools.process_registry_awaiting import release as release_in_flight, take_ready
     from tools.process_registry_notifications import format_process_notification
+    from tools.process_registry_stopped import replay_stopped_notices
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
+    # Jobs Hermes stopped for this session whose notice a restart dropped (runs in its profile scope).
+    replay_stopped_notices({str(session.get("session_key") or ""),
+                            str(getattr(session.get("agent"), "session_id", None) or "")}, process_registry)
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(
         sid, session, events, emitted, process_registry, format_process_notification, deferred)

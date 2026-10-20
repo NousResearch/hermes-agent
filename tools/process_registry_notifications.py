@@ -455,9 +455,15 @@ def _delegation_attribution_line(evt: dict) -> str | None:
 
 # A session-level teardown killed it (``agent_close:<end reason>``, agent/client_lifecycle.py).
 _SESSION_CLOSE_KILL = "agent_close:"
+# Ends Hermes chose for a reason other than a session close (see process_registry_stopped).
+_HERMES_END_STATUS = {
+    "gateway_shutdown": "was STOPPED by Hermes before it finished (Hermes was shutting down or restarting)",
+    "hermes_restart": "was LOST while Hermes was down (crash or hard restart); whether it finished is unknown",
+}
 _STOPPED_UNFINISHED_GUIDANCE = (
-    "It did NOT finish, so do not report it as done or as still running. Tell the user plainly, "
-    "starting with \"Stopped: <what> didn't finish\", then the next step (e.g. offer to rerun it).")
+    "It did NOT finish (or may not have), so do not report it as done or as still running. Tell the "
+    "user plainly, starting with \"Stopped: <what> didn't finish\", then the next step (e.g. offer to "
+    "rerun it).")
 
 
 def _completion_status(evt: dict) -> str:
@@ -466,6 +472,8 @@ def _completion_status(evt: dict) -> str:
     if source.startswith(_SESSION_CLOSE_KILL):  # the reader may record the exit before the kill does
         why = source[len(_SESSION_CLOSE_KILL):]
         return f"was STOPPED by Hermes before it finished (its session was closed: {why})"
+    if source in _HERMES_END_STATUS:
+        return _HERMES_END_STATUS[source]
     if reason == "killed":
         return f"terminated by {source or 'Hermes'}"
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
@@ -513,7 +521,7 @@ def format_process_notification(evt: dict) -> str | None:
         _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
     _status = _completion_status(evt)
-    _guidance = f"{_STOPPED_UNFINISHED_GUIDANCE}\n" if _status.startswith("was STOPPED") else ""
+    _guidance = f"{_STOPPED_UNFINISHED_GUIDANCE}\n" if _status.startswith(("was STOPPED", "was LOST")) else ""
     return (
         f"[IMPORTANT: Background process {_sid} {_status} (exit code {_exit}{_signal}).\n"
         f"{_guidance}{attribution}Command: {_cmd}\nOutput:\n{_out}]")

@@ -61,6 +61,9 @@ MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
+# How long an owner stays "awaited" after its notifying process exits: covers publish → poller dequeue →
+# turn claim (sub-second when idle). Bounded so an undeliverable notice cannot pin its owner.
+NOTIFY_DELIVERY_GRACE_SECONDS = 60.0
 
 # Watch-pattern rate limiting, PER SESSION: one watch-match notification per
 # WATCH_MIN_INTERVAL_SECONDS; a match inside the cooldown is dropped and counts as one
@@ -2481,6 +2484,25 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             session.session_key = to_session_key
             session.handoff_note = note
             return session
+
+    def awaits_notification(self, owner_task_ids, *, delivery_grace: float = NOTIFY_DELIVERY_GRACE_SECONDS) -> bool:
+        """Whether a process spawned by one of ``owner_task_ids`` will still report back: it notifies
+        (``notify_on_complete`` or live ``watch_patterns``) and is running, or exited less than
+        ``delivery_grace`` seconds ago — its completion is published after the exit is recorded and becomes an
+        agent turn only once a poller dequeues it, so the owner must outlive that hand-off too. Keyed on the
+        RAW spawning owner, the same field agent close kills by, so it survives compression rotating the
+        session key."""
+        owners = {o for o in owner_task_ids if o}
+        if not owners:
+            return False
+        now = time.time()
+        with self._lock:
+            sessions = [*self._running.values(), *self._finished.values()]
+        return any(
+            s.owner_task_id in owners
+            and (s.notify_on_complete or (s.watch_patterns and not s._watch_disabled))
+            and (not s.exited or now - (s.exited_at or now) < delivery_grace)
+            for s in sessions)
 
     def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
         """Active processes for a gateway session key. Processes older than

@@ -34,11 +34,14 @@ def server(tmp_path, monkeypatch):
 def registry():
     from tools.process_registry import process_registry
 
-    saved = dict(process_registry._running)
+    saved = dict(process_registry._running), dict(process_registry._finished)
     process_registry._running.clear()
+    process_registry._finished.clear()
     yield process_registry
     process_registry._running.clear()
-    process_registry._running.update(saved)
+    process_registry._finished.clear()
+    process_registry._running.update(saved[0])
+    process_registry._finished.update(saved[1])
 
 
 class _Timer:
@@ -76,11 +79,12 @@ def detached(server, monkeypatch):
     return sid, session, popped
 
 
-def _spawn(registry, session_key: str, **kw):
+def _spawn(registry, owner: str, **kw):
+    """A background process as the TUI turn spawns it: owner_task_id is the turn's task id (the session key)."""
     from tools.process_registry import ProcessSession
 
     proc = ProcessSession(id=f"proc_{len(registry._running)}", command="hermes -p reviewer chat",
-                          session_key=session_key, started_at=time.time(), **kw)
+                          session_key=owner, owner_task_id=owner, started_at=time.time(), **kw)
     registry._running[proc.id] = proc
     return proc
 
@@ -107,10 +111,28 @@ def test_orphan_reap_rearms_while_process_will_notify(server, registry, detached
     assert server._pending_ws_reaps[sid] is _Timer.created[-1]
 
 
-def test_session_released_once_process_exits(server, registry, detached):
+def test_exited_process_keeps_session_until_its_notice_can_be_delivered(server, registry, detached):
+    """The exit is recorded before the completion is queued, and the notice becomes a turn only once the poller
+    dequeues it: a reaper firing in that window must not close the session and lose the follow-up."""
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.exited = True  # mark_exited ran; _move_to_finished (exited_at, queue publish) has not yet
+
+    assert not server._session_is_reapable(sid, session)
+
+    registry._finished[proc.id] = registry._running.pop(proc.id)
+    proc.exited_at = time.time()  # published, not yet dequeued by the poller
+
+    assert not server._session_is_reapable(sid, session)
+
+
+def test_session_released_once_delivery_grace_passes(server, registry, detached):
+    from tools.process_registry import NOTIFY_DELIVERY_GRACE_SECONDS
+
     sid, session, popped = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
-    proc.exited = True
+    proc.exited, proc.exited_at = True, time.time() - NOTIFY_DELIVERY_GRACE_SECONDS - 1
+    registry._finished[proc.id] = registry._running.pop(proc.id)
 
     server._schedule_ws_orphan_reap(sid)
     _Timer.created[-1].callback()
@@ -129,5 +151,28 @@ def test_silent_background_process_does_not_pin_session(server, registry, detach
 def test_another_sessions_process_does_not_pin_session(server, registry, detached):
     sid, session, _ = detached
     _spawn(registry, "some-other-session", notify_on_complete=True)
+
+    assert server._session_is_reapable(sid, session)
+
+
+def test_process_started_before_compression_still_pins_session(server, registry, detached):
+    """Compression rotates session_key to the continuation id; the process keeps its original owner id. The agent
+    still kills it on close (its _process_owner_task_ids keep the old id), so it must still pin the session."""
+    from types import SimpleNamespace
+
+    sid, session, _ = detached
+    original = session["session_key"]
+    _spawn(registry, original, notify_on_complete=True)
+    session["session_key"] = "desktop-proc-session-continuation"
+    session["agent"] = SimpleNamespace(session_id=session["session_key"],
+                                       _process_owner_task_ids={original, session["session_key"]})
+
+    assert not server._session_is_reapable(sid, session)
+
+
+def test_disabled_watch_does_not_pin_session(server, registry, detached):
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], watch_patterns=["VERDICT"])
+    proc._watch_disabled = True
 
     assert server._session_is_reapable(sid, session)

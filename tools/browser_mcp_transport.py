@@ -122,9 +122,20 @@ def _log_gateway_resolution_once(gateway: bool) -> None:
         "hosted gateway (MCP transport)" if gateway else "local/community (REST)")
 
 
-def _call(tool: str, arguments: dict[str, Any], timeout: Optional[int] = None,
-          task_id: Optional[str] = None, tab_id: Optional[str] = None) -> dict[str, Any]:
-    """One stateless MCP tools/call. Returns the raw JSON-RPC envelope (parsed)."""
+def _api_key() -> str:
+    """Bearer key for the gateway: generic lane credential first, then the
+    community-compat credential."""
+    for name in ("BROWSER_MCP_API_KEY", "CAMOFOX_API_KEY"):
+        key = (get_secret(name, "") or "").strip()
+        if key:
+            return key
+    return ""
+
+
+def _rpc(method: str, *, name: Optional[str] = None, arguments: Optional[dict] = None,
+         timeout: Optional[int] = None) -> dict[str, Any]:
+    """One stateless MCP exchange: single POST, ``Mcp-Method`` header mirroring the
+    body method, no initialize/session. Returns the parsed ``result`` object."""
     base = _backend_url()
     host = base.split("//", 1)[-1].split("/", 1)[0]
     loopback = host.split(":")[0] in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
@@ -133,33 +144,26 @@ def _call(tool: str, arguments: dict[str, Any], timeout: Optional[int] = None,
         # network in cleartext. Loopback http stays allowed for local dev/sidecars.
         raise RuntimeError(
             f"browser backend URL must be HTTPS for non-loopback endpoints (got {base})")
-    effective_tab = get_task_tab(task_id, tab_id)
-    if effective_tab and effective_tab not in arguments:
-        arguments = {**arguments, "tab_id": effective_tab}
-    url = f"{base}/mcp"
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "_meta": {
-                "io.modelcontextprotocol/protocolVersion": _MCP_PROTOCOL_VERSION,
-                "io.modelcontextprotocol/clientCapabilities": {},
-            },
-            "name": tool,
-            "arguments": arguments,
-        },
+    params: dict[str, Any] = {
+        "_meta": {
+            "io.modelcontextprotocol/protocolVersion": _MCP_PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }
     }
-    key = (get_secret("BROWSER_MCP_API_KEY", "") or "").strip() or (
-        get_secret("CAMOFOX_API_KEY", "") or ""
-    ).strip()
+    if name is not None:
+        params["name"] = name
+    if arguments is not None:
+        params["arguments"] = arguments
+    url = f"{base}/mcp"
+    body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     headers = {
-        "Authorization": f"Bearer {key}",
+        "Authorization": f"Bearer {_api_key()}",
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
-        "Mcp-Method": "tools/call",
-        "Mcp-Name": tool,
+        "Mcp-Method": method,
     }
+    if name is not None:
+        headers["Mcp-Name"] = name
     try:
         resp = requests.post(url, json=body, headers=headers, timeout=timeout or _MCP_TIMEOUT_DEFAULT)
     except requests.exceptions.Timeout:
@@ -184,6 +188,20 @@ def _call(tool: str, arguments: dict[str, Any], timeout: Optional[int] = None,
     if env.get("error"):
         raise RuntimeError(env["error"].get("message", "MCP error"))
     return env.get("result", {})
+
+
+def _call(tool: str, arguments: dict[str, Any], timeout: Optional[int] = None,
+          task_id: Optional[str] = None, tab_id: Optional[str] = None) -> dict[str, Any]:
+    """One stateless MCP tools/call. Returns the raw JSON-RPC envelope (parsed)."""
+    effective_tab = get_task_tab(task_id, tab_id)
+    if effective_tab and effective_tab not in arguments:
+        arguments = {**arguments, "tab_id": effective_tab}
+    return _rpc("tools/call", name=tool, arguments=arguments, timeout=timeout)
+
+
+def tools_list(timeout: Optional[int] = None) -> list[dict[str, Any]]:
+    """Advertised tool descriptors from the gateway (``tools/list``), stateless."""
+    return _rpc("tools/list", timeout=timeout).get("tools", []) or []
 
 
 def _result_text(result: dict[str, Any]) -> str:

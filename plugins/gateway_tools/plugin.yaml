@@ -1,0 +1,13 @@
+name: gateway_tools
+version: 1.0.0
+description: "Registers every tool the configured remote MCP gateway advertises as a first-class agent tool — schema and descriptions carried from the server's tools/list, one stateless tools/call per invocation. Browser verbs are excluded (the browser tool family routes them natively). New server-side tools appear on the next session load with zero client wiring."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools: []  # dynamic: the advertised set is discovered from the gateway at load
+provides_hooks: []
+provides_middleware: []
+requires_env: []  # auth via the browser lane's own key resolution (BROWSER_MCP_API_KEY / CAMOFOX_API_KEY)
+requires_hermes: ">=0.21.7"

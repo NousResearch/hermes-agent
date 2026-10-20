@@ -31,6 +31,7 @@ Use the `terminal` tool to run `hermes pets <subcommand>`.
 | Browse the gallery | `hermes pets list` (add a substring to filter: `hermes pets list cat`) |
 | List installed pets | `hermes pets list --installed` |
 | Install a pet | `hermes pets install <slug>` (add `--select` to make it active) |
+| Import an exported pet or a pet folder | `hermes pets import <path>` (`--slug`/`--name`/`--select`/`--force`) |
 | Set the active pet | `hermes pets select <slug>` (omit slug for a picker) |
 | Resize the pet everywhere | `hermes pets scale <factor>` (e.g. `0.5`, clamped 0.1–3.0) |
 | Preview/animate in terminal | `hermes pets show [slug] [--cycle] [--state run]` |

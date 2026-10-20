@@ -12,13 +12,13 @@ import {
   $activeSessionId,
   $messages,
   setActiveSessionStoredIdRotation,
-  setCurrentFastMode,
+  setCurrentFastModeTransient,
   setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProviderTransient,
-  setCurrentReasoningEffort,
+  setCurrentReasoningEffortTransient,
   setCurrentReasoningEffortWire,
-  setCurrentServiceTier,
+  setCurrentServiceTierTransient,
   setSessionStartedAt,
   setTurnStartedAt,
   setYoloActive
@@ -69,10 +69,10 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   // sticky localStorage selection with that runtime value (#102793).
   setCurrentModelTransient(state.model ?? '')
   setCurrentProviderTransient(state.provider ?? '')
-  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  setCurrentReasoningEffortTransient(state.reasoningEffort ?? '')
   setCurrentReasoningEffortWire(state.reasoningEffortWire ?? '')
-  setCurrentServiceTier(state.serviceTier ?? '')
-  setCurrentFastMode(state.fast ?? false)
+  setCurrentServiceTierTransient(state.serviceTier ?? '')
+  setCurrentFastModeTransient(state.fast ?? false)
   setYoloActive(state.yolo ?? false)
   setCurrentPersonality(state.personality ?? '')
 }

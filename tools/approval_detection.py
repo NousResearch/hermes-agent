@@ -133,7 +133,13 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    # A word followed by `()` is a shell function DEFINITION and a word followed
+    # (no space) by `=` is a variable ASSIGNMENT — neither can invoke the named
+    # program, so `halt()` error helpers and `shutdown=1` flags must not hit the
+    # floor (#132444). Two separate lookaheads: `(?!\s*\()` allows the shell's
+    # optional space before the parens, while `(?!=)` must stay adjacency-only —
+    # `halt =1` passes "=1" as an argument and is a real invocation.
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b(?!\s*\()(?!=)', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),

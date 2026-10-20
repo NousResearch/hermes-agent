@@ -282,11 +282,24 @@ def test_an_empty_line_waits_for_the_callback_the_loopback_is_still_writing(past
             return super().get(key, default)
 
     monkeypatch.setattr(auth_device_flow, "parse_qs", lambda query: HeldQuery(parse_qs(query)))
+    bind = auth_device_flow._bind_loopback_callback_server
+
+    def bind_releasing_the_handler_on_shutdown(*args, **kwargs):
+        server = bind(*args, **kwargs)
+        shutdown = server.shutdown
+
+        def release_then_shut_down():  # the callback has been taken by now; let the handler finish writing it
+            finish.set()
+            shutdown()
+
+        server.shutdown = release_then_shut_down
+        return server
+
+    monkeypatch.setattr(auth_device_flow, "_bind_loopback_callback_server", bind_releasing_the_handler_on_shutdown)
 
     def enter_while_the_callback_is_half_written(authorize_url: str) -> str:
         threading.Thread(target=lambda: urlopen(authorize_url, timeout=10).close(), daemon=True).start()
         assert halfway.wait(timeout=5)
-        threading.Timer(0.2, finish.set).start()  # the handler finishes after the prompt has returned
         return ""
 
     pasting.answers.append(enter_while_the_callback_is_half_written)

@@ -103,12 +103,24 @@ async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
             if fallback is None:
                 return {"error": "Not in a server channel and DISCORD_HOME_CHANNEL is not resolvable."}
             source, guild_id = fallback, int(fallback.scope_id)
+        sources = getattr(adapter, "_voice_sources", None)
+        before = sources.get(guild_id) if isinstance(sources, dict) else None
         message = await runner._voice_channel_join_for_source(source, guild_id)
-        return {"success": adapter.is_in_voice_channel(guild_id), "action": "join", "message": message,
+        joined = bool(adapter.is_in_voice_channel(guild_id))
+        if isinstance(sources, dict):
+            # The shared join path writes a fresh binding only on success, so an older connection
+            # that survived a failed join does not read as success.
+            after = sources.get(guild_id)
+            joined = joined and after is not None and after is not before
+        return {"success": joined, "action": "join", "message": message,
                 "text_channel_id": source.chat_id}
-    if guild_id is None or not adapter.is_in_voice_channel(guild_id):
+    if guild_id is None and source.chat_type == "dm":
+        # DM: act on the bot's voice connection only when exactly one exists. A request from a
+        # server channel (even one whose guild id is missing) never falls back to another server.
         connected = _connected_guilds(adapter)
-        guild_id = connected[0] if connected else guild_id
+        if len(connected) > 1:
+            return {"error": "Connected to voice in more than one server; ask from a channel in that server."}
+        guild_id = connected[0] if connected else None
     if action == "status":
         info = adapter.get_voice_channel_info(guild_id) if guild_id and hasattr(
             adapter, "get_voice_channel_info") else None
@@ -169,6 +181,7 @@ def discord_voice(action: str) -> str:
     try:
         result = fut.result(timeout=_TIMEOUT_S)
     except TimeoutError:
+        fut.cancel()  # a late join/leave must not land after the agent was told it failed
         logger.warning("discord_voice %s timed out after %ss", action, _TIMEOUT_S)
         return tool_error(f"Voice {action} timed out after {_TIMEOUT_S}s.")
     except CancelledError:  # the gateway loop shut down underneath the action
@@ -179,7 +192,7 @@ def discord_voice(action: str) -> str:
 
 
 def check_discord_voice_requirements() -> bool:
-    """Only offered inside a running gateway that has a Discord adapter."""
+    """Offered when this process has a gateway runner with a Discord adapter; each call re-checks the live turn."""
     runner = _runner()
     if runner is None:
         return False
@@ -193,8 +206,10 @@ DISCORD_VOICE_SCHEMA = {
     "description": (
         "Join, leave, or check your own Discord voice-channel presence (same effect as the user typing "
         "/voice join or /voice leave). 'join' joins the voice channel the requesting user is currently "
-        "in and binds it to this text chat (spoken replies on). 'leave' disconnects, turns voice replies "
-        "off and stops listening. 'status' reports whether you are connected, where, and who is there. "
+        "in and binds it to this text chat, or to the home channel from a DM (spoken replies on). 'leave' "
+        "asks the voice client to disconnect, turns voice replies off and stops listening (only when you are "
+        "in voice in that server; otherwise it changes nothing). 'status' "
+        "reports whether you are connected, where, and who is there. "
         "Use when the user asks you to join/leave voice or hang up."),
     "parameters": {
         "type": "object",

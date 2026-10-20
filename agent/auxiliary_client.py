@@ -3337,13 +3337,28 @@ def _exc_http_status(exc: Exception) -> Any:
     return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
 
 
+# Deterministic gateway decode failures surfaced as 5xx: the ingress proxy cannot decode the
+# content-encoding because a decoder package is missing on ITS side, and its verbatim hint
+# ("Please install `Brotli`" / zstandard) bubbles through the 502 body (#137956). Retrying
+# re-sends a payload that proxy still cannot decode.
+_PROXY_DECODE_FAILURE_MARKERS = ("can not decode content-encoding", "cannot decode content-encoding")
+
+
+def _is_deterministic_proxy_decode_error(exc: Exception) -> bool:
+    err_lower = str(exc).lower()
+    return "please install" in err_lower and _contains_any(err_lower, _PROXY_DECODE_FAILURE_MARKERS)
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """One-off transport blip worth retrying on the SAME provider: connection/stream-close errors plus pure 5xx/408.
 
     Deliberately narrow: payment/auth/rate-limit errors switch provider, refresh creds, or rotate the pool.
+    A 5xx whose body names a gateway-side content-decoding failure is deterministic, not a blip.
     """
     if _is_connection_error(exc):
         return True
+    if _is_deterministic_proxy_decode_error(exc):
+        return False
     status = _exc_http_status(exc)
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 

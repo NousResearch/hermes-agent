@@ -90,3 +90,32 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     if benches_pool:
         assert pool.rotate_calls[0]["status_code"] == 429
         assert pool.rotate_calls[0]["api_key_hint"] == "sk-failed"
+
+
+@pytest.mark.parametrize("body", [
+    # NEAR AI cloud ingress, verbatim (#137956): the proxy's decode layer lacks the Brotli package.
+    "Error code: 502 - {'error': {'message': \"Proxy error: 400, message='Can not decode "
+    "content-encoding: brotli (br). Please install `Brotli`', "
+    "url='https://cloud-api.near.ai/v1/chat/completions'\", 'type': 'proxy_error'}}",
+    # Same failure class for a zstd-capable proxy.
+    "Error code: 502 - {'error': {'message': \"cannot decode content-encoding: zstd (zstd). "
+    "Please install `zstandard`\", 'type': 'proxy_error'}}",
+])
+def test_gateway_decode_502_is_not_transient_so_aux_fails_fast(body):
+    exc = _Err(body, 502)
+    assert ac._is_deterministic_proxy_decode_error(exc)
+    assert not ac._is_transient_transport_error(exc)
+    # The critical-path tasks (vision, compression) burn their whole timeout budget per retry
+    # on this error; skipping the same-provider retry hands the failure to their fallbacks at once.
+    assert not ac._should_retry_same_provider("vision", exc, "")
+    assert not ac._should_retry_same_provider("compression", exc, "")
+
+
+def test_plain_and_stream_corruption_5xx_stay_transient():
+    # A generic 502/503 is still a one-off blip worth the same-provider retry.
+    assert ac._is_transient_transport_error(_Err("Error code: 502 - {'error': 'upstream unavailable'}", 502))
+    assert ac._is_transient_transport_error(_Err("Error code: 503 - overloaded", 503))
+    # A corrupted-stream decode complaint without the missing-package hint may still clear on retry.
+    stream_corruption = _Err("Error code: 502 - {'error': 'cannot decode content-encoding: gzip'}", 502)
+    assert not ac._is_deterministic_proxy_decode_error(stream_corruption)
+    assert ac._is_transient_transport_error(stream_corruption)

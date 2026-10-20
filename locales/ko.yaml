@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ 문제가 발생해서 이 응답을 끝내지 못했어요.{hint}\n/retry로 다시 시도하거나, /new로 새 대화를 시작하세요. 기술적인 세부 정보는 게이트웨이 로그(`hermes logs`)에 있어요."
     history_unavailable: "⚠️ 이 세션의 기록을 일시적으로 사용할 수 없어서 이 메시지는 처리되지 않았어요. 운영자에게 state.db를 점검해 달라고 요청한 뒤, 정상화되면 다시 보내 주세요. 의도적으로 새 대화를 시작하려는 경우에만 /reset을 사용하세요."
     no_credentials: "⚠️ AI 모델 서비스에 연결할 수 없어서 이 메시지는 처리되지 않았어요. /login으로 다시 로그인하거나, /model로 다른 모델을 선택하세요. 계속 실패하면 호스트에서 `hermes doctor`를 실행하세요."
+    cron_session_read_only: "⚠️ 이 채팅은 예약된 작업 전용이며 그 작업만 실행하므로 메시지가 실행되지 않았습니다. 보내려면 새 채팅을 시작하세요."
   skills:
     disabled: "**{name}** 스킬은 설치되어 있지만 비활성화되어 있어요.\n활성화 방법: `hermes skills config`"
     not_installed: "**{name}** 스킬은 사용할 수 있지만 설치되어 있지 않아요.\n설치 방법: `hermes skills install {install_name}`"

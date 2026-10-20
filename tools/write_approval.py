@@ -66,23 +66,35 @@ _PENDING_ID_RE = re.compile(r"[0-9a-f]{8}")  # how stage_write mints ids: uuid4(
 
 
 def _pending_dir(subsystem: str) -> Path:
+    """``<HERMES_HOME>/pending/<subsystem>``; raises when a symlink inside the store leads elsewhere
+    (a planted link would make reads, deletes and approvals act on files outside it)."""
     if subsystem not in _SUBSYSTEMS:
         raise ValueError(f"unknown write-approval subsystem {subsystem!r}")
-    return get_hermes_home() / "pending" / subsystem
+    d = get_hermes_home().resolve() / "pending" / subsystem
+    if d.resolve() != d:
+        raise ValueError(f"pending store {d} is a link that leaves the Hermes home")
+    return d
 
 
 def _pending_path(subsystem: str, pending_id: str) -> Path:
     """Path of one pending record. Ids are typed by users (``/skills reject <id>``), so only the
     minted format is accepted: anything else (``../x``, ``/abs``, ``a/b``) raises instead of
-    naming a file outside the store."""
+    naming a file outside the store, and so does a record file that is a symlink."""
     if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
         raise ValueError(f"invalid pending id {pending_id!r}")
-    return _pending_dir(subsystem) / f"{pending_id}.json"
+    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    if path.is_symlink():
+        raise ValueError(f"pending record {pending_id!r} is a symlink")
+    return path
 
 
 def _pending_files(subsystem: str) -> list:
-    d = _pending_dir(subsystem)
-    return list(d.glob("*.json")) if d.exists() else []
+    try:
+        d = _pending_dir(subsystem)
+    except ValueError:
+        logger.warning("write_approval: ignoring the %s pending store", subsystem, exc_info=True)
+        return []
+    return [p for p in d.glob("*.json") if not p.is_symlink()] if d.exists() else []
 
 
 def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
@@ -98,8 +110,9 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     }
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
-    except Exception as e:  # pragma: no cover - disk failure path
+    except Exception as e:  # disk failure, or a store refused as a link
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        record["error"] = f"the pending {subsystem} store could not be written"  # callers report it, not "staged"
     return record
 
 
@@ -149,11 +162,8 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
 
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
-        return 0
     with suppress(Exception):
-        return sum(1 for _ in d.glob("*.json"))
+        return len(_pending_files(subsystem))
     return 0
 
 

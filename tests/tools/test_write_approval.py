@@ -455,3 +455,44 @@ def test_pending_ids_outside_the_minted_format_are_refused(hermes_home):
     assert victim.exists() and wa.pending_count(wa.SKILLS) == 1
     with pytest.raises(ValueError):
         wa._pending_path("../memory", "0123abcd")
+
+
+def test_symlinks_planted_in_the_pending_store_are_never_followed(hermes_home, tmp_path):
+    """A record file or the subsystem dir linked out of the store must not be read, applied, deleted
+    or written through."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.json"
+    secret.write_text('{"id": "deadbeef", "subsystem": "skills", "summary": "OUTSIDE", "payload": '
+                      '{"action": "create", "name": "x", "content": "outside text"}}', encoding="utf-8")
+    pending = Path(hermes_home, "pending", "skills")
+    pending.mkdir(parents=True)
+    (pending / "deadbeef.json").symlink_to(secret)                       # a linked record
+    assert wa.get_pending(wa.SKILLS, "deadbeef") is None and wa.list_pending(wa.SKILLS) == []
+    for sub in ("diff", "approve", "reject"):
+        assert "OUTSIDE" not in handle_pending_subcommand(wa.SKILLS, [sub, "deadbeef"])
+    assert wa.discard_pending(wa.SKILLS, "deadbeef") is False and wa.pending_count(wa.SKILLS) == 0
+    assert secret.exists() and wa._find_skill_path("x") is None
+    (pending / "deadbeef.json").unlink()
+    pending.rmdir()
+    victim = outside / "cafebabe.json"
+    victim.write_text('{"id": "cafebabe"}', encoding="utf-8")
+    pending.symlink_to(outside)                                          # a linked subsystem dir
+    assert wa.discard_pending(wa.SKILLS, "cafebabe") is False and victim.exists()
+    assert wa.list_pending(wa.SKILLS) == [] and wa.pending_count(wa.SKILLS) == 0
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools.skill_manager_tool import skill_manage
+    _set_approval("skills", True)
+    _set_approval("memory", True)
+    Path(hermes_home, "pending", "memory").symlink_to(outside)           # nothing stored: the tools say so
+    store = MemoryStore()
+    store.load_from_disk()
+    for out in (skill_manage(action="create", name="probe", content="---\nname: probe\ndescription: p\n---\nx\n"),
+                memory_tool("add", "memory", "a fact", store=store)):
+        assert json.loads(out)["success"] is False and "staged" not in json.loads(out), out
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "x"},
+                   summary="create probe", origin="foreground")
+    assert sorted(p.name for p in outside.iterdir()) == ["cafebabe.json", "secret.json"]

@@ -1617,6 +1617,18 @@ platform_toolsets:
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
 #
+# Approval on an untrusted server: with `trust: untrusted`, every tool without a
+# server-supplied readOnlyHint: true asks before it runs. The optional
+# `approval` lists name single tools by their exact server-reported name (no
+# globs; unknown names are ignored with a warning). Only this file sets them,
+# and they apply to this profile alone:
+#   mail:
+#     url: https://mcp.example.com/mcp
+#     trust: untrusted
+#     approval:
+#       read_only_tools: [list_messages]   # treat as readOnlyHint: true
+#       auto_approve_tools: [create_draft] # write tool that runs without asking
+#
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:
 #   analysis:

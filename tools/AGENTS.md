@@ -109,7 +109,8 @@ from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threa
 drops the scope). **MCP trust is a per-profile record:** `mcp_tool_registration.py::
 _record_scope_trust` keys trust on the home; a secondary never adopts the launch profile's trust
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
-session's profile.
+session's profile. The `approval` lists (`read_only_tools`, `auto_approve_tools`) are keyed the
+same way; never write operator policy into the connection-keyed `_tool_read_only_hints`.
 
 **Background-process teardown signals the parent first.** `process_registry_termination.py::
 ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits

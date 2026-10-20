@@ -41,7 +41,8 @@ def two_profiles(tmp_path, monkeypatch):
                "_server_connect_errors", "_server_connect_retry_after", "_server_connect_failures",
                "_server_error_counts", "_server_breaker_opened_at", "_lazy_server_configs",
                "_mcp_tool_server_names", "_orphaned_adopters", "_parallel_safe_servers",
-               "_server_trust_levels", "_tool_read_only_hints")
+               "_server_trust_levels", "_tool_read_only_hints", "_tool_read_only_overrides", "_tool_auto_approvals",
+               "_tool_approval_pins")
     saved = {n: type(getattr(core, n))(getattr(core, n)) for n in ledgers}
     for n in ledgers:
         getattr(core, n).clear()
@@ -269,6 +270,77 @@ def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gat
 
     two_profiles("a")
     assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
+
+
+def test_auto_approval_is_the_consuming_profiles_policy_not_the_connections(two_profiles, monkeypatch):
+    """An ``approval.auto_approve_tools`` exemption is keyed like trust: B adopting A's connection never
+    inherits A's exemption, B's own exemption applies to B only, and dropping B's scope drops it."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
+    from tools import mcp_tool_registration as reg
+    from tools import approval_prompt
+    import tools.mcp_tool as core
+
+    route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}, "trust": "untrusted"}
+    cfg_a = dict(route, approval={"auto_approve_tools": ["t"]})
+    asked = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                        lambda *a, **k: asked.append(a) or "deny")
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+    assert handlers._trust_gate_check("x", "t") is None and not asked
+
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": dict(route)}) == 1
+    assert handlers._trust_gate_check("x", "t") is not None and len(asked) == 1
+
+    cfg_b = dict(route, approval={"auto_approve_tools": ["t"]})
+    reg.register_connected_into_current_scope({"x": cfg_b})
+    assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
+
+    (connection,) = core._servers
+    reg._remove_server_scope(connection, scope_b)
+    assert set(core._tool_auto_approvals) == {connection}
+
+    two_profiles("a")
+    assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
+
+
+def test_read_only_tools_are_the_consuming_profiles_policy_not_the_connections(two_profiles, monkeypatch):
+    """``approval.read_only_tools`` is operator policy, not a server annotation: B (untrusted, no
+    ``approval``) adopting A's connection is still asked for a tool only A's config calls read-only,
+    and B's own list neither reaches A nor survives dropping B's scope."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
+    from tools import mcp_tool_registration as reg
+    from tools import approval_prompt
+    import tools.mcp_tool as core
+
+    route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}, "trust": "untrusted"}
+    cfg_a = dict(route, approval={"read_only_tools": ["t"]})
+    asked = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                        lambda *a, **k: asked.append(a) or "deny")
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+    assert handlers._trust_gate_check("x", "t") is None and not asked
+    (connection,) = core._servers
+    assert core._tool_read_only_hints[connection] == {"t": False}
+
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": dict(route)}) == 1
+    assert not handlers._tool_is_read_only("x", "t")
+    assert handlers._trust_gate_check("x", "t") is not None and len(asked) == 1
+
+    reg.register_connected_into_current_scope({"x": dict(route, approval={"read_only_tools": ["t"]})})
+    assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
+
+    reg._remove_server_scope(connection, scope_b)
+    assert set(core._tool_read_only_overrides) == {connection}
 
 
 def test_parallel_safe_opt_in_is_per_profile(two_profiles):

@@ -38,7 +38,7 @@ def test_list_pending_skips_non_dict_record(hermes_home):
     from tools import write_approval as wa
     wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
                    summary="ok", origin="foreground")
-    pending_dir = wa._pending_path("memory", "").parent
+    pending_dir = wa._pending_dir("memory")
     (pending_dir / "bad.json").write_text('"not a record"', encoding="utf-8")
     records = wa.list_pending("memory")
     assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
@@ -152,6 +152,35 @@ def test_handle_approve_all(hermes_home):
     assert "Approved 2" in out
     assert wa.pending_count("memory") == 0
     assert len(store.user_entries) == 2
+
+
+@pytest.mark.parametrize("subsystem, verb, target", [
+    ("memory", "reject", "../../auth"),
+    ("memory", "approve", "../../auth"),
+    ("skills", "diff", "../../auth"),
+    ("memory", "reject", "{absolute}"),
+])
+def test_pending_id_names_a_staged_record_never_a_path(hermes_home, subsystem, verb, target):
+    """The id is typed back by the operator (``/memory reject <id>``). As a path, ``../../auth`` reached
+    <HERMES_HOME>/auth.json: reject deleted it, approve replayed it as a write and diff printed it."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+    # A real staged write, so pending/<subsystem>/ exists and ``..`` resolves through it as it does live.
+    wa.stage_write(subsystem, {"action": "add", "target": "user", "content": "staged"}, summary="staged",
+                   origin="foreground")
+    victim = os.path.join(hermes_home, "auth.json")
+    with open(victim, "w", encoding="utf-8") as f:
+        json.dump({"id": "x", "summary": "LEAKED", "payload": {"action": "add", "target": "user", "content": "LEAKED"}}, f)
+    store = MemoryStore(); store.load_from_disk()
+
+    out = handle_pending_subcommand(subsystem, [verb, target.format(absolute=victim[:-len(".json")])],
+                                    memory_store=store)
+
+    assert os.path.exists(victim)
+    assert "LEAKED" not in out
+    assert not any("LEAKED" in entry for entry in store.user_entries)
+
 
 def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     """#117952: on the /memory approve surface a partial-entry replace must show the

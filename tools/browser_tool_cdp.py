@@ -39,6 +39,12 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
+        ws_url = _devtools_active_port_ws(discovery_url)
+        if ws_url:
+            # Chrome 144+ approval mode (chrome://inspect/#remote-debugging on the real profile)
+            # serves no /json/version; the browser id lives only in DevToolsActivePort.
+            _bt.logger.info("Resolved CDP endpoint %s via DevToolsActivePort -> %s", san(raw), san(ws_url))
+            return ws_url
         _bt.logger.warning("Failed to resolve CDP endpoint %s via %s: %s", san(raw), san(version_url), san(exc))
         return raw
     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
@@ -104,6 +110,34 @@ def env_cdp_url() -> str:
     else:
         value = get_secret("BROWSER_CDP_URL")
     return (value or "").strip()
+
+
+# Default user-data dirs (under $XDG_CONFIG_HOME / ~/.config) whose DevToolsActivePort names the live
+# browser id when remote debugging was enabled from chrome://inspect rather than a launch flag.
+_DEVTOOLS_ACTIVE_PORT_DIRS = ("google-chrome", "chromium", "BraveSoftware/Brave-Browser", "microsoft-edge")
+
+
+def _devtools_active_port_ws(discovery_url: str) -> str:
+    """``ws://127.0.0.1:<port>/devtools/browser/<id>`` from a local browser's DevToolsActivePort whose
+    port matches ``discovery_url``, or "". Loopback only: the file describes a browser on this machine."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(discovery_url)
+        host, port = parts.hostname or "", parts.port
+    except ValueError:
+        return ""
+    if host not in ("127.0.0.1", "localhost", "::1") or not port:
+        return ""
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    for rel in _DEVTOOLS_ACTIVE_PORT_DIRS:
+        try:
+            with open(os.path.join(config_home, rel, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
+                file_port, browser_path = (fh.read().splitlines() + ["", ""])[:2]
+        except OSError:
+            continue
+        if file_port.strip() == str(port) and browser_path.startswith("/devtools/browser/"):
+            return f"ws://127.0.0.1:{port}{browser_path.strip()}"
+    return ""
 
 
 def _get_cdp_override_raw() -> str:

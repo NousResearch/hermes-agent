@@ -382,3 +382,30 @@ class TestCdpSessionCommandArgs:
 
         assert argv[argv.index("--session") + 1] == "local_test_456"
         assert "--cdp" not in argv
+
+
+class TestDevToolsActivePortFallback:
+    """Chrome 144+ approval mode (chrome://inspect remote debugging on the real profile) serves no
+    /json/version; the live browser id is only in the profile's DevToolsActivePort."""
+
+    def _write_port_file(self, config_home, rel, port, browser_id="live-id"):
+        d = config_home / rel
+        d.mkdir(parents=True)
+        (d / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/{browser_id}\n")
+
+    def test_resolves_from_devtools_active_port_when_discovery_fails(self, tmp_path, monkeypatch):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        self._write_port_file(tmp_path, "google-chrome", 9222)
+        with patch("requests.get", side_effect=RuntimeError("404")):
+            assert _resolve_cdp_override("http://127.0.0.1:9222") == "ws://127.0.0.1:9222/devtools/browser/live-id"
+
+    def test_ignores_port_mismatch_and_remote_hosts(self, tmp_path, monkeypatch):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        self._write_port_file(tmp_path, "google-chrome", 9333)
+        with patch("requests.get", side_effect=RuntimeError("404")):
+            assert _resolve_cdp_override("http://127.0.0.1:9222") == "http://127.0.0.1:9222"
+            assert _resolve_cdp_override("http://example-host:9333") == "http://example-host:9333"

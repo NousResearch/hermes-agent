@@ -52,7 +52,7 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
     monkeypatch.setattr(subprocess, 'run', fault)
     if failure == 'head':
         monkeypatch.setattr(update_cmd, '_capture_head_sha', lambda *_: None)
-    if failure == 'reset':
+    if failure in {'reset', 'ref', 'head'}:
         with pytest.raises(SystemExit) as error:
             hermes_main.cmd_update(t.args)
         assert error.value.code == 1
@@ -64,9 +64,9 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
         assert len(t.requests) == 1
         assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
         assert (t.clone / 'untracked.txt').exists() is (not keep)
-    assert len(resets) == 1
+    assert len(resets) == (0 if failure in {'ref', 'head'} else 1)
     stashes = git(t.clone, 'stash', 'list')
-    assert bool(stashes) is (keep or failure == 'reset')
+    assert bool(stashes) is (keep or failure in {'reset', 'ref', 'head'})
     if stashes:
         assert git(t.clone, 'show', 'stash@{0}^3:untracked.txt') == 'local edit'
     output = capsys.readouterr().out

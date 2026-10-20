@@ -1,0 +1,27 @@
+name: hermetic
+repo: https://github.com/forefy/hermetic
+sha: 07ecf4949a315abf935de2f73b8ea92647801a1b
+version: "1.1.0"
+requires_hermes: ">=0.21.5"
+description: "Status-bar popover for Hermes Desktop with three views: Costs (spend, cache, pricing drift, OpenRouter provider routing), AAI (skill changes, ratings, tests and replays) and HDR (posture, destinations, sensitive paths, what runs on its own)."
+maintainer: forefy
+tier: community
+category: desktop
+docs_url: https://github.com/forefy/hermetic#readme
+screenshots:
+  - https://raw.githubusercontent.com/forefy/hermetic/07ecf4949a315abf935de2f73b8ea92647801a1b/docs/hermetic-costs.png
+  - https://raw.githubusercontent.com/forefy/hermetic/07ecf4949a315abf935de2f73b8ea92647801a1b/docs/hermetic-aai.png
+  - https://raw.githubusercontent.com/forefy/hermetic/07ecf4949a315abf935de2f73b8ea92647801a1b/docs/hermetic-hdr.png
+  - https://raw.githubusercontent.com/forefy/hermetic/07ecf4949a315abf935de2f73b8ea92647801a1b/docs/hermetic-providers.png
+  - https://raw.githubusercontent.com/forefy/hermetic/07ecf4949a315abf935de2f73b8ea92647801a1b/docs/hermetic-hdr-pipeline.png
+  - https://raw.githubusercontent.com/forefy/hermetic/07ecf4949a315abf935de2f73b8ea92647801a1b/docs/hermetic-aai-settings.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - api_request_error
+    - transform_llm_output
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

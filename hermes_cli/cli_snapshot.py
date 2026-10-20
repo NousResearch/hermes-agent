@@ -167,6 +167,6 @@ def _rejoin_cli(cli, store):
             snapshot = store.current
         cli.session_id = snapshot["stored_session_id"]
         cli.conversation_history = [{key: value for key, value in message.items() if key != "row_id"}
-                                    for message in snapshot.get("messages") or []]
+                                    for message in snapshot.get("messages") or [] if not message.get("archived")]
         bind_session(cli, store.connection)
     getattr(cli, "_write_terminal_breadcrumb", lambda: None)()

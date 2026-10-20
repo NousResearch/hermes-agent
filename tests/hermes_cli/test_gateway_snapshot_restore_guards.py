@@ -114,3 +114,28 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
         assert parked_at.pop("unserve") is True  # parked before the teardown, so no rescan re-serves it
         assert parked_at == ({} if case in {"satellite-unserve-error", "satellite-pre-parked"} else {"serve": False})
         assert marker.exists() is (case == "satellite-pre-parked")
+
+
+def test_rejoin_of_a_compressed_session_keeps_undo_counts(monkeypatch):
+    from hermes_cli.cli_snapshot import _rejoin_cli
+    rows = [{"row_id": 1, "role": "user", "content": "OLD", "archived": True},
+            {"row_id": 2, "role": "assistant", "content": "OLD answer", "archived": True},
+            {"row_id": 3, "role": "user", "content": "summary of OLD"},
+            {"row_id": 4, "role": "user", "content": "NEW"},
+            {"row_id": 5, "role": "assistant", "content": "NEW answer"}]
+    snapshot = {"stored_session_id": "kept", "messages": rows, "revision": 1, "execution_generation": 1}
+
+    class Connection(_Connection):
+        def call(self, method, **params):
+            return snapshot if method == "session.resume" else {"rewound_count": 2}
+
+    store = GatewaySessionStore(Connection())
+    store.snapshots["kept"] = snapshot  # the restored session, already resumed
+    monkeypatch.setattr("hermes_cli.gateway_tools.bind_session", lambda cli, connection: None)
+    cli = SimpleNamespace(session_id="kept", conversation_history=[])
+
+    _rejoin_cli(cli, store)
+
+    # /undo and /retry compare this warm view against the gateway's live (unarchived) rows.
+    assert [m["content"] for m in cli.conversation_history] == ["summary of OLD", "NEW", "NEW answer"]
+    assert store.rewind_user_turn("kept", -1, warm_history=cli.conversation_history).turns_undone == 1

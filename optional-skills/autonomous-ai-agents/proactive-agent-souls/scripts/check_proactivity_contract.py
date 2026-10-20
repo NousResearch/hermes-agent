@@ -159,6 +159,33 @@ def check_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[Finding]:
         scoped = [entry for entry in lines if section[0] <= entry[0] <= section[1]]
 
     tiers = _tier_bodies(scoped)
+    findings.extend(_tier_findings(tiers))
+
+    scope_text = "\n".join(line for _, line in scoped)
+    findings.extend(_contract_findings(scoped, scope_text))
+    findings.extend(_send_window_findings(scoped))
+
+    for number, line in lines:
+        match = PLACEHOLDER_RE.search(line)
+        if match:
+            findings.append(
+                Finding("placeholder", f"unfilled placeholder {match.group(0)!r} — the template is not a contract", number)
+            )
+
+    if len(text) > max_chars:
+        findings.append(
+            Finding(
+                "soul-too-long",
+                f"{len(text)} chars exceeds {max_chars} — head+tail truncation will drop the middle",
+                severity=WARNING,
+            )
+        )
+    return findings
+
+
+def _tier_findings(tiers: list[tuple[int, int, list[str]]]) -> list[Finding]:
+    """Duplicate, empty, missing and out-of-order tiers — one finding each."""
+    findings: list[Finding] = []
     seen: dict[int, int] = {}
     order: list[int] = []
     for tier, line, body in tiers:
@@ -185,8 +212,12 @@ def check_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[Finding]:
         findings.append(
             Finding("tier-order", f"tiers appear as {order} — order them Tier 1, 2, 3", 0)
         )
+    return findings
 
-    scope_text = "\n".join(line for _, line in scoped)
+
+def _contract_findings(scoped: list[tuple[int, str]], scope_text: str) -> list[Finding]:
+    """The named parts of the contract: trigger register, file paths, silence marker, quality bar."""
+    findings: list[Finding] = []
     if not TRIGGER_RE.search(scope_text):
         findings.append(
             Finding("triggers-missing", "no trigger register — name the events that may interrupt someone")
@@ -223,7 +254,12 @@ def check_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[Finding]:
                 severity=WARNING,
             )
         )
+    return findings
 
+
+def _send_window_findings(scoped: list[tuple[int, str]]) -> list[Finding]:
+    """Quiet hours and the send-suppression window: each stated window also names its bounds."""
+    findings: list[Finding] = []
     quiet_lines = [line for _, line in scoped if QUIET_HOURS_RE.search(line)]
     if not quiet_lines:
         findings.append(
@@ -256,22 +292,6 @@ def check_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[Finding]:
             Finding(
                 "suppression-incomplete",
                 "suppression window without a duration (e.g. 60 minutes)",
-                severity=WARNING,
-            )
-        )
-
-    for number, line in lines:
-        match = PLACEHOLDER_RE.search(line)
-        if match:
-            findings.append(
-                Finding("placeholder", f"unfilled placeholder {match.group(0)!r} — the template is not a contract", number)
-            )
-
-    if len(text) > max_chars:
-        findings.append(
-            Finding(
-                "soul-too-long",
-                f"{len(text)} chars exceeds {max_chars} — head+tail truncation will drop the middle",
                 severity=WARNING,
             )
         )

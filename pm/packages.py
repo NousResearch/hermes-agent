@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -326,6 +327,44 @@ def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.
     return dst
 
 
+def _copy_seed_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Recreate one payload cache symlink, healing a directory left by an older seed.
+
+    uv caches a wheel as a symlink into ``archive-v0/``; following it (the
+    ``copytree`` default) leaves a directory where uv later renames its own
+    entry into place, which fails with EISDIR. The payload's targets are
+    relative, so the target is copied verbatim, never resolved.
+    """
+    linkto = os.readlink(src)
+    dst = Path(dst)
+    staging = dst.parent / f".seed-link-{uuid.uuid4().hex}"
+    os.symlink(linkto, staging)
+    try:
+        if dst.is_dir() and not dst.is_symlink():
+            # A pre-fix seed copied the link target's contents here; uv cannot replace it.
+            shutil.rmtree(dst)
+        os.replace(staging, dst)  # atomic: replaces a file or an existing symlink
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _seed_tree(src: Path, dst: Path) -> None:
+    """Merge one payload bucket, preserving uv's link entries and publication order.
+
+    ``is_symlink()`` must be tested before ``is_dir()``: ``is_dir()`` follows
+    links, and following them is exactly the bug this walker replaced.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child.is_symlink():
+            _copy_seed_link(child, target)
+        elif child.is_dir():
+            _seed_tree(child, target)
+        else:
+            _copy_seed_file(child, target)
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
@@ -352,7 +391,10 @@ def uv_cache_dir() -> Path:
     # seed. Do not drop the suffix: the lock alone cannot tell those two images apart.
     payload_cache = long_root(store_root().parent / "uv-cache")
     if payload_cache.is_dir():
-        seed += "+payload"
+        # The suffix names the seed's copy semantics, not just "a payload exists": it moved to
+        # ``payload2`` when the seed stopped following links, so an existing volume re-runs the
+        # merge once and the directory-shaped entries the old copy left are healed in place.
+        seed += "+payload2"
     try:
         current = marker.read_text(encoding="utf-8-sig").strip() == seed
     except OSError:
@@ -374,8 +416,10 @@ def uv_cache_dir() -> Path:
                     dest = seeded / entry.name
                     # Merge into whatever an earlier failed or killed seed left: skipping
                     # an existing directory would record that partial copy as complete.
-                    if entry.is_dir():
-                        shutil.copytree(entry, dest, dirs_exist_ok=True, copy_function=_copy_seed_file)
+                    if entry.is_symlink():
+                        _copy_seed_link(entry, dest)
+                    elif entry.is_dir():
+                        _seed_tree(entry, dest)
                     else:
                         _copy_seed_file(entry, dest)
         except OSError as exc:

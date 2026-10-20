@@ -14,6 +14,7 @@ SQLite, no loop), so each 'completed exactly once' claim is checked against the 
 """
 
 import itertools
+import logging
 import types
 
 import pytest
@@ -235,3 +236,31 @@ def test_a_cancel_after_the_drain_released_the_waiter_marks_nothing():
     authority.cancel()
 
     assert authority.review_completions == {}
+
+
+def test_rebinding_the_outer_admission_to_a_queued_followup_logs_the_dropped_candidate(caplog):
+    """The in-task follow-up (``_run_agent_followup``) binds the OUTER admission to the next
+    turn: the first turn's candidate -- its reply already delivered -- is superseded by the
+    follow-up's, which covers both turns. The drop is logged like every other starved review,
+    owner-tagged and body-free under ``queued_followup_pending``; a bind that holds no candidate
+    logs nothing."""
+    from gateway.run_turn_review import _GatewayReviewAdmission
+
+    admission = _GatewayReviewAdmission("s", "p", 1)
+    first, followup = types.SimpleNamespace(session_id="s"), types.SimpleNamespace(session_id="s")
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        admission.bind_agent(first)
+        admission.capture_candidate(
+            first, [{"role": "user", "content": "first turn"}], review_memory=True, review_skills=False
+        )
+        assert admission._candidate is not None
+        admission.bind_agent(followup)
+    assert admission.agent is followup and admission._candidate is None
+    dropped = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_QUEUED_FOLLOWUP in record.getMessage()
+    ]
+    assert len(dropped) == 1, caplog.text
+    assert review_admission.owner_tag("p", "s") in dropped[0]
+    assert "first turn" not in dropped[0] and "'s'" not in dropped[0]

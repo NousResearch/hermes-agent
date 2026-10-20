@@ -70,11 +70,18 @@ class _GatewayReviewAdmission:
         return review_admission.owner_tag(self.profile_key, self.session_id)
 
     def bind_agent(self, agent: Any) -> None:
-        """Route this gateway turn's automatic candidate to the delivery owner."""
+        """Route this gateway turn's automatic candidate to the delivery owner.
+
+        Rebinding for the in-task follow-up (``_run_agent_followup``) supersedes the first turn's
+        candidate -- its reply is delivered and the follow-up's candidate covers both turns -- and
+        logs the drop like every other starved review.
+        """
+        from agent import review_admission
+
+        self.drop_candidate(review_admission.REASON_QUEUED_FOLLOWUP)
         with self._lock:
             self.agent = agent
             self.context = copy_context()
-            self._candidate = None
         agent._gateway_review_admission = self
         # Session hygiene in ``_hmwa_prepare_turn`` can rotate the session BEFORE this bind, when
         # neither the facade token nor this admission is on the agent for the rotation to alias.

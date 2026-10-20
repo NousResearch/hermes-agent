@@ -3,6 +3,7 @@
 
 import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
+import { $attentionSoundVariantId, resolveAttentionSoundVariantId } from '@/store/attention-sound'
 import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
 
@@ -439,6 +440,29 @@ export function playCompletionSound(dedupeKey?: string) {
   }
 
   void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && play())
+}
+
+// Audition the attention cue from Settings → Notifications → Sounds, next to
+// the completion cue it deliberately does not share a preset with.
+export function previewAttentionSound(variantId?: number) {
+  playVariant(resolveAttentionSoundVariantId(variantId ?? $attentionSoundVariantId.get()))
+}
+
+// Plays on the notifications that BLOCK the turn until the user answers
+// (approval / input), i.e. on the same edge the OS notification fires. Own
+// preset, own dedupe key: several windows open means one of them sounds it.
+export function playAttentionSound(dedupeKey?: string) {
+  if ($hapticsMuted.get()) {
+    return
+  }
+
+  const play = () => playVariant($attentionSoundVariantId.get())
+
+  if (!dedupeKey) {
+    return play()
+  }
+
+  void ownsAmbientCue(`sound:attention:${dedupeKey}`).then(owns => owns && play())
 }
 
 interface AirPuffSpec {

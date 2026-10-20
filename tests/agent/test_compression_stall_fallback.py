@@ -317,7 +317,8 @@ def test_total_ceiling_exhaustion_does_not_start_fallback():
     original = [{"role": "user", "content": "keep-me"}]
     worker = _StalledSummaryWorker([{"role": "user", "content": "unused"}])
     timeouts, minted = [], []
-    ceiling = 5.0
+    # Preserve upstream's 2s worker-start window (tests/AGENTS.md) after reserving half for fallback.
+    ceiling = 4.0
     elapsed = 0.0
     from agent import conversation_compression
 

@@ -18,6 +18,7 @@ from hermes_cli.cli_init_mixin import CLIInitMixin
 from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_runtime import discover_gateway_endpoint
 from hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_cli.profiles import parked_marker_path
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env
 from tests.waiting import wait_until
 
@@ -136,7 +137,7 @@ def _legacy_row(home):
 @pytest.mark.platforms("posix")  # The fixture exercises the POSIX default/named profile layout.
 @pytest.mark.parametrize("multiplex, mode", [(False, "retained"), (True, "missing"), (False, "legacy-leased")],
                          ids=["standalone-resume-restored", "satellite-create-missing", "legacy-reimport-leased"])
-def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiplex, mode, capsys):
+def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiplex, mode, capsys, monkeypatch):
     from cli import HermesCLI
     from types import MethodType
     home = local_gateway(multiplex)
@@ -174,6 +175,17 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     # The interactive CLI holds its real active-session lease for the whole chat.
     assert cli._claim_active_session("cli", stderr=True)
     retained = mode != "missing"
+    rescans = []
+    if multiplex:
+        from gateway.control_socket import rescan_gateway_profiles
+        from hermes_cli import profiles_remove
+        unowned = profiles_remove.wait_profile_unowned
+
+        def rescan_mid_handoff(target):
+            # The host's periodic rescan lands between the unserve and the restore.
+            rescans.append(rescan_gateway_profiles(target.parent.parent))
+            return unowned(target)
+        monkeypatch.setattr(profiles_remove, "wait_profile_unowned", rescan_mid_handoff)
     try:
         CLICommandsMixin._snapshot_restore(cli, ["/snapshot", "restore", snapshot])
 
@@ -199,6 +211,8 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     assert after is not None
     assert _epoch(store) > before_epoch
     if multiplex:
+        assert rescans and home.name not in rescans[0]["added"], rescans
+        assert not parked_marker_path(home).exists()  # served again after the restore
         assert before.instance_id == after.instance_id
         assert _default_profile_state(home) == default_before
     else:

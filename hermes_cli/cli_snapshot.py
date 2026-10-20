@@ -61,13 +61,28 @@ def restore_snapshot_command(cli, parts):
 
 
 def _pause_owner(home, control_home, identity):
+    """Hand the profile off; True when this restore parked a satellite and must serve it again."""
     from gateway.control_socket import pause_gateway_for_update, request_unserve_profile
     from hermes_cli.data_cleanup_holders import pause_acked
+    from hermes_cli.profiles import parked_marker_path
     satellite = control_home != home
+    ours = False
     if satellite:
-        ack = request_unserve_profile(control_home, home.name)
-        accepted = ack_confirmed(ack, "unserved", home.name) or (
-            isinstance(ack, dict) and ack.get("pending") and not ack.get("error"))
+        marker = parked_marker_path(home)
+        # Persist intent BEFORE teardown: the periodic rescan must not re-serve it mid-restore.
+        try:
+            marker.touch(exist_ok=False)
+            ours = True
+        except FileExistsError:
+            pass  # A profile the user parked stays parked and unserved.
+        accepted = False
+        try:
+            ack = request_unserve_profile(control_home, home.name)
+            accepted = ack_confirmed(ack, "unserved", home.name) or (
+                isinstance(ack, dict) and ack.get("pending") and not ack.get("error"))
+        finally:
+            if ours and not accepted:
+                marker.unlink(missing_ok=True)
     else:
         accepted = pause_acked(pause_gateway_for_update(control_home, timeout=8), identity)
     if not accepted:
@@ -75,6 +90,7 @@ def _pause_owner(home, control_home, identity):
         retry = (f"Park the profile with `hermes -p {home.name} gateway stop` and retry."
                  if satellite else "Stop the gateway and retry.")
         raise GatewayClientError(f"Gateway refused the snapshot maintenance handoff; nothing was restored. {retry}")
+    return ours
 
 
 def _restore_gateway_snapshot(cli, store, snap_id):
@@ -83,6 +99,7 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     from hermes_cli.data_cleanup_holders import manual_gateway_identity
     from hermes_cli.gateway_connection import GatewayConnection
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint
+    from hermes_cli.profiles import parked_marker_path
     from hermes_cli.profiles_remove import wait_profile_unowned
     from hermes_constants import get_hermes_home
     from hermes_state_registry import close_all_under
@@ -104,14 +121,14 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     store.connection.close()
     unserved = False
     try:
-        _pause_owner(home, control_home, identity)
-        unserved = control_home != home
+        unserved = _pause_owner(home, control_home, identity)
         if not wait_profile_unowned(home):
             raise GatewayClientError("Gateway still owns the profile; nothing was restored. "
                                      "Wait for its running work to stop and retry.")
         return restore_quick_snapshot(snap_id)
     finally:
         if unserved:
+            parked_marker_path(home).unlink(missing_ok=True)  # serve-profile refuses a parked profile
             ack = request_serve_profile_hot(control_home, home.name)
             if not ack_confirmed(ack, "served", home.name):
                 logger.warning("Profile re-serve after snapshot restore: %s", ack)

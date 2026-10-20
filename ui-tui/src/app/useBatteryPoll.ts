@@ -1,8 +1,8 @@
+import type { SystemBatteryResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SystemBatteryResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 import type { BatteryCategory, BatteryInfo } from './interfaces.js'

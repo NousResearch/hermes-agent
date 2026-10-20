@@ -4,10 +4,9 @@ import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gat
 import { modelSearchText } from '@hermes/shared/model-search-text'
 import { hasTopTier, planBlocks, planLimitLine, sectionAt, usageLevel, usageTag } from '@hermes/shared/plan-usage'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
+import { TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
 import { useEffect, useMemo, useState } from 'react'
 
-import { providerDisplayNames } from '../domain/providers.js'
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'

@@ -6,7 +6,7 @@
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
-import type { SessionInfo } from '../../types.js'
+import type { SessionInfo } from '@hermes/shared/gateway-types'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'

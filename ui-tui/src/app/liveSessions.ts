@@ -1,5 +1,7 @@
+import type { SessionActiveListResponse } from '@hermes/shared/gateway-types'
+
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionActiveItem, SessionActiveListResponse } from '../gatewayTypes.js'
+import type { SessionActiveItem, SessionActiveListResponse } from '@hermes/shared/gateway-types'
 
 import { getUiState, patchUiState } from './uiStore.js'
 

@@ -13,8 +13,6 @@ import json
 from typing import Any, Iterable, Optional
 
 SUBAGENT_ID_KEY = "_subagent_id"
-# Delegation depth is small (``delegation.max_spawn_depth``); compression adds a hop per rotation.
-_MAX_ANCESTOR_HOPS = 64
 
 
 def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[str]) -> Optional[str]:
@@ -41,12 +39,12 @@ def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[s
 
 
 def _descends_from(db: Any, session_id: str, ancestors: frozenset[str]) -> bool:
-    current = db.get_session(session_id)
-    for _ in range(_MAX_ANCESTOR_HOPS):
-        if current is None:
-            return False
+    # Each rotation is a hop, so a long-lived child's chain has no useful bound; ``seen`` ends a cycle.
+    current, seen = db.get_session(session_id), set()
+    while current is not None and current["id"] not in seen:
         if current["id"] in ancestors:
             return True
+        seen.add(current["id"])
         parent = current.get("parent_session_id")
         if not parent or not (_delegated_from(current, parent) or db._is_compression_child_row(current)):
             return False

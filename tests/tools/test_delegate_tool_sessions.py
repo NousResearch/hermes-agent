@@ -41,3 +41,22 @@ def test_spawned_children_resolve_by_subagent_id_only_under_their_conversation(t
         for agent in reversed(agents):
             agent.close()
         db.close()
+
+
+def test_a_child_rotated_past_any_hop_budget_resolves_to_its_newest_segment(tmp_path):
+    """Compression rotations count as hops on the walk to the conversation: a long-lived child
+    (compression.in_place: false) must still resolve to its newest segment, never an older one."""
+    from hermes_state import SessionDB
+    from tools.delegate_tool_sessions import stored_child_session
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("parent", source="cli")
+        marker = {"_delegate_from": "parent", "_subagent_id": "sa-0-long"}
+        db.create_session("seg-000", source="subagent", parent_session_id="parent", model_config=marker)
+        for i in range(1, 80):
+            db.end_session(f"seg-{i - 1:03d}", "compression")
+            db.create_session(f"seg-{i:03d}", source="subagent", parent_session_id=f"seg-{i - 1:03d}",
+                              model_config=marker)
+        assert stored_child_session(db, "sa-0-long", ["parent"]) == "seg-079"
+    finally:
+        db.close()

@@ -764,7 +764,12 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     from hermes_cli.kanban_db_dispatch import _worker_alive
     recorded = [(_task_field(task, "worker_pid", None),
                  _task_field(task, "worker_started_at", None))]
+    # Only this attempt's pids speak for it: an earlier run's worker that is still alive
+    # (or whose number was reused) says nothing about whether the current run is executing.
+    run_id = _task_field(task, "current_run_id", None)
     for ev in events:
+        if run_id is not None and _task_field(ev, "run_id", None) != run_id:
+            continue
         if _event_kind(ev) in {"spawned", "worker_bound"}:
             payload = _parse_payload(ev)
             recorded.append((payload.get("pid"), payload.get("started_at")))

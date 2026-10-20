@@ -251,3 +251,10 @@ def test_an_exited_unreaped_owner_no_longer_holds_the_slot(board):
     finally:
         child.wait()
 
+
+def test_an_earlier_runs_live_pid_does_not_hide_the_current_dead_run(board):
+    """Only the current attempt's pids speak for it in the stale_running diagnostic."""
+    run = board.dead_attempt("t_ghost")
+    board.event("t_ghost", run - 1, "spawned", {"pid": os.getpid()}, NOW - 100_000)
+    board.conn.commit()
+    assert [d.kind for d in board.diagnostics("t_ghost") if d.kind == "stale_running"] == ["stale_running"]

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
-from gateway.streaming_tts_consumer import StreamingTTSConsumer
+from gateway.streaming_tts_consumer import StreamingTTSConsumer, wait_streaming_tts_drain
 from tools.tts_streaming import SentenceChunker
 
 
@@ -131,6 +131,7 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer._finished = False
     consumer._dropped = False
     consumer._suppress_whole_file = False
+    consumer._progress = 0
     consumer._task = None
     consumer._lock = threading.Lock()
     consumer._strip_markdown = None
@@ -688,5 +689,73 @@ class TestEndpointReportedRate:
             assert adapter.begin_count == 1
             assert adapter.handle.audio_format.sample_rate == 44100
             assert len(adapter.written_chunks) == 2
+
+        _run_test(run)
+
+
+# ---------------------------------------------------------------------------
+# Drain finalisation: an inactivity deadline, not a total one (#138022)
+# ---------------------------------------------------------------------------
+
+
+class SlowChunkStreamer(FakeStreamer):
+    """Yields chunks on a steady cadence: audio keeps flowing, just slower than a cloud API."""
+
+    def __init__(self, chunks_per_clause=40, interval=0.05):
+        super().__init__(chunks_per_clause=chunks_per_clause)
+        self._interval = interval
+
+    def stream(self, text):
+        for chunk in super().stream(text):
+            time.sleep(self._interval)  # health: allow HX013 -- the chunk cadence IS the behaviour under test (#138022)
+            yield chunk
+
+
+class TestDrainInactivityDeadline:
+    """A slow engine that is still producing audio must not be aborted by a total deadline."""
+
+    def test_steady_slow_chunks_outlive_the_idle_window_and_still_complete(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = SlowChunkStreamer(chunks_per_clause=40, interval=0.05)
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("A long reply sentence. ")
+            consumer.finish()
+
+            # Total synthesis time (~2 s) far exceeds the idle window; the chunk cadence stays under it.
+            await wait_streaming_tts_drain(consumer, idle_timeout=0.3)
+            assert consumer.done is True
+            assert consumer.completed is True
+            assert len(adapter.written_chunks) == 40
+
+        _run_test(run)
+
+    def test_quiet_stream_times_out_and_leaves_the_abort_to_the_caller(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = BlockingSecondChunkStreamer()
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("This sentence stops producing audio partway. ")
+            consumer.finish()
+
+            await asyncio.wait_for(
+                asyncio.to_thread(streamer.first_chunk_written.wait, 2.0),
+                timeout=2.0,
+            )
+            assert consumer.progress == 1
+
+            started = time.monotonic()
+            await wait_streaming_tts_drain(consumer, idle_timeout=0.2)
+            assert time.monotonic() - started >= 0.2
+            assert consumer.done is False  # the caller decides to abort
+
+            streamer.allow_remaining_chunks.set()
+            consumer.abort("streaming TTS finalisation timeout")
+            await consumer.wait_complete(timeout=2.0)
+            assert consumer.completed is False
 
         _run_test(run)

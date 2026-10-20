@@ -163,9 +163,12 @@ def _pid_passwd_home(pid: int) -> str | None:
     return None
 
 
-def _hermes_home_for_pid(pid: int) -> str | None:
-    """The Hermes home *pid* runs on, tri-state: ``None`` ONLY when its environment is unreadable
-    (another user, hardened ``/proc``) — callers spare those, never guess.
+def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> str | None:
+    """Resolve a process home for discovery, or require pinned launch identity for termination.
+
+    By default, ``None`` means an unreadable environment (another user, hardened ``/proc``).
+    ``require_launch_identity`` also refuses missing argv, relative/missing home anchors and
+    any profile selection that would depend on today's sticky ``active_profile``.
 
     A readable environment always resolves, replaying ``_apply_profile_override`` on the target's
     exec-time env + argv (``hermes -p X serve`` rewrites ``HERMES_HOME`` in ``os.environ`` AFTER
@@ -176,14 +179,28 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     the profile is the ``--profile``/``-p`` flag, else the root's sticky ``active_profile`` unless
     the process has a fixed identity (supervised child, post-swap updater, Desktop SSH backend).
     """
+    # Destructive callers require launch evidence; discovery may still use sticky selection.
     env = _pid_environ(pid)
     if env is None:
         return None
     from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
     from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
-    argv = _dashboard_cmdline_for_pid(pid) or []
+    argv = _dashboard_cmdline_for_pid(pid)
+    if require_launch_identity and argv is None:
+        # The dashboard argv reader has no Windows implementation; psutil does.
+        import psutil
+        argv = psutil.Process(pid).cmdline()
+    if require_launch_identity and not argv:
+        return None
+    argv = argv or []
     env_home = env.get("HERMES_HOME", "").strip()
     profile = _profile_flag_value(argv)
+    if require_launch_identity:
+        anchor = (env.get('LOCALAPPDATA') or env.get('USERPROFILE')) if sys.platform == 'win32' else env.get('HOME')
+        if env_home and not Path(env_home).is_absolute():
+            return None
+        if not env_home and (not anchor or not Path(anchor).is_absolute()):
+            return None
     if profile is None and env_home and (
         Path(env_home).parent.name == "profiles" or env.get("HERMES_UPDATE_POST_SWAP") == "1"
     ):
@@ -198,6 +215,8 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
                                                "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or is_desktop_ssh_backend_argv(argv)
     if profile is None and not fixed_identity:
+        if require_launch_identity:
+            return None  # The sticky profile at launch is unknowable; never read today's value.
         profile = get_active_profile(root)
     canon = normalize_profile_name(profile) if profile else "default"
     return str(root) if canon == "default" else str(root / "profiles" / canon)

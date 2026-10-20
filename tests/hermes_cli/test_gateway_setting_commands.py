@@ -93,3 +93,19 @@ def test_cron_reads_keep_the_answer_deadline(monkeypatch, capsys):
         assert gateway_setting_commands.run(cli, "cron", typed) is True
     assert [params["command"] for _m, params in conn.calls] == [
         "cron", "cron list", "cron LIST -a", 'cron add "every 2h']
+
+
+def test_toolsets_is_the_gateway_sessions_report_printed_as_is(monkeypatch, capsys):
+    """#134889 CLI-22: `/toolsets` is the owner's report (its MCP and plugin toolsets, this session's
+    marked), not this process's registry; its already laid-out lines are not re-indented."""
+    report = "+----+\n|  (^_^)b Available Toolsets  |\n\n  (*) mcp-zeta           [11 tools] - MCP server zeta"
+
+    class _Reply(_Conn):
+        def call(self, method, **params):
+            self.calls.append((method, params))
+            return {"type": "exec", "output": report}
+    conn = _Reply()
+    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    assert gateway_setting_commands.run(SimpleNamespace(session_id="local-s"), "toolsets", "/toolsets") is True
+    assert conn.calls == [("slash.exec", {"session_id": "local-s", "command": "toolsets"})]
+    assert "\n  (*) mcp-zeta           [11 tools]" in capsys.readouterr().out

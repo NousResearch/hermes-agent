@@ -5091,6 +5091,7 @@ export interface CanonicalCorrectionAck {
   text: string
   execution_generation: number
   authority_epoch: number
+  delivered?: false | null
 }
 /** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
 export interface CanonicalVoiceStopped {

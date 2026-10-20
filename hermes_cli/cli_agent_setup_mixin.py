@@ -118,13 +118,25 @@ def _gateway_owned_id(session_db, session_id):
     ``stored_session_id``. A canonical local compression segment holds the transcript, but its creation
     receipt lives on the conversation's logical owner, which every turn and mutation must name (as Ink
     and ``session.resume`` do). Unchanged off the gateway store or when the resume is refused."""
+    return _gateway_open(session_db, session_id)[0]
+
+
+def _gateway_open(session_db, session_id):
+    """``(owner_id, refusal)`` from one ``session.resume`` of *session_id* on this viewer: the attach
+    subscribes it and names its receipt owner (:func:`_gateway_owned_id`). ``refusal`` is the reason
+    code when the owner answered that this viewer may not open it (``RESUME_GONE``), else ``None``:
+    off the gateway store, a transient refusal, or no answer, the caller proceeds on its local reads."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli.gateway_connection import RESUME_GONE
     from hermes_cli.gateway_session_store import GatewaySessionStore
     if not isinstance(session_db, GatewaySessionStore):
-        return session_id
+        return session_id, None
     try:
-        return session_db.attach(session_id).get("stored_session_id") or session_id
-    except Exception:  # health: allow BLE001 -- a refused attach leaves main's own resume path to report it
-        return session_id
+        return session_db.attach(session_id).get("stored_session_id") or session_id, None
+    except GatewayRPCError as exc:
+        return session_id, (str(exc) if str(exc) in RESUME_GONE else None)
+    except Exception:  # health: allow BLE001 -- no answer: the turn reports the lost connection itself
+        return session_id, None
 
 
 def _user_display_text(content) -> str:

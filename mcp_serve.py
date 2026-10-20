@@ -43,7 +43,10 @@ def _hermes_home() -> Path:
         from hermes_constants import get_hermes_home
         return get_hermes_home()
     except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        # Present-but-empty HERMES_HOME must not win over the default: get()
+        # only substitutes when the key is absent, and Path("") is relative.
+        hermes_home = os.environ.get("HERMES_HOME")
+        return Path(hermes_home) if hermes_home else Path.home() / ".hermes"
 
 
 def _get_sessions_dir() -> Path:

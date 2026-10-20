@@ -280,6 +280,28 @@ class TestHelpers:
         result = _get_sessions_dir()
         assert result == tmp_path / "sessions"
 
+    def test_get_sessions_dir_empty_hermes_home_falls_back_to_home(
+        self, tmp_path, monkeypatch
+    ):
+        """An empty HERMES_HOME must fall back to Path.home() / '.hermes', not a
+        relative ``sessions`` path. Regression for the ImportError fallback,
+        where ``os.environ.get("HERMES_HOME", default)`` returned the empty
+        string (env var present but blank), so the default never applied and
+        ``Path("") / "sessions"`` collapsed to a relative path. (#8350)"""
+        import sys
+        import mcp_serve
+        from pathlib import Path
+
+        home = tmp_path / "home"
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setenv("HERMES_HOME", "")
+        # Force the ImportError fallback (get_hermes_home already treats "").
+        monkeypatch.setitem(sys.modules, "hermes_constants", None)
+
+        result = mcp_serve._get_sessions_dir()
+        assert result == home / ".hermes" / "sessions"
+        assert result.is_absolute()
+
     def test_coerce_int_handles_invalid_and_out_of_range_values(self):
         from mcp_serve import _coerce_int
 

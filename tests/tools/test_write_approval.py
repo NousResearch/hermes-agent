@@ -38,7 +38,7 @@ def test_list_pending_skips_non_dict_record(hermes_home):
     from tools import write_approval as wa
     wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
                    summary="ok", origin="foreground")
-    pending_dir = wa._pending_path("memory", "").parent
+    pending_dir = wa._pending_dir("memory")
     (pending_dir / "bad.json").write_text('"not a record"', encoding="utf-8")
     records = wa.list_pending("memory")
     assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
@@ -409,7 +409,7 @@ def test_staged_hint_names_the_pending_dir_on_headless_surfaces(hermes_home, mon
     r = _stage_one_memory_write()
     assert "review with /memory pending" not in r["message"], r["message"]
     assert "pending records live in" in r["message"]
-    assert str(wa._pending_path(wa.MEMORY, "").parent) in r["message"]
+    assert str(wa._pending_dir(wa.MEMORY)) in r["message"]
     monkeypatch.delenv("HERMES_CRON_SESSION")
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-7")
@@ -430,3 +430,28 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+# ---------------------------------------------------------------------------
+# Pending store integrity: only minted records inside pending/<subsystem>/
+# ---------------------------------------------------------------------------
+
+def test_pending_ids_outside_the_minted_format_are_refused(hermes_home):
+    """approve|reject|diff take the id as typed (#119997): a path-like id must not read, apply or
+    delete any file outside pending/<subsystem>/."""
+    from pathlib import Path
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "x"},
+                   summary="create probe", origin="foreground")  # pending/skills/ exists
+    victim = Path(hermes_home, "victim.json")
+    victim.write_text('{"id": "victim", "summary": "VICTIM", "payload": {}}', encoding="utf-8")
+    for bad in ("../../victim", str(victim.with_suffix("")), "a/b", "../skills/x"):
+        for sub in ("approve", "reject", "diff"):
+            out = handle_pending_subcommand(wa.SKILLS, [sub, bad])
+            assert out.startswith("No pending") and "VICTIM" not in out, (sub, bad, out)
+        assert wa.get_pending(wa.SKILLS, bad) is None
+        assert wa.discard_pending(wa.SKILLS, bad) is False
+    assert victim.exists() and wa.pending_count(wa.SKILLS) == 1
+    with pytest.raises(ValueError):
+        wa._pending_path("../memory", "0123abcd")

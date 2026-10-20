@@ -62,12 +62,26 @@ def _normalize_enabled(value: Any) -> bool:
 
 # --- Pending store (file-backed) ---
 
+_PENDING_ID_RE = re.compile(r"[0-9a-f]{8}")  # how stage_write mints ids: uuid4().hex[:8]
+
+
+def _pending_dir(subsystem: str) -> Path:
+    if subsystem not in _SUBSYSTEMS:
+        raise ValueError(f"unknown write-approval subsystem {subsystem!r}")
+    return get_hermes_home() / "pending" / subsystem
+
+
 def _pending_path(subsystem: str, pending_id: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
+    """Path of one pending record. Ids are typed by users (``/skills reject <id>``), so only the
+    minted format is accepted: anything else (``../x``, ``/abs``, ``a/b``) raises instead of
+    naming a file outside the store."""
+    if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
+        raise ValueError(f"invalid pending id {pending_id!r}")
+    return _pending_dir(subsystem) / f"{pending_id}.json"
 
 
 def _pending_files(subsystem: str) -> list:
-    d = _pending_path(subsystem, "").parent
+    d = _pending_dir(subsystem)
     return list(d.glob("*.json")) if d.exists() else []
 
 
@@ -105,8 +119,11 @@ def list_pending(subsystem: str) -> list[dict[str, Any]]:
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
-    """Return a single pending record by id, or None."""
-    path = _pending_path(subsystem, pending_id)
+    """Return a single pending record by id, or None (also for an id that was never minted)."""
+    try:
+        path = _pending_path(subsystem, pending_id)
+    except ValueError:
+        return None
     if not path.exists():
         return None
     try:
@@ -123,6 +140,8 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
         if path.exists():
             path.unlink()
             return True
+    except ValueError:
+        return False  # not a minted id: no such record
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
@@ -130,7 +149,7 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
 
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
-    d = _pending_path(subsystem, "").parent
+    d = _pending_dir(subsystem)
     if not d.exists():
         return 0
     with suppress(Exception):
@@ -192,7 +211,7 @@ def _staged(subsystem: str) -> GateDecision:
     if _slash_review_surface():
         where = f"review with {command}"
     else:
-        where = (f"pending records live in {_pending_path(subsystem, '').parent} "
+        where = (f"pending records live in {_pending_dir(subsystem)} "
                  f"(review from an interactive CLI session with {command})")
     return GateDecision(stage=True, message=(f"Staged for approval ({subsystem}.write_approval is on). "
                                              f"Not yet saved — {where}."))

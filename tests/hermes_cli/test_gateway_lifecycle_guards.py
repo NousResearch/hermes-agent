@@ -15,6 +15,7 @@ Every ``systemctl``/``launchctl``/kill seam is replaced by a recorder; nothing h
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -128,11 +129,11 @@ def test_stop_refuses_while_sessions_are_live_and_names_them(monkeypatch, record
     assert "2 live session(s)" in out
     assert "chat turn agent:main:telegram:dm:7" in out
     assert "background delegation deleg_ab12cd34" in out
-    assert "hermes gateway stop --interrupt" in out
+    assert "hermes gateway stop --yes" in out
 
     gw._cmd_stop(SimpleNamespace(all=False, system=False, interrupt=True))
     assert stopped == [False]
-    assert "--interrupt: stop proceeds: 2 live session(s) would be interrupted" in capsys.readouterr().out
+    assert "--yes: stop proceeds: 2 live session(s) would be interrupted" in capsys.readouterr().out
 
 
 def test_restart_refuses_on_the_published_active_agents_of_an_older_gateway(monkeypatch, recorded, capsys):
@@ -190,3 +191,137 @@ def test_dashboard_stop_refuses_while_sessions_are_live(monkeypatch):
 
     assert client.post("/api/gateway/stop?interrupt=true").status_code == 200
     assert spawned and spawned[0][-1] == "--interrupt"
+
+
+@pytest.mark.platforms("linux")
+def test_sudo_system_stop_checks_the_units_home_not_roots(tmp_path, monkeypatch, recorded, capsys):
+    """``sudo hermes gateway stop --system``: HOME=/root and HERMES_HOME stripped, while the system unit
+    runs the invoking user's home. The live-work check must ask the unit's home, without adopting it."""
+    import hermes_constants
+    root_home, user_home = tmp_path / "root", tmp_path / "user" / ".hermes"
+    (root_home / ".hermes").mkdir(parents=True)
+    user_home.mkdir(parents=True)
+    _unit(tmp_path / "systemd" / "hermes-gateway.service", user_home)
+    monkeypatch.setattr(gw, "_SYSTEM_UNIT_DIR", tmp_path / "systemd")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("HOME", str(root_home))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(hermes_constants, "_account_home", lambda: root_home)
+    _live_gateway(monkeypatch, None)
+    from gateway import control_socket
+    monkeypatch.setattr(control_socket, "query_gateway_control", lambda home, verb, **kw: (
+        _WORK if verb == "active-work" and Path(home).resolve() == user_home.resolve() else None))
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda: None)
+    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda: False)
+    stopped: list = []
+    monkeypatch.setattr(gw, "_stop_installed_service", lambda system: stopped.append(system) or True)
+
+    with pytest.raises(SystemExit) as exc:
+        gw._cmd_stop(SimpleNamespace(all=False, system=True, interrupt=False))
+
+    assert exc.value.code == 1 and stopped == [] and recorded == []
+    assert "chat turn agent:main:telegram:dm:7" in capsys.readouterr().out
+    assert "HERMES_HOME" not in os.environ  # the check never adopted the unit's home
+
+
+@pytest.mark.parametrize("verb", ["stop", "restart"])
+def test_host_served_profile_refuses_before_unserving_its_live_turns(tmp_path, monkeypatch, capsys, verb):
+    """``hermes -p coder gateway stop|restart`` on a profile the host serves unserves it in the host,
+    which Stops its executing turns: the live-work policy applies first, scoped to that profile."""
+    from gateway import control_socket
+    from hermes_cli import gateway_profile_lifecycle as gpl
+    profile_home, host_home = tmp_path / "profiles" / "coder", tmp_path / "root"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(gw, "_current_profile_name", lambda: "coder")
+    monkeypatch.setattr(gpl, "get_hermes_home", lambda: profile_home)
+    monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda: SimpleNamespace(home=host_home))
+    asked: list = []
+    coder_work = {"active_agents": 1, "active_work": [_WORK["active_work"][0] | {"session": "agent:coder:telegram:dm:7"}]}
+    monkeypatch.setattr(control_socket, "query_gateway_control",
+                        lambda home, verb, params=None, **kw: asked.append((home, params)) or (
+                            coder_work if (params or {}).get("profile") == "coder" else _WORK))
+    requests: list = []
+    monkeypatch.setattr(control_socket, "request_unserve_profile",
+                        lambda home, name: requests.append(("unserve", name)) or {"unserved": name})
+    monkeypatch.setattr(control_socket, "request_serve_profile_hot",
+                        lambda home, name: requests.append(("serve", name)) or {"served": name})
+    command = getattr(gw, f"_cmd_{verb}")
+
+    with pytest.raises(SystemExit) as exc:
+        command(SimpleNamespace(all=False, system=False, force=False, interrupt=False))
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1 and requests == []
+    assert asked == [(host_home, {"profile": "coder"})]
+    assert "1 live session(s)" in out and "agent:coder:telegram:dm:7" in out
+    assert f"hermes -p coder gateway {verb} --yes" in out
+    assert not (profile_home / "gateway.parked").exists()
+
+    command(SimpleNamespace(all=False, system=False, force=False, interrupt=True))
+    assert requests[0] == ("unserve", "coder")
+
+
+def test_active_work_verb_scoped_to_a_profile_names_only_its_turns(monkeypatch):
+    """The host's ``active-work`` verb with ``{"profile": "coder"}`` answers only what unserving coder stops."""
+    from gateway.run_active_work_verb import active_work_verb
+    from tools import async_delegation
+    monkeypatch.setattr(async_delegation, "list_async_delegations", list)
+    units = [{"kind": "chat", "session": "agent:coder:telegram:dm:7", "pid": 1},
+             {"kind": "chat", "session": "agent:main:telegram:dm:8", "pid": 1}]
+    runner = SimpleNamespace(_describe_active_work=lambda: units, _active_work_count=lambda: 2,
+                             _served_profile_homes={}, session_authorities=None)
+    loop = SimpleNamespace(call_soon_threadsafe=lambda fn: fn())
+    handler = active_work_verb(runner, loop)
+
+    assert handler({})["active_agents"] == 2
+    scoped = handler({"profile": "coder"})
+    assert scoped["active_agents"] == 1 and [u["session"] for u in scoped["active_work"]] == ["agent:coder:telegram:dm:7"]
+
+
+
+def test_active_work_verb_counts_a_profiles_side_agent_and_reads_it_on_the_loop(monkeypatch):
+    """A profile whose only work is a running /bg side agent is not idle (unserving it interrupts the
+    agent), and every live read happens inside the loop callback, never on the socket thread."""
+    from gateway.run_active_work_verb import active_work_verb
+    from tools import async_delegation
+    monkeypatch.setattr(async_delegation, "list_async_delegations", list)
+    on_loop = []
+    authority = SimpleNamespace(_managed_workers={}, _cron_cancellations={},
+                                _side_agents={object(): [object()]})
+    reads = []
+    registry = SimpleNamespace(for_home=lambda home: reads.append(on_loop[-1]) or authority)
+    runner = SimpleNamespace(_describe_active_work=list, _active_work_count=lambda: 1,
+                             _served_profile_homes={"coder": "/h/coder"}, session_authorities=registry)
+
+    def _call_soon(fn):
+        on_loop.append(True)
+        fn()
+        on_loop.append(False)
+
+    loop = SimpleNamespace(call_soon_threadsafe=_call_soon)
+    answer = active_work_verb(runner, loop)({"profile": "coder"})
+    assert answer["active_agents"] == 1 and answer["active_work"][0]["kind"] == "side_agent"
+    assert reads == [True], "the authority must be read inside the loop callback"
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_live_sessions_ask_yes_no_on_a_terminal(monkeypatch, capsys, answer):
+    """On a terminal the verb names the live work and asks; yes proceeds, no (the default) cancels."""
+    from hermes_cli import cli_output, gateway_lifecycle_guards as guards
+    monkeypatch.setattr(guards, "live_work", lambda home, profile=None: {
+        "active_agents": 1, "active_work": [{"kind": "cron", "job_id": "nightly", "pid": 1}]})
+    monkeypatch.setattr(guards.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(guards.sys.stdout, "isatty", lambda: True, raising=False)
+    asked = []
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda q, default=True: asked.append(default) or answer)
+    verb = "s" + "top"
+    args = SimpleNamespace(interrupt=False)
+    if answer:
+        guards.refuse_while_sessions_live(verb, args, host_home="/h", profile="coder")
+    else:
+        with pytest.raises(SystemExit):
+            guards.refuse_while_sessions_live(verb, args, host_home="/h", profile="coder")
+        assert "Cancelled" in capsys.readouterr().out
+    assert asked == [False]

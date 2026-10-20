@@ -1,6 +1,6 @@
 name: burnclock
 repo: https://github.com/jersilb/burnclock-hermes
-sha: "8fee7d1408419a1e96e8a404d20f434e5e25e94e"
+sha: "80dbfd197a14dd1531ef2d30bb38a6dea4450f82"
 title: Burnclock
 description: 'Status-bar chip showing the provider balance and runway tracked by the MIT burnclock CLI, read from its local badge cache. Requires the CLI (pip install burnclock); the plugin makes no network calls and reads no credentials.'
 maintainer: jersilb
@@ -10,9 +10,9 @@ version: "0.1.0"
 requires_hermes: ">=0.22.0"
 platforms: [macos]
 docs_url: https://github.com/jersilb/burnclock-hermes
-image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/8fee7d1408419a1e96e8a404d20f434e5e25e94e/docs/banner.png
+image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/80dbfd197a14dd1531ef2d30bb38a6dea4450f82/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/8fee7d1408419a1e96e8a404d20f434e5e25e94e/docs/chip.png
+  - https://raw.githubusercontent.com/jersilb/burnclock-hermes/80dbfd197a14dd1531ef2d30bb38a6dea4450f82/docs/chip.png
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "1-клацання послідується за ним, улюбленим, підсилюванням і закладкою для Mastodon, незалежно від того, який екземпляр ви зателефонуєте додому.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Назва вашого файла Mastodon",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Потрібна Допомога?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Обліковий запис",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Назад до облікових записів",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Ще ні на Мастодоні?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Не вдається знайти цей екземпляр, будь ласка, перевірте адресу і спробуйте ще раз.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Рахунки"
+  },
+  "add_account": {
+    "message": "+ ДОДАТИ ОБЛІКОВИЙ ЗАПИС",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Показати сповіщення",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Не проти",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Вилучити обліковий запис",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "за"
+  },
+  "or": {
+    "message": "або"
+  },
+  "send_feedback": {
+    "message": "Надіслати відгуки",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Повідомити про помилку",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Отримати підтримку",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Пожертвувати",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze для Mastodon готовий до використання!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Ця вкладка буде закрито",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "секунд",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "напр.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Слідувати",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Ось вам",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Відписатися",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Згадати",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Пряме повідомлення",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Поділитись",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Приглушити",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Заблокувати",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Звіт",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Блокувати домен",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Відкрити оригінальну сторінку",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Копіювати посилання на допис",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Вбудоване повідомлення",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Публікувати у профілі",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Змінити підписані мови",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Приховати підвищення від",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Додати або видалити зі списків",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "годин",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "під",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Ти голосував за цю відповідь",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Параметри",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "тема"
+  },
+  "graze_theme_p": {
+    "message": "Graze автоматично відповідає вашій темі, ви можете перевизначити його, якщо вам подобається.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Мастодон темний",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Мастодон світлий",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Перевизначити Колір Акценту Mastodon",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "мова"
+  },
+  "Afrikaans": {
+    "message": "Африкаанс"
+  },
+  "Arabic": {
+    "message": "Арабська"
+  },
+  "Bengali": {
+    "message": "Бенгаль"
+  },
+  "Bulgarian": {
+    "message": "Болгарська"
+  },
+  "Chinese_Simplified": {
+    "message": "Китайська"
+  },
+  "Chinese_Traditional": {
+    "message": "Китайські традиційні"
+  },
+  "Czech": {
+    "message": "Чеська"
+  },
+  "Danish": {
+    "message": "Данська"
+  },
+  "Dutch": {
+    "message": "Голландська"
+  },
+  "English": {
+    "message": "Англійська"
+  },
+  "Finnish": {
+    "message": "Фінська"
+  },
+  "French": {
+    "message": "Французька"
+  },
+  "German": {
+    "message": "Німецька"
+  },
+  "Greek": {
+    "message": "Грецька"
+  },
+  "Hawaiian": {
+    "message": "Гавайська"
+  },
+  "Hebrew": {
+    "message": "Єврейська"
+  },
+  "Hindi": {
+    "message": "Гінді"
+  },
+  "Hungarian": {
+    "message": "Угорською"
+  },
+  "Icelandic": {
+    "message": "ісландська"
+  },
+  "Indonesian": {
+    "message": "індонезійська"
+  },
+  "Italian": {
+    "message": "Італійська"
+  },
+  "Japanese": {
+    "message": "Японська"
+  },
+  "Korean": {
+    "message": "Корейська"
+  },
+  "Malay": {
+    "message": "Малайська"
+  },
+  "Maori": {
+    "message": "Маорі"
+  },
+  "Norwegian": {
+    "message": "Норвезька"
+  },
+  "Polish": {
+    "message": "Польська"
+  },
+  "Portuguese": {
+    "message": "Португальська"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Португальська, бразильська"
+  },
+  "Romanian": {
+    "message": "Румунська"
+  },
+  "Russian": {
+    "message": "Російське"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Сербська (Кирилиця)"
+  },
+  "Spanish_Modern": {
+    "message": "Іспанська (сучасна)"
+  },
+  "Swedish": {
+    "message": "Шведська"
+  },
+  "Tamil": {
+    "message": "тамільська"
+  },
+  "Thai": {
+    "message": "Тайська"
+  },
+  "Turkish": {
+    "message": "Турецька"
+  },
+  "Ukrainian": {
+    "message": "Українська"
+  },
+  "Urdu_India": {
+    "message": "Урду (Індія)"
+  },
+  "Vietnamese": {
+    "message": "В’єтнамська"
+  },
+  "Welsh": {
+    "message": "Уельс"
+  },
+  "convenience": {
+    "message": "зручність"
+  },
+  "graze_convenience_p": {
+    "message": "Graze може зробити ім'я mastodon в посиланнях по мережі.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Імена користувачів Linkify Mastodon",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze може зробити ім'я mastodon в посиланнях по мережі.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Показати карти",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "У листівках може бути показано швидку інформацію про користувача, якщо ви наведете вказівник миші на їх назву.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Показати спливаюче вікно для екземплярів, до яких ви не об'єднані",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Запропонувати екземпляри федерації при візиті до",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Показувати спливаюче вікно, коли увійти в обліковий запис не додано до Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Показувати спливаюче вікно швидкого входу в обліковий запис",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Перевизначити автоматичну мову у Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Якщо ви натиснете кнопку відповідь на віддаленому сервері або \", ця сторінка\" Граце може відкрити швидку відповідь або відвести вас до вашого домашнього примірника.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Відповідь від Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Відповідь від батьківського примірника",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "На віддаленому екземплярі місцева часова хронологія більш тісно відображає користувачів і зміст цього екземпляра.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Перенаправлення <strong>Дослідження</strong> на <strong>Локальна</strong> часова шкала",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "зміст",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Зробити віддалений вміст файлів, який відповідає ваш власний, або змішувати його.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Показати вміст за допомогою попередження про зміст (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Автоматично відтворювати GIFs",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Показати/чутливі зображення NSFW",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "встановити активний обліковий запис",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Перетягніть, щоб перепорядкувати",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Повідомлення для {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Сповіщень для {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "БРАТИ ДІЇ З ЦЬОГО РАХУНКА",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Виконання дій як {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Показати круглі зображення аватару",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Показати посилання на посилання, зображення і текстовий фрагмент тексту з контекстного меню",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Показати контекстне меню Graze",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Переспрямувати порожні (unfedered) профілі у домашні екземпляри для безпечного клацання кнопкою",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Перенаправлення автоматично",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Розгорнути посилання на дописи Mastodon у ваших розкладах",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Показ розгорнутих у рядках",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Обробка публікацій та попередній перегляд посилань",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Замінити типову мініатюру посилань на більші зображення і повний текст фрагмента",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Показувати зображення багатих посилань",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze може показувати зображення з зображення \"Alt Text\", нижче зображення, rafotr, ніж просто \"підказка\" для легшого читання",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Показувати описи зображень під зображенням",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze сумісний лише з запущеною версією Mastodon 4.0.0 або вище",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Не вдається знайти цей екземпляр, будь ласка, перевірте адресу та повторіть спробу.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Сталася помилка. Будь ласка, спробуйте пізніше.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Повідомлення",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Підписники",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Слідкую",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Ні, дякую",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Перейти до каталогу профілю",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Перейти до локальної шкали часу",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Підписуйтесь на акаунті з локальної стрічки новин, щоб почати бачити вміст вашої домашньої стрічки.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Ви не федеративні до $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Ви зможете вжити заходів з цього облікового запису в будь-якому екземплярі.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Додати $display_name$ до Graz?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Додати до Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

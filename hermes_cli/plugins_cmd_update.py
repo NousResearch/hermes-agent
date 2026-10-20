@@ -20,11 +20,14 @@ def _pc():
     return plugins_cmd
 
 
-def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False) -> str:
+def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False,
+                        force: bool = False, scan_decision_cb=None) -> str:
     """Shared ``update`` core: refuse pinned checkouts, ``git pull`` (or re-install from the
     recorded source when the tree carries no ``.git`` — subdirectory installs), record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
-    *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text."""
+    *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text. Both paths
+    scan the candidate tree the same way: *force* or a truthy *scan_decision_cb* accepts a caution
+    verdict, nothing accepts a dangerous one."""
     metadata = _pc()._read_install_metadata()
     install_record = metadata.get(target.name, {})
     if install_record.get("pinned") is True:
@@ -39,25 +42,31 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
             raise _pc().PluginOperationError(not_git_msg())
         if before_pull is not None:
             before_pull()
-        return _reclone_plugin_update(target, source, install_record.get("revision"))
+        return _reclone_plugin_update(target, source, install_record.get("revision"),
+                                      force=force, scan_decision_cb=scan_decision_cb)
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
 
-    return update_plugin(target, interactive=interactive)
+    return update_plugin(target, interactive=interactive, force=force, scan_decision_cb=scan_decision_cb)
 
 
-def _reclone_plugin_update(target: Path, source: str, previous_revision: object) -> str:
+def _reclone_plugin_update(target: Path, source: str, previous_revision: object, *, force: bool = False,
+                           scan_decision_cb=None) -> str:
     """Update a subdirectory install by re-cloning its source and atomically replacing the tree.
 
     These installs carry no local ``.git``, so the staged replacement also carries user-owned
     config/data from *target* before publication instead of silently deleting it (#122006).
+    Replacing the tree needs the install core's ``force``; accepting a caution scan is a separate
+    decision (*force* / *scan_decision_cb*), the same as the git-pull path.
     """
     from hermes_cli.plugins_cmd_catalog import _carry_user_files
 
     new_target, _manifest, _name = _pc()._install_plugin_core(
         source,
         force=True,
+        accept_caution=force,
+        scan_decision_cb=scan_decision_cb,
         before_swap=lambda _manifest, tree: _carry_user_files(target, tree, None),
     )
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
@@ -67,15 +76,18 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
-def update_one(name: str, target: Path, console, *, interactive: bool = True) -> bool:
+def update_one(name: str, target: Path, console, *, interactive: bool = True, force: bool = False) -> bool:
     """Update one installed plugin, printing progress and consent prompts; True when it moved.
 
+    Every update is scanned. A caution verdict on a git update asks ``Update anyway? [y/N]`` when
+    *interactive*; *force* (``--force``) accepts it without asking. A dangerous verdict always blocks.
     Refusals raise :class:`~hermes_cli.plugins_cmd_catalog.RepinConsentRequired` or
     ``PluginOperationError`` with nothing changed; :func:`cmd_update` turns them into exit 1 and
     ``hermes plugins update`` with no name records them per plugin and moves on.
     """
     from rich.markup import escape
     from hermes_cli import plugins_cmd_catalog as catalog
+    from hermes_cli.plugins_cmd_install import interactive_scan_decision
     sidecar = catalog.catalog_install_record(target)
     if sidecar:  # catalog installs re-pin to the reviewed SHA — never `git pull`
         return catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
@@ -87,7 +99,9 @@ def update_one(name: str, target: Path, console, *, interactive: bool = True) ->
             "--ref <40-character commit SHA>`."),
         lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
         before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
-        interactive=interactive)
+        interactive=interactive,
+        force=force,
+        scan_decision_cb=interactive_scan_decision(console, "Update") if interactive else None)
     _post_pull_housekeeping(target, console)
 
     # Update-time re-consent (#64228): if the new version declares
@@ -115,15 +129,17 @@ def update_one(name: str, target: Path, console, *, interactive: bool = True) ->
     return True
 
 
-def cmd_update(name: str, *, interactive: bool = True) -> None:
-    """``hermes plugins update <name>``: :func:`update_one`, exit 1 on a refusal."""
+def cmd_update(name: str, *, interactive: bool = True, force: bool = False) -> None:
+    """``hermes plugins update <name> [--force]``: :func:`update_one`, exit 1 on a refusal."""
     from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
     console = _pc()._console()
     target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
     try:
-        update_one(name, target, console, interactive=interactive)
+        update_one(name, target, console, interactive=interactive, force=force)
     except RepinConsentRequired as exc:
         _pc()._fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
+    except _pc().PluginScanBlocked as exc:
+        _pc()._fail(console, f"[red]Blocked:[/red] {exc}")
     except _pc().PluginOperationError as exc:
         _pc()._fail(console, f"[red]Error:[/red] {exc}")
 

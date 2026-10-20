@@ -408,8 +408,9 @@ def _review_push(cwd: str) -> None:
         _git_ok(cwd, ["push"])
         return
     branch = _git_line(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])
-    if branch and branch != "HEAD":
-        _git_ok(cwd, ["push", "-u", "origin", branch])
+    if not branch or branch == "HEAD":
+        raise RuntimeError("Cannot push without a current branch; check out a branch first.")
+    _git_ok(cwd, ["push", "-u", "origin", branch])
 
 
 def review_push(cwd: str) -> dict:

@@ -291,7 +291,14 @@ def gmail_search(args: argparse.Namespace) -> None:
                     "userId": "me",
                     "id": msg_meta["id"],
                     "format": "metadata",
-                    "metadataHeaders": ["From", "To", "Subject", "Date"],
+                    # No metadataHeaders filter: it matches header names
+                    # case-sensitively against the raw MIME source, so
+                    # senders that emit "to:"/"SUBJECT:" instead of
+                    # "To:"/"Subject:" silently drop those headers here.
+                    # This deliberately returns every header on the
+                    # message (format=metadata still excludes body/
+                    # payload); _headers_dict() lower-cases keys for
+                    # the client-side lookup below.
                 },
             )
             headers = _headers_dict(msg)
@@ -318,9 +325,13 @@ def gmail_search(args: argparse.Namespace) -> None:
 
     output = []
     for msg_meta in messages:
+        # No metadataHeaders filter -- see the matching comment in the
+        # _gws_binary() branch above: it's a case-sensitive exact match
+        # against the raw header name and silently drops non-Title-Case
+        # headers (issue #34806). This deliberately returns every header
+        # on the message (format=metadata still excludes body/payload).
         msg = service.users().messages().get(
             userId="me", id=msg_meta["id"], format="metadata",
-            metadataHeaders=["From", "To", "Subject", "Date"],
         ).execute()
         headers = _headers_dict(msg)
         output.append({
@@ -428,7 +439,10 @@ def gmail_reply(args):
                 "userId": "me",
                 "id": args.message_id,
                 "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                # No metadataHeaders filter -- see the comment in
+                # gmail_search() above (issue #34806 follow-up): it's a
+                # case-sensitive exact match against the raw header name
+                # and can silently drop From/Subject/Message-ID.
             },
         )
         headers = _headers_dict(original)
@@ -456,9 +470,9 @@ def gmail_reply(args):
         return
 
     service = build_service("gmail", "v1")
+    # No metadataHeaders filter -- see gmail_search() above.
     original = service.users().messages().get(
         userId="me", id=args.message_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Message-ID"],
     ).execute()
     headers = _headers_dict(original)
 

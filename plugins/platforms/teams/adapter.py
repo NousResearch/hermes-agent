@@ -516,8 +516,38 @@ class TeamsAdapter(BasePlatformAdapter):
             if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
                 logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
                 return
-        if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
-            text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        if "<at>" in text:
+            # Strip only bot mentions (<at>BotName</at>), preserving mentions of other users.
+            # Teams write mention entities into activity.entities; when present, filter to
+            # the bot's own mentions so @UserB is preserved. Without entities, fall back to
+            # the existing blanket strip (legacy/text-only payloads). See #134734.
+            mentions = [
+                e for e in getattr(activity, "entities", None) or []
+                if getattr(e, "type", None) == "mention"
+                and str(
+                    getattr(getattr(e, "mentioned", None), "id", "")
+                ) in bot_ids
+            ]
+            if mentions:
+                # Bot-mention display names; match against the <at>Name</at> tag text.
+                # No display name in any bot entity → strip every <at> tag (legacy path).
+                bot_mention_names: set[str] = {
+                    name for e in mentions
+                    if (name := getattr(e, "text", None)) and isinstance(name, str)
+                }
+                if not bot_mention_names:
+                    text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+                else:
+                    kept: list[str] = []
+                    for part in re.split(r"(<at>[^<]*</at>)", text):
+                        if part.startswith("<at>") and part.endswith("</at>"):
+                            name = part[4:-5]
+                            if name in bot_mention_names:
+                                continue  # strip bot mention
+                        kept.append(part)
+                    text = "".join(kept).strip()
+            else:
+                text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(

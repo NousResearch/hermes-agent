@@ -621,3 +621,16 @@ def test_a_platform_plugin_still_cannot_take_a_variable_hermes_uses_itself(idp, 
     with pytest.raises(ValueError, match=f"{name} is a variable Hermes uses itself"):
         plugin_oauth._declared_clients(_home() / "plugins" / "voice")
     assert idp.token_requests == []
+
+
+@pytest.mark.parametrize("requires_env", [1, True, {"VOICE_CLIENT_ID": {}, "VOICE_CLIENT_SECRET": {}}],
+                         ids=["number", "bool", "mapping"])
+def test_a_requires_env_that_is_not_a_list_declares_nothing(idp, monkeypatch, requires_env):
+    """The install notice, the consent surface, admission and sign-in all parse the manifest: a requires_env of
+    another shape leaves the registered client variables undeclared, a reported problem rather than a crash."""
+    _plugin(oauth=[_entry(idp)], kind="platform")
+    _registered_like_a_fresh_process(monkeypatch)
+    manifest = {"name": "voice", "kind": "platform", "requires_env": requires_env, "oauth": [_entry(idp)]}
+
+    clients, problems = plugin_oauth.parse_oauth_clients(manifest)
+    assert clients == [] and any("VOICE_CLIENT_ID is a variable Hermes uses itself" in p for p in problems)

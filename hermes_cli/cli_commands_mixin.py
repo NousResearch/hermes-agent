@@ -1144,7 +1144,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.gateway_client import GatewayClientError
         from hermes_cli.gateway_session_store import move_cli_workspace
         try:
-            move_cli_workspace(self, wt_info["path"])  # the gateway session's tools, then this process
+            move_cli_workspace(self, wt_info)  # the gateway session's tools, then this process
         except (GatewayClientError, OSError) as e:
             return print(f"  {_t('worktree.enter_failed', error=e)}")
         _cli._active_worktree = wt_info

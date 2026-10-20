@@ -509,14 +509,19 @@ def _check_resume_launch(launch, snapshot):
         raise resume_policy_error(differs)
 
 
-def move_cli_workspace(cli, cwd):
+def move_cli_workspace(cli, wt_info):
     """``/worktree new``: the session's tools run in the gateway under the cwd frozen in its policy, so
     move that first (``session.mutate workspace``, Desktop's Move to project; a refusal raises before
-    anything moved). Then this process's cwd and TERMINAL_CWD follow, so a later /new creates its session
-    from the tree; a chdir OSError leaves both where they were (the gateway session has moved by then)."""
+    anything moved). The moved session resumes in the tree, so it is recorded as a ``--tui -w`` tree is:
+    quit removes it when clean and a resume recreates it (N8). Then this process's cwd and TERMINAL_CWD
+    follow, so a later /new creates its session from the tree; a chdir OSError leaves both where they
+    were (the gateway session has moved by then)."""
     from hermes_cli.gateway_automation import gateway_connection
+    cwd = wt_info["path"]
     if gateway_connection(cli) is not None:
         cli._session_db._mutate(cli.session_id, "workspace", {"cwd": cwd})
+        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        record_tui_worktree(wt_info)
     os.chdir(cwd)
     os.environ["TERMINAL_CWD"] = cwd
 

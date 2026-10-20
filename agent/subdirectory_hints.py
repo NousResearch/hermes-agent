@@ -119,6 +119,28 @@ def _nav_targets(cmd: str) -> list:
 # vacuous-containment hazard as the desktop home pin, just container-shaped (#76902).
 _CONTAINER_HOMES = frozenset({Path("/home"), Path("/root"), Path("/workspace")})
 
+# The docker backend's fixed container-side mount point for the host working dir when
+# ``docker_mount_cwd_to_workspace`` is on (terminal_tool's ``_resolve_config_cwd``). The agent's
+# pwd inside the sandbox is /workspace, so its tool arguments naturally use container-absolute
+# paths (#138115).
+_DOCKER_WORKSPACE_MOUNT = Path("/workspace")
+
+
+def _docker_workspace_mount() -> Optional[Path]:
+    """The container mount point of the host working dir, or None when the active
+    terminal backend does not map it (``terminal_env`` is scope-aware, so a
+    multiplexed per-profile turn reads its own policy). An unreadable/refused
+    policy just disables the mapping — discovery keeps its host-path behavior."""
+    try:
+        from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
+
+        if terminal_env("TERMINAL_ENV").strip().lower() != "docker":
+            return None
+        mounted = terminal_env("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower()
+    except (ImportError, TerminalPolicyUnavailable):
+        return None
+    return _DOCKER_WORKSPACE_MOUNT if mounted in {"true", "1", "yes"} else None
+
 
 def _is_home_like_working_dir(working_dir: Path) -> bool:
     """True when ``working_dir`` is a home the desktop/container fell back to — not a project."""
@@ -215,6 +237,11 @@ class SubdirectoryHintTracker:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
+            elif (mount := _docker_workspace_mount()) is not None and (p == mount or mount in p.parents):
+                # Container-absolute (/workspace/<sub>/...) — the agent's pwd is the mount
+                # point, so remap onto the host working dir before the host-side checks;
+                # containment/exclusion then judge the remapped path as usual (#138115).
+                p = self.working_dir / p.relative_to(mount)
             p = p.resolve()
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent

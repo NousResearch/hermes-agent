@@ -115,10 +115,15 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert task.model_override not in captured["cmd"]
 
-def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
-    """Under multiplex a worker spawn with ``terminal.env_passthrough`` configured must
-    forward the ASSIGNEE profile's own value, never crash on an unscoped read or leak the
-    dispatcher's ambient os.environ (#109494).
+def test_default_spawn_under_multiplex_hands_the_assignee_owner_its_own_value(monkeypatch, tmp_path):
+    """Under multiplex, a worker spawn with ``terminal.env_passthrough`` configured must not crash on
+    an unscoped read (#109494), and the assignee's owner, if the spawned client has to start it, must
+    run with the assignee's own value rather than the dispatcher's ambient one.
+
+    The spawned child only submits the claim to the assignee's gateway; the turn runs there. When
+    that gateway is down, the child starts it with ``served_profile_child_env(base=<child env>,
+    target_home=<assignee>, inherit_credentials=True)`` (``gateway_runtime_start``), so that is the
+    environment this asserts on.
     """
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"
@@ -157,8 +162,10 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
         set_multiplex_active(False)
 
     assert pid == 4243
-    # The assignee's own scoped value, not the dispatcher's ambient os.environ one.
-    assert captured["env"].get("MY_PASSTHROUGH_VAR") == "elias-value"
+    from tools.environments.local import served_profile_child_env
+    owner_env = served_profile_child_env(base=captured["env"], target_home=str(profile), inherit_credentials=True)
+    assert owner_env.get("MY_PASSTHROUGH_VAR") == "elias-value"
+    assert owner_env["HERMES_HOME"] == str(profile)
 
 
 def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 name: kanban-stream
 repo: https://github.com/mbgulden/hermes-kanban-stream
-sha: 60d7173a1c423fd37ac2de4fbd67ff29648daa82
+sha: cfc84a3fcdc4f403e2cc9908bb268b39564869b6
 subdir: ""
 title: Kanban Stream
 description: >-
@@ -17,8 +17,8 @@ maintainer: mbgulden
 tier: community
 category: automation
 requires_hermes: ">=0.20.5"
-version: "1.0.0"
-docs_url: https://github.com/mbgulden/hermes-kanban-stream/blob/60d7173a1c423fd37ac2de4fbd67ff29648daa82/README.md
+version: "1.0.1"
+docs_url: https://github.com/mbgulden/hermes-kanban-stream/blob/cfc84a3fcdc4f403e2cc9908bb268b39564869b6/README.md
 platforms: []
 capabilities:
   provides_tools: []

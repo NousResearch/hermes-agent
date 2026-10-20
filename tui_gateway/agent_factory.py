@@ -394,9 +394,10 @@ def _device_toolsets(session_id: str | None) -> list[str]:
     """``mobile_device`` when a client on *session_id* advertised a device capability, else ``[]``.
 
     The toolset IS the surface gate (``tools/AGENTS.md``): tools are fixed for the life of a
-    conversation (prompt caching), so the fold-in is decided when the session's agent is built — by
-    then the client has sent ``client.capabilities``, which it does on connect. A desktop window,
-    the TUI and the CLI advertise nothing and never see ``device_request``.
+    conversation (prompt caching), so the fold-in is decided at a turn boundary — when the session's
+    agent is built, and again at the start of each turn for a device that advertised late
+    (``agent/turn_context.py::_refresh_device_tools_between_turns``; never mid-turn). A desktop
+    window, the TUI and the CLI advertise nothing and never see ``device_request``.
     """
     from toolsets import DEVICE_SURFACE_TOOLSET
 
@@ -720,6 +721,12 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    # A phone can attach (and advertise) AFTER this build — a desktop session the user picks up on
+    # their phone, a page reload that reconnects late. The turn boundary re-asks this probe and folds
+    # ``mobile_device`` in for the NEXT turn (``agent/turn_context.py``
+    # ``_refresh_device_tools_between_turns``); the toolset never changes mid-turn, so ``tools=`` stays
+    # a stable cached prefix within a turn (#11911).
+    agent._device_toolsets_probe = lambda: _device_toolsets(sid)  # type: ignore[attr-defined]
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice

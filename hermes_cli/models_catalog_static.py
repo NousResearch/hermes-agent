@@ -52,7 +52,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash", "moonshotai/kimi-k3", "minimax/minimax-m3", "z-ai/glm-5.3",
         "z-ai/glm-5.3-flash", "z-ai/glm-5.3-flashx", "z-ai/glm-5.2",
         "xiaomi/mimo-v2.6-pro", "xiaomi/mimo-v2.6-flash", "xiaomi/mimo-v2.6-pro-ultraspeed", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview",
-        "tencent/hy3",
+        "tencent/hy4", "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
         "upstage/solar-pro4", "upstage/solar-mini4",
@@ -201,7 +201,7 @@ _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
 _MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"]
-_TENCENT_MODELS = ["hy4-preview", "hy3", "hy3-preview"]
+_TENCENT_MODELS = ["hy4-preview", "hy4", "hy3", "hy3-preview"]
 # Alibaba DashScope Coding platform (coding-intl): Qwen + third-party (GLM, Kimi, MiniMax, DeepSeek).
 # Classic DashScope keys should override DASHSCOPE_BASE_URL to
 # https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat) or /apps/anthropic.

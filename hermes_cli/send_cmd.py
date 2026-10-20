@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -57,6 +58,26 @@ def _invalid_whatsapp_mentions(mentions: list[str]) -> list[str]:
     from gateway.whatsapp_identity import normalize_whatsapp_mention_jid
 
     return [mention for mention in mentions if not normalize_whatsapp_mention_jid(mention)]
+
+
+# The documented positional-target form (``hermes send telegram:-1001234567890 "msg"``): a bare
+# ``platform:chat_id`` token — letters-first platform name, no spaces, and a chat id that may be
+# negative, a ``#channel``, a JID, or a ``:``-separated thread suffix.
+_POSITIONAL_TARGET_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*:\S+$")
+
+
+def _split_positional_target(flag_target: Optional[str], positional: list[str]) -> tuple[str, Optional[str]]:
+    """Split the positional arguments into ``(target, message)``.
+
+    Without ``--to``, a leading bare ``platform:...`` token is the delivery target (the form the
+    messaging docs show, e.g. ``hermes send ntfy:alerts-channel "Done!"``); the remaining tokens,
+    joined by one space, are the message. With ``--to``, every positional token is message text.
+    """
+    target = (flag_target or "").strip()
+    parts = list(positional)
+    if not target and parts and _POSITIONAL_TARGET_RE.match(parts[0]):
+        target = parts.pop(0)
+    return target, " ".join(parts) if parts else None
 
 
 def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
@@ -194,11 +215,12 @@ def _load_hermes_env() -> None:
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
+    positional = list(getattr(args, "message", None) or [])
     if getattr(args, "list_targets", False):  # --list short-circuits everything else
-        # `hermes send --list telegram` lands "telegram" in the `message` positional.
-        exit_code = _list_targets(getattr(args, "message", None), json_mode=getattr(args, "json", False))
+        # `hermes send --list telegram` lands "telegram" in the `message` positionals.
+        exit_code = _list_targets(" ".join(positional) or None, json_mode=getattr(args, "json", False))
         sys.exit(exit_code)
-    target = (getattr(args, "to", None) or "").strip()
+    target, message_positional = _split_positional_target(getattr(args, "to", None), positional)
     if not target:
         _fail(
             "hermes send: --to PLATFORM[:channel[:thread]] is required\n"
@@ -216,7 +238,7 @@ def cmd_send(args: argparse.Namespace) -> None:
             "hermes send: invalid --mention value(s): "
             f"{', '.join(invalid_mentions)}. Use a phone number or participant JID.",
             _USAGE_EXIT)
-    message = _read_message_body(getattr(args, "message", None), getattr(args, "file", None))
+    message = _read_message_body(message_positional, getattr(args, "file", None))
     if message is None or not message.strip():
         _fail(
             "hermes send: no message provided. Pass text as a positional "
@@ -247,7 +269,10 @@ _SEND_ARGUMENTS = (
         "'platform:chat_id', 'platform:chat_id:thread_id', or "
         "'platform:#channel-name'. Examples: telegram, "
         "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, signal:+15551234567."))),
-    (("message",), dict(nargs="?", default=None, help="Message text. If omitted, read from --file or stdin.")),
+    (("message",), dict(nargs="*", default=None, help=(
+        "Message text. A leading bare 'platform:chat_id' token (no --to) is the "
+        "delivery target: `hermes send telegram:-1001234567890 \"done\"`. "
+        "If omitted, read from --file or stdin."))),
     (("-f", "--file"), dict(metavar="PATH", default=None, help=(
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
@@ -280,6 +305,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  hermes send --to telegram \"deploy finished\"\n"
+            "  hermes send telegram:-1001234567890 \"deploy finished\"   # target as first positional\n"
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
             "  hermes send --to discord:#ops --file ./report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"

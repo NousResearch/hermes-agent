@@ -47,6 +47,18 @@ export interface KanbanBoard {
   assignees: string[]
   latest_event_id: number
   now: number
+  /** Board pause state (``null`` = running). Present on every board payload
+   *  since #141451, so the banner and the sidebar badge share one read. */
+  pause?: KanbanPause | null
+}
+
+/** ``hermes kanban pause`` state for one board (``PAUSED`` sentinel). */
+export interface KanbanPause {
+  board: string
+  /** Operator's note, shown in the banner; null when paused without a reason. */
+  reason: null | string
+  /** ISO-8601 timestamp of the pause. */
+  paused_at: null | string
 }
 
 /** A structured recovery action attached to a diagnostic. */
@@ -162,6 +174,8 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+  /** Non-null while this board is held: no new dispatch until resumed. */
+  pause?: KanbanPause | null
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

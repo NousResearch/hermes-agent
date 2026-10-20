@@ -23,7 +23,9 @@ import {
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_NAV_TRAILING_AREA,
   type SidebarNavContribution,
+  type SidebarNavTrailingContribution,
   STATUSBAR_AREAS,
   Tip,
   useQuery,
@@ -33,6 +35,7 @@ import {
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
+import { KanbanPauseNavBadge } from './pause'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
@@ -116,6 +119,15 @@ const plugin: HermesPlugin = {
         area: STATUSBAR_AREAS.right,
         order: 80,
         render: () => <KanbanCount />
+      },
+      {
+        // Red PAUSED chip on the Kanban nav row while the selected board is
+        // paused: visible from any page, not just the board itself.
+        id: 'pause-badge',
+        area: SIDEBAR_NAV_TRAILING_AREA,
+        order: 10,
+        data: { navPath: '/kanban', navId: 'nav' } satisfies SidebarNavTrailingContribution,
+        render: () => <KanbanPauseNavBadge />
       }
     ])
 

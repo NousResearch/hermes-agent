@@ -1303,6 +1303,8 @@ def _cmd_specify(args: argparse.Namespace) -> int:
 
 
 def _decompose_ok_line(o) -> str:
+    if o.question:
+        return f"Question card {o.task_id} → blocked (needs_input): open premise — no children"
     if o.fanout and o.child_ids:
         return (f"Decomposed {o.task_id} → {len(o.child_ids)} "
                 f"children ({', '.join(o.child_ids)}); root promoted to todo")
@@ -1314,7 +1316,8 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_decompose as decomp
 
     return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
-                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
+                             ("task_id", "ok", "reason", "fanout", "question", "child_ids", "new_title"),
+                             _decompose_ok_line)
 
 
 _HANDLERS = {

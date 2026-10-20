@@ -296,7 +296,12 @@ class _KanbanDispatcher:
             # Common no-op reasons (no aux client) must not spam logs every tick.
             logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
             return 0
-        if outcome.fanout and outcome.child_ids:
+        if outcome.question:
+            logger.info(
+                "kanban auto-decompose [%s]: %s → question card (open premise, parked needs_input)",
+                slug, tid,
+            )
+        elif outcome.fanout and outcome.child_ids:
             logger.info("kanban auto-decompose [%s]: %s → %d children", slug, tid, len(outcome.child_ids))
         else:
             logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)

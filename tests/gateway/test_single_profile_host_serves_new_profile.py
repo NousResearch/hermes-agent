@@ -114,6 +114,25 @@ async def test_a_blocked_new_profile_is_served_once_the_blocker_clears(standalon
     assert result["added"] == ["coder"] and restarts == []
 
 
+@pytest.mark.asyncio
+async def test_auto_multiplex_migration_false_keeps_a_single_profile_boot_standalone(standalone_host):
+    """``gateway.auto_multiplex_migration: false`` on the default profile opts out of the in-place
+    switch: a second profile stays unserved by this process on the creator's signal and the watcher, and
+    setting the key back to true converges on the next rescan without a restart."""
+    runner, home, restarts = standalone_host
+    (home / "config.yaml").write_text(
+        "model: {default: m}\ngateway:\n  auto_multiplex_migration: false\n", encoding="utf-8")
+    _mkprofile(home, "coder")
+    for reason in ("control-socket", "watcher"):
+        result = await runner.reconcile_served_profiles(reason=reason)
+        assert result["multiplex"] is False and result["served_profiles"] == ["default"]
+    assert not is_multiplex_active() and not runner.config.multiplex_profiles
+
+    (home / "config.yaml").write_text("model: {default: m}\n", encoding="utf-8")
+    result = await runner.reconcile_served_profiles(reason="watcher")
+    assert result["added"] == ["coder"] and is_multiplex_active() and restarts == []
+
+
 def test_launch_profile_work_on_a_standalone_host_binds_its_scope_once_a_second_home_is_hosted(standalone_host):
     """Desktop's ``profiles.create`` hosts the new home before any rescan: from then on unscoped
     secret reads fail closed, so the launch profile's own ``session.create`` (owner dispatch on a

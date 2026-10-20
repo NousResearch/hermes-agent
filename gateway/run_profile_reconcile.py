@@ -59,6 +59,16 @@ def profile_serve_signature(home: Path) -> tuple:
     return tuple(sig)
 
 
+def _added_profile_blocker(launch: Path) -> Optional[str]:
+    """Why a single-profile boot must not start multiplexing now that a second profile exists: the
+    ``gateway.auto_multiplex_migration: false`` opt-out on the default profile, else boot's preflight."""
+    from hermes_cli.gateway_migrate_guards import auto_migration_opted_out
+    from hermes_cli.gateway_multiplex_mode import AUTO_MIGRATION_OPTED_OUT_REASON, implicit_multiplex_blocker
+    if auto_migration_opted_out(launch):
+        return AUTO_MIGRATION_OPTED_OUT_REASON
+    return implicit_multiplex_blocker()
+
+
 class GatewayProfileReconcileMixin:
     """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
 
@@ -330,24 +340,30 @@ class GatewayProfileReconcileMixin:
         profile. Turns already running keep their bound scope; the launch profile's later work binds
         its own scope through ``_standalone_launch_scope`` and the re-wired primary handlers. Any
         other standalone verdict, or a preflight blocker now, leaves the gateway as it is; nothing is
-        latched, so the next rescan or watcher tick retries once the blocker clears. True when armed."""
+        latched, so the next rescan or watcher tick retries once the blocker clears. The switch is an
+        automatic migration, so ``gateway.auto_multiplex_migration: false`` holds it back the same way
+        (re-read on every rescan: setting it back to true converges without a restart). True when armed."""
         from hermes_cli.gateway_multiplex_mode import (
-            SINGLE_PROFILE_REASON, MultiplexDecision, implicit_multiplex_blocker, log_multiplex_decision,
-            recorded_standalone_reason)
+            AUTO_MIGRATION_OPTED_OUT_REASON, SINGLE_PROFILE_REASON, MultiplexDecision, log_multiplex_decision,
+            record_multiplex_decision, recorded_standalone_reason)
         from hermes_cli.profiles import profiles_to_serve
         from hermes_constants import get_default_hermes_root, get_process_hermes_home
-        if recorded_standalone_reason() != SINGLE_PROFILE_REASON:
+        if recorded_standalone_reason() not in (SINGLE_PROFILE_REASON, AUTO_MIGRATION_OPTED_OUT_REASON):
             return False
         launch = get_process_hermes_home().resolve()
         if launch != get_default_hermes_root().resolve():
             return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
         if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
             return False
-        blocker = await self._run_housekeeping_in_executor(implicit_multiplex_blocker)
+        blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
         if blocker is not None:
             if blocker != self._single_profile_blocker_logged:
                 logger.warning("[MULTIPLEX] A new profile exists but this gateway stays standalone: %s", blocker)
                 self._single_profile_blocker_logged = blocker
+            if blocker == AUTO_MIGRATION_OPTED_OUT_REASON:
+                # Published so `gateway ensure` refuses the new profile naming the opt-out (Desktop shows
+                # that detail) instead of "only one profile exists".
+                record_multiplex_decision(MultiplexDecision(False, "guard", blocker))
             return False
         from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
         activate_multi_profile_hosting()

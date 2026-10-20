@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 SINGLE_PROFILE_REASON = "only one profile exists (nothing to multiplex)"
 STANDALONE_PROFILE_REASON = "this profile is standalone (gateway.standalone: true); it serves only itself"
+#: A single-profile boot that ``gateway.auto_multiplex_migration: false`` keeps standalone once a second
+#: profile appears: the in-place switch is an automatic migration, so the opt-out holds it back.
+AUTO_MIGRATION_OPTED_OUT_REASON = (
+    "gateway.auto_multiplex_migration is false, so this gateway serves only its own profile; "
+    "run `hermes gateway migrate --multiplex` to serve every profile")
 
 #: ``gateway.standalone: true`` is a TEMPORARY backwards-compatibility shim, not a supported topology.
 #: It exists so fleets that lost per-profile gateways in the multiplex-only switch keep working while

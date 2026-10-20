@@ -607,6 +607,13 @@ DEFAULT_CONFIG = {
         # Off by default: no single count suits windows from 64K to 1M+, so the ratio decides.
         "threshold_tokens": None,
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
+        # reuse_main_system_prompt: opt-in. When the summary actually routes to the main
+        # model, the aux summary call carries the session's frozen system prompt as its
+        # system message, making the request a prefix-extension of the main conversation's
+        # cached prefix so providers with automatic prefix caching (vLLM, SGLang, llama.cpp,
+        # oMLX) serve the system block from KV cache instead of re-prefilling it. No effect
+        # on providers without prefix caching (the block is simply prefilled as before).
+        "reuse_main_system_prompt": False,
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
         # digests, anchor index, verbatim user messages and session_search pointers in the summary

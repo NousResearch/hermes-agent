@@ -1596,6 +1596,10 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        # Opt-in: the aux summary reuses the frozen main system prompt as its system message
+        # so prefix-caching providers serve it from KV cache (only when the summary routes
+        # to the main model; see ContextCompressor._should_reuse_main_system_prompt).
+        reuse_main_system_prompt=is_truthy_value(cfg.get("reuse_main_system_prompt"), default=False),
     )
 
 
@@ -2012,6 +2016,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            reuse_main_system_prompt=cs.reuse_main_system_prompt,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

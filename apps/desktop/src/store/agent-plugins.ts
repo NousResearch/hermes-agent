@@ -379,8 +379,11 @@ export interface AgentPluginScanFinding {
  *  (retry with `acceptCapabilities`), `scan` when the security scan blocked the
  *  new code (a `caution` verdict can be retried with `force`). The backend
  *  changed nothing for `consent` and `scan`. */
-export type AgentPluginUpdateOutcome =
-  | { kind: 'applied' | 'unchanged' | 'failed' }
+export type AgentPluginUpdateOutcome = AgentPluginUpdateReplyOutcome | { kind: 'failed' }
+
+/** What a `plugins.manage update` reply says, short of a failure. */
+export type AgentPluginUpdateReplyOutcome =
+  | { kind: 'applied' | 'unchanged' }
   | { kind: 'consent'; sha: string; deltaLines: string[] }
   | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
 
@@ -389,6 +392,55 @@ export interface AgentPluginUpdateOptions {
   acceptCapabilities?: boolean
   /** Apply an update whose scan returned caution, after the user saw the findings. */
   force?: boolean
+}
+
+/** Wire reply of `plugins.manage update`. */
+export interface AgentPluginUpdateReply {
+  ok?: boolean
+  unchanged?: boolean
+  consent_required?: boolean
+  sha?: string
+  delta_lines?: string[]
+  scan_blocked?: boolean
+  scan_verdict?: string
+  scan_findings?: AgentPluginScanFinding[]
+  error?: string
+}
+
+/** `plugins.manage update` params for one plugin, with the overrides the user approved. */
+export function agentPluginUpdateParams(name: string, options: AgentPluginUpdateOptions = {}): PluginsManageParams {
+  const params: PluginsManageParams = { action: 'update', name }
+
+  if (options.acceptCapabilities) {
+    params.accept_capabilities = true
+  }
+
+  if (options.force) {
+    params.force = true
+  }
+
+  return params
+}
+
+/** Read an update reply: the override the backend asks for, or whether the update landed.
+ *  `null` when the backend refused without one (the caller reports the failure). Shared by
+ *  the single-profile update below and the fleet-wide one (`store/plugin-fleet-updates`). */
+export function readAgentPluginUpdateReply(
+  result: AgentPluginUpdateReply | null | undefined
+): AgentPluginUpdateReplyOutcome | null {
+  if (result?.consent_required) {
+    return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+  }
+
+  if (result?.scan_blocked) {
+    return { kind: 'scan', verdict: result.scan_verdict ?? 'dangerous', findings: result.scan_findings ?? [] }
+  }
+
+  if (!result?.ok) {
+    return null
+  }
+
+  return { kind: result.unchanged ? 'unchanged' : 'applied' }
 }
 
 /** Update an installed plugin (backend `plugins.manage update`): a catalog install
@@ -403,43 +455,26 @@ export async function updateAgentPlugin(
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
 
-  const params: PluginsManageParams = { action: 'update', name }
-
-  if (options.acceptCapabilities) {
-    params.accept_capabilities = true
-  }
-
-  if (options.force) {
-    params.force = true
-  }
-
   try {
-    const result = await request<{
-      ok?: boolean
-      unchanged?: boolean
-      consent_required?: boolean
-      sha?: string
-      delta_lines?: string[]
-      scan_blocked?: boolean
-      scan_verdict?: string
-      scan_findings?: AgentPluginScanFinding[]
-    }>('plugins.manage', withProfile({ ...params }, profile), PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
+    const result = await request<AgentPluginUpdateReply>(
+      'plugins.manage',
+      withProfile({ ...agentPluginUpdateParams(name, options) }, profile),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
+    )
 
-    if (result?.consent_required) {
-      return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
-    }
+    const outcome = readAgentPluginUpdateReply(result)
 
-    if (result?.scan_blocked) {
-      return { kind: 'scan', verdict: result.scan_verdict ?? 'dangerous', findings: result.scan_findings ?? [] }
-    }
-
-    if (!result?.ok) {
+    if (!outcome) {
       throw new Error(failMessage)
+    }
+
+    if (outcome.kind === 'consent' || outcome.kind === 'scan') {
+      return outcome
     }
 
     await loadAgentPlugins(request, profile)
 
-    return { kind: result.unchanged ? 'unchanged' : 'applied' }
+    return outcome
   } catch (e) {
     notifyError(e, failMessage)
 

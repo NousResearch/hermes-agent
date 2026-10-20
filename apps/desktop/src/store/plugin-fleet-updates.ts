@@ -9,7 +9,15 @@ import {
   type SpawnPriority
 } from '@/store/gateway'
 
-import { type AgentPluginRow, isDesktopRelevantPlugin, normalizeAgentPluginRow } from './agent-plugins'
+import {
+  type AgentPluginRow,
+  agentPluginUpdateParams,
+  type AgentPluginUpdateReply,
+  type AgentPluginUpdateReplyOutcome,
+  isDesktopRelevantPlugin,
+  normalizeAgentPluginRow,
+  readAgentPluginUpdateReply
+} from './agent-plugins'
 
 /**
  * Fleet view of agent-plugin updates: every profile on every registered
@@ -341,42 +349,32 @@ export function scanPluginFleet(options: { force?: boolean } = {}): Promise<Plug
   return inflight
 }
 
-export type FleetUpdateOutcome =
-  | { kind: 'applied' | 'unchanged' }
-  | { kind: 'failed'; error: string }
-  | { kind: 'consent'; sha: string; deltaLines: string[] }
+export type FleetUpdateOutcome = AgentPluginUpdateReplyOutcome | { kind: 'failed'; error: string }
 
-/** Re-pin one install on its own gateway/profile (backend `plugins.manage update`). */
+/** Re-pin one install on its own gateway/profile (backend `plugins.manage update`), with the
+ *  same params and reply reading as the tab's single-profile update. `options` carries the
+ *  overrides the user approved for the batch: a widened pin, a caution scan verdict. */
 export async function updateFleetInstall(
   install: FleetInstall,
-  acceptCapabilities = false
+  options: { acceptCapabilities?: boolean; force?: boolean } = {}
 ): Promise<FleetUpdateOutcome> {
   const { target, row } = install
 
   try {
-    const result = await fleetRequest<{
-      ok?: boolean
-      unchanged?: boolean
-      consent_required?: boolean
-      sha?: string
-      delta_lines?: string[]
-      error?: string
-    }>(
+    const result = await fleetRequest<AgentPluginUpdateReply>(
       target,
-      { action: 'update', name: row.name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) },
+      { ...agentPluginUpdateParams(row.name, options) },
       UPDATE_TIMEOUT_MS,
       'foreground'
     )
 
-    if (result?.consent_required) {
-      return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
-    }
+    const outcome = readAgentPluginUpdateReply(result)
 
-    if (!result?.ok) {
+    if (!outcome) {
       return { kind: 'failed', error: result?.error || 'Update failed' }
     }
 
-    return { kind: result.unchanged ? 'unchanged' : 'applied' }
+    return outcome
   } catch (error) {
     return { kind: 'failed', error: error instanceof Error ? error.message : String(error) }
   }

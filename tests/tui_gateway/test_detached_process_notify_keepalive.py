@@ -118,20 +118,91 @@ def test_orphan_reap_rearms_while_process_will_notify(server, registry, detached
     assert server._pending_ws_reaps[sid] is _Timer.created[-1]
 
 
-def test_exited_process_keeps_session_until_its_notice_is_dequeued(server, registry, detached):
-    """The exit is recorded before the completion is queued, and the notice becomes a turn only once the poller
-    dequeues it: a reaper firing anywhere in that hand-off must not close the session and lose the follow-up."""
+def test_exited_process_keeps_session_until_its_notice_is_routed(server, registry, detached):
+    """Exit recorded → completion published → dequeued by a poller → routed: a reaper firing at any point of that
+    hand-off must not close the session and lose the follow-up. Protection ends only when routing returns."""
+    from tools.process_registry_awaiting import release, take_ready
+
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
     proc.exited = True  # mark_exited ran; _move_to_finished (publish) has not yet
-
     assert not server._session_is_reapable(sid, session)
 
-    registry._move_to_finished(proc)  # published: queued, not yet dequeued
-    assert not registry.completion_queue.empty()
+    registry._move_to_finished(proc)  # published: queued
     assert not server._session_is_reapable(sid, session)
 
-    registry.completion_queue.get_nowait()  # the poller took it
+    ready = take_ready(registry.completion_queue, 0)  # a poller took it and is routing it
+    assert registry.completion_queue.empty() and len(ready) == 1
+    assert not server._session_is_reapable(sid, session)
+
+    release(ready)  # routing returned (turn admitted → ``running`` protects it, or requeued, or dropped)
+    assert server._session_is_reapable(sid, session)
+
+
+def test_unpublished_completion_survives_registry_pruning(server, registry, detached, monkeypatch):
+    """Pruning can run (a concurrent spawn) after the exit is recorded but before the completion is queued; the
+    entry must survive it, since it is the only record that a notice is still coming."""
+    from tools.process_registry import FINISHED_TTL_SECONDS
+
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.started_at = time.time() - FINISHED_TTL_SECONDS - 1
+    proc.mark_exited(0)
+    publish = registry._publish_finished
+    seen = []
+
+    def prune_mid_publish(s, was_running):
+        with registry._lock:
+            registry._prune_if_needed()
+        seen.append((s.id in registry._finished, server._session_is_reapable(sid, session)))
+        publish(s, was_running)
+
+    monkeypatch.setattr(registry, "_publish_finished", prune_mid_publish)
+    registry._move_to_finished(proc)
+
+    assert seen == [(True, False)]
+    with registry._lock:  # once published, the entry is ordinary history again
+        registry._prune_if_needed()
+    assert proc.id not in registry._finished
+
+
+def test_poller_holds_session_between_dequeue_and_routing(server, registry, detached, monkeypatch):
+    """The real poller loop: a reaper that fires after the poller dequeued the completion but before it routed it
+    must still see the session as protected."""
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.mark_exited(0)
+    registry._move_to_finished(proc)
+    for name in ("_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
+        monkeypatch.setattr(server, name, lambda *a, **k: None)
+    monkeypatch.setattr(registry, "restore_completions", lambda: 0)
+    stop, observed = threading.Event(), []
+
+    def routing(*args, **kwargs):
+        if kwargs.get("deferred", args[6] if len(args) > 6 else None) is None and not observed:
+            observed.append((registry.completion_queue.empty(), server._session_is_reapable(sid, session)))
+            stop.set()
+
+    monkeypatch.setattr(server, "_notif_handle_ready", routing)
+    worker = threading.Thread(target=server._notification_poller_scoped_loop, args=(stop, sid, session), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert observed == [(True, False)], "dequeued but unrouted: the session must stay protected"
+    assert server._session_is_reapable(sid, session), "routing returned: the hold is released"
+
+
+@pytest.mark.parametrize("persist", [False, True])
+def test_stop_releases_session_even_with_a_running_watch(server, registry, detached, persist):
+    """After Stop no notification turn can start until the user's next prompt, so a never-exiting watched server
+    must not keep the stopped, disconnected session alive."""
+    sid, session, _ = detached
+    _spawn(registry, session["session_key"], watch_patterns=["ERROR"], persist_on_release=persist)
+    assert not server._session_is_reapable(sid, session)
+
+    session["_turn_cancel_requested"] = True
+
     assert server._session_is_reapable(sid, session)
 
 
@@ -150,19 +221,6 @@ def test_queued_notice_survives_registry_pruning(server, registry, detached):
 
     assert proc.id not in registry._finished
     assert not server._session_is_reapable(sid, session)
-
-
-def test_session_released_once_notice_is_delivered(server, registry, detached):
-    sid, session, popped = detached
-    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
-    proc.mark_exited(0)
-    registry._move_to_finished(proc)
-    registry.completion_queue.get_nowait()
-
-    server._schedule_ws_orphan_reap(sid)
-    _Timer.created[-1].callback()
-
-    assert sid not in server._sessions and popped == [session]
 
 
 def test_notice_held_after_stop_does_not_pin_session(server, registry, detached):

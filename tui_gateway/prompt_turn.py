@@ -463,7 +463,10 @@ def _run_post_turn_followups(
         from tools.process_registry import process_registry
         # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
-        with _session_profile_runtime_scope(session):
+        from tools.process_registry_awaiting import holding
+        # This drain dequeues this session's own events while it is idle; hold its owners until routing finishes so
+        # the reapers cannot close it between dequeue and turn admission.
+        with _session_profile_runtime_scope(session), holding(_session_process_owners(session)):
             drained = process_registry.drain_notifications(
                 session_key=session.get("session_key", ""),
                 owns_event=lambda e: _session_owns_notification_event(sid, session, e),

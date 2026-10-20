@@ -324,17 +324,24 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
 
 def _session_owns_pending_process_notification(session: dict) -> bool:
     """True while a background process this session started will still report back into it (``notify_on_complete``
-    or ``watch_patterns``): running, exited with its completion not yet published, or published but not yet dequeued. The notice
+    or ``watch_patterns``): running, or its notice not yet routed (see ``tools.process_registry_awaiting``). The notice
     reaches the model only through THIS session's notification poller, and closing the session kills the process
     (``agent_close``), so the reapers must keep it alive. Ownership is the set close() kills by — the agent's raw
     spawning task ids, which keep pre-compression ids after the session key rotates. Bounded by delivery: the session
-    is released once the notice has been dequeued."""
-    agent = session.get("agent")
-    owners = {*getattr(agent, "_process_owner_task_ids", ()), str(session.get("session_key") or "")}
+    is released once routing admits the notice's turn (``running`` then protects it), requeues or drops it."""
+    if session.get("_turn_cancel_requested"):
+        # After Stop no notification turn can start until the user's next prompt (``_notif_claim_turn``), so a
+        # pending notice is no reason to keep the session: the user's prompt resumes it like any other.
+        return False
     from tools.process_registry import process_registry
     from tools.process_registry_awaiting import awaits_notification
-    # After Stop the poller requeues notices until the user's next prompt: those must not make the session immortal.
-    return awaits_notification(process_registry, owners, include_queued=not session.get("_turn_cancel_requested"))
+    return awaits_notification(process_registry, _session_process_owners(session))
+
+
+def _session_process_owners(session: dict) -> set:
+    """The raw spawning ids ``close()`` kills by (pre-compression ids included), plus the current key."""
+    agent = session.get("agent")
+    return {*getattr(agent, "_process_owner_task_ids", ()), str(session.get("session_key") or "")} - {""}
 
 
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
@@ -726,6 +733,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     """
     from tools import async_delegation
     from tools.process_registry import process_registry
+    from tools.process_registry_awaiting import release as release_in_flight, take_ready
     from tools.process_registry_notifications import format_process_notification
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
@@ -749,34 +757,29 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
-        try:
-            evt = queue.get(timeout=0.5)
-        except Exception:
+        # Dequeue and in-flight hold are one step: until routing admits a turn, requeues or drops each event, its
+        # owner session stays protected from the reapers (it is in neither the queue nor ``running`` meanwhile).
+        ready = take_ready(queue, 0.5)
+        if not ready:
             continue
-        ready = [evt]
-        for _ in range(queue.qsize()):
-            try:
-                ready.append(queue.get_nowait())
-            except Exception:
-                break
         try:
             handle(ready, None)
         except Exception as exc:
             # This thread is the session's only path to notifications, /loop, /heartbeat and its
             # bot mailbox; one bad event must not end all four.
             _notif_log_failure("notification dispatch failed", exc)
+        finally:
+            release_in_flight(ready)
     # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
     # events are handed back to the shared queue afterwards.
     deferred: list = []
-    ready = []
-    for _ in range(queue.qsize()):
-        try:
-            ready.append(queue.get_nowait())
-        except Exception:
-            break
-    handle(ready, deferred)
-    for evt in deferred:
-        queue.put(evt)
+    ready = take_ready(queue, 0)
+    try:
+        handle(ready, deferred)
+        for evt in deferred:
+            queue.put(evt)
+    finally:
+        release_in_flight(ready)
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:

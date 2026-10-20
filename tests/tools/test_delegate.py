@@ -321,9 +321,9 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
-                self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
-                )
+                # The registry canonicalizes its key; on macOS /var and
+                # /private/var can spell the same temporary database.
+                self.assertEqual(child_db.db_path.resolve(), parent_db.db_path.resolve())
             finally:
                 if child_db is not None:
                     child_db.close()

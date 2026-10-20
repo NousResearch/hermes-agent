@@ -232,11 +232,21 @@ def wrap_progress_callback(inner_cb, writer: LiveTranscriptWriter):
     return _cb
 
 
+def batch_route_metadata(task_routes: list[dict[str, Any]]) -> dict[str, Optional[str]]:
+    """A homogeneous label, or None for mixed/unknown members (async accepts null)."""
+    metadata = {}
+    for key in ("model", "provider"):
+        values = {route.get(key) for route in task_routes}
+        metadata[key] = values.pop() if len(values) == 1 else None
+    return metadata
+
+
 def create_live_transcripts(
     task_list: list[dict[str, Any]], context: Optional[str] = None,
     delegation_id: Optional[str] = None, model: Optional[str] = None,
     provider: Optional[str] = None,
     home: Optional[Path] = None,
+    task_routes: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[Optional[str], list[Optional[LiveTranscriptWriter]], list[str]]:
     """One pre-headered writer per task + a manifest.json; prunes stale dirs.
     Returns ``(delegation_id, writers, paths)``; on any top-level failure
@@ -260,7 +270,7 @@ def create_live_transcripts(
         paths: list[str] = [str(w.path) for w in made if w.path is not None]
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home)
+        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home, task_routes=task_routes)
         return deleg_id, writers, paths
     return None, [None] * n, []
 
@@ -271,7 +281,8 @@ def _manifest_path(delegation_id: str, home: Optional[Path] = None) -> Path:
 
 def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
                     paths: list[str], model: Optional[str] = None,
-                    provider: Optional[str] = None, home: Optional[Path] = None) -> None:
+                    provider: Optional[str] = None, home: Optional[Path] = None,
+                    task_routes: Optional[list[dict[str, Any]]] = None) -> None:
     with _best_effort("manifest write"):
         _dump_json(_manifest_path(delegation_id, home), {
             "delegation_id": delegation_id, "started": time.strftime(_TIME_FMT),
@@ -281,7 +292,9 @@ def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
                 # Same mounted dir as the .log files, so the goal needs the same redaction.
                 "goal": _redact(str(t.get("goal", ""))[:500]),
                 "log": paths[i] if i < len(paths) else None,
-                "status": "running"} for i, t in enumerate(task_list)]})
+                "status": "running",
+                **({key: task_routes[i].get(key) for key in ("model", "provider")}
+                   if task_routes is not None else {})} for i, t in enumerate(task_list)]})
 
 
 def update_manifest_statuses(delegation_id: Optional[str],

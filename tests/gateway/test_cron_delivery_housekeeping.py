@@ -111,6 +111,142 @@ def test_multiplex_housekeeping_scopes_primary_and_drains_each_profile(
     ]
 
 
+def test_misfire_catchup_sweep_fires_each_served_profiles_overdue_jobs(
+    tmp_path, monkeypatch
+):
+    """Regression: the misfire catch-up sweep must run per served profile.
+
+    An external cron provider has NO local tick loop — this housekeeping sweep is
+    the only backstop for a missed external fire. Before, the chore was not
+    profile-scoped, so under a multiplexed gateway ``load_jobs()`` read only the
+    launch profile's store and a secondary profile's overdue job was never caught
+    up. The fire must also run under the OWNING profile's home (inherited context),
+    not the launch one.
+    """
+    import threading
+    from datetime import timedelta
+
+    from cron.jobs import _hermes_now, create_job, load_jobs, save_jobs
+    from cron.scheduler_provider import CronScheduler
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    class _FiveTickStopEvent:
+        """Let the cadence-5 misfire sweep run once (tick 5) before stopping."""
+
+        def __init__(self):
+            self.waits = 0
+
+        def is_set(self):
+            return self.waits >= 5
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            return self.waits >= 5
+
+    fired = []
+    fired_event = threading.Event()
+
+    class SweepRecordingProvider(CronScheduler):
+        @property
+        def name(self):
+            return "recording"
+
+        def start(self, stop_event, **kw):  # pragma: no cover - unused
+            return None
+
+        def fire_claimed(self, claimed_job, **kw):
+            fired.append((claimed_job["id"], str(get_hermes_home().resolve())))
+            fired_event.set()
+            return True
+
+    root_home = tmp_path / "root"
+    secondary_home = tmp_path / "secondary"
+    (secondary_home / "cron").mkdir(parents=True)
+
+    runner = SimpleNamespace(
+        config=SimpleNamespace(multiplex_profiles=True),
+        adapters={},
+        _profile_adapters={"secondary": {}},
+    )
+
+    @contextmanager
+    def home_only_scope(home):
+        token = set_hermes_home_override(str(home))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_multiplex_profile_homes",
+        lambda _config: [("default", root_home), ("secondary", secondary_home)],
+    )
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", home_only_scope)
+    monkeypatch.setattr(
+        gateway_run,
+        "_handoff_watch_scopes",
+        lambda _runner: [(None, root_home), ("secondary", secondary_home)],
+    )
+    # Keep heavyweight per-profile/cadence-1 siblings out of this test's tick budget.
+    for chore in (
+        "_housekeeping_curator",
+        "_housekeeping_skill_sync",
+        "_housekeeping_org_skill_sync",
+        "_housekeeping_plugin_update_check",
+        "_write_runtime_status_quiet",
+        "_housekeeping_channel_directory",
+        "_housekeeping_deferred_fts_retry",
+        "_housekeeping_memory_trim",
+        "_housekeeping_checkpoint_prune",
+    ):
+        monkeypatch.setattr(gateway_run, chore, lambda: None, raising=False)
+    monkeypatch.setattr(
+        gateway_run, "_housekeeping_state_db_maintenance", lambda _launch: None
+    )
+    monkeypatch.setattr(
+        scheduler, "drain_delivery_queue", lambda adapters, loop: None, raising=False
+    )
+    from gateway import run_profile_reconcile
+    monkeypatch.setattr(
+        run_profile_reconcile, "_mcp_config_reconciler", lambda runner: lambda: None
+    )
+
+    # The launch (default) profile's store stays empty; only the secondary profile
+    # holds an overdue job.
+    token = set_hermes_home_override(str(secondary_home))
+    try:
+        job = create_job(prompt="p", schedule="every 1h")
+        jobs = load_jobs()
+        for entry in jobs:
+            if entry["id"] == job["id"]:
+                entry["next_run_at"] = (
+                    _hermes_now() - timedelta(minutes=30)
+                ).isoformat()
+        save_jobs(jobs)
+    finally:
+        reset_hermes_home_override(token)
+
+    gateway_run._start_gateway_housekeeping(
+        _FiveTickStopEvent(),
+        adapters={},
+        loop=object(),
+        interval=0,
+        cron_provider=SweepRecordingProvider(),
+        runner=runner,
+    )
+
+    assert fired_event.wait(10.0), (
+        f"sweep never fired the secondary profile's job: {fired!r}"
+    )
+    assert [job_id for job_id, _home in fired] == [job["id"]]
+    assert fired[0][1] == str(secondary_home.resolve())
+
+
 def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite(
     tmp_path, monkeypatch
 ):

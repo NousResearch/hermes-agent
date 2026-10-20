@@ -1018,3 +1018,50 @@ def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent
     _sync_agent_to_session(cli, SID, parent_session_id="", reason="resume")
     agent.run_conversation("plan")
     assert agent._todo_store.read() == todos
+
+
+def _resume_with_todos(client, todos, revision):
+    """``client``'s ``session.resume`` answers as the gateway does for a session with a plan."""
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        reply = await original(method, _timeout=_timeout, **params)
+        if method == "session.resume":
+            reply = dict(reply, stored_session_id=params["session_id"],
+                         todo_state={"todos": todos, "revision": revision})
+        return reply
+    client.rpc = rpc
+
+
+def test_resume_restores_the_sessions_todos_into_the_cli_todo_store(make_agent):
+    """/resume and /branch attach through ``session.resume``; main then swaps in a fresh ``TodoStore``,
+    which starts with the gateway's ``todo_state`` (revision kept), not empty until the next ``todo.updated``."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    todos = [{"id": "1", "content": "ship it", "status": "in_progress"}]
+    agent, client = make_agent([])
+    _resume_with_todos(client, todos, 4)
+    agent._session_db = GatewaySessionStore(agent.connection)
+    _sync_agent_to_session(SimpleNamespace(agent=agent, conversation_history=[]), "local-other",
+                           parent_session_id="", reason="resume")
+    assert agent._todo_store.snapshot() == {"todos": todos, "revision": 4}
+
+
+def test_startup_resume_builds_the_agent_with_the_sessions_todos(make_agent):
+    """``chat -c`` attaches (``open_session``) before it builds the agent, whose store starts with the
+    snapshot; a later ``todo.updated`` of that session is what the next swapped-in store starts with."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from tools.todo_tool import TodoStore
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, client = make_agent([])
+    _resume_with_todos(client, todos, 2)
+    store = GatewaySessionStore(agent.connection)
+    store.attach("local-resumed")
+    resumed = GatewayAgent(connection=agent.connection, session_db=store, session_id="local-resumed")
+    assert resumed._todo_store.snapshot() == {"todos": todos, "revision": 2}
+    later = [dict(todos[0], status="in_progress")]
+    agent.connection.state("local-resumed").apply_event("todo.updated", {"todos": later, "revision": 3})
+    resumed._todo_store = TodoStore()
+    assert resumed._todo_store.snapshot() == {"todos": later, "revision": 3}

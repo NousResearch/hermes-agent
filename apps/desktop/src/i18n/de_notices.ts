@@ -36,5 +36,16 @@ export const deNotices = {
     message:
       'Hermes kann den Computer wach halten, solange eine Aufgabe läuft. Der Bildschirm schaltet sich weiterhin aus, und im Akkubetrieb kann der Computer trotzdem einschlafen.',
     action: 'Während der Arbeit wach halten'
+  },
+  billingBlock: {
+    titleNous: 'Keine Nous-Credits mehr',
+    titleProvider: provider => `Keine Credits mehr — ${provider}`,
+    fallbackMessage: 'Auf Ihrem Konto sind keine Credits mehr übrig. Fügen Sie Credits hinzu, um fortzufahren.',
+    openBilling: 'Billing öffnen',
+    addCredits: 'Credits hinzufügen',
+    dismiss: 'Schließen'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

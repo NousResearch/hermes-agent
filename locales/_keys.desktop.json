@@ -220,6 +220,8 @@
     "assistant.thread.errorCodes.content_policy_blocked.title",
     "assistant.thread.errorCodes.context_overflow.body",
     "assistant.thread.errorCodes.context_overflow.title",
+    "assistant.thread.errorCodes.cron_session_read_only.body",
+    "assistant.thread.errorCodes.cron_session_read_only.title",
     "assistant.thread.errorCodes.disk_full.body",
     "assistant.thread.errorCodes.disk_full.title",
     "assistant.thread.errorCodes.empty_response.body",

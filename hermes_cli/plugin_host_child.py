@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, decode, describe_signature,
-    encode, is_async_callable, serving_request,
+    Channel, HOST_CWD_ENV, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request,
+    decode, describe_signature, encode, is_async_callable, serving_request,
 )
 
 logger = logging.getLogger("hermes_cli.plugin_host_child")
@@ -504,6 +504,35 @@ def _take_protocol_streams():
     return reader, writer
 
 
+def _close_inherited_fds(keep: set) -> None:
+    """Every descriptor beyond 0/1/2 that is not a protocol stream. The parent's spawn
+    (:class:`hermes_cli.plugin_host._SpawnedHost`) skips close actions on purpose; nothing the
+    parent had open — gateway sockets, pipes, files — may reach plugin code."""
+    if os.name != "posix":
+        return
+    try:
+        names = os.listdir("/dev/fd")
+    except OSError:
+        return
+    for name in names:
+        try:
+            fd = int(name)
+        except ValueError:
+            continue
+        if fd > 2 and fd not in keep:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _apply_spawn_cwd() -> None:
+    """chdir to the parent's chosen working directory; popped so plugins never see the plumbing."""
+    target = os.environ.pop(HOST_CWD_ENV, None)
+    if target:
+        os.chdir(target)
+
+
 def capture_profiles(path: str, module_name: str) -> list[Any]:
     """Import a model-provider plugin and return the profiles it passes to ``register_provider``."""
     import providers
@@ -555,6 +584,8 @@ def extract_profiles_main(path: str, module_name: str) -> int:
     import json
     reader, writer = _take_protocol_streams()
     del reader
+    _close_inherited_fds({writer.fileno()})
+    _apply_spawn_cwd()
     import hermes_bootstrap
     try:
         payload = {"profiles": [describe_profile(p) for p in capture_profiles(path, module_name)]}
@@ -567,6 +598,8 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 
 def main() -> int:
     reader, writer = _take_protocol_streams()
+    _close_inherited_fds({reader.fileno(), writer.fileno()})
+    _apply_spawn_cwd()
     import hermes_bootstrap
     logging.basicConfig(stream=sys.stderr, level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"),
                         format="%(levelname)s %(name)s: %(message)s")

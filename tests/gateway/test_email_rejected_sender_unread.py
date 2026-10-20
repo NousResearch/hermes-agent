@@ -64,7 +64,7 @@ class TestRejectedSenderKeepsUnread(unittest.TestCase):
         return adapter, resultados, llamadas
 
     def test_rejected_sender_is_not_marked_seen_on_the_server(self):
-        adapter, resultados, llamadas = self._run(aceptado=False)
+        _adapter, resultados, llamadas = self._run(aceptado=False)
 
         self.assertEqual(resultados, [], "un remitente rechazado no se despacha")
         stores = [args for (cmd, args) in llamadas if cmd == "store"]
@@ -82,7 +82,7 @@ class TestRejectedSenderKeepsUnread(unittest.TestCase):
         )
 
     def test_authorized_sender_still_dispatches(self):
-        adapter, resultados, _llamadas = self._run(aceptado=True)
+        _adapter, resultados, _llamadas = self._run(aceptado=True)
 
         self.assertEqual(len(resultados), 1)
         self.assertEqual(resultados[0]["sender_addr"], "unknown@test.com")

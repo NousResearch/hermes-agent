@@ -162,6 +162,19 @@ def owner_reclaim_blocked(conn, task_id, *, crash_sweep=False) -> bool:
     return not owner_attempt_provably_over(conn, task_id)
 
 
+def owner_reclaim_blocked_after_kill(conn, task_id, *, signalled: bool) -> bool:
+    """The under-lock re-check for a reclaim path, after its termination step.
+
+    When this host just signalled the run's worker (``signalled``), killing it takes its bound
+    interpreter down too (``_watch_submitter``) and the owner settles the admission ``unknown``:
+    a pause this path caused itself, which would leave a timed-out run for the crash sweep to
+    misbook ``crashed``. Only an interpreter still LIVE (one that bound after the first look)
+    keeps the claim. Without a local signal (a foreign-host claim) the bound interpreter's pid
+    means nothing here, so a "dead" reading is no proof and the plain gate applies.
+    """
+    return owner_reclaim_blocked(conn, task_id, crash_sweep=signalled)
+
+
 def managed_run_exit_code(conn, task_id, worker_pid, claim_lock):
     """The exit code a managed run's authority recorded for the task's CURRENT run, else None.
 

@@ -151,6 +151,23 @@ def _get_plugin_env_provider(env_type: str):
     return _plugin_registry_lookup(env_type, "get_provider", None)
 
 
+def plugin_sandbox_home(env: Any) -> str | None:
+    """The home a plugin environment started in (``_build_plugin_env`` stamps it per environment, so two
+    sandboxes of one backend never share it), or None."""
+    home = getattr(env, "_hermes_sandbox_home", None)
+    return home if isinstance(home, str) and posixpath.isabs(home) and home != "/" else None
+
+
+def _in_sandbox_home(cwd: Any, env: Any) -> bool:
+    """True for *cwd* at or under *env*'s sandbox home: a ``cd`` inside that sandbox, not a host workspace,
+    even when it looks like one (``/home/...``)."""
+    home = plugin_sandbox_home(env)
+    if not home or not isinstance(cwd, str) or not posixpath.isabs(cwd):
+        return False
+    home, cwd = posixpath.normpath(home), posixpath.normpath(cwd)
+    return cwd == home or cwd.startswith(home + "/")
+
+
 @overload
 def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
 @overload

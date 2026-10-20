@@ -4,8 +4,6 @@ Mixin on ``HermesCLI``; cli.py symbols are imported lazily inside methods (impor
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 import threading
 import time
 
@@ -126,21 +124,19 @@ class CLILoopsMixin:
         out.cursor_goto(0, 0)
         out.flush()
         cc = ChatConsole()
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        # The banner plan startup uses (show_banner): a gateway session's banner is the new
+        # session's snapshot (its tools, MCP included, and main's short label), never this
+        # process's registry.
+        from hermes_cli.cli_info_mixin import banner_plan
+        plan = banner_plan(self, cc)
+        if plan.banner_kw is None:
             cc.print(_build_compact_banner())
+        elif plan.inventory is not None:
+            self._show_gateway_banner(build_welcome_banner, plan.inventory, plan.banner_kw)
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-            agent = getattr(self, "agent", None)
-            ctx_len = None
-            if agent and hasattr(agent, "context_compressor"):
-                ctx_len = agent.context_compressor.context_length
-            from agent.context_pin import is_context_pinned
-            build_welcome_banner(
-                console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
-                tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider,
-                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
+            build_welcome_banner(tools=tools, **plan.banner_kw)
         _cprint(_fresh_start())
         self._print_random_tip()
 

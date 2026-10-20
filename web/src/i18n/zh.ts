@@ -225,6 +225,8 @@ export const zh: Translations = {
     component: "组件",
     lines: "行数",
     noLogLines: "未找到日志记录",
+    copy: "复制",
+    copied: "已复制",
   },
 
   cron: {

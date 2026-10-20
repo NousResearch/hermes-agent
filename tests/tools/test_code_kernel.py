@@ -9,6 +9,7 @@ contract:
   - state persists across cells and reset=true discards it
   - a raised exception keeps the kernel (and its state) alive
   - a timeout kills the kernel; the next call gets a fresh one
+  - a timeout or reset takes the cell's own subprocesses down with the kernel
   - fd-level output from user-spawned subprocesses reaches the result
   - sys.exit() inside a cell ends the kernel deliberately
 
@@ -606,3 +607,79 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+
+def _stray_child_cell(pidfile, tail=""):
+    """Cell that starts a long-lived child of the kernel and records its pid."""
+    return (
+        "import subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n{tail}"
+    )
+
+
+def _gone(pid, timeout=5.0):
+    """True once ``pid`` is dead; a zombie waiting on a non-reaping init counts as dead."""
+    import psutil
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # a surviving child is reparented out of the test's subtree
+class TestTeardownKillsCellSubprocesses(unittest.TestCase):
+    """Teardown kills the kernel's process TREE (tools/code_kernel.py docstring, constraint 2): closing
+    the death pipe before the tree-kill lets the runner exit first and orphans what the cell started."""
+
+    def _assert_child_killed(self, pidfile):
+        import psutil
+
+        child = int(pidfile.read_text())
+        gone = _gone(child)
+        if not gone:
+            psutil.Process(child).kill()
+        self.assertTrue(gone, f"cell subprocess {child} outlived the killed kernel")
+
+    def test_timeout_kills_the_cells_subprocesses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp, "child.pid")
+            with _kernel_config(timeout=2):
+                result = _run(_stray_child_cell(pidfile, "import time\ntime.sleep(60)\n"))
+            self.assertEqual(result["status"], "timeout", result)
+            self._assert_child_killed(pidfile)
+
+    def test_reset_kills_the_previous_cells_subprocesses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp, "child.pid")
+            with _kernel_config():
+                first = _run(_stray_child_cell(pidfile))
+                self.assertEqual(first["status"], "success", first)
+                self.assertEqual(_run("print('fresh')", reset=True)["status"], "success")
+            self._assert_child_killed(pidfile)
+
+    def test_tree_kill_runs_before_the_death_pipe_closes(self):
+        """Order, not outcome: where a zombie leader keeps its pgid (Linux) the tests above pass either way."""
+        from tools import code_execution_tool
+
+        with _kernel_config():
+            self.assertEqual(_run("x = 1")["status"], "success")
+            kernel = next(iter(_KERNELS.values()))
+            pipe_open_at_kill = []
+            real_kill = code_execution_tool._kill_process_group
+
+            def spy(proc, escalate=False):
+                pipe_open_at_kill.append(kernel.death_pipe_w is not None)
+                return real_kill(proc, escalate=escalate)
+
+            with patch.object(code_execution_tool, "_kill_process_group", spy):
+                kernel.teardown()
+        self.assertEqual(pipe_open_at_kill, [True])

@@ -58,4 +58,10 @@ describe('filterToSessionBearingProjects (#53004)', () => {
     expect(ids).toContain('explicit_empty')
     expect(ids).toContain('home')
   })
+
+  it('keeps the entered project even when it has no sessions', () => {
+    const ids = filterToSessionBearingProjects(tree, 'auto_empty').map(project => project.id)
+
+    expect(ids).toContain('auto_empty')
+  })
 })

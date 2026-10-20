@@ -363,7 +363,8 @@ KANBAN_ATTACH_URL_SCHEMA = _schema(
         "Attach a file to a task by URL — Hermes downloads it server-side "
         "and stores it as a real attachment (capped at 25 MB). Use when "
         "you have a link rather than the bytes. Only http/https URLs are "
-        "accepted."
+        "accepted; dispatcher-owned Argos workers require a public URL "
+        "without credentials or query parameters (including redirects)."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -400,7 +401,11 @@ KANBAN_CREATE_SCHEMA = _schema(
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
         "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "tasks on its next tick and spawns the assigned profiles. "
+        "A dispatcher-owned Argos worker may only assign hefesto/atena on "
+        "its pinned board, with a fresh scratch workspace and no project, "
+        "model/provider, skills or session overrides. Other profiles retain "
+        "the usual creation options."
     ),
     {
         "title": _prop("string", "Short task title (required)."),

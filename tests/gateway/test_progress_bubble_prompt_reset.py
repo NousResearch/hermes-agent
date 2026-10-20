@@ -1,8 +1,8 @@
-"""Tool progress after an approval or clarify prompt starts a new bubble below the prompt.
+"""Tool progress after a prompt or a mid-turn message starts a new bubble below it.
 
-The tool-progress bubble is one message edited in place. An approval card or clarify poll posts a
-new message under it; without a reset, tool lines after the prompt kept editing the bubble ABOVE
-the prompt, so after a prompt or two the live status was out of view. Also pins that a reset
+The tool-progress bubble is one message edited in place. An approval card, a clarify poll, or a
+user message folded into the running turn (redirect, steer) lands under it; without a reset, tool
+lines after it kept editing the bubble ABOVE, so the live status scrolled out of view. Also pins that a reset
 delivers lines still held back by the edit throttle instead of dropping them (#29371).
 """
 
@@ -125,6 +125,52 @@ def test_clarify_prompt_closes_the_progress_bubble(loop, monkeypatch):
     monkeypatch.setattr(cm, "get_clarify_timeout", lambda: 5)
     runner._clarify_callback_sync([{"qid": "q0", "question": "Pick?", "choices": ["a", "b"], "multi_select": False}])
     assert q.get_nowait() == RESET
+
+
+# --- Mid-turn messages (redirect / steer) close the progress bubble -------------------------
+
+
+def _busy_host(turn):
+    from gateway.run_busy import GatewayBusySessionMixin
+
+    host = object.__new__(GatewayBusySessionMixin)
+    host._session_state = lambda _key: SimpleNamespace(turn=turn)
+    return host
+
+
+def _turn(agent, progress_queue):
+    opener = SimpleNamespace(absorb_reply_expected=lambda _e: None, reply_expected=True)
+    return SimpleNamespace(agent=agent, event=opener, ctx=SimpleNamespace(progress_queue=progress_queue))
+
+
+def test_redirect_closes_the_progress_bubble():
+    agent = SimpleNamespace(redirect=lambda _text: True)
+    q = queue_mod.Queue()
+    q.put("💻 terminal: make test")
+    host = _busy_host(_turn(agent, q))
+    host._try_agent_verb = lambda *a, **k: True
+    host._reply_anchor_for_event = lambda _e: "u2"
+    assert host._redirect_active_turn(agent, "actually, skip the tests", "sk", SimpleNamespace(message_id="u2"))
+    assert [q.get_nowait() for _ in range(q.qsize())] == ["💻 terminal: make test", RESET]
+
+
+def test_steer_fold_closes_the_progress_bubble():
+    agent = object()
+    q = queue_mod.Queue()
+    _busy_host(_turn(agent, q))._fold_into_running_turn(agent, "sk", SimpleNamespace(message_id="u2"))
+    assert q.get_nowait() == RESET
+
+
+def test_fold_into_a_newer_turn_leaves_its_bubble_alone():
+    """A newer turn owns the slot: its bubble isn't the one the message landed under."""
+    q = queue_mod.Queue()
+    assert _busy_host(_turn(object(), q))._fold_into_running_turn(object(), "sk", SimpleNamespace()) is None
+    assert q.empty()
+
+
+def test_fold_without_a_progress_queue_is_a_no_op():
+    agent = object()
+    assert _busy_host(_turn(agent, None))._fold_into_running_turn(agent, "sk", SimpleNamespace()) is not None
 
 
 # --- The progress loop honours the reset without losing lines -------------------------------

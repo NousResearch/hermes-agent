@@ -18,6 +18,7 @@ DARWINIAN = "optional-skills/research/darwinian-evolver"
 PINECONE = "optional-skills/research/pinecone-research"
 EMAIL = "skills/email/email-inbox-triage"
 MEETING = "skills/productivity/meeting-action-items"
+PDF = "skills/productivity/pdf"
 PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
@@ -77,6 +78,19 @@ def test_document_obligations(skill, required, forbidden):
         assert not re.search(pattern, body, re.IGNORECASE), pattern
     if skill == SOCIAL:
         assert "handed-off, not published" in body or "handed-off slots" in body
+
+
+def test_pdf_examples_never_pipe_into_a_flag():
+    # A pipeline segment's first token is the executable; a "--flag" there is
+    # "command not found" (#136928).
+    body = (REPO / PDF / "SKILL.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```bash\n(.*?)```", body, re.DOTALL)
+    assert blocks and any("--list-attachments" in b for b in blocks)
+    for block in blocks:
+        for line in re.sub(r"\\\n", " ", block).splitlines():
+            for segment in line.split("|"):
+                tokens = segment.strip().split()
+                assert not (tokens and tokens[0].startswith("-")), line
 
 
 @pytest.mark.parametrize("relative", [

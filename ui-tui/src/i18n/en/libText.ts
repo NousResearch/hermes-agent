@@ -2,6 +2,8 @@
 // Owned namespace: `libText`.
 // Function leaves take positional args; packs use `{0}`, `{1}` (argument order documented per leaf).
 
+import { gatewayTextEn } from '@hermes/shared/gateway-text'
+
 export const libTextEn = {
   libText: {
     // @hermes/shared/gateway-client (given Ink's `t`) — transport-drop reasons that reject in-flight RPCs and
@@ -9,22 +11,9 @@ export const libTextEn = {
     // `gateway not running` are deliberately NOT here: app/userMessages.ts
     // parses them (NOT_CONNECTED_RE) and rewrites them into plain words.
     gateway: {
-      restarting: 'gateway restarting',
-      exited: 'gateway exited',
-      /** {0} = exit code */
-      exitedWithCode: (code: string) => `gateway exited (${code})`,
+      ...gatewayTextEn.libText.gateway,
       /** {0} = child process error message */
-      error: (message: string) => `gateway error: ${message}`,
-      websocketUnavailable: 'gateway websocket unavailable',
-      websocketConnectionFailed: 'gateway websocket connection failed',
-      /** {0} = websocket close code */
-      websocketClosedDuringConnect: (code: string) => `gateway websocket closed (${code}) during connect`,
-      websocketClosed: 'gateway websocket closed',
-      /** {0} = websocket close code */
-      websocketClosedWithCode: (code: string) => `gateway websocket closed (${code})`,
-      websocketStartupFailed: 'gateway websocket startup failed',
-      attachUrlChanged: 'gateway attach url changed',
-      closed: 'gateway closed'
+      error: (message: string) => `gateway error: ${message}`
     },
 
     // lib/terminalSetup.ts — /terminal-setup result messages. {0} = IDE label

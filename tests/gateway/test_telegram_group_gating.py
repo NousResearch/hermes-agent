@@ -368,6 +368,28 @@ def test_explicit_multi_bot_mentions_route_only_to_named_bots():
     assert ops_bot._should_process_message(_group_message(text, entities=entities)) is True
 
 
+def test_clean_bot_trigger_text_preserves_multi_bot_addressing_for_each_named_bot():
+    text = "@Research_bot @Ops_helperbot please report status"
+
+    research = _make_adapter(require_mention=True, bot_username="Research_bot")
+    ops = _make_adapter(require_mention=True, bot_username="Ops_helperbot")
+
+    assert research._clean_bot_trigger_text(text) == text
+    assert ops._clean_bot_trigger_text(text) == text
+
+
+def test_clean_bot_trigger_text_still_strips_a_single_self_mention():
+    adapter = _make_adapter(require_mention=True, bot_username="Research_bot")
+
+    assert adapter._clean_bot_trigger_text("@Research_bot please report status") == "please report status"
+
+
+def test_clean_bot_trigger_text_leaves_ordinary_text_unchanged():
+    adapter = _make_adapter(require_mention=True, bot_username="Research_bot")
+
+    assert adapter._clean_bot_trigger_text("ordinary conversation") == "ordinary conversation"
+
+
 def test_entityless_multi_bot_mentions_still_route_exclusively():
     text = "@research_bot @ops_bot hi"
 

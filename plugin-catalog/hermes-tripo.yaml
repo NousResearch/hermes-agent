@@ -1,19 +1,19 @@
 name: hermes-tripo
 title: Hermes Tripo
 repo: https://github.com/Adolanium/hermes-tripo
-sha: 8acab9d22fc87f348a635b713b97558153bea111
-description: Tripo 3D tools on Tripo's v3 API (openapi.tripo3d.ai). Text, image or multiview to 3D, retexturing,
-  auto-rigging, preset animations, retopology, format conversion (FBX, USDZ, STL, 3MF, OBJ, GLTF) and downloads,
-  with an inline 3D viewer in Hermes Desktop (orbit, animation playback, live progress, a Download menu).
-  Every credit-spending call goes through Hermes's approval prompt with its estimated cost. Needs TRIPO_API_KEY.
-  Unofficial; not affiliated with Tripo or VAST.
+sha: 8269e201e22df7ae8e210bb5482985d5886cd0b0
+description: Tripo 3D tools on Tripo's v3 API (openapi.tripo3d.ai). Text, photo or multiview to 3D, image edits,
+  retexturing, splitting into parts, Smart UV, auto-rigging, preset animations, retopology, format conversion (FBX,
+  USDZ, STL, 3MF, OBJ, GLTF) and downloads, with an inline 3D viewer and a Tripo library pane in Hermes Desktop.
+  Every credit-spending call goes through Hermes's approval prompt with its estimated cost, and a per-chat limit makes
+  it ask again past 100 credits. Needs TRIPO_API_KEY. Unofficial; not affiliated with Tripo or VAST.
 maintainer: Adolanium
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Adolanium/hermes-tripo#readme
-version: "0.2.0"
-image: https://raw.githubusercontent.com/Adolanium/hermes-tripo/8acab9d22fc87f348a635b713b97558153bea111/assets/catalog-banner.png
+version: "0.3.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-tripo/8269e201e22df7ae8e210bb5482985d5886cd0b0/assets/catalog-banner.png
 capabilities:
   provides_tools:
     - tripo_generate_model
@@ -24,6 +24,9 @@ capabilities:
     - tripo_animate
     - tripo_retopology
     - tripo_convert
+    - tripo_parts
+    - tripo_uv
+    - tripo_multiview
     - tripo_task
     - tripo_download
     - tripo_balance

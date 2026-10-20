@@ -886,7 +886,7 @@ def test_native_windows_arm64_behavior():
 For several supported hosts, use one marker with multiple arguments, such as
 `@pytest.mark.platforms("linux", "macos")`. Do not stack host markers.
 Tests of pure functions that accept a platform as data need no host marker.
-See [AGENTS.md](AGENTS.md#dont-fake-the-host-os) for the complete contract.
+See [tests/_fixtures/platform_gating.py](tests/_fixtures/platform_gating.py) for the complete contract.
 
 ---
 

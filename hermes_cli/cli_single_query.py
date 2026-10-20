@@ -408,43 +408,49 @@ def _install_single_query_signal_handlers(cli):
     from cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
     import signal as _signal
 
-    def _kill_foreground_and_exit(*_):
+    def _kill_foreground_and_exit(code: int = 0):
         # The worker's command runs in its own process group: SIGKILL it or it outlives os._exit.
         with suppress(Exception):
             from tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes(now=True)
-        os._exit(0)
+        os._exit(code)
 
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
         _interrupt_agent_for_signal(getattr(cli, "agent", None), signum)
         # Kanban: a non-daemon worker blocked in _wait_for_process survives KeyboardInterrupt
-        # and the dispatcher sees 'running' forever, so os._exit(0) (SIGALRM deadman guards
+        # and the dispatcher sees 'running' forever, so os._exit (SIGALRM deadman guards
         # a blocking flush). That skips atexit + the token-drain hook, hence the explicit flush.
         # Kanban worker exit path (#28181): SIGTERM hits a dispatcher-spawned worker that's likely in a
         # non-daemon thread waiting on a child subprocess in _wait_for_process. Raising KeyboardInterrupt
         # only unwinds the main thread; the worker thread keeps running, the process gets reparented to
         # init, and the dispatcher's _pid_alive check returns True forever — task stuck in 'running'
-        # indefinitely. Skip the controlled-unwind dance and call os._exit(0) so the kernel reclaims the PID
+        # indefinitely. Skip the controlled-unwind dance and call os._exit so the kernel reclaims the PID
         # immediately and detect_crashed_workers can reclaim the stale claim on the next tick. Flush logging
         # + stdout/stderr first so the final debug trace isn't lost; SIGALRM deadman guards the flush
         # against any rare blocking-I/O case (the reporter measured flush in <1ms; the alarm is a failsafe,
         # not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # Exit 128+signal (shell convention), never 0: the dispatcher books a reaped
+            # rc=0 as a clean-exit protocol violation, so a worker whose systemd scope is
+            # OOM-killed (MemoryMax) and SIGTERMs this path would read as an agent-behavior
+            # bug instead of the memory kill it is, and the violation-only budget would
+            # never trip the crash breaker (#136651).
+            _signal_exit_code = 128 + signum
             with suppress(Exception):
                 if hasattr(_signal, "SIGALRM"):
-                    _signal.signal(_signal.SIGALRM, _kill_foreground_and_exit)
+                    _signal.signal(_signal.SIGALRM, lambda *_a: _kill_foreground_and_exit(_signal_exit_code))
                     _signal.alarm(5)
             with suppress(Exception):
                 # Durable flush FIRST: memory-provider shutdown inside _run_cleanup can issue aux-LLM calls,
                 # and nothing after it may fail in a way that loses the turn (#88583).
-                # os._exit(0) skips atexit AND SessionDB's token-drain hook, so flush + finalize the session
+                # os._exit skips atexit AND SessionDB's token-drain hook, so flush + finalize the session
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
             _flush_logging_and_stdio()
-            _kill_foreground_and_exit()
+            _kill_foreground_and_exit(_signal_exit_code)
         raise KeyboardInterrupt()
     with suppress(Exception):  # restricted environments
         for _name in ("SIGINT", "SIGTERM", "SIGHUP"):

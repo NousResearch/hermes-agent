@@ -87,3 +87,34 @@ def test_compressing_a_stamped_tip_stamps_its_legacy_root(tmp_path, root_created
         assert [_created(db, sid) for sid in ("parent-" + tip, tip, "new-tip")] == ["cli"] * 3
     finally:
         db.close()
+
+
+def test_unset_parent_behind_a_reset_edge_takes_the_fast_path(tmp_path):
+    """A stamped chain whose root was reset from a legacy NULL row has nothing to stamp: the
+    ancestor stamp returns after its two lookups instead of walking the chain on every write."""
+    from hermes_state_compression import stamp_compression_ancestors
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("legacy", source="local")
+        db.create_session("reset-root", source="cli", parent_session_id="legacy",
+                          model_config={"_reset_from": "legacy"})
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source=NULL, ended_at=1, "
+                             "end_reason='session_reset' WHERE id='legacy'")
+            db._conn.commit()
+        db.append_message("reset-root", role="user", content="hi")
+        db.publish_compression_child(
+            parent_session_id="reset-root", child_session_id="tip", source="cli",
+            messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+        statements = []
+        with db._lock:
+            db._conn.set_trace_callback(statements.append)
+            try:
+                stamp_compression_ancestors(db._conn, "tip")
+            finally:
+                db._conn.set_trace_callback(None)
+        assert len(statements) == 2, statements
+        assert _created(db, "legacy") is None
+    finally:
+        db.close()

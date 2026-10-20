@@ -111,17 +111,19 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
 _UNSET_CREATED_SOURCES = frozenset({None, "", "unknown", "local"})
 _UNSET_CREATED_SQL = "COALESCE({col}, '') IN ('', 'unknown', 'local')"
 _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE id = ?"
-# Is any ancestor unset, walking up parent_session_id through ancestors on the same surface?
-# One query, so a fully stamped chain is skipped without the per-hop validated walk below.
+# Is any ancestor unset, walking up parent_session_id through compressed parents on the same
+# surface? One query, so a fully stamped chain is skipped without the per-hop validated walk below.
+# A parent that did not end by compression (a reset or branch source) is not a chain edge, so an
+# unset row behind one does not send every write down that walk.
 _UNSET_ANCESTOR_SQL = """
     WITH RECURSIVE up(pid, n) AS (
         SELECT parent_session_id, 1 FROM sessions WHERE id = ?
         UNION ALL
         SELECT s.parent_session_id, up.n + 1 FROM up JOIN sessions s ON s.id = up.pid
-        WHERE s.created_source = ? AND up.n < ?
+        WHERE s.end_reason = 'compression' AND s.created_source = ? AND up.n < ?
     )
     SELECT 1 FROM up JOIN sessions s ON s.id = up.pid
-    WHERE """ + _UNSET_CREATED_SQL.format(col="s.created_source") + """
+    WHERE s.end_reason = 'compression' AND """ + _UNSET_CREATED_SQL.format(col="s.created_source") + """
     LIMIT 1
 """
 

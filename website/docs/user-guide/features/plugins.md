@@ -108,6 +108,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
+| Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -129,7 +130,7 @@ A `/command` registered with `ctx.register_command()` runs in the gateway proces
 
 - **Return its text** instead of calling `print()`. Printed output goes to the gateway's stdout, not to the user's chat.
 - **Read the session's working directory with `agent.runtime_cwd.resolve_agent_cwd()`**, not `os.getcwd()`, which is the gateway's own directory. The gateway pins the session's directory while the handler runs.
-- **Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")`** (and the other `HERMES_SESSION_*` names, such as `HERMES_SESSION_ID` and `HERMES_SESSION_KEY`), not `os.environ`. These values are bound per session around the handler, so a background job the handler starts records the session as its parent.
+- **Take the calling session as handler keywords**: declare `session_id`, `session_key`, `platform` or `source` (the sender's `SessionSource`) and Hermes passes them; one-argument handlers keep working unchanged. The same values are bound as `HERMES_SESSION_*` around the handler (`gateway.session_context.get_session_env`, never `os.environ`), so a background job the handler starts records the session as its parent.
 
 The classic CLI waits for the reply for as long as the handler runs. Ctrl+C stops the wait, not the handler: the handler finishes in the gateway and its reply is not shown. The command runs over its own connection to the gateway, so the session's prompts, interrupts and other commands are not held up while it runs.
 
@@ -349,7 +350,7 @@ Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.p
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `on_human_input_request`, `on_human_input_resolved`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `post_compaction`, `on_session_delete`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `on_human_input_request`, `on_human_input_resolved`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -423,6 +424,9 @@ hermes plugins install user/repo             # install from Git, then prompt Ena
 hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins update my-plugin --force      # same, accepting a caution security-scan verdict without the question
+hermes plugins update                        # list every plugin with an update, then "Update all N? [Y/n]"
+hermes plugins update --yes                  # same, without the question (scripts, cron; required without a terminal)
 hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
                                              # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
@@ -450,7 +454,20 @@ check runs when `plugins.auto_update_check_hours` is due: default 24 hours,
 desktop sync-status view. This is not a hard once-per-day limit if you configure
 a different interval.
 
-By default, updates require `hermes plugins update NAME`. Setting
+`hermes plugins update` with no name runs the same check and lists the
+plugins it can move: catalog installs (re-pinned to the reviewed catalog
+commit) and tracked Git installs (pulled). It names every plugin it skips and
+why: pinned, needs fixing, status unknown, or a pip distribution Hermes does
+not upgrade. In a terminal it asks once, then updates each plugin through the
+same path as `hermes plugins update NAME`, so new capabilities, a widened
+catalog pin and scan findings still prompt per plugin. One failure does not
+stop the rest; the summary lists what updated, what was already current and
+what failed with its reason (exit code 1 if any failed). Without a terminal
+it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
+consent prompts fail closed as in any non-interactive update (new
+capabilities stay ungranted, a widened catalog pin is not applied).
+
+By default, plugins only update when you run `hermes plugins update`. Setting
 `plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
 Both routes use the update security scan. Auto-apply does not manage pinned,
 manual, drifted, or pip-distribution rows.
@@ -556,7 +573,7 @@ granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
 widen its access. Catalog re-pins go one step further: when the new pin adds
 tools, hooks, Python dependencies, host capabilities, a provider sign-in
-(`requires_auth`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
+(`requires_auth`), a new or changed OAuth client (`oauth:`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
 anything moves, and the Desktop / dashboard **Update** button opens the same
 confirmation. Declining (or a non-interactive session) leaves the plugin at
 the old pin.
@@ -766,6 +783,20 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
 | **dangerous** | Blocked. `--force` does **not** override |
 
+`hermes plugins update` scans the new code with the same rules before it
+replaces the installed copy, so a plugin that picks up risky code in an update
+is flagged before it runs. A caution verdict on a Git update asks
+`Update anyway? [y/N]`, and `hermes plugins update NAME --force` accepts it
+without the question. Hermes Desktop shows the same findings in a dialog with an
+**Update anyway** button. Catalog updates move to a reviewed pin, so a caution
+verdict there does not ask. In every case nothing changes until the update is
+accepted.
+
+Hermes Desktop shows an **Update** button on a Git-installed plugin when the
+last update check found a newer commit. The gateway runs that check every
+`plugins.auto_update_check_hours` (default 24), and `hermes plugins check-updates`
+runs it on demand.
+
 On `hermes plugins update`, a dangerous verdict on the updated tree
 disables the plugin until you review the findings and re-enable it. A
 dangerous block names the critical findings that caused it (e.g.
@@ -924,6 +955,59 @@ Plugins occupy one of three states:
 The default for a newly-installed or bundled plugin is `not enabled`. `hermes plugins list` shows all three distinct states so you can tell what's been explicitly turned off vs. what's just waiting to be enabled.
 
 In a running session, `/plugins` shows which plugins are currently loaded.
+
+## Posting a live message
+
+A plugin can post one message into the conversation it is working for and update that same message
+later, on any channel, with no per-platform code. Use it for live progress (a checklist while a long
+tool runs, a plan card that changes as the plan is revised):
+
+```python
+def run_migration(args, **kwargs):
+    status = ctx.post_message("Migrating: 0/3 tables")
+    for i, table in enumerate(TABLES, 1):
+        migrate(table)
+        status.edit(f"Migrating: {i}/3 tables")
+    status.edit("Migration done ✓")
+    return tool_result({"migrated": len(TABLES)})
+```
+
+**Signatures:** `ctx.post_message(text: str) -> PluginMessage` and
+`PluginMessage.edit(text: str) -> dict`. From `async` code that already runs on the gateway's event loop
+(an async hook or slash-command handler) use `await ctx.apost_message(text)` and `await handle.aedit(text)`
+instead; the sync forms refuse there with `error: "on_event_loop"` rather than deadlocking the loop.
+
+**Which conversation.** The current conversation is the session bound to the calling code: a tool
+handler or hook running in that session's turn, its slash command, or a hook fired for it. The plugin
+never names a chat, so it cannot post anywhere else. A thread the plugin starts itself does not inherit
+that binding (start it with `contextvars.copy_context().run(...)` if it should), and a timer, a cron
+run or a process with no live gateway has no conversation at all.
+
+**Never raises.** Every call returns a result. `handle.ok`, `handle.message_id` and `handle.error`
+describe the last operation; `edit()` returns `{"ok", "message_id", "edited"}` plus
+`"fallback": True` when it had to post a new message. Error codes: `no_conversation` (nothing is bound
+in the calling context, the session is not live, or it belongs to another profile),
+`gateway_unavailable`, `adapter_unavailable`, `send_failed`, `edit_failed`, `on_event_loop`, `timeout`.
+A refused post returns a handle whose `edit()` is refused the same way, so the happy path needs no
+branching. `timeout` means the gateway has not answered within 30 s: the operation keeps running and
+its outcome still lands on the handle (`handle.pending` is true meanwhile), and the next `edit()` waits
+for it first, so a slow post never leaves a message the handle cannot edit. An edit that the platform
+refuses or that raises falls back to a fresh message the same way as a platform without edit support. Every post and edit is logged as `plugin_message plugin=<id> op=post|edit ...`.
+
+What each surface does:
+
+| Surface | `post_message` | `edit` |
+|---|---|---|
+| Messaging platforms that can edit (Telegram, Discord, Slack, Matrix, ...) | the adapter's normal `send` into the chat/thread | edits the same message in place |
+| Platforms without edit support (SMS, email, plugin adapters that do not implement `edit_message`) | `send` | sends a new message; the handle follows it (`edited: False, fallback: True`) |
+| Desktop and the Ink TUI | a keyed notice to the session's viewers (Desktop toast, TUI status line) | replaces that notice in place |
+| Classic CLI (`hermes chat`) | queued as a notice line, printed at the end of the next turn (the classic CLI has no live notice slot) | each edit queues another line |
+
+Text is clamped to the platform's message limit with an ellipsis (never split). It is plain text: an
+adapter may render its own formatting, but the plugin should not depend on it. No permission is needed,
+because the message can only reach the conversation that already invoked the plugin.
+`ctx.post_message` is not available to plugins running in the out-of-process plugin host
+(`plugins.isolation: host`): the handle is bound to the gateway's event loop and live adapter.
 
 ## Injecting Messages
 

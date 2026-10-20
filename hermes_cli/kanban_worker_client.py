@@ -19,6 +19,17 @@ import time
 # until an owner is ready, so waiting can never run the claim twice.
 OWNER_WAIT_S = 180.0
 _TRANSIENT_OWNER_STATES = frozenset({'draining', 'starting'})
+# Past the board lock wait: the owner's session setup and receipt before and after the write.
+ADMISSION_ANSWER_MARGIN_S = 60.0
+
+
+def admission_answer_budget():
+    """Seconds to wait for ``kanban.run``'s answer: the longest the owner's admission write can
+    wait on the board lock (``write_txn`` retries ``BEGIN IMMEDIATE`` ``_BUSY_MAX_RETRIES`` times,
+    each under the busy timeout) plus ``ADMISSION_ANSWER_MARGIN_S``."""
+    from hermes_cli import kanban_db_connect
+    lock_wait = (kanban_db_connect._BUSY_MAX_RETRIES + 1) * kanban_db_connect._resolve_busy_timeout_ms() / 1000
+    return lock_wait + ADMISSION_ANSWER_MARGIN_S
 
 
 async def run(params, board_db):
@@ -29,17 +40,36 @@ async def run(params, board_db):
     while True:
         try:
             async with connect_gateway() as client:
-                return await _submit_claim(client, params, board_db)
+                # kanban.run subscribes this socket to the card's session, but only receipts matter
+                # here: discard the turn's events, or they fill the client's bounded queue and its
+                # reader stops, with the next receipt behind it.
+                drain = asyncio.create_task(_discard(client.events))
+                try:
+                    return await _submit_claim(client, params, board_db)
+                finally:
+                    drain.cancel()
         except GatewayUnavailableError as exc:
             if exc.state not in _TRANSIENT_OWNER_STATES or time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(1)
 
 
+async def _discard(events):
+    while True:
+        await events.get()
+
+
 async def _submit_claim(client, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
     db = str(await asyncio.to_thread(Path(board_db).resolve))
-    accepted = await client.rpc('kanban.run', **dict(params, db=db))
+    # The owner answers only after it checks the claim and writes its ``owner_admitted`` marker
+    # in one board write transaction. The board (the cross-profile dispatch bus) can make that
+    # wait out its busy timeout, so the 30 s default left the owner admitting an attempt whose
+    # submitter had exited (the later-bound worker's submitter-liveness watcher ended it, and the
+    # admission was left ``unknown``). The wait is still finite: once the marker commits,
+    # ``enforce_max_runtime`` and TTL reclaim skip the run (``owner_reclaim_paused``), so an owner
+    # that stalls after admitting is bounded only here. A hang-up fails the wait sooner.
+    accepted = await client.rpc('kanban.run', _timeout=admission_answer_budget(), **dict(params, db=db))
     sid, receipt = accepted['session_id'], accepted['receipt']
     print(f'Session: {sid}', file=sys.stderr)
     while receipt['status'] not in {'terminal', 'unknown'}:
@@ -74,7 +104,8 @@ def _submit():
         board_db = os.environ['HERMES_KANBAN_DB']
         # Owner startup must never inherit this worker's task/tool/goal identity.
         for key in list(os.environ):
-            if key.startswith('HERMES_KANBAN_') and key != 'HERMES_KANBAN_HOME':
+            # The busy timeout is a host tuning knob, not task identity: the answer budget reads it.
+            if key.startswith('HERMES_KANBAN_') and key not in ('HERMES_KANBAN_HOME', 'HERMES_KANBAN_BUSY_TIMEOUT_MS'):
                 os.environ.pop(key)
         for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
             os.environ.pop(key, None)

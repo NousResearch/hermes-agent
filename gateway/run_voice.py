@@ -383,6 +383,10 @@ class GatewayVoiceMixin:
         # agent already produced (#90103). Keep /voice scoped to human platforms.
         if getattr(event.source.platform, "value", None) == "a2a":
             return False
+        # A local session's speech plays in its own client: LocalSessionAdapter has no audio delivery,
+        # so an owner-side synthesis would be a paid provider call nobody hears.
+        if event.source.platform == Platform.LOCAL:
+            return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE

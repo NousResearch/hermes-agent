@@ -27,7 +27,9 @@ export type {
   UsageBarData,
   UsageModelData
 } from './billing-types'
-export { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
+export { groupCatalogPlugins, PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from './catalog-browse'
+export { type FeaturedCandidate, featuredPicks, isOfficialSkillSource, OFFICIAL_SKILL_SOURCES, pickFeatured } from './catalog-featured'
+export { pluginCatalogInstallUrl, skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
 export {
   driveChargeSettlement,
   SETTLEMENT_MAX_RETRY_AFTER_MS,
@@ -75,6 +77,7 @@ export {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
+  isUndeliveredCorrectionRefusal,
   JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
@@ -136,6 +139,7 @@ export {
   type SkillCommandDispatchResponse,
   SLASH_COMMAND_RE
 } from './slash'
+
 export {
   THEME_PRESET_PALETTES,
   type ThemePresetColors,
@@ -174,6 +178,7 @@ export {
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
+
 export { type UpdateDebt, updateDebt, type UpdateDebtReceipt, type UpdateDebtStep } from './update-debt'
 export { usageFromTick, type UsageTickPayload } from './usage-tick'
 export {

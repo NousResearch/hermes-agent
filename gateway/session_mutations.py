@@ -163,7 +163,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, ow
     if is_chat_pick(live, operation):
         # No frozen policy to commit into: the chat's own /model and /reasoning override (#141152).
         from gateway.session_messaging_picks import apply_chat_pick
-        return await apply_chat_pick(authority, ref, owner or ref, live, params)
+        return await apply_chat_pick(authority, ref, owner or ref, live, params, principal_id=actor.subject)
 
     def authorize_write(conn):
         from hermes_state_mutation_binding import authorize_history, import_history_control

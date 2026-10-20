@@ -23,17 +23,6 @@ def is_chat_pick(live, operation):
     return operation in CHAT_PICKS and live is not None and live.source.platform != Platform.LOCAL
 
 
-def _require_fences(authority, ref, params):
-    row = authority.db.get_session(ref.session_id)
-    if row is None:
-        raise RuntimeStoreError('not_found')
-    if row['runtime_revision'] != params['expected_revision']:
-        raise RuntimeStoreError('revision_conflict')
-    if row['runtime_generation'] != params['expected_generation']:
-        raise RuntimeStoreError('stale_generation')
-    return row
-
-
 def _platform_key(live):
     from gateway.run import _platform_config_key
     return _platform_config_key(live.source.platform)
@@ -73,15 +62,23 @@ async def _pick_model(authority, owner, live, payload, row):
     return fields
 
 
-async def apply_chat_pick(authority, ref, owner, live, params):
+async def apply_chat_pick(authority, ref, owner, live, params, *, principal_id):
     """Apply a ``model`` / ``reasoning`` mutation to the messaging chat *live* mounted on *owner* (the
     caller authorized control and holds its mutation lock). The fences are the mount's, the ones
     ``session.resume`` handed the viewer; comparing them with a compression segment's row refused a
-    pick on a compressed chat with ``stale_generation``."""
+    pick on a compressed chat with ``stale_generation``. The receipt is keyed on that mount too: an
+    exact retry answers its stored receipt without re-applying the override, and the commit bumps the
+    mount's revision, so a retry of an older pick refuses ``revision_conflict``."""
+    from hermes_state_mutation_chat_pick import chat_pick_key, commit_chat_pick, prepare_chat_pick
     from hermes_state_mutations import validate_action
     operation, payload = params['operation'], params['payload']
     validate_action(operation, payload)
-    row = await asyncio.to_thread(_require_fences, authority, owner, params)
+    key, digest = chat_pick_key(principal_id, owner.session_id, params)
+    fenced = dict(epoch=authority.epoch, key=key, digest=digest, session_id=owner.session_id, params=params)
+    prepared = await asyncio.to_thread(prepare_chat_pick, authority.db, **fenced)
+    if 'receipt' in prepared:
+        return prepared['receipt']
+    row = prepared['row']
     runner = authority.runner
     if operation == 'reasoning':
         await asyncio.to_thread(_apply_reasoning, runner, live, payload['effort'])
@@ -89,10 +86,11 @@ async def apply_chat_pick(authority, ref, owner, live, params):
     else:
         async with runner._model_switch_lock():
             fields = await _pick_model(authority, owner, live, payload, row)
-    result = {'session_id': ref.session_id, 'operation': operation, 'revision': row['runtime_revision'],
-              'execution_generation': row['runtime_generation'], **fields}
     if fields.get('status') == 'confirmation_required':
         return {'session_id': ref.session_id, 'operation': operation, **fields}
+    result = {'session_id': ref.session_id, 'operation': operation, 'revision': row['runtime_revision'],
+              'execution_generation': row['runtime_generation'], **fields}
+    result = await asyncio.to_thread(commit_chat_pick, authority.db, **fenced, result=result)
     from gateway.session_local import local_session_info
     # Every viewer repaints its model and reasoning pill, as after a LOCAL pick.
     live.event_stream.publish(owner.session_id, local_session_info(authority, owner), event_type='session.info')

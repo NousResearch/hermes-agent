@@ -91,3 +91,30 @@ async def test_a_model_pick_on_a_messaging_chat_is_the_chats_next_turn_model(tmp
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_messaging_pick_is_fenced_by_its_receipt_and_revision(tmp_path):
+    """An exact retry of an older pick answers its stored receipt (the chat keeps the newer level); a
+    reused request id with another payload and a retry on stale fences are refused, as on LOCAL."""
+    runner, source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        first = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'high'}, 'pick-a'))
+        assert first['result']['revision'] == fences['revision'] + 1, first
+        second = await viewer.dispatch(_mutate(root, first['result'], 'reasoning', {'effort': 'low'}, 'pick-b'))
+        assert second['result']['revision'] == fences['revision'] + 2, second
+
+        retried = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'high'}, 'pick-a'))
+
+        assert retried.get('result') == first['result'], retried
+        level = runner._resolve_session_reasoning_config(source=source, session_key=route, model='')
+        assert level and level.get('effort') == 'low', level
+        reused = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'medium'}, 'pick-a'))
+        assert reused.get('error', {}).get('data', {}).get('reason') == 'admission_conflict', reused
+        stale = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'medium'}, 'pick-c'))
+        assert stale.get('error', {}).get('data', {}).get('reason') == 'revision_conflict', stale
+        level = runner._resolve_session_reasoning_config(source=source, session_key=route, model='')
+        assert level.get('effort') == 'low', level
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()

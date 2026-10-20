@@ -352,6 +352,20 @@ class GatewayAgent:
 
     # -- session identity ----------------------------------------------------------------------
     @property
+    def _todo_store(self):
+        return self._todos
+
+    @_todo_store.setter
+    def _todo_store(self, store):
+        """Main swaps in a fresh ``TodoStore`` after /new, /resume and /branch move ``session_id`` (and the
+        constructor builds one): it starts with the gateway's snapshot of that session, so a resumed
+        plan is there before its next ``todo.updated``."""
+        self._todos = store
+        snapshot = self._state().todo_state
+        if snapshot:
+            self._set_todos(snapshot)
+
+    @property
     def session_id(self):
         return self._session_id
 

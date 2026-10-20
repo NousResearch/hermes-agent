@@ -252,6 +252,9 @@ class CLIStreamMixin:
             ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        if modern:
+            from hermes_cli.cli_modern_layout import closing_separator
+            _cprint(closing_separator(True))
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
@@ -324,12 +327,13 @@ class CLIStreamMixin:
         if not getattr(self, "_reasoning_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import reasoning_text_line, thought_line
+            from hermes_cli.cli_modern_layout import closing_separator, reasoning_text_line, thought_line
             if getattr(self, "_reasoning_buf", ""):
                 _cprint(reasoning_text_line(self._reasoning_buf))
             started = getattr(self, "_reasoning_started_at", 0.0)
             _cprint(thought_line(time.monotonic() - started if started else None,
                                  getattr(self, "_reasoning_full_text", "")))
+            _cprint(closing_separator(False))
             self._reasoning_buf, self._reasoning_full_text, self._reasoning_box_opened = "", "", False
             if not getattr(self, "_stream_box_live", False):
                 self._release_held_status_lines()
@@ -562,9 +566,13 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened and getattr(self, "_stream_box_live", False) and not getattr(self, "_modern_layout", False):
-            w = self._scrollback_box_width()
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
+            if getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import closing_separator
+                _cprint(closing_separator(True))
+            else:
+                w = self._scrollback_box_width()
+                _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
         self._stream_box_live = False
         self._release_held_status_lines()
 

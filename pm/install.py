@@ -16,6 +16,7 @@ from typing import Optional
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
 from pm.filesystem import native, remove_tree, retry_held
+from pm.install_external import external_drift, external_packages
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -864,16 +865,20 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     against the lockfile. Maps package names to reasons; empty means healthy. Never
     installs, never touches the network. An install pm has never touched
     (no installed-state file) reports nothing — pm only vouches for what
-    it installed. Lockfile packages this build doesn't know (version skew
+    it installed. Declared external executables are checked even without
+    PM state. Lockfile packages this build doesn't know (version skew
     during a partial update) are skipped, not fatal."""
+    external = external_packages()
+    problems = external_drift(external)
     if not paths.facts_path().is_file() and not paths.runtime_facts_path().is_file():
-        return {}
+        return problems
 
-    problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
     target = current_target()
     for name in lockfile.names():
+        if name in external:
+            continue
         try:
             package = get_package(name)
         except KeyError:
@@ -933,6 +938,7 @@ def _store_path_dirs() -> list[str]:
 
     lockfile = _lockfile()
     target = current_target()
+    external = external_packages()
     locations: dict[str, object] = {}
 
     def located(package):
@@ -942,6 +948,9 @@ def _store_path_dirs() -> list[str]:
 
     dirs: list[str] = []
     for name in _dependents_first(lockfile.names()):
+        # An old PM receipt must not displace the package owner's tools.
+        if name in external:
+            continue
         try:
             package = get_package(name)
             chain = walk([name])

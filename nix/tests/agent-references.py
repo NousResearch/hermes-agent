@@ -38,11 +38,18 @@ assert (Path(inputs["pm_runtime"]) / "pm-runtime.json").is_file()
 # exit status alone is not an import check. No parsing makeWrapper's shell text.
 with tempfile.TemporaryDirectory() as temporary:
     home = Path(temporary)
+    # Optional PM installs or a previous Python selection must not make
+    # Nix's supplied runtime tools appear absent from PM's download store.
+    tools = home / ".hermes" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "facts.json").write_text(json.dumps({"schema": 1, "packages": {}}))
     probe = home / "probe"
     probe.mkdir()
     (probe / "sitecustomize.py").write_text(
         "import importlib, json, os\n"
         "observed = dict(os.environ)\n"
+        "import pm\n"
+        "observed['pm_problems'] = pm.activate(allow_incomplete=True)\n"
         "module, function = os.environ['NIX_CHECK_ENTRY'].split(':')\n"
         "assert callable(getattr(importlib.import_module(module), function))\n"
         "print(json.dumps(observed), flush=True)\n"
@@ -60,6 +67,7 @@ with tempfile.TemporaryDirectory() as temporary:
                                 env={**env, "PYTHONPATH": str(probe), "NIX_CHECK_ENTRY": entry},
                                 text=True, capture_output=True, check=True, timeout=60)
         observed = json.loads(result.stdout)
+        assert observed["pm_problems"] == [], (name, observed["pm_problems"])
         for key, value in command_map["env"].items():
             assert observed[key] == value, (name, key, observed.get(key), value)
         assert observed["HERMES_BIN"] == str(package / "bin/hermes")
@@ -70,5 +78,14 @@ with tempfile.TemporaryDirectory() as temporary:
         subprocess.run([str(package / "bin" / name), "--help"], cwd=home, env=env,
                        check=True, timeout=60, stdout=subprocess.DEVNULL)
         print(f"PASS: {name} --help")
+
+    # Doctor dispatches through PM's independent interpreter. A startup
+    # probe alone cannot prove that this command honors the same stamp.
+    doctor = subprocess.run([str(package / "bin/hermes"), "pm", "doctor"], cwd=home,
+                            env=env, text=True, capture_output=True, timeout=60, check=False)
+    assert doctor.returncode == 0, doctor.stdout + doctor.stderr
+    for name, executable in stamp["externalPackages"].items():
+        assert f"✓ {name}: externally managed ({executable})" in doctor.stdout, doctor.stdout
+    print("PASS: hermes pm doctor recognizes the externally managed runtime tools")
 
 print("PASS: referenced resources, independent PM runtime, and uv2nix code placement")

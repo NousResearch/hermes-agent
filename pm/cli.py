@@ -419,6 +419,7 @@ def cmd_env(args) -> int:
 
 
 def cmd_doctor(args) -> int:
+    from pm.cli_doctor import report_external_packages
     from pm.install import _identity, _installed_location
     from pm.store import tree_digest
 
@@ -426,8 +427,10 @@ def cmd_doctor(args) -> int:
     facts = _facts()
     store = _store()
     target = current_target()
-    bad = 0
+    external, bad = report_external_packages()
     for name in lockfile.names():
+        if name in external:
+            continue
         package = get_package(name)
         reason = package.missing_reason(target)
         if reason is not None:

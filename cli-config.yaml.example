@@ -1314,8 +1314,8 @@ agent:
   # approval) and clean-diff expectations. Set false to keep that nudge terse.
   # verify_guidance: true
 
-  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
-  # agent going one more turn to verify/clean before finishing. This caps how
+  # A `pre_verify` hook (after file edits) or `pre_finish` hook (any text answer;
+  # plugin or shell, see Event Hooks docs) can keep the agent going one more turn. This caps how
   # many times one turn may be nudged to continue, so a hook can't trap the loop.
   # Default 3.
   # max_verify_nudges: 3

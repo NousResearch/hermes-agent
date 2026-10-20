@@ -1316,7 +1316,7 @@ When enabled, Hermes refuses to accept a final answer on a turn where the agent 
 agent:
   verify_on_stop: false        # true | false | "auto" (surface-aware: on for CLI/TUI/desktop, off for messaging)
   verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
-  max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
+  max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify/pre_finish hooks)
   coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
 ```
 
@@ -1324,7 +1324,7 @@ agent:
 
 The evidence that feeds this guard (which test/lint/build commands ran, which files were edited since) lives in `~/.hermes/verification_evidence.db`. That ledger is only written or created while the guard is enabled; with `verify_on_stop: false` nothing is recorded and an existing file can be deleted freely.
 
-For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](./features/hooks.md#pre_verify).
+For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](./features/hooks.md#pre_verify). To check every text answer, including turns that edited no files, use [`pre_finish`](./features/hooks.md#pre_finish).
 
 ## Standing Goals (`/goal`)
 

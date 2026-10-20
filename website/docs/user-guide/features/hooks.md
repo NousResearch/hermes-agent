@@ -457,6 +457,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
+| [`pre_finish`](#pre_finish) | Directive/control | When any text answer is about to finish, edited or not, after `pre_verify` declined; same directive and `agent.max_verify_nudges` budget as `pre_verify`. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` (empty on a turn with no file edits) | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
@@ -857,7 +858,7 @@ return {"action": "continue", "message": "Run the formatter on your changes, the
 
 The `message` is appended as a synthetic user turn and the loop runs again. The Claude-Code Stop shape (`{"decision": "block", "reason": "..."}`, where blocking the stop means *keep going*) is accepted too. A directive with no message — or any other return — lets the turn finish.
 
-**Bounded:** consecutive continue directives in one turn are capped by `agent.max_verify_nudges` (default 3), so a hook that always says continue can never trap the loop. The attempted answer is kept in history but not surfaced to the user while the agent is being nudged.
+**Bounded:** consecutive continue directives in one turn are capped by `agent.max_verify_nudges` (default 3), so a hook that always says continue can never trap the loop. The attempted answer stays in history and is shown to the user as an interim message; only the nudge is dropped from history.
 
 **Make it idempotent:** the hook re-fires after each nudge, so gate on `attempt` (`if attempt: return None`) — otherwise it just nudges until the bound is hit.
 
@@ -884,6 +885,36 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `pre_finish`
+
+Fires **every time a text answer is about to finish**, whether or not the turn edited files. Use it for checks on the answer itself: a diagram that will not render, a required citation, a reply in the wrong language. `pre_verify` stays scoped to turns that edited files, so hooks written for it never see answer-only turns.
+
+**Callback signature:** the same as [`pre_verify`](#pre_verify). `changed_paths` is an empty list on a turn with no file edits.
+
+**Fires:** at the same gate as `pre_verify`, after it. On a turn that edited files, `pre_verify` hooks run first; `pre_finish` hooks run only when none of them asked to continue.
+
+**Return value and bound:** the same as `pre_verify`. Both hooks share one `agent.max_verify_nudges` budget per turn, so together they cannot nudge a turn more than that many times.
+
+**Example — resend a broken diagram once:**
+
+```python
+import re
+
+def check_diagrams(final_response, attempt, **kwargs):
+    if attempt:
+        return None  # one retry is enough
+    bad = [i for i, block in enumerate(re.findall(r"```mermaid\n(.*?)```", final_response, re.S), 1)
+           if not my_renderer_accepts(block)]
+    if not bad:
+        return None
+    return {"action": "continue", "message": f"Diagram {bad[0]} does not render; resend it fixed."}
+
+def register(ctx):
+    ctx.register_hook("pre_finish", check_diagrams)
+```
 
 ---
 
@@ -1931,7 +1962,7 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
 
-// Keep the agent going at the verify gate (pre_verify); both shapes accepted:
+// Keep the agent going at the verify gate (pre_verify or pre_finish); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}
 

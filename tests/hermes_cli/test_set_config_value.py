@@ -558,6 +558,7 @@ class TestValidateConfigKey:
 
     @pytest.mark.parametrize("key", [
         "agent.max_turns",
+        "agent.reasoning_effort",
         "discord.gateway_restart_notification",
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",

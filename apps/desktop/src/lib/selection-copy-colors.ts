@@ -155,6 +155,20 @@ function rangeContainsNode(range: Range, node: Node): boolean {
   }
 }
 
+function selectionContainsMath(selection: Selection, doc: Document): boolean {
+  const formulas = doc.querySelectorAll('.katex')
+
+  for (const formula of formulas) {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      if (rangeContainsNode(selection.getRangeAt(i), formula)) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
 /**
  * Mean perceived luma of the ink that paints the current selection, read
  * from the LIVE DOM: the computed color (preferring -webkit-text-fill-color
@@ -295,6 +309,15 @@ export function installSelectionCopyColorGuard(doc: Document = document): () => 
 
     if (selectionStartsInEditable(sel)) {
       trace({ step: 'editable-skip' })
+
+      return
+    }
+
+    // Markdown surfaces own the copy payload for KaTeX selections so the
+    // original `$...$`/`$$...$$` source survives instead of the visual glyphs.
+    // This guard runs during capture, before React's bubbling copy handler.
+    if (selectionContainsMath(sel, doc)) {
+      trace({ step: 'latex-skip' })
 
       return
     }

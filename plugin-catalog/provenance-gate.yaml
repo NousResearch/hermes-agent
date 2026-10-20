@@ -1,0 +1,30 @@
+name: provenance-gate
+title: Provenance Gate
+repo: https://github.com/simin-yuan/hermes-provenance-gate
+sha: 8813469d45c82fb0f5af6724c3761169ca7c3e86
+version: "0.1.0"
+description: >-
+  Flags memory and skill_manage writes that state a user decision ("the user decided ...", "用户决定 ...")
+  without the user's own words: each such sentence needs a quote that appears verbatim in text the user
+  typed in this session, shares key words with the decision and does not drop a negation. A patch is
+  checked by the text it produces. Observe mode (the default) records flagged writes and `hermes
+  provenance-gate report` lists them; block mode refuses them and tells the model how to fix the write.
+  Measured on an independent blind set of 133 lines: precision 1.000, recall 0.694.
+  Disclosure — two hooks (pre_llm_call, pre_tool_call); keeps a local copy of the text the user types,
+  with its sender_id and session link, and an evidence log of checked claims under
+  plugin-data/provenance-gate (30-day default retention, `hermes provenance-gate purge`); reads
+  MEMORY.md, USER.md and skill files to reproduce what a patch produces; no network, no credentials,
+  never asks for approval.
+maintainer: simin-yuan
+tier: community
+category: memory
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/simin-yuan/hermes-provenance-gate#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -225,14 +225,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
     ) -> None:
-        """Deliver explicit MEDIA: tags from an already-streamed response (text already delivered).
+        """Deliver explicit attachments from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
         path in a streamed reply is shown text or stale inspected content, and promoting it sent
         files the model never asked for. MEDIA tags are NOT deduped against prior turns (a final-reply
         directive is a deliberate attach); stale auto-appended tags are deduped upstream.
 
-        Only ``MEDIA:`` directives — the explicit attachment contract — trigger post-stream uploads. See
-        #20834.
+        Explicit means ``MEDIA:`` directives and markdown/HTML image tags — the two contracts the
+        non-streaming chain turns into attachments. See #20834 and #141806.
         """
         from urllib.parse import quote as _quote
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
@@ -249,7 +249,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # the same filter removal on the non-streaming path in gateway/platforms/base.py. Bare local
             # paths in an already-streamed reply are text the user has seen (or stale inspected content),
             # not an attachment request.
-            adapter.extract_images(cleaned)
+            # A markdown/HTML image tag IS an attachment request, though — the non-streaming chain turns it
+            # into a native attachment, so post-stream it has to be delivered here too. Discarding the
+            # extraction left a streamed reply that showed the tag as text and never sent the image
+            # (#141806).
+            url_images, _ = adapter.extract_images(cleaned)
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
@@ -263,9 +267,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
             image_paths = [p for p, v in media_files if _is_photo(p, v)]
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
-            if image_paths:
+            # Local images and URL images go out in one batch so a platform that bundles native
+            # multi-attachment sends (Signal) still gets a single call. ``[[as_document]]`` only
+            # applies to local files: a URL has no file to hand to send_document.
+            if image_paths or url_images:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                    images.extend(url_images)
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)

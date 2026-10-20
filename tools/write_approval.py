@@ -317,14 +317,20 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
+def _skill_file_refused(skill_dir: Path, target_label: str) -> bool:
+    """A staged file_path is the model's: apply the checks approval applies before reading it."""
+    from tools.skill_manager_tool import _resolve_supporting_file
+    return target_label != "SKILL.md" and _resolve_supporting_file(Path(skill_dir), target_label)[1] is not None
+
+
 def _staged_base(name: str, target_label: str, staged: Optional[dict[str, dict[str, str]]]) -> str:
     """What an op diffs against: the content earlier ops of the same batch left in this file,
-    else the on-disk copy (empty for a file that does not exist yet)."""
+    else the on-disk copy (empty for a file that does not exist yet or may not be read)."""
     files = (staged or {}).get(name)
     if files and target_label in files:
         return files[target_label]
     skill_dir = _find_skill_path(name)
-    if not skill_dir:
+    if not skill_dir or _skill_file_refused(skill_dir, target_label):
         return ""
     with suppress(Exception):
         p = skill_dir / target_label
@@ -354,6 +360,9 @@ def skill_pending_diff(
 
     # patch/write_file target a file inside the skill; edit always targets SKILL.md.
     target_label = "SKILL.md" if action == "edit" else (payload.get("file_path") or "SKILL.md")
+    skill_dir = _find_skill_path(name)
+    if skill_dir and _skill_file_refused(skill_dir, target_label):
+        return f"(refused: {action} path {target_label!r} is outside the skill's allowed files)"
     current = _staged_base(name, target_label, staged)
 
     if action == "patch":

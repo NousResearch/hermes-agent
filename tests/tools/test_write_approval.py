@@ -519,3 +519,30 @@ def test_a_record_is_known_by_its_file_name_not_the_id_written_inside_it(hermes_
     handle_pending_subcommand(wa.SKILLS, ["approve", beta["id"]])
     assert wa.get_pending(wa.SKILLS, beta["id"]) is None             # applied and gone, not left to replay
     assert wa.get_pending(wa.SKILLS, gamma["id"]) is not None        # the unreviewed record is untouched
+
+
+def test_skills_diff_never_reads_a_staged_path_outside_the_skill(hermes_home, tmp_path):
+    """A staged write_file/patch names its own file_path; /skills diff must not show a file outside
+    the skill as the diff's current side, alone or inside a staged batch."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe",
+                                     "content": "---\nname: probe\ndescription: p\n---\nbody\n"},
+                         summary="create probe", origin="foreground")
+    handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+    secret = tmp_path / "private.txt"
+    secret.write_text("PRIVATE-LINE\n", encoding="utf-8")
+    skill_dir = wa._find_skill_path("probe")
+    rel = os.path.relpath(secret, skill_dir)
+    for bad in (str(secret), rel, "references/../../" + rel):
+        staged = wa.stage_write(wa.SKILLS, {"action": "write_file", "name": "probe", "file_path": bad,
+                                            "file_content": "new\n"}, summary="write", origin="foreground")
+        out = wa.skill_pending_diff(staged)
+        assert "PRIVATE-LINE" not in out and out.startswith("(refused"), (bad, out)
+        batch = {"payload": {"action": "batch", "operations": [
+            {"action": "patch", "name": "probe", "file_path": bad, "old_string": "PRIVATE", "new_string": "X"},
+            {"action": "write_file", "name": "probe", "file_path": bad, "file_content": "new\n"}]}}
+        assert "PRIVATE-LINE" not in wa.skill_pending_diff(batch), bad
+    ok = wa.stage_write(wa.SKILLS, {"action": "write_file", "name": "probe", "file_path": "references/notes.md",
+                                    "file_content": "new\n"}, summary="write", origin="foreground")
+    assert "+new" in wa.skill_pending_diff(ok)

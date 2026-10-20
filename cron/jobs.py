@@ -486,10 +486,20 @@ def job_payload_is_empty(job: dict[str, Any]) -> bool:
 
 
 def _schedule_display_for_job(job: dict[str, Any]) -> str:
+    schedule = job.get("schedule")
+    # Interval schedules fire relative to their previous run, not at fixed cron wall-clock
+    # slots.  Legacy records can carry a misleading cron-style ``schedule_display``; derive
+    # the operator-facing label from the interval that the scheduler actually honours.
+    if isinstance(schedule, dict) and schedule.get("kind") == "interval":
+        try:
+            minutes = int(schedule.get("minutes"))
+        except (TypeError, ValueError):
+            minutes = 0
+        if minutes > 0:
+            return f"every {minutes}m"
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
         return display
-    schedule = job.get("schedule")
     if isinstance(schedule, dict):
         for key in ("display", "value", "expr", "run_at"):
             text = _coerce_job_text(schedule.get(key)).strip()

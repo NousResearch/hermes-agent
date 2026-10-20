@@ -72,6 +72,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_update.add_argument(
         "--yes", "-y", action="store_true",
         help="With no name: update everything listed without the confirmation question (required without a terminal)")
+    plugins_update.add_argument(
+        "--force", "-f", action="store_true",
+        help="Apply the update even when the security scan returns a caution verdict (a dangerous verdict "
+             "still blocks). Without it, a terminal asks first")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",

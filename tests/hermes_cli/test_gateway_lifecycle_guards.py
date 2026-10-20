@@ -306,16 +306,6 @@ def test_active_work_verb_counts_a_profiles_side_agent_and_reads_it_on_the_loop(
     assert reads == [True], "the authority must be read inside the loop callback"
 
 
-def test_profile_stop_fails_closed_when_the_host_does_not_report(monkeypatch, capsys):
-    """No answer from the host that serves the profile is not "idle": refuse unless --interrupt."""
-    from hermes_cli import gateway_lifecycle_guards as guards
-    monkeypatch.setattr(guards, "live_work", lambda home, profile=None: None)
-    with pytest.raises(SystemExit):
-        guards.refuse_while_sessions_live("stop", SimpleNamespace(interrupt=False), host_home="/h", profile="coder")
-    assert "did not report its live work" in capsys.readouterr().out
-    guards.refuse_while_sessions_live("stop", SimpleNamespace(interrupt=True), host_home="/h", profile="coder")
-
-
 @pytest.mark.parametrize("answer", [True, False])
 def test_live_sessions_ask_yes_no_on_a_terminal(monkeypatch, capsys, answer):
     """On a terminal the verb names the live work and asks; yes proceeds, no (the default) cancels."""

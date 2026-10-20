@@ -100,14 +100,8 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
     so only its work counts."""
     if profile:
         hint = f"hermes -p {profile} gateway {{verb}} {INTERRUPT_FLAG}"
-        work = live_work(Path(host_home), profile)
-        if work is None:
-            # The host serving this profile is up; no answer is not "idle", so fail closed.
-            lines = [f"Refusing to {verb} the gateway: profile '{profile}' did not report its live work.",
-                     "  Retry in a moment, or interrupt whatever it is running deliberately:",
-                     f"    {hint.format(verb=verb)}"]
-        else:
-            lines = _work_lines(verb, Path(host_home), work, hint)
+        # No answer (control socket down) proceeds: the park marker path exists for exactly that host.
+        lines = refusal_lines(verb, [Path(host_home)], profile=profile, flag_hint=hint)
     else:
         lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
     if not lines:

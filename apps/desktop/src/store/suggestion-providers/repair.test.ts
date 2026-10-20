@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   request: vi.fn()
 }))
 
-vi.mock('@/hermes', () => ({ listMcpServers: async () => ({ servers: [{ name: 'figma' }] }) }))
+vi.mock('@/hermes', () => ({
+  listMcpServers: async () => ({ servers: [{ name: 'figma' }] }),
+  setApiRequestProfile: () => {}
+}))
 vi.mock('@/lib/mcp-dashboard-oauth', () => ({
   completeMcpDesktopOAuth: async () => ({ tools: [] }),
   McpOAuthCancelled: class extends Error {}

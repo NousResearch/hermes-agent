@@ -30,6 +30,11 @@ def server(tmp_path, monkeypatch):
         mod._pending_ws_reaps.clear()
 
 
+def _drain(registry):
+    while not registry.completion_queue.empty():
+        registry.completion_queue.get_nowait()
+
+
 @pytest.fixture()
 def registry():
     from tools.process_registry import process_registry
@@ -37,7 +42,9 @@ def registry():
     saved = dict(process_registry._running), dict(process_registry._finished)
     process_registry._running.clear()
     process_registry._finished.clear()
+    _drain(process_registry)
     yield process_registry
+    _drain(process_registry)
     process_registry._running.clear()
     process_registry._finished.clear()
     process_registry._running.update(saved[0])
@@ -111,33 +118,84 @@ def test_orphan_reap_rearms_while_process_will_notify(server, registry, detached
     assert server._pending_ws_reaps[sid] is _Timer.created[-1]
 
 
-def test_exited_process_keeps_session_until_its_notice_can_be_delivered(server, registry, detached):
+def test_exited_process_keeps_session_until_its_notice_is_dequeued(server, registry, detached):
     """The exit is recorded before the completion is queued, and the notice becomes a turn only once the poller
-    dequeues it: a reaper firing in that window must not close the session and lose the follow-up."""
+    dequeues it: a reaper firing anywhere in that hand-off must not close the session and lose the follow-up."""
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
-    proc.exited = True  # mark_exited ran; _move_to_finished (exited_at, queue publish) has not yet
+    proc.exited = True  # mark_exited ran; _move_to_finished (publish) has not yet
 
     assert not server._session_is_reapable(sid, session)
 
-    registry._finished[proc.id] = registry._running.pop(proc.id)
-    proc.exited_at = time.time()  # published, not yet dequeued by the poller
+    registry._move_to_finished(proc)  # published: queued, not yet dequeued
+    assert not registry.completion_queue.empty()
+    assert not server._session_is_reapable(sid, session)
 
+    registry.completion_queue.get_nowait()  # the poller took it
+    assert server._session_is_reapable(sid, session)
+
+
+def test_queued_notice_survives_registry_pruning(server, registry, detached):
+    """Retained history is pruned by start time and a process cap, on every spawn: a long job's queued completion
+    must keep protecting its owner after its finished entry is gone."""
+    from tools.process_registry import FINISHED_TTL_SECONDS
+
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.started_at = time.time() - FINISHED_TTL_SECONDS - 1
+    proc.mark_exited(0)
+    registry._move_to_finished(proc)
+    with registry._lock:
+        registry._prune_if_needed()
+
+    assert proc.id not in registry._finished
     assert not server._session_is_reapable(sid, session)
 
 
-def test_session_released_once_delivery_grace_passes(server, registry, detached):
-    from tools.process_registry_awaiting import NOTIFY_DELIVERY_GRACE_SECONDS
-
+def test_session_released_once_notice_is_delivered(server, registry, detached):
     sid, session, popped = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
-    proc.exited, proc.exited_at = True, time.time() - NOTIFY_DELIVERY_GRACE_SECONDS - 1
-    registry._finished[proc.id] = registry._running.pop(proc.id)
+    proc.mark_exited(0)
+    registry._move_to_finished(proc)
+    registry.completion_queue.get_nowait()
 
     server._schedule_ws_orphan_reap(sid)
     _Timer.created[-1].callback()
 
     assert sid not in server._sessions and popped == [session]
+
+
+def test_notice_held_after_stop_does_not_pin_session(server, registry, detached):
+    """After the user's Stop the poller requeues notices until their next prompt; that wait must not be forever."""
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True)
+    proc.mark_exited(0)
+    registry._move_to_finished(proc)
+    session["_turn_cancel_requested"] = True
+
+    assert server._session_is_reapable(sid, session)
+
+
+def test_recovered_process_whose_pid_died_releases_session(server, registry, detached, monkeypatch):
+    """A checkpoint-recovered process has no reader thread to observe its exit; a dead PID must not pin its owner."""
+    sid, session, _ = detached
+    _spawn(registry, session["session_key"], notify_on_complete=True, detached=True, pid=12345)
+    monkeypatch.setattr(registry, "_detached_host_fate", lambda *_: "gone")
+
+    assert server._session_is_reapable(sid, session)
+
+
+@pytest.mark.parametrize("unit", ["", "hermes-proc.scope"])
+def test_uncollected_recovered_exit_never_pins_session(server, registry, detached, unit):
+    """A recovered entry closed without a collected exit (exited_at stays 0, a scope keeps it retained) queues no
+    completion, so it must not hold its owner however long ago it ended."""
+    sid, session, _ = detached
+    proc = _spawn(registry, session["session_key"], notify_on_complete=True, detached=True, pid=12345,
+                  systemd_unit=unit)
+    registry._prune_uncollected_detached(proc)
+
+    assert proc.exited and not proc.exited_at
+    assert server._session_is_reapable(sid, session)
 
 
 def test_silent_background_process_does_not_pin_session(server, registry, detached):

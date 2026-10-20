@@ -324,16 +324,17 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
 
 def _session_owns_pending_process_notification(session: dict) -> bool:
     """True while a background process this session started will still report back into it (``notify_on_complete``
-    or ``watch_patterns``): running, or exited so recently its completion may not have become a turn yet. The notice
+    or ``watch_patterns``): running, exited with its completion not yet published, or published but not yet dequeued. The notice
     reaches the model only through THIS session's notification poller, and closing the session kills the process
     (``agent_close``), so the reapers must keep it alive. Ownership is the set close() kills by — the agent's raw
-    spawning task ids, which keep pre-compression ids after the session key rotates. Bounded by the process: the
-    session is released a short grace after it exits."""
+    spawning task ids, which keep pre-compression ids after the session key rotates. Bounded by delivery: the session
+    is released once the notice has been dequeued."""
     agent = session.get("agent")
     owners = {*getattr(agent, "_process_owner_task_ids", ()), str(session.get("session_key") or "")}
     from tools.process_registry import process_registry
     from tools.process_registry_awaiting import awaits_notification
-    return awaits_notification(process_registry, owners)
+    # After Stop the poller requeues notices until the user's next prompt: those must not make the session immortal.
+    return awaits_notification(process_registry, owners, include_queued=not session.get("_turn_cancel_requested"))
 
 
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:

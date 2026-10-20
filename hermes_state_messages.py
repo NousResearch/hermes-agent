@@ -376,17 +376,18 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         return msg
 
     @staticmethod
-    def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
-        """Bump sessions.* counters after an insert; *unit* bakes the ``+ 1`` literal into the SQL."""
+    def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, activity_at, *, unit: bool) -> None:
+        """Bump counters and advance durable activity without overwriting a newer heartbeat."""
         inc, params = ("1", ()) if unit else ("?", (inserted,))
         if tool_calls > 0:
             conn.execute(
                 f"""UPDATE sessions SET message_count = message_count + {inc},
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
-                (*params, tool_calls, session_id))
+                       tool_call_count = tool_call_count + ?, last_activity_at = CASE
+                       WHEN last_activity_at IS NULL OR last_activity_at < ? THEN ? ELSE last_activity_at END WHERE id = ?""",
+                (*params, tool_calls, activity_at, activity_at, session_id))
         elif inserted > 0:
             conn.execute(
-                f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
+                f"UPDATE sessions SET message_count = message_count + {inc}, last_activity_at = CASE WHEN last_activity_at IS NULL OR last_activity_at < ? THEN ? ELSE last_activity_at END WHERE id = ?", (*params, activity_at, activity_at, session_id))
 
     def append_message(
         self, session_id: str, role: str, content: str | None = None, tool_name: str | None = None, tool_calls: Any = None,
@@ -416,7 +417,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
-            self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
+            self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), message_timestamp, unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -460,7 +461,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             decode_row_fn=self._decoded_repair_row,
         )
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-        self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+        self._bump_session_counters(conn, session_id, inserted, tool_calls_total,
+            max((row.get("timestamp") for row in inserted_rows), default=None), unit=False)
         return inserted
 
     _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")

@@ -55,6 +55,86 @@ def test_writable_startup_reconciles_legacy_activity_column_before_index(tmp_pat
         healed.close()
 
 
+def test_v31_activity_backfill_is_monotonic_and_runs_once(tmp_path):
+    """Historical message recency heals once even if schema advancement is later deferred."""
+    path = tmp_path / "legacy-activity.db"
+    original = SessionDB(path)
+    original.create_session("null-activity", "cli")
+    original.create_session("later-heartbeat", "cli")
+    original._conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES ('null-activity', 'user', 'new', 50)",
+    )
+    original._conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES ('later-heartbeat', 'user', 'old', 40)",
+    )
+    original._conn.execute(
+        "UPDATE sessions SET last_activity_at = 60 WHERE id = 'later-heartbeat'",
+    )
+    original._conn.execute("UPDATE schema_version SET version = 30")
+    original._conn.execute(
+        "DELETE FROM state_meta WHERE key = 'session_activity_message_backfill_version'",
+    )
+    original._conn.commit()
+    original.close()
+
+    healed = SessionDB(path)
+    try:
+        rows = dict(healed._conn.execute(
+            "SELECT id, last_activity_at FROM sessions WHERE id IN ('null-activity', 'later-heartbeat')",
+        ).fetchall())
+        assert rows == {"null-activity": 50.0, "later-heartbeat": 60.0}
+        assert healed.get_meta("session_activity_message_backfill_version") == "1"
+        healed._conn.execute(
+            "UPDATE sessions SET last_activity_at = 70 WHERE id = 'null-activity'",
+        )
+        healed._conn.commit()
+    finally:
+        healed.close()
+
+    reopened = SessionDB(path)
+    try:
+        assert reopened._conn.execute(
+            "SELECT last_activity_at FROM sessions WHERE id = 'null-activity'",
+        ).fetchone()[0] == 70.0
+    finally:
+        reopened.close()
+
+
+def test_v31_backfill_marker_skips_rescan_when_schema_is_fts_deferred(tmp_path, monkeypatch):
+    """A marker-complete v30 store must not aggregate messages again while FTS defers version advancement."""
+    path = tmp_path / "marker-complete-legacy.db"
+    original = SessionDB(path)
+    original.create_session("session", "cli")
+    original.append_message("session", "user", "persisted", timestamp=50.0)
+    original._conn.execute("UPDATE schema_version SET version = 30")
+    original._conn.execute(
+        "INSERT OR REPLACE INTO state_meta(key, value) VALUES (?, ?)",
+        ("session_activity_message_backfill_version", "1"),
+    )
+    original._conn.commit()
+    original.close()
+
+    import hermes_state_schema
+
+    statements = []
+    original_migration = hermes_state_schema.SessionSchemaMixin._run_data_migrations
+
+    def traced_migration(self, cursor, current_version, fts5_available):
+        cursor.connection.set_trace_callback(statements.append)
+        return original_migration(self, cursor, current_version, fts5_available)
+
+    monkeypatch.setattr(hermes_state_schema.SessionSchemaMixin, "_sqlite_supports_fts5", lambda *_: False)
+    monkeypatch.setattr(hermes_state_schema.SessionSchemaMixin, "_run_data_migrations", traced_migration)
+
+    reopened = SessionDB(path)
+    try:
+        assert reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 30
+    finally:
+        reopened.close()
+
+    assert not any("message_activity" in statement.lower() for statement in statements)
+
+
 def test_bounded_recent_orders_by_durable_activity_and_shapes_preview(db):
     now = time.time()
     db.create_session("older", source="cli")

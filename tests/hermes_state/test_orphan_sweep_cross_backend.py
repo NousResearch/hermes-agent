@@ -50,13 +50,6 @@ def _backdate_session(db: SessionDB, session_id: str, ts: float) -> None:
     db._conn.commit()
 
 
-def _set_message_timestamps(db: SessionDB, session_id: str, ts: float) -> None:
-    db._conn.execute(
-        "UPDATE messages SET timestamp = ? WHERE session_id = ?", (ts, session_id)
-    )
-    db._conn.commit()
-
-
 def _make_session(
     db: SessionDB,
     session_id: str,
@@ -67,8 +60,7 @@ def _make_session(
 ) -> None:
     db.create_session(session_id, source=source)
     if message_at is not None:
-        db.append_message(session_id, role="user", content="hello")
-        _set_message_timestamps(db, session_id, message_at)
+        db.append_message(session_id, role="user", content="hello", timestamp=message_at)
     _backdate_session(db, session_id, started_at)
 
 

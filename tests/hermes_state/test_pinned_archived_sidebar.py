@@ -82,17 +82,13 @@ def test_pinned_backfill_still_obeys_other_filters(db):
 
 def test_stale_sweep_does_not_archive_pinned_session(db):
     """The idle sweep retires an unpinned stale row and leaves a pin active."""
+    old = time.time() - 10 * 86400
     db.create_session(session_id="keep", source="cli")
-    db.append_message(session_id="keep", role="user", content="old pin")
+    db.append_message(session_id="keep", role="user", content="old pin", timestamp=old)
     db.set_session_pinned("keep", True)
     db.create_session(session_id="drop", source="cli")
-    db.append_message(session_id="drop", role="user", content="old")
-    old = time.time() - 10 * 86400
+    db.append_message(session_id="drop", role="user", content="old", timestamp=old)
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id IN (?, ?)", (old, "keep", "drop"))
-    db._conn.execute(
-        "UPDATE messages SET timestamp = ? WHERE session_id IN (?, ?)",
-        (old, "keep", "drop"),
-    )
     db._conn.commit()
 
     assert db.archive_stale_sessions(3) == 1

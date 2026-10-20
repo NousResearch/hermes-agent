@@ -2730,6 +2730,7 @@ class TestListSessionsRich:
                 "UPDATE messages SET timestamp=? WHERE session_id=? AND role=?",
                 (1_700_000_000.0, "s1", "user"),
             )
+            db._conn.execute("UPDATE sessions SET last_activity_at = NULL WHERE id = ?", ("s1",))
             db._conn.commit()
 
         before = db.list_sessions_rich()[0]["last_active"]
@@ -2784,19 +2785,6 @@ class TestListSessionsRich:
         assert activity["last_activity_description"] == ""
         assert activity["last_activity_provenance"] == "unknown"
 
-    def test_last_active_uses_newer_message_over_stale_heartbeat(self, db):
-        """Rate-limited heartbeats can lag message writes; last_active must take max."""
-        db.create_session("s1", "cli")
-        db.append_message("s1", "user", "hello")
-        with db._lock:
-            db._conn.execute(
-                "UPDATE messages SET timestamp=? WHERE session_id=?",
-                (1_700_000_800.0, "s1"),
-            )
-            db._conn.commit()
-        db.touch_session_activity("s1", 1_700_000_500.0, description="api")  # older than message
-        assert db.list_sessions_rich()[0]["last_active"] == 1_700_000_800.0
-
     def test_list_gateway_sessions_last_active_uses_activity_heartbeat(self, db):
         db.create_session(
             "gw-1",
@@ -2811,6 +2799,7 @@ class TestListSessionsRich:
                 "UPDATE messages SET timestamp=? WHERE session_id=?",
                 (1_700_000_000.0, "gw-1"),
             )
+            db._conn.execute("UPDATE sessions SET last_activity_at = NULL WHERE id = ?", ("gw-1",))
             db._conn.commit()
 
         heartbeat = 1_700_000_900.0
@@ -3942,6 +3931,10 @@ class TestAutoMaintenance:
                 "UPDATE messages SET timestamp = ? WHERE session_id = ?",
                 (time.time() - 100 * 86400, sid),
             )
+            db._conn.execute(
+                "UPDATE sessions SET last_activity_at = ? WHERE id = ?",
+                (time.time() - 100 * 86400, sid),
+            )
         db._conn.commit()
 
         result = db.maybe_auto_prune_and_vacuum(retention_days=90)
@@ -5012,6 +5005,7 @@ class TestSessionPinAndStaleArchive:
         db._conn.execute(
             "UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid)
         )
+        db._conn.execute("UPDATE sessions SET last_activity_at = ? WHERE id = ?", (old, sid))
         db._conn.commit()
 
     # ── pin flag ──────────────────────────────────────────────────────────

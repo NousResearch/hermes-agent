@@ -38,13 +38,6 @@ def _backdate_session(db: SessionDB, session_id: str, ts: float) -> None:
     db._conn.commit()
 
 
-def _set_message_timestamps(db: SessionDB, session_id: str, ts: float) -> None:
-    db._conn.execute(
-        "UPDATE messages SET timestamp = ? WHERE session_id = ?", (ts, session_id)
-    )
-    db._conn.commit()
-
-
 def _set_last_activity(db: SessionDB, session_id: str, ts: float) -> None:
     conn = db._conn
     assert conn is not None
@@ -64,8 +57,7 @@ def _make_session(
 ) -> None:
     db.create_session(session_id, source=source)
     if message_at is not None:
-        db.append_message(session_id, role="user", content="hello")
-        _set_message_timestamps(db, session_id, message_at)
+        db.append_message(session_id, role="user", content="hello", timestamp=message_at)
     _backdate_session(db, session_id, started_at)
 
 
@@ -194,8 +186,7 @@ class TestSweepOrphanedSessions:
             ("unkeyed-telegram", None),
         ):
             db.create_session(sid, source="telegram", session_key=session_key)
-            db.append_message(sid, role="user", content="hello")
-            _set_message_timestamps(db, sid, stale)
+            db.append_message(sid, role="user", content="hello", timestamp=stale)
             _backdate_session(db, sid, stale)
 
         assert db.sweep_orphaned_sessions(
@@ -224,8 +215,7 @@ class TestSweepOrphanedSessions:
         _make_session(db, "root", source="cli", started_at=stale, message_at=stale)
         db.end_session("root", "compression")
         db.create_session("tip", source="cli", parent_session_id="root")
-        db.append_message("tip", role="user", content="continued")
-        _set_message_timestamps(db, "tip", stale)
+        db.append_message("tip", role="user", content="continued", timestamp=stale)
         _backdate_session(db, "tip", stale)
         assert db.try_acquire_session_turn_lease(
             "tip", "external-turn", ttl_seconds=300
@@ -473,8 +463,7 @@ class TestSweepOrphanedSessions:
         _make_session(db, "root", source="cli", started_at=stale, message_at=stale)
         db.end_session("root", "compression")
         db.create_session("tip", source="cli", parent_session_id="root")
-        db.append_message("tip", role="user", content="continued")
-        _set_message_timestamps(db, "tip", stale)
+        db.append_message("tip", role="user", content="continued", timestamp=stale)
         _backdate_session(db, "tip", stale)
         _set_last_activity(db, "tip", stale)
         assert db.try_acquire_session_turn_lease(

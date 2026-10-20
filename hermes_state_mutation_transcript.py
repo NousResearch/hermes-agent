@@ -32,7 +32,11 @@ def rewind_in_transaction(self, conn, session_id, target_message_id, *,
     conn.execute(
         "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
     message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
-    conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+    activity_at = replacement["timestamp"] if replacement is not None else None
+    conn.execute(f"""{_SET_COUNTERS_SQL}, last_activity_at = CASE
+                  WHEN ? IS NOT NULL AND (last_activity_at IS NULL OR last_activity_at < ?) THEN ?
+                  ELSE last_activity_at END WHERE id = ?""",
+                 (message_count, tool_call_count, activity_at, activity_at, activity_at, session_id))
     head_id = conn.execute(
         "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
     return target_row, ids, head_id, replacement_message_id

@@ -16,12 +16,12 @@ from agent.session_activity import (
 )
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
-    _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
-    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
-    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause, emit_session_deleted,
+    _COMPRESSION_CHILD_SQL, _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT,
+    _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS,
+    _legacy_reset_child_sql, _non_continuation_child_sql, _shape_preview, _sql_preview_raw,
+    QUEUED_PROMPT_METADATA_KEY, _sql_in_window, _sql_json_extract, _sql_session_last_active,
+    _sql_session_last_active_by_id, escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks,
+    _placeholders as _session_ids_placeholders, _source_match_clause, emit_session_deleted,
 )
 from hermes_state_compression import _CHAIN_CAP
 
@@ -37,6 +37,23 @@ def workspace_key(row: dict[str, Any]) -> Optional[str]:
 
 def _delegate_from_json(col: str = "model_config") -> str:
     return _sql_json_extract(col, "$._delegate_from")
+
+
+def _candidate_listable_child_sql() -> str:
+    """Default-listable rows plus the compression continuations that rank their root.
+
+    A rich-list candidate may include a physical compression continuation before
+    the outer projection maps it to its logical root.  Other hidden children
+    must not consume that bounded slot: delegates/subagents have their own
+    marker predicate in ``_session_filter_where``; tool continuations and reset
+    children are excluded from this extra arm while branch/reset visibility
+    remains governed by ``_LISTABLE_CHILD_SQL``.
+    """
+    return (
+        f"({_LISTABLE_CHILD_SQL} OR ({_COMPRESSION_CHILD_SQL.format(a='s')}"
+        f" AND NOT ({_RESET_CHILD_SQL.format(a='s')})"
+        " AND COALESCE(s.source, '') != 'tool'))"
+    )
 
 
 # _merge_model_config_json's "no such row" result — distinct from the legal None
@@ -113,7 +130,8 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
-    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+    include_compression_candidates: bool = False, include_subagents: bool = False,
+    local_created_sources: Sequence[str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -121,10 +139,11 @@ def _session_filter_where(
     (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
     where: list[str] = []
     params: list[Any] = []
+    child_sql = _candidate_listable_child_sql() if include_compression_candidates else _LISTABLE_CHILD_SQL
     if exclude_children and include_subagents:
-        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
+        where.append(f"({child_sql} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
     elif exclude_children:
-        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
+        where += [child_sql, f"{_delegate_from_json('s.model_config')} IS NULL"]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
@@ -1374,44 +1393,33 @@ class SessionSessionsMixin:
         )
         from_sessions = f"FROM sessions s\n                {prompt_join}"
         if order_by_last_active:
-            # The CTE walks compression-continuation edges forward from the admitted
-            # rows; MAX over the chain gives effective_last_active in SQL. Do NOT
-            # require child.started_at >= parent.ended_at: races insert the
-            # continuation before ended_at is written.
+            # First admit the requested page from the indexed, durable activity
+            # timestamp.  The exact activity expression reads messages, so using
+            # it to seed ``chain`` would pay a message subquery for every visible
+            # session before LIMIT.  The outer query still computes and orders by
+            # exact activity for this bounded candidate page.  Searches retain
+            # their complete-chain semantics rather than applying this fast path.
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
-            query = f"""
-                WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
-                    UNION ALL
-                    SELECT c.root_id, child.id
-                    FROM chain c
-                    JOIN sessions parent ON parent.id = c.cur_id
-                    JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
-                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
-                ),
-                chain_max AS (
-                    SELECT
-                        root_id,
-                        MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
-                    FROM chain
-                    GROUP BY root_id
-                )
-                {select_head}{_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, {_sql_in_window("s.started_at")}) AS _effective_last_active
-                FROM sessions s
-                LEFT JOIN chain_max cm ON cm.root_id = s.id
-                {prompt_join}
-                {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
-                LIMIT ? OFFSET ?
-            """
-            params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
+            # A recent compression continuation is not listable itself, but it must first map back to its
+            # logical root.  Rank logical roots by their indexed physical members before the page LIMIT so
+            # a multi-hop chain cannot consume several candidate slots.  Rebuild the predicate explicitly:
+            # positional slicing would also admit hidden delegate/subagent children.
+            candidate_clauses, candidate_params = _session_filter_where(
+                exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
+                exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+                archived_only=archived_only, include_archived=include_archived,
+                include_compression_candidates=not include_children,
+            )
+            if not include_hidden and not archived_only:
+                candidate_clauses.append("s.hidden = 0")
+            candidate_where = _where_sql(candidate_clauses)
+            candidate_limit = -1 if (id_query or search_query or limit < 0) else limit + offset
+            from hermes_state_sessions_page import recent_page_sql
+            query = recent_page_sql(candidate_where, outer_where, select_head, prompt_join,
+                _sql_session_last_active_by_id("cur_id"), _sql_session_last_active("s"))
+            params = candidate_params + [candidate_limit] + params + id_params + [limit, offset]
         else:
             query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active

@@ -273,6 +273,35 @@ def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home):
         assert kinds[-2:] == ["reclaimed", "gave_up"]
 
 
+def test_stale_ready_claim_is_released_for_dispatch(kanban_home, monkeypatch):
+    """Regression for #136878: a terminal run can leave an expired ready lock."""
+    import hermes_cli.kanban_db as _kb
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="stuck ready", assignee="a")
+        lock = f"{_kb._claimer_id().split(':', 1)[0]}:worker"
+        assert kb.claim_task(conn, task_id, claimer=lock) is not None
+        conn.execute(
+            "UPDATE task_runs SET status = 'superseded', outcome = 'superseded', "
+            "ended_at = ?, claim_expires = NULL WHERE id = "
+            "(SELECT current_run_id FROM tasks WHERE id = ?)",
+            (int(time.time()), task_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', current_run_id = NULL, "
+            "claim_expires = ?, worker_pid = ? WHERE id = ?",
+            (int(time.time()) - 1, 12345, task_id),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+        assert kb.release_stale_claims(conn) == 1
+        released = kb.get_task(conn, task_id)
+        assert released.status == "ready"
+        assert released.claim_lock is None and released.worker_pid is None
+        assert released.consecutive_failures == 0
+        assert kb.claim_task(conn, task_id) is not None
+
+
 def test_stale_claim_extend_live_worker_does_not_count_failure(
     kanban_home, monkeypatch,
 ):

@@ -84,12 +84,33 @@ def test_pre_finish_continues_text_turn_without_edits(agent, hooks):
     assert HINT not in [m.get("content") for m in result["messages"]]
 
 
-def test_pre_finish_is_bounded_by_max_verify_nudges(agent, hooks):
-    hooks["pre_finish"] = [lambda **_kw: {"action": "continue", "message": HINT}]
-    seen = _script(agent, ["one", "two", "three", "four"])
+def test_pre_verify_and_pre_finish_share_max_verify_nudges(agent, hooks):
+    calls = []
 
-    with patch("agent.verify_hooks.max_verify_nudges", return_value=2):
-        result = agent.run_conversation("draw the flow")
+    def hook(name, keep_going):
+        def check(attempt, changed_paths, **_kw):
+            calls.append((name, attempt, changed_paths))
+            return {"action": "continue", "message": HINT} if keep_going(attempt) else None
+        return check
 
-    assert len(seen) == 3
-    assert result["final_response"] == "three"
+    hooks["pre_verify"] = [hook("pre_verify", lambda attempt: attempt == 0)]
+    hooks["pre_finish"] = [hook("pre_finish", lambda _attempt: True)]
+    seen = _script(agent, ["one", "two", "three", "four", "five"])
+    answer = agent._interruptible_api_call
+
+    def edit_then_answer(api_kwargs):
+        agent._turn_file_mutation_paths = {"src/app.py"}
+        return answer(api_kwargs)
+
+    agent._interruptible_api_call = edit_then_answer
+    with patch("agent.verify_hooks.max_verify_nudges", return_value=3):
+        result = agent.run_conversation("fix the flow")
+
+    edited = ["src/app.py"]
+    assert calls == [
+        ("pre_verify", 0, edited),
+        ("pre_verify", 1, edited), ("pre_finish", 1, edited),
+        ("pre_verify", 2, edited), ("pre_finish", 2, edited),
+    ]
+    assert len(seen) == 4
+    assert result["final_response"] == "four"

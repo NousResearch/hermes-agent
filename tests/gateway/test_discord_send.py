@@ -479,6 +479,29 @@ async def test_oversized_upload_rejected_before_send(tmp_path, monkeypatch, meth
 
 
 @pytest.mark.asyncio
+async def test_oversized_upload_respects_group_warning_suppression(tmp_path, monkeypatch):
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "config.yaml").write_text(json.dumps({"display": {"platforms": {"discord": {
+        "suppress_warning_notifications": False,
+        "chat_types": {"group": {"suppress_warning_notifications": True}},
+    }}}}))
+    big = tmp_path / "report.pdf"
+    big.write_bytes(b"x")
+    _fake_getsize(monkeypatch, big, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1)
+    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    adapter = _preflight_adapter(SimpleNamespace(id=555, guild=None, send=send))
+
+    result = await adapter.send_document(
+        "555", str(big), caption="requested caption", metadata={"chat_type": "group"})
+
+    assert result.success is False
+    send.assert_awaited_once_with(content="requested caption")
+
+
+@pytest.mark.asyncio
 async def test_send_video_under_guild_boost_limit_uploads(tmp_path, monkeypatch):
     """A boosted guild's higher cap is honored: a file over the default but under the guild
     limit is uploaded, not rejected."""
@@ -525,3 +548,35 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     assert send.await_count == 1
     kwargs = send.await_args.kwargs
     assert not kwargs.get("files") and "big.png" in kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_image_batch_respects_group_warning_suppression(tmp_path, monkeypatch):
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "config.yaml").write_text(json.dumps({"display": {"platforms": {"discord": {
+        "suppress_warning_notifications": False,
+        "chat_types": {"group": {"suppress_warning_notifications": True}},
+    }}}}))
+    small = tmp_path / "small.png"
+    small.write_bytes(b"ok")
+    big = tmp_path / "big.png"
+    big.write_bytes(b"x")
+    _fake_getsize(monkeypatch, big, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1)
+    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    adapter = _preflight_adapter(SimpleNamespace(id=9, guild=None, send=send))
+    metadata = {"chat_type": "group"}
+
+    mixed = await adapter.send_multiple_images(
+        "9", [(f"file://{small}", "requested caption"), (f"file://{big}", "")], metadata=metadata)
+    assert mixed.success is True
+    assert send.await_args is not None
+    assert send.await_args.kwargs["content"] == "requested caption"
+
+    send.reset_mock()
+    only_big = await adapter.send_multiple_images(
+        "9", [(f"file://{big}", "requested caption")], metadata=metadata)
+    assert only_big.success is False
+    send.assert_awaited_once_with(content="requested caption")

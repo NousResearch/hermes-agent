@@ -810,7 +810,7 @@ class GatewayStartupMixin:
                 logger.debug("Crash-left reply: no routed scope for %s", origin.chat_id, exc_info=True)
                 scope = nullcontext()
             with scope:
-                if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
+                if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform, source=origin):
                     return ""
         if is_intentional_silence_response(last["content"]):
             decision = silence_decision or {}

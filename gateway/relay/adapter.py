@@ -256,7 +256,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         platform = (logical_platform or (metadata or {}).get("_relay_logical_platform")
                     or self._chat_platform(chat_id))
-        return super().warning_notifications_enabled(platform)
+        return super().warning_notifications_enabled(platform, chat_id=chat_id, metadata=metadata)
 
     def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
         """The descriptor governing a specific chat. Platform caps genuinely differ

@@ -40,3 +40,23 @@ async def test_emit_warning_uses_logical_override_and_does_not_swallow_send_erro
     adapter.send = AsyncMock(side_effect=RuntimeError("fixture transport failure"))
     with pytest.raises(RuntimeError, match="fixture transport failure"):
         await adapter.emit_warning("chat", "diagnostic", logical_platform="slack")
+
+
+@pytest.mark.asyncio
+async def test_media_warning_uses_chat_type_policy_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "config.yaml").write_text(json.dumps({"display": {
+        "suppress_warning_notifications": False,
+        "platforms": {"telegram": {"chat_types": {
+            "group": {"suppress_warning_notifications": True}}}}}}))
+    adapter = HygieneCaptureAdapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+    result = await adapter.emit_media_warning(
+        "chat", "diagnostic", caption="requested caption", metadata={"chat_type": "group"})
+
+    assert result.success is False
+    assert result.error == "diagnostic"
+    adapter.send.assert_awaited_once_with(
+        "chat", "requested caption", reply_to=None, metadata={"chat_type": "group"})

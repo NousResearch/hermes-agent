@@ -126,6 +126,7 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     thread_id = getattr(source, "thread_id", None)
     platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    metadata.update({"chat_type": str(chat_type)} if (chat_type := getattr(source, "chat_type", None)) else {})
     # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
     # gateway never falls back to its primary WebClient.
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
@@ -2975,10 +2976,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         byte-identical). When hidden, preserve the media failure even if the independent
         caption itself was delivered.
         """
-        result = await self.emit_warning(chat_id, f"{caption}\n{notice}" if caption else notice,
-                                         reply_to=reply_to, metadata=shown_metadata)
-        if result is not None:
-            return result
+        if self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
+            return await self.send(chat_id, f"{caption}\n{notice}" if caption else notice, reply_to=reply_to, metadata=shown_metadata)
         if caption:
             await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
         return SendResult(success=False, error=notice)
@@ -2996,7 +2995,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         """Presentation policy under the caller's owning profile; old plugins inherit it."""
         from gateway.warning_notifications import warning_notifications_enabled
-        return warning_notifications_enabled(logical_platform or self.platform)
+        return warning_notifications_enabled(logical_platform or self.platform, chat_id=chat_id,
+                                             chat_type=(metadata or {}).get("chat_type"))
 
     def prepare_tts_text(self, text: str) -> str:
         """Chat Markdown -> transcript-like spoken script (reasoning blocks removed,

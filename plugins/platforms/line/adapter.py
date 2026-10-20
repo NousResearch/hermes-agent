@@ -79,6 +79,7 @@ DEFAULT_EXPIRED_TEXT_KEY = "platform.line.pending.expired"
 MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
+LINE_FILE_MAX_BYTES = 300 * 1024 * 1024  # 300 MB per LINE Messaging API docs
 # LINE message type → normalized MessageType. LINE audio is recorded voice clips →
 # VOICE (STT path), like Telegram/WhatsApp. Unknown types fall back to TEXT.
 _LINE_MESSAGE_TYPES = {
@@ -366,6 +367,9 @@ _OUTBOUND_MEDIA = {
         "LINE_PUBLIC_URL must be set to send images (LINE only accepts publicly reachable HTTPS URLs)"),
     "audio": (LINE_AV_MAX_BYTES, "audio exceeds 200 MB LINE limit", "LINE_PUBLIC_URL must be set to send audio"),
     "video": (LINE_AV_MAX_BYTES, "video exceeds 200 MB LINE limit", "LINE_PUBLIC_URL must be set to send video"),
+    "file": (
+        LINE_FILE_MAX_BYTES, "file exceeds 300 MB LINE limit",
+        "LINE_PUBLIC_URL must be set to send files (LINE only accepts publicly reachable HTTPS URLs)"),
 }
 
 # Inbound media kinds → cached file extension.
@@ -770,7 +774,7 @@ class LineAdapter(BasePlatformAdapter):
         return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
 
     def _check_media_file(self, kind: str, file_path: str) -> tuple[Optional[Path], Optional[SendResult]]:
-        """Shared preflight for send_image_file/send_voice/send_video → ``(path, error)``."""
+        """Shared preflight for send_image_file/send_voice/send_video/send_document → ``(path, error)``."""
         max_bytes, size_error, url_error = _OUTBOUND_MEDIA[kind]
         path = Path(file_path)
         if not path.is_file():
@@ -859,6 +863,29 @@ class LineAdapter(BasePlatformAdapter):
                 raise
         msg = {"type": "video", "originalContentUrl": self._serve_file(path), "previewImageUrl": preview_url}
         return await self._send_messages(chat_id, [msg])
+
+    async def send_document(
+        self, chat_id: str, file_path: str, caption: Optional[str] = None,
+        file_name: Optional[str] = None, reply_to: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None, **kwargs: Any,
+    ) -> SendResult:
+        path, err = self._check_media_file("file", file_path)
+        if err:
+            return err
+        url = self._serve_file(path)
+        if not url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE file URL must be HTTPS: {url}")
+        title = (file_name or path.name)[:100]
+        msg = {
+            "type": "file",
+            "title": title,
+            "size": path.stat().st_size,
+            "originalContentUrl": url,
+        }
+        msgs: list[dict[str, Any]] = [msg]
+        if caption:
+            msgs.append(_text_message(caption))
+        return await self._send_messages(chat_id, msgs)
 
     async def _send_messages(
         self, chat_id: str, messages: list[dict[str, Any]], *, force_push: bool = False, text: bool = False
@@ -990,7 +1017,7 @@ def register(ctx) -> None:
             "Markdown — text bubbles show ** and # literally. Bare URLs are "
             "auto-linked, but \\[label\\](url) syntax is not. Each text bubble "
             "is capped at 5000 characters and at most 5 bubbles are sent per "
-            "reply, so keep responses concise. Image/audio/video sending "
+            "reply, so keep responses concise. Image/audio/video/document sending "
             "requires LINE_PUBLIC_URL configured to a publicly reachable HTTPS "
             "host. Slow responses surface a 'Get answer' button the user taps "
             "to fetch the reply via a fresh free token."))

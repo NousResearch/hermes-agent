@@ -536,3 +536,103 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+
+class TestSendDocument:
+    """Outbound document/file delivery via LINE file messages."""
+
+    def _adapter(self, monkeypatch, **extra):
+        from gateway.config import PlatformConfig
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        monkeypatch.setenv("LINE_PUBLIC_URL", "https://line.example.com")
+        base = {"channel_access_token": "tok", "channel_secret": "sec"}
+        base.update(extra)
+        ad = LineAdapter(PlatformConfig(enabled=True, extra=base))
+        ad._client = MagicMock()
+        ad._client.push = AsyncMock()
+        ad._client.reply = AsyncMock()
+        return ad
+
+    def test_send_document_success(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        doc = tmp_path / "report.pdf"
+        doc_content = b"%PDF-1.4 sample content"
+        doc.write_bytes(doc_content)
+
+        result = asyncio.run(ad.send_document("Uchat", str(doc)))
+        assert result.success
+        assert ad._client.push.await_count == 1
+        messages = ad._client.push.await_args.args[1]
+        assert len(messages) == 1
+        msg = messages[0]
+        assert msg["type"] == "file"
+        assert msg["title"] == "report.pdf"
+        assert msg["size"] == len(doc_content)
+        assert msg["originalContentUrl"].startswith("https://line.example.com/line/media/")
+        assert msg["originalContentUrl"].endswith("/report.pdf")
+
+    def test_send_document_with_caption(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        doc = tmp_path / "notes.txt"
+        doc.write_text("meeting notes")
+
+        result = asyncio.run(ad.send_document("Uchat", str(doc), caption="Project summary notes"))
+        assert result.success
+        messages = ad._client.push.await_args.args[1]
+        assert len(messages) == 2
+        assert messages[0]["type"] == "file"
+        assert messages[1]["type"] == "text"
+        assert messages[1]["text"] == "Project summary notes"
+
+    def test_send_document_custom_file_name_and_truncation(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        doc = tmp_path / "temp_file.bin"
+        doc.write_bytes(b"\x00\x01\x02")
+
+        # Custom name
+        result = asyncio.run(ad.send_document("Uchat", str(doc), file_name="CustomName.dat"))
+        assert result.success
+        assert ad._client.push.await_args.args[1][0]["title"] == "CustomName.dat"
+
+        # Truncate title > 100 characters
+        long_name = "x" * 120 + ".pdf"
+        result2 = asyncio.run(ad.send_document("Uchat", str(doc), file_name=long_name))
+        assert result2.success
+        sent_title = ad._client.push.await_args.args[1][0]["title"]
+        assert len(sent_title) == 100
+        assert sent_title == ("x" * 120 + ".pdf")[:100]
+
+    def test_send_document_file_not_found(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        result = asyncio.run(ad.send_document("Uchat", "/nonexistent/path/to/missing.pdf"))
+        assert not result.success
+        assert "file not found" in (result.error or "").lower()
+
+    def test_send_document_blocked_without_public_url(self, monkeypatch, tmp_path):
+        from gateway.config import PlatformConfig
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        monkeypatch.delenv("LINE_PUBLIC_URL", raising=False)
+        ad = LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"}))
+        ad._client = MagicMock()
+        doc = tmp_path / "file.pdf"
+        doc.write_bytes(b"pdf-bytes")
+
+        result = asyncio.run(ad.send_document("Uchat", str(doc)))
+        assert not result.success
+        assert "LINE_PUBLIC_URL" in (result.error or "")
+
+    def test_send_document_size_limit_exceeded(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        doc = tmp_path / "huge.zip"
+        doc.write_bytes(b"small-real-content")
+
+        from unittest.mock import patch
+        real_stat = doc.stat()
+        mock_stat_res = MagicMock()
+        mock_stat_res.st_size = 301 * 1024 * 1024
+        mock_stat_res.st_mode = real_stat.st_mode
+        with patch("pathlib.Path.stat", return_value=mock_stat_res):
+            result = asyncio.run(ad.send_document("Uchat", str(doc)))
+            assert not result.success
+            assert "file exceeds 300 MB" in (result.error or "")
+
+

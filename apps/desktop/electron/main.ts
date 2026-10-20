@@ -6,7 +6,7 @@ import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-
 import { createPluginWsUrlHandler } from './plugin-ws-url'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
-  async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
+  async () => ensureRuntime(await resolveHermesBackendBound([]), () => undefined), resolveHermesCwd))
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -615,6 +615,7 @@ import {
 } from './update-marker'
 import { heldWaitMessage, holdTicker } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
+import { createValidatedSourceResolver, isGitCheckout, resolveUpdateRoot as resolveUpdateRootForOptions } from './update-root'
 import {
   resolveUpdaterMechanism,
   type UpdaterApplyResultWire,
@@ -2759,10 +2760,6 @@ function fileExists(filePath) {
   }
 }
 
-function isGitCheckout(root: string): boolean {
-  return fs.existsSync(path.join(root, '.git'))
-}
-
 function directoryExists(filePath) {
   try {
     return fs.statSync(filePath).isDirectory()
@@ -3476,17 +3473,17 @@ function writeZoomState(zoomLevel) {
   }
 }
 
-// Match the backend's source resolution but bias toward a real git checkout.
-// Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
-// HERMES_DESKTOP_HERMES_ROOT always wins so devs can pin a worktree.
+// Resolve the update checkout using explicit, dev, canonical, then validated backend roots.
 function resolveUpdateRoot() {
-  const candidates = [
-    process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
-    !IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT) ? SOURCE_REPO_ROOT : null,
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : null
-  ].filter(Boolean)
-
-  return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_HERMES_ROOT
+  return resolveUpdateRootForOptions({
+    overrideRoot: process.env.HERMES_DESKTOP_HERMES_ROOT,
+    isPackaged: IS_PACKAGED,
+    sourceRepoRoot: SOURCE_REPO_ROOT,
+    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    validatedSourceInstallRoot: resolveHermesBackendBound.current(),
+    isHermesSourceRoot,
+    isGitCheckout
+  })
 }
 
 function emitUpdateProgress(payload) {
@@ -3720,7 +3717,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
       // too (4de06d1dbf7b). An unreadable answer keeps the snapshot.
       if (
         !(await readPreUpdateBackupEnabled(
-          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          resolveHermesBackendBound(['config', 'get', 'updates.pre_update_backup', '--json']),
           home
         ))
       ) {
@@ -4999,7 +4996,7 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
-async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
+async function resolveHermesBackend(backendArgs: string[], selectSourceInstall: (root: string) => void): Promise<ResolvedHermesBackend> {
   const payload = bundledPayload(process.resourcesPath)
 
   if (payload) {
@@ -5149,6 +5146,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
       )
 
       if (userBackend) {
+        selectSourceInstall(userBackend.root)
         rememberLog(`[boot] Using Hermes install at ${userInstall.root} (published launcher ${userInstall.launcher})`)
 
         return userBackend
@@ -5186,6 +5184,8 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     local: 'none'
   }
 }
+
+const resolveHermesBackendBound = createValidatedSourceResolver(resolveHermesBackend)
 
 interface ResolvedHermesBackend {
   kind: string
@@ -5339,7 +5339,7 @@ async function ensureRuntime(
 
     // Resolve the newly published launcher after the installer completes.
     return ensureRuntime(
-      await installedRuntimeGate.afterInstall(() => resolveHermesBackend(backend.args)),
+      await installedRuntimeGate.afterInstall(() => resolveHermesBackendBound(backend.args)),
       assertStillOwned
     )
   }
@@ -11637,7 +11637,7 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
 
   const connection = await ensureLocalGateway(async () => {
     const backend = await ensureRuntime(
-      await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
+      await resolveHermesBackendBound(['--profile', profile, 'gateway', 'ensure', '--json']),
       () => assertPoolEntryStillOwned(poolKey, entry)
     )
 
@@ -11686,7 +11686,7 @@ const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 // follows reports what actually answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
   const backend = await ensureRuntime(
-    await resolveHermesBackend(['--profile', ownerProfile, 'gateway', 'restart']),
+    await resolveHermesBackendBound(['--profile', ownerProfile, 'gateway', 'restart']),
     () => undefined
   )
 
@@ -12067,7 +12067,7 @@ async function startHermes(requestedProfile?: string) {
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 
-        return resolveHermesBackend(backendArgs)
+        return resolveHermesBackendBound(backendArgs)
       },
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
@@ -14474,7 +14474,7 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
 
   try {
     const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
-    const backend = await resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+    const backend = await resolveHermesBackendBound(tuiResumeArgs(sessionId.trim(), profile || undefined))
 
     if (!backend.command) {
       return { ok: false, error: 'Hermes is not installed yet' }
@@ -14699,7 +14699,7 @@ ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:local-backend:probe', async () => {
   // Resolution only. ensureRuntime/runBootstrap must not start from a hover
   // or a click that has not confirmed the install.
-  const backend = await resolveHermesBackend([])
+  const backend = await resolveHermesBackendBound([])
 
   return { bootstrapNeeded: backend?.kind === 'bootstrap-needed' }
 })

@@ -1096,6 +1096,20 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         """Fixed-width durable identity for indexed display-generation lookup."""
         return hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).digest()
 
+    @staticmethod
+    def _fold_summary_carrier(row, key: Any, first_by_uid: dict) -> Any:
+        """The display identity both display reads give *row*, scanning rows in ``id`` order.
+
+        A compaction carrier keeps its message's ``message_uid`` but not its content (the prior tail
+        wrapped around the summary), so it is a copy of the first row with that uid: shown once."""
+        uid = row["message_uid"]
+        if not uid:
+            return key
+        if row["_compressed_summary"]:
+            return first_by_uid.get(uid, key)
+        first_by_uid.setdefault(uid, key)
+        return key
+
     def _dedupe_display_generations(self, rows, *, drop_removed: bool = False):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
@@ -1135,14 +1149,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if self._is_model_only_row(row):
                 continue
             key = key or self._display_dedupe_key(row)
-            # A compaction carrier keeps its message's uid but not its content (the prior tail wrapped
-            # around the summary): it is a copy of that message, shown once. Only the carrier: other
-            # rewritten copies (a pruned tool stub) must keep their archived original visible.
-            uid = row["message_uid"]
-            if uid and row["_compressed_summary"]:
-                key = uid_key.get(uid, key)
-            elif uid:
-                uid_key.setdefault(uid, key)
+            # Only the summary carrier folds by uid: other rewritten copies (a pruned tool stub) must keep
+            # their archived original visible.
+            key = self._fold_summary_carrier(row, key, uid_key)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
@@ -1179,13 +1188,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             updates = []
             for row in rows:
                 last_id = row["id"]
-                identity = self._display_identity(self._display_dedupe_key(row))
-                # Same rule as _dedupe_display_generations: a summary carrier is a copy of the message its uid names.
-                uid = row["message_uid"]
-                if uid and row["_compressed_summary"]:
-                    identity = uid_identity.get(uid, identity)
-                elif uid:
-                    uid_identity.setdefault(uid, identity)
+                identity = self._fold_summary_carrier(
+                    row, self._display_identity(self._display_dedupe_key(row)), uid_identity)
                 # A row already holding this identity keeps its stored slot (an in-place prune changes a
                 # row's content, not its place); otherwise the slot is the identity's first row.
                 kept = row["display_order"] if row["display_identity"] == identity else None

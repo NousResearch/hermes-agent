@@ -1,7 +1,7 @@
 name: hermes-tripo
 title: Hermes Tripo
 repo: https://github.com/Adolanium/hermes-tripo
-sha: 8269e201e22df7ae8e210bb5482985d5886cd0b0
+sha: d7e557cfe85efe8fc9693d9e3548529b7266e163
 description: Tripo 3D tools on Tripo's v3 API (openapi.tripo3d.ai). Text, photo or multiview to 3D, image edits,
   retexturing, splitting into parts, Smart UV, auto-rigging, preset animations, retopology, format conversion (FBX,
   USDZ, STL, 3MF, OBJ, GLTF) and downloads, with an inline 3D viewer and a Tripo library pane in Hermes Desktop.
@@ -12,8 +12,8 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Adolanium/hermes-tripo#readme
-version: "0.3.0"
-image: https://raw.githubusercontent.com/Adolanium/hermes-tripo/8269e201e22df7ae8e210bb5482985d5886cd0b0/assets/catalog-banner.png
+version: "0.3.1"
+image: https://raw.githubusercontent.com/Adolanium/hermes-tripo/d7e557cfe85efe8fc9693d9e3548529b7266e163/assets/catalog-banner.png
 capabilities:
   provides_tools:
     - tripo_generate_model

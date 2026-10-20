@@ -124,6 +124,50 @@ interface CreateAgentDialogProps {
   roster: RosterRow[]
 }
 
+type CapabilityPicks = Pick<ProfileConfigurePayload, 'disabled_skills' | 'enabled_mcp_servers' | 'enabled_toolsets'>
+
+/** The `profiles.configure` fields for the Advanced-tab picks the user changed. */
+function capabilityPayload(
+  caps: CapabilityCatalog | null,
+  dirty: { mcp: boolean; skills: boolean; toolsets: boolean }
+): CapabilityPicks {
+  const payload: CapabilityPicks = {}
+
+  if (!caps) {
+    return payload
+  }
+
+  if (dirty.skills) {
+    payload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
+  }
+
+  if (dirty.toolsets) {
+    const en = caps.toolsets.filter(t => t.enabled)
+    payload.enabled_toolsets = en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
+  }
+
+  if (dirty.mcp) {
+    payload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
+  }
+
+  return payload
+}
+
+/** Delete a draft profile the New Agent dialog minted: on the remote target it
+ *  was created on (`cli.exec`), else locally. Fire-and-forget with a toast. A
+ *  cancel while profiles.create is still in flight is caught by that flight
+ *  itself (the dialog's draftGenRef), since the draft is only recorded once the
+ *  RPC returns (#141623). */
+function discardDraftProfile(draft: string, remoteRequest: null | ((method: string, params: Record<string, unknown>) => Promise<unknown>)) {
+  const discard = remoteRequest
+    ? remoteRequest('cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
+    : deleteBot({ name: draft })
+
+  void Promise.resolve(discard)
+    .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
+    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
+}
+
 /** The live Capabilities surface needs a real profile. Materialize it whenever
  *  the tab is showing a valid, untaken name that has no draft yet, not only on
  *  the tab click: a user who opens the tab first and names the bot after (or
@@ -191,9 +235,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
-  // Bumped by every discard: a profiles.create still in flight when the user
-  // cancels belongs to an abandoned draft and must not adopt the dialog.
-  const draftGenRef = useRef(0)
+  const draftGenRef = useRef(0) // bumped per discard: an in-flight create then deletes its own draft
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -291,47 +333,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       )
     : roster.some(b => !b.remoteSource && b.name === slug && b.name !== createdRef.current)
 
-  // Draft semantics for the lazily-created profile: opening the Capabilities
-  // tab (or running MCP setup) materializes the profile so the LIVE config
-  // surfaces have a real backend to write to — but until the user hits
-  // Create Agent it is a DRAFT. Cancelling the dialog deletes it, so
-  // preconfigure-then-back-out leaves zero residue. Best-effort and
-  // fire-and-forget: a failed cleanup surfaces a toast, never blocks close.
-  //
-  // A cancel that lands while profiles.create is still in flight orphaned the
-  // profile that flight mints: createdRef is only set once the RPC returns, so
-  // the discard saw nothing to delete and the draft survived as a bot
-  // (#141623). The flight now checks, on return, whether its draft was
-  // discarded meanwhile and deletes it itself.
-  const removeDraftProfile = (draft: string) => {
-    const discard = remoteTarget
-      ? requestForTarget('cli.exec', {
-          argv: ['profile', 'delete', draft, '--yes']
-        })
-      : deleteBot({
-          name: draft
-        })
-
-    void Promise.resolve(discard)
-      .then(() =>
-        host.notify({
-          kind: 'success',
-          message: `Draft agent "${draft}" discarded`
-        })
-      )
-      .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
-  }
+  // Opening Capabilities (or MCP setup) materializes a DRAFT profile so the live
+  // config surfaces have a backend; cancelling deletes it (discardDraftProfile).
+  const removeDraftProfile = (draft: string) => discardDraftProfile(draft, remoteTarget ? requestForTarget : null)
 
   const discardDraft = () => {
     const draft = createdRef.current
-
     draftGenRef.current += 1
-    createdRef.current = null
-    flightRef.current = null
-
-    if (draft) {
-      removeDraftProfile(draft)
-    }
+    createdRef.current = flightRef.current = null
+    draft && removeDraftProfile(draft)
   }
 
   const reset = () => {
@@ -497,9 +507,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           : {})
       })
 
-      // Discarded while the create was in flight: this dialog minted the
-      // profile and nobody will complete it, so delete it on the target it
-      // was created on and configure nothing.
+      // Discarded mid-create: delete the profile this flight minted, configure nothing.
       if (generation !== draftGenRef.current) {
         removeDraftProfile(slug)
 
@@ -511,23 +519,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       // Apply capability picks from the Advanced tabs (best-effort; the
       // profile exists either way and Edit Profile can finish the job).
       try {
-        const capPayload: Pick<
-          ProfileConfigurePayload,
-          'disabled_skills' | 'enabled_mcp_servers' | 'enabled_toolsets'
-        > = {}
-
-        if (dirtyCaps.skills && caps) {
-          capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
-        }
-
-        if (dirtyCaps.toolsets && caps) {
-          const en = caps.toolsets.filter(t => t.enabled)
-          capPayload.enabled_toolsets = en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
-        }
-
-        if (dirtyCaps.mcp && caps) {
-          capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
-        }
+        const capPayload = capabilityPayload(caps, dirtyCaps)
 
         if (Object.keys(capPayload).length) {
           await requestForTarget('profiles.configure', {

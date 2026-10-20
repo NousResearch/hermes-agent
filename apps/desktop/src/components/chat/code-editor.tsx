@@ -50,6 +50,14 @@ interface CodeEditorProps {
    */
   framed?: boolean
   filePath: string
+  /**
+   * Soft-wrap long lines instead of scrolling horizontally. Defaults to `false`
+   * to preserve historical behavior; the file-pane editor (preview-file.tsx)
+   * opts in because prose/markdown files routinely run off the right edge.
+   * For pure `framed` prose edits (SOUL.md, skills) `framed` already implies
+   * wrapping via `FRAMED_THEME`; this prop is the file-pane / non-framed path.
+   */
+  wrap?: boolean
   /** Character range to wash with a subtle background (the "you are here" block). */
   highlight?: null | { from: number; to: number }
   // Read once at mount. To load a different file or discard edits, remount the
@@ -187,7 +195,10 @@ export function CodeEditor({
   onChange,
   onCursorChange,
   onFormatJsonError,
-  onSave
+  onSave,
+  // Default `false` keeps the existing non-framed callsites (skills-tab,
+  // json-document-editor, …) byte-identical. The file-pane editor opts in.
+  wrap = false
 }: CodeEditorProps) {
   const { resolvedMode } = useTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -280,8 +291,9 @@ export function CodeEditor({
         LAYOUT_THEME,
         // Standalone edits (SOUL.md, skills, memories) are prose, not code —
         // wrap long lines instead of scrolling horizontally, and drop the gutter
-        // inset. Pane previews stay flush/scrolling to mirror their SourceView.
-        ...(framed ? [EditorView.lineWrapping, FRAMED_THEME] : [])
+        // inset. Pane previews stay flush/scrolling to mirror their SourceView
+        // unless the caller opts in via `wrap` (see #136344).
+        ...(wrap || framed ? [EditorView.lineWrapping, FRAMED_THEME] : [])
       ]
     })
 

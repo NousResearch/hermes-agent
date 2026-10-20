@@ -147,3 +147,24 @@ async def test_a_cold_model_pick_resolves_against_the_chats_saved_provider(tmp_p
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_messaging_chats_effort_wire_is_clamped_for_its_api_mode(tmp_path, monkeypatch):
+    """A chat on the Codex app-server route displays ``ultra`` on the wire, as that route sends it;
+    clamping without the route's api_mode showed ``max``."""
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, '_hermes_home', tmp_path)
+    (tmp_path / 'config.yaml').write_text(
+        'model:\n  default: gpt-5.6\n  provider: openai-codex\n  api_mode: codex_app_server\n')
+    runner, _source, _route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        picked = await viewer.dispatch(_mutate(root, fences, 'reasoning', {'effort': 'ultra'}, 'pick-ultra'))
+        assert picked.get('result', {}).get('effort') == 'ultra', picked
+
+        info = await viewer.dispatch({'id': 3, 'method': 'session.info', 'params': {'session_id': root}})
+
+        assert (info['result']['model'], info['result']['reasoning_effort_wire']) == ('gpt-5.6', 'ultra'), info
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()

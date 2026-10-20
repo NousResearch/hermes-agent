@@ -116,6 +116,9 @@ def messaging_route_info(runner, live):
     override = runner._session_model_override(live.route) or runner.session_store.get_model_override(live.route) or {}
     model = override.get('model') or model
     provider, base_url = override.get('provider') or provider, override.get('base_url') or base_url
+    # The wire level clamps per api_mode (a Codex app-server route keeps ``ultra``); config.yaml's
+    # api_mode belongs to its own provider only.
+    api_mode = override.get('api_mode') or (block.get('api_mode') if provider == block.get('provider') else None)
     reasoning = runner._resolve_session_reasoning_config(source=live.source, session_key=live.route, model=model)
     tier = runner._resolve_session_service_tier(source=live.source, session_key=live.route)
-    return {'model': model, **effort_fields(reasoning, tier, model, provider, base_url)}
+    return {'model': model, **effort_fields(reasoning, tier, model, provider, base_url, api_mode)}

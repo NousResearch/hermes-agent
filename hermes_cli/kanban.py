@@ -1078,7 +1078,7 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
         def op(tid):
-            if not kb.reopen_review_task(conn, tid):
+            if not kb.reopen_review_task(conn, tid, reason=reason):
                 return False
             if reason:
                 kb.add_comment(conn, tid, author or "operator", f"CHANGES REQUESTED: {reason}")

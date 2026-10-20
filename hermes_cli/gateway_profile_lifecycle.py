@@ -1,8 +1,13 @@
 """Named-profile lifecycle inside the host gateway, never a service-manager action."""
 from __future__ import annotations
 
+import logging
+
 from hermes_constants import get_hermes_home, get_default_hermes_root
 from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
+
+
+logger = logging.getLogger(__name__)
 
 
 def ack_confirmed(answer, key, name):
@@ -13,6 +18,18 @@ def ack_failure(answer):
     if isinstance(answer, dict):
         return answer.get("error") or "host operation is still pending"
     return "host control socket did not answer"
+
+
+def mark_planned_stop(pid: int | None = None) -> None:
+    """Best-effort planned-stop marker for ``pid`` (default: the recorded gateway PID)."""
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+        if pid is None:
+            pid = get_running_pid(cleanup_stale=False)
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass
 
 
 def host_scope_for_all_verb(owner):
@@ -113,3 +130,102 @@ def print_parked_status() -> bool:
             for profile in parked:
                 print(f"Profile '{profile}': parked (hermes -p {profile} gateway start)")
     return False
+
+
+def owned_gateway_pid() -> int | None:
+    """This profile's own gateway pid, only on positive, fresh ownership evidence; else None.
+
+    A served profile's runtime record carries the host multiplexer's pid (#141133), so the recorded
+    pid alone never authorizes a stop. Every ``find_gateway_pids()`` caller (stop, uninstall's kill,
+    ``service_manager.is_running``, cron readiness, Windows start polls) reads it through here.
+    """
+    from gateway.status import get_running_pid, _get_process_hermes_home
+
+    try:
+        pid = get_running_pid()
+        if pid is None or not _pid_owned_by_home(pid, _get_process_hermes_home()):
+            return None
+        # The runtime may have switched owners while the OS/control probes ran.
+        return pid if get_running_pid() == pid else None
+    except Exception:
+        # An inaccessible rendezvous or process is never permission to kill it.
+        logger.debug("Could not prove gateway process ownership", exc_info=True)
+        return None
+
+
+def _pid_owned_by_home(pid: int, home) -> bool:
+    """Ownership ladder, cheapest proof first; the control socket is dialled only for the host's pid.
+
+    ``gateway status`` asks once per profile and every served profile's record names the host, so the
+    host record (a file read plus an incarnation check) settles those without a dial.
+    """
+    from gateway import host_attach, host_rendezvous as hr
+    from gateway.status import _same_hermes_home
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+
+    record = hr.read_record(hr.ROLE_GATEWAY)
+    is_host = record is not None and record.pid == pid and hr.record_names_live_owner(record)
+    if is_host and not _same_hermes_home(host_attach.record_home(record), home):
+        return False  # the live host, launched from another home
+    if _launch_record_owns(pid, home):
+        return True
+    if is_host:
+        host_attach.invalidate_host_gateway_cache()
+        owner = host_attach.host_gateway()
+        # A verified identity answer from the host's own home needs no argv profile (bare launch).
+        if owner is not None and owner.pid == pid and owner.served_known:
+            return _same_hermes_home(owner.home, home)
+    process_home = _hermes_home_for_pid(pid, require_launch_identity=True)
+    return process_home is not None and _same_hermes_home(process_home, home)
+
+
+def _launch_record_owns(pid: int, home) -> bool:
+    """``<home>/gateway.pid`` names *pid*'s exact incarnation as launched from *home*.
+
+    A gateway writes that file once, about its own launch home (the host never writes one into a
+    served profile), so it pins the profile resolved at launch: a ``gateway run --force`` that relied
+    on the sticky ``active_profile`` stays stoppable after the sticky choice changes, which argv and
+    environment alone cannot prove.
+    """
+    from gateway.status import (
+        _GATEWAY_KIND, _get_process_start_time, _pid_from_record, _read_pid_record, _same_hermes_home)
+
+    record = _read_pid_record() or {}
+    started, recorded_home = record.get("start_time"), record.get("hermes_home")
+    return (record.get("kind") == _GATEWAY_KIND and _pid_from_record(record) == pid
+            and started is not None and started == _get_process_start_time(pid)
+            and isinstance(recorded_home, str) and _same_hermes_home(recorded_home, home))
+
+
+def report_profile_stop_failure() -> None:
+    """Do not report absence when a live PID was refused or the probe failed."""
+    from gateway.status import get_running_pid
+    from hermes_cli import gateway as gw
+
+    try:
+        absent = get_running_pid() is None and not gw.find_gateway_pids()
+    except Exception:
+        logger.debug("Could not confirm gateway absence after stop", exc_info=True)
+        absent = False
+    if absent:
+        print("✗ No gateway running for this profile")
+        return
+    gw.print_error("Gateway stop was not confirmed; a gateway may still be running. "
+                   "Check gateway status and process ownership.")
+    _print_host_hint()
+    raise SystemExit(1)
+
+
+def _print_host_hint() -> None:
+    """Name the refused pid when it is the host gateway serving this profile (#141133)."""
+    from gateway import host_rendezvous as hr
+    from gateway.status import get_running_pid
+
+    try:
+        pid, record = get_running_pid(), hr.read_record(hr.ROLE_GATEWAY)
+    except Exception:
+        logger.debug("Could not read the host record for the stop hint", exc_info=True)
+        return
+    if pid is not None and record is not None and record.pid == pid:
+        print(f"  PID {pid} is the host gateway serving this profile; stopping it would take every "
+              f"served profile offline. Stop the host instead: hermes gateway stop --all")

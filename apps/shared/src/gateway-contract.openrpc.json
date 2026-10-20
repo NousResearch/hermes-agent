@@ -368,7 +368,7 @@
     },
     {
       "name": "client.capabilities",
-      "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server→client request methods this backend may send.",
+      "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server\u2192client request methods this backend may send.",
       "params": [
         {
           "name": "params",
@@ -1520,7 +1520,7 @@
     },
     {
       "name": "i18n.languages",
-      "summary": "Every language some layer supplies (bundled ∪ user overlay ∪ plugin packs), en first.",
+      "summary": "Every language some layer supplies (bundled \u222a user overlay \u222a plugin packs), en first.",
       "params": [
         {
           "name": "params",
@@ -1934,7 +1934,7 @@
     },
     {
       "name": "mcp.servers.test",
-      "summary": "Connect, list tools, disconnect — an OAuth server with no token on disk is reported as not ok.",
+      "summary": "Connect, list tools, disconnect \u2014 an OAuth server with no token on disk is reported as not ok.",
       "params": [
         {
           "name": "params",
@@ -2744,7 +2744,7 @@
     },
     {
       "name": "projects.discover_repos",
-      "summary": "Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived.",
+      "summary": "Repos for the desktop overview: scanned-from-disk (cached) \u222a session-derived.",
       "params": [
         {
           "name": "params",
@@ -2906,7 +2906,7 @@
     },
     {
       "name": "projects.tree",
-      "summary": "Project → repo → lane overview with counts and a few preview sessions per project.",
+      "summary": "Project \u2192 repo \u2192 lane overview with counts and a few preview sessions per project.",
       "params": [
         {
           "name": "params",
@@ -3032,7 +3032,7 @@
     },
     {
       "name": "request.answer",
-      "summary": "Answer an open server→client request from a client that never received the frame.",
+      "summary": "Answer an open server\u2192client request from a client that never received the frame.",
       "params": [
         {
           "name": "params",
@@ -4806,7 +4806,7 @@
       },
       "ActiveSubagent": {
         "additionalProperties": true,
-        "description": "One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record\nis extended by the child runner — ``missed_steer`` etc. — so it stays open).",
+        "description": "One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record\nis extended by the child runner \u2014 ``missed_steer`` etc. \u2014 so it stays open).",
         "properties": {
           "subagent_id": {
             "title": "Subagent Id",
@@ -5110,6 +5110,18 @@
             "default": null,
             "title": "Update Available"
           },
+          "update_target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Target"
+          },
           "pinned_sha": {
             "anyOf": [
               {
@@ -5232,7 +5244,7 @@
       },
       "ApprovalCancelledPayload": {
         "additionalProperties": false,
-        "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
+        "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5368,7 +5380,7 @@
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side.",
+        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -6132,7 +6144,7 @@
       },
       "BillingChargeResult": {
         "additionalProperties": false,
-        "description": "``202 {chargeId}`` — money is not confirmed yet; poll ``billing.charge_status``.",
+        "description": "``202 {chargeId}`` \u2014 money is not confirmed yet; poll ``billing.charge_status``.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -8166,6 +8178,7 @@
       },
       "CanonicalBotDeliverResult": {
         "additionalProperties": false,
+        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
         "properties": {
           "status": {
             "title": "Status",
@@ -8184,8 +8197,29 @@
             "type": "string"
           },
           "admission_id": {
-            "title": "Admission Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refused"
           },
           "message": {
             "title": "Message",
@@ -8245,7 +8279,6 @@
           "delivery_id",
           "profile_home",
           "session_id",
-          "admission_id",
           "message"
         ],
         "title": "CanonicalBotDeliverResult",
@@ -8544,6 +8577,40 @@
         "title": "CanonicalControlParams",
         "type": "object"
       },
+      "CanonicalCorrectionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "redirected",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "text",
+          "execution_generation",
+          "authority_epoch"
+        ],
+        "title": "CanonicalCorrectionAck",
+        "type": "object"
+      },
       "CanonicalCorrectionParams": {
         "additionalProperties": false,
         "properties": {
@@ -8581,38 +8648,16 @@
         "type": "object"
       },
       "CanonicalCorrectionResult": {
-        "additionalProperties": false,
-        "properties": {
-          "status": {
-            "enum": [
-              "queued",
-              "redirected",
-              "rejected"
-            ],
-            "title": "Status",
-            "type": "string"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalCorrectionAck"
           },
-          "text": {
-            "title": "Text",
-            "type": "string"
-          },
-          "execution_generation": {
-            "title": "Execution Generation",
-            "type": "integer"
-          },
-          "authority_epoch": {
-            "title": "Authority Epoch",
-            "type": "integer"
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
           }
-        },
-        "required": [
-          "status",
-          "text",
-          "execution_generation",
-          "authority_epoch"
         ],
-        "title": "CanonicalCorrectionResult",
-        "type": "object"
+        "description": "``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``\nwhen the busy-time text was a bare stop phrase that ended the LOCAL voice chat.",
+        "title": "CanonicalCorrectionResult"
       },
       "CanonicalCreateParams": {
         "additionalProperties": false,
@@ -8900,6 +8945,21 @@
             "default": false,
             "title": "Verbose",
             "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
           }
         },
         "title": "CanonicalCreateParams",
@@ -9099,6 +9159,18 @@
             ],
             "default": null,
             "title": "Provider"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
           }
         },
         "required": [
@@ -9164,6 +9236,37 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "controls": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "steer",
+                    "replace"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Controls"
+          },
+          "steering": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steering"
           }
         },
         "required": [
@@ -9466,6 +9569,88 @@
           "profiles"
         ],
         "title": "CanonicalProfilesResult",
+        "type": "object"
+      },
+      "CanonicalReplaceQueuedParams": {
+        "additionalProperties": false,
+        "description": "The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "const": "hidden",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id",
+          "submission_id",
+          "text"
+        ],
+        "title": "CanonicalReplaceQueuedParams",
         "type": "object"
       },
       "CanonicalReplayEvent": {
@@ -10062,6 +10247,21 @@
             "default": null,
             "title": "Browser Backend Notice"
           },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -10105,6 +10305,23 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "edit_approval_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ask",
+                  "workspace_session",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit Approval Policy"
           },
           "launch_request": {
             "anyOf": [
@@ -10250,6 +10467,18 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "required": [
@@ -10501,6 +10730,17 @@
           },
           "info": {
             "$ref": "#/components/schemas/CanonicalSnapshotInfo"
+          },
+          "pending_connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionRequestPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10736,6 +10976,21 @@
             "default": null,
             "title": "Browser Backend Notice"
           },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
           "desktop_protocol": {
             "const": "hermes-gateway-v1",
             "title": "Desktop Protocol",
@@ -10812,6 +11067,23 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "edit_approval_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ask",
+                  "workspace_session",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit Approval Policy"
           },
           "launch_request": {
             "anyOf": [
@@ -10957,12 +11229,55 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "required": [
           "desktop_protocol"
         ],
         "title": "CanonicalSnapshotInfo",
+        "type": "object"
+      },
+      "CanonicalSteerQueuedParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CanonicalSteerQueuedParams",
         "type": "object"
       },
       "CanonicalSubmitParams": {
@@ -11148,6 +11463,18 @@
         "title": "CanonicalSubmitParams",
         "type": "object"
       },
+      "CanonicalSubmitResult": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AdmissionStatus"
+          },
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
+          }
+        ],
+        "description": "``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``.",
+        "title": "CanonicalSubmitResult"
+      },
       "CanonicalTurnAuthor": {
         "additionalProperties": false,
         "properties": {
@@ -11194,6 +11521,22 @@
           }
         },
         "title": "CanonicalTurnAuthor",
+        "type": "object"
+      },
+      "CanonicalVoiceStopped": {
+        "additionalProperties": false,
+        "description": "A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was\nadmitted (TUI-26).",
+        "properties": {
+          "voice_stopped": {
+            "const": true,
+            "title": "Voice Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "voice_stopped"
+        ],
+        "title": "CanonicalVoiceStopped",
         "type": "object"
       },
       "CapabilityEntry": {
@@ -11343,6 +11686,7 @@
       "CatalogTier": {
         "enum": [
           "official",
+          "verified",
           "community"
         ],
         "title": "CatalogTier",
@@ -11350,7 +11694,7 @@
       },
       "ChangeSignalPayload": {
         "additionalProperties": true,
-        "description": "``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed.",
+        "description": "``change_watcher._CHANGE_WATCHES`` payload fn \u2014 ``{}`` for every watch except pet.changed.",
         "properties": {},
         "title": "ChangeSignalPayload",
         "type": "object"
@@ -11392,7 +11736,7 @@
       },
       "ClarifyLockResult": {
         "additionalProperties": false,
-        "description": "``remaining`` lists the qids still unanswered; the lock that empties it resolves the request.\n``expired``: the wait already ended (timeout / cancel) — not an error.",
+        "description": "``remaining`` lists the qids still unanswered; the lock that empties it resolves the request.\n``expired``: the wait already ended (timeout / cancel) \u2014 not an error.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/ClarifyLockStatus"
@@ -11941,6 +12285,63 @@
         "title": "CommandDispatchResult",
         "type": "object"
       },
+      "CommandObserveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "arg": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Arg"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "name"
+        ],
+        "title": "CommandObserveParams",
+        "type": "object"
+      },
+      "CommandObserveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "CommandObserveResult",
+        "type": "object"
+      },
       "CommandResolveParams": {
         "additionalProperties": false,
         "properties": {
@@ -12087,6 +12488,18 @@
             "default": "",
             "title": "Warning",
             "type": "string"
+          },
+          "plugin_discovery_error": {
+            "default": "",
+            "title": "Plugin Discovery Error",
+            "type": "string"
+          },
+          "plugin_commands": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Plugin Commands",
+            "type": "object"
           }
         },
         "title": "CommandsCatalogResult",
@@ -14129,35 +14542,6 @@
         "title": "ConnectorChange",
         "type": "object"
       },
-      "ConnectorErrorReason": {
-        "type": "string",
-        "enum": [
-          "INVALID_PARAMS",
-          "NOT_OWNER",
-          "UNSUPPORTED_RUNTIME",
-          "CONNECTOR_REQUEST_FAILED",
-          "INVALID_CONNECTOR_RESPONSE",
-          "UNKNOWN_TARGET",
-          "LINK_STILL_VALID",
-          "REISSUE_REFUSED",
-          "UNKNOWN_OPERATION",
-          "INVALID_ANSWER",
-          "NEEDS_NOUS_AUTH",
-          "CONNECTOR_NOT_FOUND",
-          "TOOLS_UNAVAILABLE",
-          "CONNECTORS_UNAVAILABLE",
-          "CATALOG_UNAVAILABLE",
-          "ACCOUNTS_UNAVAILABLE",
-          "CONNECTION_NOT_FOUND",
-          "POLICY_UNAVAILABLE",
-          "POLICY_CONFLICT",
-          "FORBIDDEN_SCOPE",
-          "ORG_REQUIRED",
-          "ORG_ACCESS_DENIED",
-          "INVALID_POLICY",
-          "ALIAS_TAKEN"
-        ]
-      },
       "ConnectorPolicyAllowBody": {
         "additionalProperties": false,
         "properties": {
@@ -15810,7 +16194,7 @@
       },
       "CronManageResult": {
         "additionalProperties": true,
-        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` →\n``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``.",
+        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``. A tool-level failure lands in ``error``.",
         "properties": {
           "success": {
             "anyOf": [
@@ -17790,7 +18174,7 @@
       },
       "ErrorPayload": {
         "additionalProperties": false,
-        "description": "Every ``_emit(\"error\", …)`` site sets exactly ``message``.",
+        "description": "Every ``_emit(\"error\", \u2026)`` site sets exactly ``message``.",
         "properties": {
           "message": {
             "title": "Message",
@@ -17805,7 +18189,7 @@
       },
       "ErrorSurface": {
         "additionalProperties": true,
-        "description": "``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,\n+ ``resets_at`` epoch seconds when the provider named when its limit lifts).",
+        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint,\n+ ``resets_at`` epoch seconds when the provider named when its limit lifts).",
         "properties": {
           "layer": {
             "title": "Layer",
@@ -18034,7 +18418,7 @@
       },
       "ForeignSessionRow": {
         "additionalProperties": false,
-        "description": "``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque\nhandle, never a path.",
+        "description": "``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` \u2014 ``id`` is an opaque\nhandle, never a path.",
         "properties": {
           "id": {
             "title": "Id",
@@ -18559,7 +18943,7 @@
       },
       "GoalSnapshot": {
         "additionalProperties": false,
-        "description": "``methods_session_control.py::_safe_goal_snapshot`` — the frontend-safe GoalState subset.",
+        "description": "``methods_session_control.py::_safe_goal_snapshot`` \u2014 the frontend-safe GoalState subset.",
         "properties": {
           "title": {
             "title": "Title",
@@ -19312,7 +19696,7 @@
       },
       "GroupsLogResult": {
         "additionalProperties": false,
-        "description": "``gateway/hosted_rooms.py::read_events`` page — also the ``page`` ``groups.replicate`` ingests.",
+        "description": "``gateway/hosted_rooms.py::read_events`` page \u2014 also the ``page`` ``groups.replicate`` ingests.",
         "properties": {
           "events": {
             "items": {
@@ -20384,7 +20768,7 @@
       },
       "I18nCatalogResult": {
         "additionalProperties": false,
-        "description": "``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the\nclient merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request\nresolved to (``pt-BR`` → ``pt-br``; an unknown id resolves to ``en`` with an empty layer).",
+        "description": "``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the\nclient merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request\nresolved to (``pt-BR`` \u2192 ``pt-br``; an unknown id resolves to ``en`` with an empty layer).",
         "properties": {
           "lang": {
             "title": "Lang",
@@ -20428,7 +20812,7 @@
       },
       "ImageAttachBytesParams": {
         "additionalProperties": false,
-        "description": "``content_base64`` (or the ``data`` alias) carries the bytes; ``filename`` / ``ext`` only hint\nthe extension — magic bytes decide.",
+        "description": "``content_base64`` (or the ``data`` alias) carries the bytes; ``filename`` / ``ext`` only hint\nthe extension \u2014 magic bytes decide.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -21108,7 +21492,7 @@
       },
       "LanguageOption": {
         "additionalProperties": false,
-        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` — the highest layer that supplies the language.",
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
         "properties": {
           "id": {
             "title": "Id",
@@ -21529,7 +21913,7 @@
       },
       "LearningMutationResult": {
         "additionalProperties": false,
-        "description": "``agent.learning_mutations`` — ``ok: false`` carries the reason in ``message``.",
+        "description": "``agent.learning_mutations`` \u2014 ``ok: false`` carries the reason in ``message``.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -21639,6 +22023,66 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "hooks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hooks"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Commands"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "required": [
@@ -21803,7 +22247,7 @@
       },
       "LoopSnapshot": {
         "additionalProperties": false,
-        "description": "``_safe_loop_snapshot`` — persisted LoopState fields, never its route.",
+        "description": "``_safe_loop_snapshot`` \u2014 persisted LoopState fields, never its route.",
         "properties": {
           "prompt": {
             "title": "Prompt",
@@ -22672,7 +23116,7 @@
       },
       "McpServerSummary": {
         "additionalProperties": false,
-        "description": "``tui_gateway/mcp_rpc_helpers.summarize_server`` — a server's config without secret values.",
+        "description": "``tui_gateway/mcp_rpc_helpers.summarize_server`` \u2014 a server's config without secret values.",
         "properties": {
           "name": {
             "title": "Name",
@@ -24134,7 +24578,7 @@
       },
       "ModelPricing": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only.",
+        "description": "``hermes_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only.",
         "properties": {
           "input": {
             "title": "Input",
@@ -24280,7 +24724,7 @@
       },
       "NotificationShowPayload": {
         "additionalProperties": false,
-        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.",
+        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.\n``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows\nit in the toast's expandable body, the Ink TUI prints it into the transcript.",
         "properties": {
           "text": {
             "title": "Text",
@@ -24329,6 +24773,18 @@
             ],
             "default": null,
             "title": "Id"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
           }
         },
         "required": [
@@ -24627,7 +25083,7 @@
       },
       "OpenRequestEntry": {
         "additionalProperties": false,
-        "description": "One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting\nclient re-delivers it to its request handlers.",
+        "description": "One unanswered server\u2192client request (``server_requests.Request.snapshot``); the reconnecting\nclient re-delivers it to its request handlers.",
         "properties": {
           "id": {
             "title": "Id",
@@ -24686,7 +25142,7 @@
       },
       "Params": {
         "additionalProperties": false,
-        "description": "Client→server method params / server→client request params. Unknown keys are rejected.",
+        "description": "Client\u2192server method params / server\u2192client request params. Unknown keys are rejected.",
         "properties": {},
         "title": "Params",
         "type": "object"
@@ -25279,7 +25735,7 @@
       },
       "PetCellsResult": {
         "additionalProperties": false,
-        "description": "Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``\nset): ``frames`` are transmit escapes and ``placeholder`` the text grid.",
+        "description": "Unicode: ``frames`` is frame \u2192 row \u2192 cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``\nset): ``frames`` are transmit escapes and ``placeholder`` the text grid.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -25459,7 +25915,7 @@
       },
       "PetChangedPayload": {
         "additionalProperties": true,
-        "description": "``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off.",
+        "description": "``change_watcher._pet_changed_payload`` \u2014 ``pet.info.meta``-shaped; ``{enabled: false}`` when off.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -26737,7 +27193,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn — the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
         "properties": {
           "name": {
             "title": "Name",
@@ -26957,6 +27413,46 @@
         "title": "PluginLiveSkill",
         "type": "object"
       },
+      "PluginScanFinding": {
+        "additionalProperties": false,
+        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "properties": {
+          "pattern_id": {
+            "title": "Pattern Id",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern_id",
+          "severity",
+          "category",
+          "file",
+          "line",
+          "description"
+        ],
+        "title": "PluginScanFinding",
+        "type": "object"
+      },
       "PluginServerRow": {
         "additionalProperties": false,
         "properties": {
@@ -27100,6 +27596,30 @@
         "title": "PluginSettingFieldType",
         "type": "string"
       },
+      "PluginToolsetRow": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "description"
+        ],
+        "title": "PluginToolsetRow",
+        "type": "object"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -27129,6 +27649,36 @@
             },
             "title": "Plugins",
             "type": "array"
+          },
+          "toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginToolsetRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Toolsets"
+          },
+          "portable_mcp_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Portable Mcp Servers"
           }
         },
         "required": [
@@ -27139,7 +27689,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -27299,7 +27849,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities`` \u2014 or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /\n``scan_findings`` (retry a caution verdict with ``force``); ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -27586,6 +28136,45 @@
             ],
             "default": null,
             "title": "Delta Lines"
+          },
+          "scan_blocked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scan Blocked"
+          },
+          "scan_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scan Verdict"
+          },
+          "scan_findings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginScanFinding"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scan Findings"
           },
           "error": {
             "anyOf": [
@@ -29627,7 +30216,7 @@
       },
       "ProjectFacts": {
         "additionalProperties": false,
-        "description": "``agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection.",
+        "description": "``agent/coding_context.py::project_facts_for`` \u2014 the system prompt's coding-context detection.",
         "properties": {
           "root": {
             "title": "Root",
@@ -29826,7 +30415,7 @@
       },
       "ProjectInfo": {
         "additionalProperties": false,
-        "description": "``hermes_cli/projects_db.py::Project.to_dict`` — one stored project with its folders.",
+        "description": "``hermes_cli/projects_db.py::Project.to_dict`` \u2014 one stored project with its folders.",
         "properties": {
           "id": {
             "title": "Id",
@@ -30032,7 +30621,7 @@
       },
       "ProjectTreeNode": {
         "additionalProperties": false,
-        "description": "``project_tree._project_node`` — explicit, auto (git root) or the synthetic Home bucket.",
+        "description": "``project_tree._project_node`` \u2014 explicit, auto (git root) or the synthetic Home bucket.",
         "properties": {
           "id": {
             "title": "Id",
@@ -31650,6 +32239,30 @@
             ],
             "default": null,
             "title": "Turn Isolation"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "forwarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Forwarded"
           }
         },
         "title": "PromptSubmitResult",
@@ -31667,7 +32280,7 @@
       },
       "ProviderLimit": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
+        "description": "``hermes_cli/inventory.py::_apply_limits`` \u2014 ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
         "properties": {
           "scope": {
             "enum": [
@@ -31713,7 +32326,7 @@
       },
       "ProviderUsage": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache.\n\nMulti-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``\nstays EMPTY there — a provider-wide percentage across different logins would be fabricated).\nSingle-account providers keep the legacy ``windows`` gauge.",
+        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's subscription usage, from cache.\n\nMulti-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``\nstays EMPTY there \u2014 a provider-wide percentage across different logins would be fabricated).\nSingle-account providers keep the legacy ``windows`` gauge.",
         "properties": {
           "windows": {
             "items": {
@@ -31743,7 +32356,7 @@
       },
       "ProviderUsageAccount": {
         "additionalProperties": false,
-        "description": "One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).\n``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI\nfalls back to a localized \"Account N\"). ``windows`` is empty while the account's usage is not\nyet known — state carries the meaning, never a fabricated gauge.\n\n``state``: ``ready`` — live quota below the cap (numeric windows present); ``limited`` — a live\ncredential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` — no live\nnumeric windows (failed/empty fetch, stale snapshot, provider without a usage API);\n``unavailable`` — DEAD auth row (kept visible, never a quota row).\n\n``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a\nlive cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.\nthe earliest limited sibling).",
+        "description": "One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).\n``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI\nfalls back to a localized \"Account N\"). ``windows`` is empty while the account's usage is not\nyet known \u2014 state carries the meaning, never a fabricated gauge.\n\n``state``: ``ready`` \u2014 live quota below the cap (numeric windows present); ``limited`` \u2014 a live\ncredential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` \u2014 no live\nnumeric windows (failed/empty fetch, stale snapshot, provider without a usage API);\n``unavailable`` \u2014 DEAD auth row (kept visible, never a quota row).\n\n``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a\nlive cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.\nthe earliest limited sibling).",
         "properties": {
           "id": {
             "title": "Id",
@@ -31793,7 +32406,7 @@
       },
       "ProviderUsageWindow": {
         "additionalProperties": false,
-        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).\n\n``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly,\nso a limited account's resets_at must wait for it); ``model`` — the window caps only one model\nfamily (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota.",
+        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).\n\n``scope``: ``account`` \u2014 exhausting the window exhausts the whole login (Codex session/weekly,\nso a limited account's resets_at must wait for it); ``model`` \u2014 the window caps only one model\nfamily (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota.",
         "properties": {
           "label": {
             "title": "Label",
@@ -32172,6 +32785,7 @@
       },
       "ReloadMcpResult": {
         "additionalProperties": false,
+        "description": "``session``: what the calling local session's MCP servers did (a new policy generation, nothing to\nchange, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect\nbeside what did apply; ``session_servers``: the MCP servers that session's committed policy runs.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/ReloadMcpStatus"
@@ -32233,6 +32847,47 @@
             ],
             "default": null,
             "title": "Host Ack"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReloadMcpSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable"
+          },
+          "session_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Servers"
           }
         },
         "required": [
@@ -32240,6 +32895,15 @@
         ],
         "title": "ReloadMcpResult",
         "type": "object"
+      },
+      "ReloadMcpSession": {
+        "enum": [
+          "applied",
+          "unchanged",
+          "busy"
+        ],
+        "title": "ReloadMcpSession",
+        "type": "string"
       },
       "ReloadMcpStatus": {
         "enum": [
@@ -32251,7 +32915,7 @@
       },
       "RepoDiscoveryPolicy": {
         "additionalProperties": false,
-        "description": "``methods_projects._repo_discovery_policy`` — the effective ``desktop.repo_scan_*`` config.",
+        "description": "``methods_projects._repo_discovery_policy`` \u2014 the effective ``desktop.repo_scan_*`` config.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -32628,6 +33292,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "all": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "All"
           }
         },
         "required": [
@@ -32792,6 +33468,84 @@
           "success"
         ],
         "title": "RollbackRestoreResult",
+        "type": "object"
+      },
+      "RollbackSessionDiffParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "RollbackSessionDiffParams",
+        "type": "object"
+      },
+      "RollbackSessionDiffResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the\nsession's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).\n``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "success": {
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          },
+          "stat": {
+            "default": "",
+            "title": "Stat",
+            "type": "string"
+          },
+          "diff": {
+            "default": "",
+            "title": "Diff",
+            "type": "string"
+          },
+          "diff_lines": {
+            "default": 0,
+            "title": "Diff Lines",
+            "type": "integer"
+          },
+          "empty": {
+            "default": false,
+            "title": "Empty",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RollbackSessionDiffResult",
         "type": "object"
       },
       "Room": {
@@ -33750,7 +34504,7 @@
       },
       "SeedMessage": {
         "additionalProperties": true,
-        "description": "One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the\nlegacy alias of ``content``; only ``display_kind: \"hidden\"`` is accepted from the wire. Clients\nforward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does\nnot use, so the row stays open.",
+        "description": "One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the\nlegacy alias of ``content``; only ``display_kind: \"hidden\"`` is accepted from the wire. Clients\nforward stored rows verbatim (``_row_id``, ``timestamp``, \u2026) and the coercer drops what it does\nnot use, so the row stays open.",
         "properties": {
           "role": {
             "title": "Role",
@@ -34093,6 +34847,18 @@
           "session_key": {
             "title": "Session Key",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
           },
           "started_at": {
             "title": "Started At",
@@ -35166,7 +35932,7 @@
       },
       "SessionControlDispatch": {
         "additionalProperties": false,
-        "description": "``_dispatch_envelope`` — the command result's user-visible envelope, every key always present.",
+        "description": "``_dispatch_envelope`` \u2014 the command result's user-visible envelope, every key always present.",
         "properties": {
           "type": {
             "anyOf": [
@@ -35335,7 +36101,7 @@
       },
       "SessionControlSnapshot": {
         "additionalProperties": false,
-        "description": "``_snapshot_control`` — ``revision`` is a hash of the visible state (``\"\"`` when empty);\n``updated_at`` is the newest persisted timestamp (``0`` when none).",
+        "description": "``_snapshot_control`` \u2014 ``revision`` is a hash of the visible state (``\"\"`` when empty);\n``updated_at`` is the newest persisted timestamp (``0`` when none).",
         "properties": {
           "goal": {
             "anyOf": [
@@ -36103,6 +36869,18 @@
             ],
             "default": null,
             "title": "Last Seen"
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
           }
         },
         "required": [
@@ -36214,6 +36992,68 @@
           "max_bytes_process"
         ],
         "title": "SessionEventsStatsResult",
+        "type": "object"
+      },
+      "SessionExportParams": {
+        "additionalProperties": false,
+        "description": "``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "format": {
+            "default": "json",
+            "title": "Format",
+            "type": "string"
+          },
+          "redact": {
+            "default": false,
+            "title": "Redact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionExportParams",
+        "type": "object"
+      },
+      "SessionExportResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
+        "properties": {
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "filename",
+          "content"
+        ],
+        "title": "SessionExportResult",
         "type": "object"
       },
       "SessionForeignIdParams": {
@@ -36674,7 +37514,7 @@
       },
       "SessionLiveInfo": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
+        "description": "``tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
         "properties": {
           "model": {
             "default": "",
@@ -36989,7 +37829,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project.",
+        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -37037,7 +37877,7 @@
       },
       "SessionMutateResult": {
         "additionalProperties": true,
-        "description": "The committed mutation receipt plus the operation's projection (``title``, ``archived``,\n``branched_session_id``, compress ``status``/``lines``, …). ``revision`` is absent only on a\nread-only compress preview.",
+        "description": "The committed mutation receipt plus the operation's projection (``title``, ``archived``,\n``branched_session_id``, compress ``status``/``lines``, \u2026). ``revision`` is absent only on a\nread-only compress preview.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -38056,7 +38896,7 @@
       },
       "SessionUsagePayload": {
         "additionalProperties": false,
-        "description": "``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative\ncounters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:\npublished after every API call and at turn end, what main's classic CLI read off its agent.",
+        "description": "``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker\n(``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call\nand at turn end (``gateway/session_usage.py::usage_frame``). Read this.\n\nDeprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``\ndict) that the gateway frame also carries. They are kept for existing readers; new readers use\n``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them.",
         "properties": {
           "usage": {
             "anyOf": [
@@ -39538,7 +40378,7 @@
       },
       "SharedMetricsDesktopDislikeParams": {
         "additionalProperties": false,
-        "description": "``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a\nclosed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a\nconfig key for setting_off_default only (the value is never sent — the backend compares it to the\ndefault).",
+        "description": "``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a\nclosed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a\nconfig key for setting_off_default only (the value is never sent \u2014 the backend compares it to the\ndefault).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -39582,7 +40422,7 @@
       },
       "SharedMetricsDesktopFeatureUseParams": {
         "additionalProperties": false,
-        "description": "``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` …);\nthe backend collapses anything outside its closed set to ``other``.",
+        "description": "``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` \u2026);\nthe backend collapses anything outside its closed set to ``other``.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -40318,7 +41158,7 @@
       },
       "SkillsManageResult": {
         "additionalProperties": false,
-        "description": "Shape follows the action: ``list`` → ``skills`` (category → names); ``search`` → ``results``;\n``install`` → ``installed`` + ``name``; ``browse`` → ``items`` + paging; ``inspect`` → ``info``.",
+        "description": "Shape follows the action: ``list`` \u2192 ``skills`` (category \u2192 names); ``search`` \u2192 ``results``;\n``install`` \u2192 ``installed`` + ``name``; ``browse`` \u2192 ``items`` + paging; ``inspect`` \u2192 ``info``.",
         "properties": {
           "skills": {
             "anyOf": [
@@ -40534,7 +41374,7 @@
       },
       "SkinPayload": {
         "additionalProperties": true,
-        "description": "``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token → colour string.",
+        "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
         "properties": {
           "name": {
             "default": "",
@@ -40631,7 +41471,7 @@
       },
       "SlashExecResult": {
         "additionalProperties": false,
-        "description": "Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to\n``command.dispatch`` — that method's directive fields with ``type`` set.",
+        "description": "Plain worker/plugin text in ``output`` (+ ``warning``), or \u2014 when the command was rerouted to\n``command.dispatch`` \u2014 that method's directive fields with ``type`` set.",
         "properties": {
           "output": {
             "anyOf": [
@@ -41126,7 +41966,7 @@
       },
       "SubagentEventPayload": {
         "additionalProperties": false,
-        "description": "``tool_progress._progress_subagent`` — every ``subagent.*`` frame; identity fields are optional\nbecause older emitters omit them and the TUI spawn tree falls back to flat rendering.",
+        "description": "``tool_progress._progress_subagent`` \u2014 every ``subagent.*`` frame; identity fields are optional\nbecause older emitters omit them and the TUI spawn tree falls back to flat rendering.",
         "properties": {
           "goal": {
             "title": "Goal",
@@ -42899,7 +43739,7 @@
       },
       "TodoUpdatedPayload": {
         "additionalProperties": false,
-        "description": "``tool_progress._normalize_todo_state`` — full task snapshot.",
+        "description": "``tool_progress._normalize_todo_state`` \u2014 full task snapshot.",
         "properties": {
           "todos": {
             "items": {},
@@ -43060,7 +43900,7 @@
       },
       "ToolLabel": {
         "additionalProperties": false,
-        "description": "``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is,\nin words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse\nthe tool name themselves.",
+        "description": "``tools.tool_labels.ToolLabel`` \u2014 what one call executed through the tool_search bridge is,\nin words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse\nthe tool name themselves.",
         "properties": {
           "kind": {
             "$ref": "#/components/schemas/ToolLabelKind"
@@ -43717,7 +44557,7 @@
       },
       "TranscriptMessage": {
         "additionalProperties": true,
-        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``\nrewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.\nAssistant detail sidecars (``reasoning``, …) ride as extra keys.",
+        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``\nrewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
         "properties": {
           "role": {
             "title": "Role",
@@ -44192,7 +45032,7 @@
       },
       "UsageModel": {
         "additionalProperties": false,
-        "description": "``_serialize_usage_model`` — also embedded as ``usage`` in the billing / subscription states,\nwhere the fail-open form is a bare ``{available: false}`` (no ``ok``).",
+        "description": "``_serialize_usage_model`` \u2014 also embedded as ``usage`` in the billing / subscription states,\nwhere the fail-open form is a bare ``{available: false}`` (no ``ok``).",
         "properties": {
           "ok": {
             "anyOf": [
@@ -45177,7 +46017,7 @@
       },
       "VoicePartialPayload": {
         "additionalProperties": false,
-        "description": "``methods_voice`` voice.record ``on_partial`` — live STT text so far (``stt.streaming``).",
+        "description": "``methods_voice`` voice.record ``on_partial`` \u2014 live STT text so far (``stt.streaming``).",
         "properties": {
           "text": {
             "title": "Text",
@@ -45269,7 +46109,7 @@
       },
       "VoiceStatusPayload": {
         "additionalProperties": false,
-        "description": "``methods_voice._vr_on_status``; states come from the recorder (idle / listening / transcribing …).",
+        "description": "``methods_voice._vr_on_status``; states come from the recorder (idle / listening / transcribing \u2026).",
         "properties": {
           "state": {
             "title": "State",
@@ -45691,7 +46531,7 @@
       },
       "WakeInputDevice": {
         "additionalProperties": true,
-        "description": "``tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic.",
+        "description": "``tools/wake_word.py::_describe_input_device`` \u2014 PortAudio diagnostics for the configured mic.",
         "properties": {
           "selector": {
             "anyOf": [
@@ -46335,7 +47175,7 @@
       },
       "WorkerPersistResult": {
         "additionalProperties": true,
-        "description": "The operation's durable receipt (``message_id`` for an append, delegation results, …).",
+        "description": "The operation's durable receipt (``message_id`` for an append, delegation results, \u2026).",
         "properties": {},
         "title": "WorkerPersistResult",
         "type": "object"
@@ -46453,6 +47293,35 @@
         },
         "title": "_SessionScoped",
         "type": "object"
+      },
+      "ConnectorErrorReason": {
+        "type": "string",
+        "enum": [
+          "INVALID_PARAMS",
+          "NOT_OWNER",
+          "UNSUPPORTED_RUNTIME",
+          "CONNECTOR_REQUEST_FAILED",
+          "INVALID_CONNECTOR_RESPONSE",
+          "UNKNOWN_TARGET",
+          "LINK_STILL_VALID",
+          "REISSUE_REFUSED",
+          "UNKNOWN_OPERATION",
+          "INVALID_ANSWER",
+          "NEEDS_NOUS_AUTH",
+          "CONNECTOR_NOT_FOUND",
+          "TOOLS_UNAVAILABLE",
+          "CONNECTORS_UNAVAILABLE",
+          "CATALOG_UNAVAILABLE",
+          "ACCOUNTS_UNAVAILABLE",
+          "CONNECTION_NOT_FOUND",
+          "POLICY_UNAVAILABLE",
+          "POLICY_CONFLICT",
+          "FORBIDDEN_SCOPE",
+          "ORG_REQUIRED",
+          "ORG_ACCESS_DENIED",
+          "INVALID_POLICY",
+          "ALIAS_TAKEN"
+        ]
       }
     }
   },
@@ -46512,6 +47381,42 @@
       }
     },
     {
+      "name": "bot_relay.settle",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotDeliverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.lock",
+      "summary": "Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyLockParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarifyLockResult"
+        }
+      }
+    },
+    {
       "name": "clarify.respond",
       "summary": "Generation-fenced answer to a pending clarify prompt (empty answer = skipped).",
       "params": [
@@ -46526,6 +47431,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "command.observe",
+      "summary": "Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CommandObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CommandObserveResult"
         }
       }
     },
@@ -46836,6 +47759,24 @@
       }
     },
     {
+      "name": "prompt.replace_queued",
+      "summary": "Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalReplaceQueuedParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
       "name": "prompt.resolve_unknown",
       "summary": "Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input.",
       "params": [
@@ -46843,6 +47784,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/PromptResolveUnknownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.steer_queued",
+      "summary": "Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSteerQueuedParams"
           }
         }
       ],
@@ -46867,7 +47826,25 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/AdmissionStatus"
+          "$ref": "#/components/schemas/CanonicalSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "rollback.session_diff",
+      "summary": "The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RollbackSessionDiffParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RollbackSessionDiffResult"
         }
       }
     },
@@ -46962,6 +47939,24 @@
       }
     },
     {
+      "name": "session.export",
+      "summary": "The /save transcript rendered for the client to write (the gateway writes nothing).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionExportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionExportResult"
+        }
+      }
+    },
+    {
       "name": "session.info",
       "summary": "Frozen launch policy projection of one local session.",
       "params": [
@@ -47017,7 +48012,7 @@
     },
     {
       "name": "session.mutate",
-      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import).",
+      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).",
       "params": [
         {
           "name": "params",
@@ -48053,7 +49048,7 @@
     },
     {
       "name": "request.cancel",
-      "summary": "The backend withdrew an open server→client request; clear the matching card only.",
+      "summary": "The backend withdrew an open server\u2192client request; clear the matching card only.",
       "params": [
         {
           "name": "payload",
@@ -48172,6 +49167,18 @@
       ]
     },
     {
+      "name": "skills.changed",
+      "summary": "A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "skin.changed",
       "summary": "The active skin moved (name switch or live colour edit); repaint from this palette.",
       "params": [
@@ -48185,7 +49192,7 @@
     },
     {
       "name": "status.update",
-      "summary": "Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …).",
+      "summary": "Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, \u2026).",
       "params": [
         {
           "name": "payload",

@@ -23,7 +23,7 @@ import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
 import { liveGroupChatNames } from './group-membership'
-import { closeGroupChatMainTab } from './group-panes'
+import { closeGroupChatMainTab, groupOpenOrigin } from './group-panes'
 import { displayName } from './labels'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { botCanonicalSessionId } from './row-helpers'
@@ -268,7 +268,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       return
     }
 
-    openGroupChat(currentGroup)
+    openGroupChat(currentGroup, groupOpenOrigin(currentGroup))
   }
 
   // The persisted half of clear-on-open. The transient dot is retired by

@@ -17,7 +17,8 @@ def handlers(connection):
 
 def authorize(connection, ref, params, capability):
     connection.authority.authorize(connection.actor, ref, capability)
-    if 'profile' in params:
+    # The contract's ``profile`` is nullable; null means this owner, as an omitted key does.
+    if params.get('profile') is not None:
         from hermes_cli.profiles import profile_matches_home
         profile = params['profile']
         if not isinstance(profile, str):
@@ -88,8 +89,8 @@ def verbose_config(connection, ref, params, write):
 
 def show_reasoning_config(connection, ref, params, write):
     """Session-scoped reasoning display (the classic CLI's ``/reasoning show|hide`` and verbose
-    reasoning): whether a local-viewer turn of this session streams ``reasoning.delta``. Off until
-    set, because a reasoning sink changes what the provider is asked for. Never a settings write."""
+    reasoning): whether a local-viewer turn of this session streams ``reasoning.delta``. Unset, it
+    reports the launch default the turn uses. Never a settings write."""
     value = params.get('value')
     word = str(value).strip().lower()
     if write and word not in _YOLO_WORDS:
@@ -98,8 +99,13 @@ def show_reasoning_config(connection, ref, params, write):
     live = connection.authority.sessions[ref.session_id]
     if write:
         live.show_reasoning = _YOLO_WORDS[word]
-    return {'key': 'show_reasoning', 'value': '1' if getattr(live, 'show_reasoning', None) is True else '0',
-            'scope': 'session'}
+    shown = getattr(live, 'show_reasoning', None)
+    if shown is None:
+        from gateway.local_viewer_events import launch_shows_reasoning
+        from gateway.session_policy import policy_for_source
+        shown = launch_shows_reasoning(policy_for_source(connection.authority.runner, live.source),
+                                       connection.authority)
+    return {'key': 'show_reasoning', 'value': '1' if shown is True else '0', 'scope': 'session'}
 
 
 def service_tier_config(connection, ref, params):
@@ -172,6 +178,12 @@ async def correct(connection, ref, params, *, verb):
             or type(params.get('execution_generation')) is not int):
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:control')
+    # TUI-26: text typed during a running turn in Ink's interrupt/steer busy modes arrives here, not
+    # at prompt.submit. A bare stop phrase in a LOCAL voice chat ends the chat and reaches no agent,
+    # whatever generation is running.
+    voice_stop = getattr(connection, '_typed_voice_stop', None)
+    if voice_stop is not None and await voice_stop(ref, params):
+        return {'voice_stopped': True}
     authority = connection.authority
     generation = params['execution_generation']
     live = authority.sessions[ref.session_id]

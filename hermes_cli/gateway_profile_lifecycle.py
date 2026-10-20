@@ -5,11 +5,11 @@ from hermes_constants import get_hermes_home, get_default_hermes_root
 from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
 
 
-def _confirmed(answer, key, name):
+def ack_confirmed(answer, key, name):
     return isinstance(answer, dict) and answer.get(key) == name and not answer.get("error")
 
 
-def _failure(answer):
+def ack_failure(answer):
     if isinstance(answer, dict):
         return answer.get("error") or "host operation is still pending"
     return "host control socket did not answer"
@@ -57,10 +57,10 @@ def profile_lifecycle(command: str, args) -> bool:
                 return False  # Unpark even when today's normal start path must start the host first.
         host_home = owner.home if owner is not None else get_default_hermes_root()
         answer = request_serve_profile_hot(host_home, name)
-        if _confirmed(answer, "served", name):
+        if ack_confirmed(answer, "served", name):
             print(f"Profile '{name}' served by the host gateway.")
         else:
-            print(f"Profile '{name}' unparked, but serving was not confirmed: {_failure(answer)}.")
+            print(f"Profile '{name}' unparked, but serving was not confirmed: {ack_failure(answer)}.")
             print("The host retries on its next rescan (within 30s). Check gateway status.")
         return True
 
@@ -75,23 +75,23 @@ def profile_lifecycle(command: str, args) -> bool:
         # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
         marker.touch()
         answer = request_unserve_profile(host_home, name)
-        if _confirmed(answer, "unserved", name):
+        if ack_confirmed(answer, "unserved", name):
             print(f"Profile '{name}' parked; its bots and cron are stopped. "
                   f"Start again with: hermes -p {name} gateway start")
         else:
-            print(f"Profile '{name}' parked, but immediate stop was not confirmed: {_failure(answer)}.")
+            print(f"Profile '{name}' parked, but immediate stop was not confirmed: {ack_failure(answer)}.")
             print("The host drops it on its next rescan (within 30s).")
         return True
 
     answer = request_unserve_profile(host_home, name)
-    if not _confirmed(answer, "unserved", name):
-        print(f"Profile '{name}' restart was not confirmed: {_failure(answer)}.")
+    if not ack_confirmed(answer, "unserved", name):
+        print(f"Profile '{name}' restart was not confirmed: {ack_failure(answer)}.")
         return True
     answer = request_serve_profile_hot(host_home, name)
-    if _confirmed(answer, "served", name):
+    if ack_confirmed(answer, "served", name):
         print(f"Profile '{name}' restarted by the host gateway.")
     else:
-        print(f"Profile '{name}' stopped, but serving was not confirmed: {_failure(answer)}.")
+        print(f"Profile '{name}' stopped, but serving was not confirmed: {ack_failure(answer)}.")
         print("The host retries on its next rescan (within 30s). Check gateway status.")
     return True
 

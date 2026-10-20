@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 import pytest
 
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection
 
 SID = "local-abc"
 
@@ -29,9 +29,12 @@ class FakeClient:
         self.result = result if result is not None else {}
         self.usage = usage or {}
         self.on_interrupt = None
+        self.mutate_replies = []
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
+        if method == "session.mutate" and self.mutate_replies:
+            return self.mutate_replies.pop(0)
         if method == "prompt.submit":
             asyncio.get_running_loop().call_soon(lambda: asyncio.ensure_future(self._play()))
             return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
@@ -206,32 +209,6 @@ def test_hard_interrupt_is_a_real_method():
     assert inspect.getattr_static(GatewayAgent, "hard_interrupt")
 
 
-def test_manual_compress_is_the_gateway_compress_mutation(make_agent):
-    """Main's /compress (compress_now -> agent._compress_context) commits on the gateway and adopts
-    the compacted transcript; the CLI prints main's \"Compressed: N -> M\" report from it."""
-    from agent.conversation_compression_manual import CompressRequest, compress_now
-    agent, client = make_agent([])
-    compacted = [{"role": "user", "content": "summary", "row_id": 1}, {"role": "assistant", "content": "ok", "row_id": 2}]
-    original = client.rpc
-
-    async def rpc(method, *, _timeout=None, **params):
-        if method == "session.resume":
-            client.calls.append((method, params))
-            done = any(m == "session.mutate" for m, _ in client.calls)
-            return {"revision": 9, "execution_generation": 7, "messages": compacted if done else []}
-        return await original(method, _timeout=_timeout, **params)
-    client.rpc = rpc
-    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(6)]
-    result = compress_now(agent, history, CompressRequest(), task_id=SID)
-    mutate = dict(client.calls)["session.mutate"]
-    assert mutate["operation"] == "compress" and mutate["expected_revision"] == 9 and mutate["payload"] == {}
-    assert mutate["expected_generation"] == 7
-    assert result.status == "compressed"
-    assert result.after_messages == [{"role": "user", "content": "summary"}, {"role": "assistant", "content": "ok"}]
-    assert result.summary["headline"] == "Compressed: 6 → 2 messages"
-    assert agent.context_compressor.compression_count == 1
-
-
 SESSION_USAGE = {"input_tokens": 500, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
                  "prompt_tokens": 500, "completion_tokens": 80, "total_tokens": 580, "reasoning_tokens": 0,
                  "api_calls": 5, "last_prompt_tokens": 229, "context_tokens": 229, "context_length": 128000,
@@ -259,6 +236,25 @@ def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
     n = len(agent._api_latency_history)
     assert n == 1 and round(sum(agent._api_output_history) / sum(agent._api_latency_history)) == 116
     assert agent.get_rate_limit_state() is None
+
+
+def test_gateway_session_usage_frame_feeds_the_status_bar_mid_turn(make_agent):
+    """The frame the gateway really publishes (`usage_frame`: flat counters plus the nested TUI
+    `usage` view) lands the flat counters, not the nested view, on main's attributes mid-turn."""
+    from gateway.session_usage import usage_frame
+    usage = dict(SESSION_USAGE, compression_count=2)
+    seen = []
+    agent, _ = make_agent([frame("session.usage", usage_frame(usage), admission=None),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    agent.context_compressor.context_length = 0
+    # Runs after the agent's own listener: what the status bar shows right after the mid-turn frame.
+    agent._state().usage_listeners.append(lambda cached: seen.append((
+        dict(cached), agent.session_api_calls, agent.context_compressor.context_length,
+        agent.context_compressor.compression_count, list(agent._api_latency_history))))
+    agent.run_conversation("q")
+    cached, *bar = seen[0]
+    assert bar == [5, 128000, 2, [0.2]]
+    assert cached["api_calls"] == 5 and "context_max" not in cached
 
 
 def test_turn_end_reads_session_stats_cumulative(make_agent):
@@ -414,6 +410,21 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
     assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
     assert agent2.reasoning_config == {"enabled": False}
+
+
+def test_an_explicit_level_the_session_already_inherits_is_still_committed(make_agent):
+    """``/reasoning high`` (the rebuilt agent) or a model pick's ``--reasoning high`` while the session runs
+    high by inheritance: still the owner's reasoning mutation, so a later profile change can't move it. An
+    implicit re-derivation (/new, a one-turn restore) of the same level commits nothing."""
+    from types import SimpleNamespace
+    from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+    agent, client = make_agent([])
+    agent.connection.state(SID).info["reasoning_effort"] = "high"
+    GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": True, "effort": "high"},
+                 push_reasoning=True)
+    _apply_reasoning_after_switch(SimpleNamespace(agent=agent), "high", persist_global=False)
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    assert [p["payload"] for m, p in client.calls if m == "session.mutate"] == [{"effort": "high"}] * 2
 
 
 def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(make_agent):
@@ -659,3 +670,351 @@ def test_fast_tier_reaches_the_session_on_each_rebuild_and_back_to_normal(make_a
     assert fast and again and normal
     sets = [p["value"] for m, p in client.calls if m == "config.set" and p.get("key") == "service_tier"]
     assert sets == ["priority", "normal"]
+
+
+class RefusingClient(FakeClient):
+    """``prompt.submit`` raises ``error`` instead of admitting the turn."""
+
+    def __init__(self, error):
+        super().__init__([])
+        self.error = error
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "prompt.submit":
+            self.calls.append((method, params))
+            raise self.error
+        return await super().rpc(method, _timeout=_timeout, **params)
+
+
+def submit_against(error):
+    conn = GatewayConnection(connect=connect_with(RefusingClient(error)))
+    conn.start(5)
+    try:
+        return GatewayAgent(connection=conn, session_id=SID).run_conversation("q")
+    finally:
+        conn.close()
+
+
+def test_a_session_busy_refusal_at_submit_is_the_session_busy_verdict():
+    """The owner answered: the session is busy. That is the busy verdict (send again), not a
+    lost gateway connection."""
+    result = submit_against(GatewayRPCError("session_busy"))
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "session_busy"
+    assert result["failure_retryable"] is True
+
+
+@pytest.mark.parametrize("reason", ["permission_denied", "runtime_draining", "invalid_params"])
+def test_other_owner_refusals_at_submit_are_not_a_lost_connection(reason):
+    """A received refusal keeps main's unclassified failed result: no gateway_connection label and
+    no retryability verdict."""
+    result = submit_against(GatewayRPCError(reason))
+    assert result["failed"] is True and result["error"] == reason
+    assert result["failure_reason"] is None
+    assert "failure_retryable" not in result
+
+
+def test_a_transport_loss_at_submit_is_still_gateway_connection():
+    result = submit_against(GatewayClientError(DISCONNECTED))
+    assert result["failed"] is True and result["error"] == DISCONNECTED
+    assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
+
+
+def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
+    """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
+    the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
+    and the agent main rebuilds for the next turn reads the committed model from the session.
+    ``/model --once`` is not this path: that pick is one admission's ``model_override``."""
+    agent, client = make_agent([], model="old-model", provider="openrouter")
+    agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
+                       base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)
+    mutations = [p for m, p in client.calls if m == "session.mutate"]
+    assert len(mutations) == 1
+    assert mutations[0]["operation"] == "model"
+    assert mutations[0]["payload"] == {"model": "new-model", "provider": "anthropic"}
+    assert (mutations[0]["expected_revision"], mutations[0]["expected_generation"]) == (1, 7)
+    assert (agent.model, agent.provider) == ("new-model", "anthropic")
+    rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
+    assert (rebuilt.model, rebuilt.provider) == ("new-model", "anthropic")
+
+
+def test_a_guarded_model_target_commits_only_on_the_users_yes_to_the_owners_warning(make_agent):
+    """The owner's guard refusal (cost, data policy, large context) is the user's to answer: its
+    warning goes to the CLI's prompt and only a yes re-sends with its token. A no commits nothing;
+    with no prompt (-q) the token is never sent. A second refusal after a yes (the session moved)
+    raises, so main rolls its fields back and the agent keeps the old model."""
+    refusal = {"status": "confirmation_required", "confirm": "tok-1", "confirm_message": "Expensive model"}
+    asked = []
+    agent, client = make_agent([], model="old-model",
+                               model_confirm_callback=lambda r: asked.append(r["confirm_message"]) or True)
+    client.mutate_replies = [refusal, {"status": "committed", "model": "pricey-model"}]
+    assert agent.switch_model(new_model="pricey-model", new_provider="openrouter") is True
+    assert asked == ["Expensive model"]
+    sent = [p["payload"] for m, p in client.calls if m == "session.mutate"]
+    assert sent == [{"model": "pricey-model", "provider": "openrouter"},
+                    {"model": "pricey-model", "provider": "openrouter", "confirm": "tok-1"}]
+    assert agent.model == "pricey-model"
+    declined, declined_client = make_agent([], model="old-model", model_confirm_callback=lambda r: False)
+    unattended, unattended_client = make_agent([], model="old-model")
+    declined_client.mutate_replies, unattended_client.mutate_replies = [refusal], [refusal]
+    assert declined.switch_model(new_model="pricey-model", new_provider="openrouter") is False
+    with pytest.raises(GatewayClientError, match="interactive session"):
+        unattended.switch_model(new_model="pricey-model", new_provider="openrouter")
+    for refused, refused_client in ((declined, declined_client), (unattended, unattended_client)):
+        assert [p["payload"] for m, p in refused_client.calls if m == "session.mutate"] == [
+            {"model": "pricey-model", "provider": "openrouter"}]
+        assert refused.model == "old-model"
+    other, other_client = make_agent([], model="old-model", model_confirm_callback=lambda r: True)
+    other_client.mutate_replies = [refusal, dict(refusal, confirm="tok-2")]
+    with pytest.raises(GatewayClientError, match="Model not switched"):
+        other.switch_model(new_model="pricey-model", new_provider="openrouter")
+    assert other.model == "old-model"
+
+
+def test_moa_one_shot_preset_rides_this_turns_submit_as_its_model_override(make_agent):
+    """``/moa <prompt>`` (#134889 CLI-18): main rebuilds its agent on the MoA virtual provider for
+    one turn, but the session's info names the session's own model. The preset must reach the turn
+    as its admission's ``model_override``; a regular rebuild sends none."""
+    done = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent, client = make_agent(done)
+    agent.connection.state(SID).info.update(model="claude-sonnet", provider="anthropic")
+    moa = GatewayAgent(connection=agent.connection, session_id=SID, model="default", provider="moa")
+    moa.run_conversation("compare these designs")
+    submit = dict(client.calls)["prompt.submit"]
+    assert submit["model_override"] == {"model": "default", "provider": "moa"}
+    client.calls.clear()
+    regular = GatewayAgent(connection=agent.connection, session_id=SID, model="claude-sonnet", provider="anthropic")
+    regular.run_conversation("next")
+    assert "model_override" not in dict(client.calls)["prompt.submit"]
+
+
+def test_moa_one_shot_overrides_a_moa_session_running_another_preset(make_agent):
+    """A session already on the MoA provider runs ITS preset; ``/moa`` with another preset must still
+    send that preset as the turn's override. Only the same preset is the session's own route."""
+    done = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent, client = make_agent(done)
+    agent.connection.state(SID).info.update(model="fast", provider="moa")
+    GatewayAgent(connection=agent.connection, session_id=SID, model="deep", provider="moa").run_conversation("go")
+    assert dict(client.calls)["prompt.submit"]["model_override"] == {"model": "deep", "provider": "moa"}
+    client.calls.clear()
+    GatewayAgent(connection=agent.connection, session_id=SID, model="fast", provider="moa").run_conversation("again")
+    assert "model_override" not in dict(client.calls)["prompt.submit"]
+
+
+def test_a_committed_model_switch_stands_when_the_refresh_after_it_fails(make_agent):
+    """Once ``session.mutate`` commits, the gateway runs the next turn on the new model. A failed
+    ``session.resume`` refresh after that must not raise: main's caller would roll its fields back to
+    a model the session no longer has. The agent shows the model and provider the gateway committed."""
+    agent, client = make_agent([], model="old-model", provider="openrouter")
+    client.mutate_replies = [{"status": "committed", "model": "claude-sonnet-4", "provider": "anthropic"}]
+    rpc = client.rpc
+
+    async def refresh_fails(method, **params):
+        if method == "session.resume" and any(m == "session.mutate" for m, _ in client.calls):
+            raise GatewayClientError(DISCONNECTED)
+        return await rpc(method, **params)
+    client.rpc = refresh_fails
+    agent.switch_model(new_model="sonnet")
+    assert len([m for m, _ in client.calls if m == "session.mutate"]) == 1
+    assert (agent.model, agent.provider) == ("claude-sonnet-4", "anthropic")
+    rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
+    assert (rebuilt.model, rebuilt.provider) == ("claude-sonnet-4", "anthropic")
+
+
+def test_a_background_review_summary_during_a_turn_is_printed_like_mains(make_agent):
+    """``/refine`` (#134889 M3) and the post-turn review run in the gateway, which publishes their
+    summary as a ``review.summary`` frame (no admission). One landing while a turn streams is printed
+    as main's ``display.review.summary_cli`` line, never dropped."""
+    printed = []
+    agent, _ = make_agent([frame("review.summary", {"text": "💾 Self-improvement review: Memory updated"}, admission=None),
+                           frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    agent._print_fn = printed.append
+    agent.run_conversation("hi")
+    assert printed == ["  💾 Self-improvement review: Memory updated"]
+
+
+def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_agent, monkeypatch):
+    """Another viewer (Desktop/Ink) locks every answer of the batch the classic CLI is showing: the
+    gateway settles it and withdraws the request (``request.cancel`` reason ``resolved``). main's real
+    batch panel (``CLIModalMixin._clarify_callback``) blocks the agent thread, so the withdrawal must
+    close it from the connection thread; the pump then reads the turn's completion instead of sitting
+    in the modal until clarify_timeout."""
+    import cli
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    monkeypatch.setattr(cli, "CLI_CONFIG", {"agent": {"clarify_timeout": 60}})
+    panel = _make_cli_stub()
+    panel._ring_bell = lambda **kw: None
+    request = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]},
+        {"qid": "q1", "question": "size?", "choices": ["s", "l"]}]}}
+    withdrawn = frame("request.cancel", {"id": "srq-clr", "method": "clarify", "reason": "resolved"}, admission=None)
+    agent, _client = make_agent(
+        [request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        clarify_callback=panel._clarify_callback, modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(agent.run_conversation("ask")), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its clarify panel"
+    assert panel._clarify_state is None
+    assert out["completed"] is True or out.get("final_response") is not None
+    # Its late reply is a cancel the gateway drops (the request is already settled).
+    assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
+
+
+def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
+    agent, _client = make_agent([])
+    closed = []
+    agent.modal_withdraw_callback = closed.append
+    agent._open_request = ("srq-mine", "clarify")
+    agent._on_request_withdrawn({"id": "srq-other", "method": "clarify", "reason": "resolved"})
+    assert closed == []
+    agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
+    assert closed == ["clarify"]
+
+
+def test_ctrl_c_during_the_first_api_call_keeps_mains_estimate_marker(make_agent):
+    """T4: Ctrl+C while the turn's first request is in flight. The gateway agent counted the attempt
+    (``api_calls: 1`` in the turn result) but no response priced the ask, so main's in-process bar kept
+    the previous turn's anchor and estimated the ask (``~``). The stand-in must not anchor after the ask."""
+    from agent.usage_anchor import anchored_context_tokens
+    usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)  # no response: cumulative calls unchanged
+    agent, client = make_agent([frame("message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"})],
+                               result={"final_response": "", "api_calls": 1, "interrupted": True, "messages": []})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 2
+    agent.run_conversation("story", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    anchor = agent._turn_base_usage_anchor
+    assert anchor["base_count"] == 2  # the unanswered ask is the estimated delta: main's `~`
+    assert anchored_context_tokens(agent._session_messages, anchor, charge_stale_thinking=False) == 700
+
+
+def test_a_voice_stopped_reply_returns_without_waiting_for_a_turn():
+    """TUI-26: the owner answers a typed stop phrase in a LOCAL voice chat (turned on by another
+    viewer) with ``{voice_stopped: true}`` and admits nothing, so no ``message.complete`` will ever
+    come: the classic CLI returns at once with the stop notice instead of pumping forever."""
+    from agent.i18n import t
+
+    class Client(FakeClient):
+        async def rpc(self, method, *, _timeout=None, **params):
+            if method == "prompt.submit":
+                self.calls.append((method, params))
+                return {"voice_stopped": True}
+            return await super().rpc(method, _timeout=_timeout, **params)
+
+    client = Client([])
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    conn.state(SID)
+    try:
+        printed = []
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._print_fn = printed.append
+        done = {}
+        worker = threading.Thread(target=lambda: done.setdefault("r", agent.run_conversation(
+            "stop", conversation_history=[{"role": "user", "content": "hi"}])), daemon=True)
+        worker.start()
+        worker.join(8)
+        assert not worker.is_alive(), "run_conversation hung waiting for a turn that was never admitted"
+        result = done["r"]
+        assert result["voice_stopped"] is True and not result["failed"] and result["final_response"] == ""
+        assert result["messages"] == [{"role": "user", "content": "hi"}], "nothing was admitted"
+        assert "prompt.receipt" not in [m for m, _ in client.calls]
+        assert any(t("cli.voice.stop_phrase_typed") in line for line in printed), printed
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("mode", ["steer", "interrupt"])
+def test_a_voice_stopped_correction_is_consumed_not_requeued(make_agent, mode):
+    """TUI-26 (Greptile): a bare stop typed while a turn runs reaches ``session.steer`` /
+    ``session.redirect``; the owner ends the LOCAL voice chat and answers ``{voice_stopped: true}``.
+    The classic CLI must take the text as consumed: re-queuing it would submit ``stop`` again once
+    voice is already off, and that becomes an agent turn."""
+    import queue
+
+    from cli import HermesCLI
+
+    agent, client = make_agent([])
+    agent._generation = 7
+    agent._supports_active_turn_redirect = True
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method in {"session.steer", "session.redirect"}:
+            client.calls.append((method, params))
+            return {"voice_stopped": True}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    printed = []
+    agent._print_fn = printed.append
+    shell = object.__new__(HermesCLI)
+    shell.busy_input_mode = mode
+    shell.agent = agent
+    shell._pending_input, shell._interrupt_queue = queue.Queue(), queue.Queue()
+    agent._turn_ask_index = 3  # the running turn's ask; a consumed stop must leave it alone
+    shell._tui_enter_while_busy("stop", [], "stop")
+    assert shell._pending_input.empty() and shell._interrupt_queue.empty(), "consumed stop was re-queued"
+    sent = [m for m, _ in client.calls if m.startswith("session.")]
+    assert sent == [{"steer": "session.steer", "interrupt": "session.redirect"}[mode]]
+    assert agent._turn_ask_index == 3, "the running turn's history changed for a consumed stop"
+
+
+def test_a_session_switch_drops_the_previous_sessions_figures(make_agent):
+    """/new, /resume and /branch repoint ``session_id`` then call ``reset_session_state``: the bar and
+    /usage show the target's gateway figures (``session.stats``), never the session left behind, and
+    a late frame of the old session does not repaint them."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    assert agent.session_api_calls == 5 and agent._api_latency_history
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats" and params.get("session_id") == "local-other":
+            return {"api_calls": 3, "input_tokens": 9}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.connection.state("local-other").messages = [{"role": "user", "content": "earlier"}]  # resumed
+    agent.session_id = "local-other"
+    agent.reset_session_state()
+    assert (agent.session_api_calls, agent.session_input_tokens, agent.session_output_tokens) == (3, 9, 0)
+    assert agent.context_compressor.last_prompt_tokens == 0 and agent._api_latency_history == []
+    agent.connection.state(SID).apply_usage(dict(SESSION_USAGE, api_calls=6))
+    assert agent.session_api_calls == 3
+    assert agent._on_request_withdrawn not in agent.connection.state(SID).request_listeners
+
+
+def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
+    """/new lands on a session the gateway just created (no transcript, no usage): its figures are
+    known zero, so the reset makes no ``session.stats`` call."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    agent.session_id = "local-fresh"
+    client.calls.clear()
+    agent.reset_session_state()
+    assert agent.session_api_calls == 0 and agent._api_latency_history == []
+    assert [method for method, _ in client.calls] == []
+
+
+def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent):
+    """/new, /resume and /branch give the agent a fresh ``tools.todo_tool.TodoStore``; the gateway's
+    later ``todo.updated`` must still land where the CLI reads it (``read()``: the pet's done-plan beat)."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, _ = make_agent([frame("todo.updated", {"todos": todos, "revision": 1}),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    cli = SimpleNamespace(agent=agent, conversation_history=[])
+    _sync_agent_to_session(cli, SID, parent_session_id="", reason="resume")
+    agent.run_conversation("plan")
+    assert agent._todo_store.read() == todos

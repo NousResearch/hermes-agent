@@ -45,8 +45,14 @@ def resolve_latest_session(authority, actor, family, workspace=None):
     if family not in families or (workspace is not None and (not isinstance(workspace, str) or not workspace)):
         raise RuntimeStoreError('invalid_params')
     from gateway.session_local_migration import resolve_local_target
+    # The owner's own rows are stored ``local``, with the family in ``created_source``.
+    sources = [*families[family], 'local']
     for scope in ([workspace] if workspace else []) + [None]:
-        for row in authority.db.search_sessions(source=families[family], limit=50, workspace_key=scope):
+        # A launch stub (the CLI crashed or a resume failed before the first turn) is the newest row
+        # and carries the surface from its insert. It has no messages and no admission, so it is never
+        # "latest"; a session whose first prompt is admitted but not yet written still is.
+        for row in authority.db.search_sessions(source=sources, local_created_sources=[family], limit=50,
+                                                workspace_key=scope, skip_launch_stubs=True):
             tip = authority.db.get_compression_tip(row['id']) or row['id']
             try:
                 return resolve_local_target(authority, actor, tip)

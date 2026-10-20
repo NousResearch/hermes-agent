@@ -1,4 +1,4 @@
-import { Button } from '@hermes/plugin-sdk'
+import { Button, Textarea } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
@@ -7,20 +7,28 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState { room: CanonicalRoom; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+
+function CanonicalGroupRoster({ members = [], label }: { members?: CanonicalRoomMember[]; label: string }) {
+  if (!members.length) {return null}
+
+  return <ul aria-label={label} className="flex flex-wrap gap-x-2 text-xs text-(--ui-text-tertiary)">
+    {members.map(member => <li key={member.member_id}>{member.display_name || member.handle || member.member_id}</li>)}
+  </ul>
+}
 
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView binding={binding} key={JSON.stringify([binding.connectionId, binding.profile, binding.roomId])} onBack={onBack} visible={visible} />
 }
 
 function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
@@ -159,14 +167,17 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
-      <h2>{state?.room.name || labels.loadingGroup}</h2>
+      <div className="min-w-0">
+        <h2 className="text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
+        <CanonicalGroupRoster label={labels.members} members={state?.room.members} />
+      </div>
       <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
-      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
+      <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
     </div>
     {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
       <span>{action.member_id}</span>
@@ -182,7 +193,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
       <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} />
-      <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
+      <Textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
       <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>

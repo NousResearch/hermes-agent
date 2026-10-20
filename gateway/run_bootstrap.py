@@ -3,10 +3,26 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from gateway.config import GatewayConfig
+
+
+def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
+    """Run the store scan an unclean-exit report deferred, once the runner is live.
+
+    On the event loop it held every local listener open but unanswered for the whole
+    ``quick_check`` (minutes on a multi-GB ``state.db``), so local clients hung instead of being
+    refused. A daemon thread nothing waits on; it only appends the forensic exit-diag record.
+    """
+    from agent.memory_provider import spawn_context_thread
+    from gateway.lifecycle_ledger import STATE_DB_INTEGRITY_DEADLINE_S, run_deferred_integrity_check
+    # Under the caller's profile scope: the scan resolves this gateway's state.db through it.
+    spawn_context_thread(
+        run_deferred_integrity_check, args=(evidence,),
+        kwargs={"deadline_s": STATE_DB_INTEGRITY_DEADLINE_S}, name="state-db-integrity-check").start()
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -93,7 +109,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     _clear_takeover_marker_quiet()
     # Stopped (Ctrl+Z) processes don't release scoped locks on exit; stale lock files block the new gateway.
     try:
-        from gateway.status import release_all_scoped_locks
+        from gateway.status_scoped_locks import release_all_scoped_locks
         _released = release_all_scoped_locks(owner_pid=existing_pid, owner_start_time=existing_start_time)
         if _released:
             logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
@@ -254,6 +270,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -262,7 +279,11 @@ async def _start_gateway_start_control_socket(runner):
                 "instance_id", "runtime_protocol", "authority_epoch", "state", "api_origin",
                 "served_profiles", "parked_profiles", "capabilities") if key in descriptor})
             if getattr(runner, '_draining', False):
-                payload.update(state='draining', capabilities=[])
+                payload.update(state='draining')
+                # The restart's after-turn wait still owns its turns: clients reach it to answer a
+                # parked approval/clarify (#139041), so the endpoint stays dialable until stop().
+                if descriptor.get('drain_reason') != RESTART_WAIT_REASON:
+                    payload['capabilities'] = []
             if payload.get('state') == 'draining' and descriptor.get('drain_reason'):
                 payload['drain_reason'] = descriptor['drain_reason']
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
@@ -524,12 +545,68 @@ def _start_gateway_resolve_terminal_cwd() -> None:
             os.environ["TERMINAL_CWD"] = resolved_cwd
 
 
+# A browse that catches a lagging state.db up holds the profile's gateway.lock only for the drift
+# re-check and the additive DDL, cut off at hermes_state_reconcile.BROWSE_RECONCILE_BUDGET_S by a
+# sqlite progress handler. Its integrity scan (which scales with file size) runs BEFORE the lock, so
+# a large store never extends this window. A gateway booting in it waits it out, with margin for lock
+# publication and the drift probes, instead of exiting as if another gateway owned the profile.
+def _browse_reconcile_reserve_wait_s() -> float:
+    from hermes_state_reconcile import BROWSE_RECONCILE_BUDGET_S
+    return BROWSE_RECONCILE_BUDGET_S + 2.0
+
+
+def _conflicting_homes(homes):
+    """The homes whose gateway.lock another holder has right now: each probed alone with its own open
+    file description and released at once (the all-or-nothing reserve does not say which failed).
+    A home freed meanwhile is simply not listed; the next reserve attempt takes it."""
+    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    conflicting = []
+    for home in homes:
+        probe = ProfileOwnership()
+        try:
+            probe.reserve([home])
+        except OwnershipConflict:
+            conflicting.append(home)
+        finally:
+            probe.close()
+    return conflicting
+
+
+def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | None = None):
+    """Reserve *homes*, waiting (bounded) while a contender is a browse reconcile or has not yet
+    published its lock record (flock taken, record unwritten). Only a positively identified holder
+    that is not browse maintenance refuses at once; the flock exclusion itself is never weakened."""
+    from gateway.runtime_ownership import OwnershipConflict, lock_record_unpublished, maintenance_holder
+    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    if wait_s is None:
+        wait_s = _browse_reconcile_reserve_wait_s()
+    deadline = time.monotonic() + wait_s
+    logged = False
+    while True:
+        try:
+            return ownership.reserve(homes)
+        except OwnershipConflict:
+            # Only the homes that actually conflict decide: a real owner on any of them refuses at
+            # once, even while another home is mid-browse (multiplexer boot, all-or-nothing).
+            conflicting = _conflicting_homes(homes)
+            holders = [h for h in conflicting
+                       if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
+            if not holders or len(holders) < len(conflicting) or time.monotonic() >= deadline:
+                raise
+            if not logged:
+                logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
+                            holders[0], wait_s)
+                logged = True
+            time.sleep(0.1)
+
+
 def _start_gateway_reserve_profiles(profile_homes) -> bool:
     """Reserve the launch home plus every served profile home; False when startup must abort."""
     from gateway.run import get_hermes_home
     from gateway.runtime_ownership import process_ownership, OwnershipConflict
+    homes = [get_hermes_home(), *(home for _, home in profile_homes)]
     try:
-        process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
+        _reserve_waiting_out_browse_reconcile(process_ownership, homes)
     except OwnershipConflict as exc:
         logger.error("Cannot reserve gateway profiles: %s", exc)
         # A named profile that the LIVE default multiplexer already serves is a configuration
@@ -772,23 +849,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
 
-        def _lifecycle_record_startup() -> None:
+        def _lifecycle_record_startup() -> Optional[dict]:
             # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
             # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
+            # The store scan that report used to run here is deferred: see below.
             from gateway.lifecycle_ledger import record_startup
-            record_startup()
+            return record_startup()
 
         def _start_keepalive() -> None:
             from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
             start_nous_auth_keepalive()
 
-        _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+        _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
         _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
         _ensure_windows_gateway_venv_imports()
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
         if _early_verdict is not None:
             return _early_verdict
+        if _unclean_exit is not None:
+            _start_deferred_state_db_integrity_check(_unclean_exit)
 
         cron_stop, cron_provider, cron_thread, housekeeping_thread = (
             _start_gateway_start_cron_and_housekeeping(runner))

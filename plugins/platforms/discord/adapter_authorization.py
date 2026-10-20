@@ -4,14 +4,17 @@ import asyncio
 
 class DiscordAuthorizationMixin:
     async def reauthorize_native_roles(self, source):
-        from plugins.platforms.discord.adapter import _read_dm_role_auth_guild, _scoped_gate_env
-        from hermes_cli.config import read_raw_config
+        from plugins.platforms.discord.adapter import _read_dm_role_auth_guild
+        from gateway.config import Platform, PlatformConfig, load_gateway_config
         from discord import HTTPException
 
-        # Unlike ingress caches, recovery reads current transport-scoped policy.
+        # Unlike ingress caches, recovery reads current transport-scoped policy, resolved like
+        # ingress: the same gate resolver over the Discord config the loader builds now. Env still
+        # wins, and outside multiplex the loader copies YAML allowed_roles into it once (first
+        # writer), so there a role removed from YAML is revoked at restart, as for ingress.
         def policy():
-            cfg = (read_raw_config() or {}).get('discord', {}) or {}
-            raw = _scoped_gate_env('DISCORD_ALLOWED_ROLES') or cfg.get('allowed_roles', [])
+            current = load_gateway_config().platforms.get(Platform.DISCORD) or PlatformConfig()
+            raw = self._gate_raw('allowed_roles', 'DISCORD_ALLOWED_ROLES', config=current)
             roles = {int(str(item).strip()) for item in self._gate_csv_set(raw)
                      if str(item).strip().isdigit()}
             guild_id = _read_dm_role_auth_guild() if source.chat_type == 'dm' else source.scope_id

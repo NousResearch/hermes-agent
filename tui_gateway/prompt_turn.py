@@ -116,7 +116,7 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -130,7 +130,8 @@ def _admit_prompt_turn(
         with session["history_lock"]:
             session["running"] = False
             session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        if report_ownership_refusal:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return None
     with session["history_lock"]:
         if session.get("_closing") or (
@@ -462,15 +463,17 @@ def _run_post_turn_followups(
         from tools.process_registry import process_registry
         # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
-        with _session_profile_runtime_scope(session):
-            drained = process_registry.drain_notifications(
-                session_key=session.get("session_key", ""),
-                owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-                skip_poll_observed=False)
-            from tools.process_registry_notifications import format_process_notification
+        from tools.process_registry_awaiting import drained_for
+        from tools.process_registry_notifications import format_process_notification, should_surface_notification
+        key = session.get("session_key", "")
+        owns = lambda e: process_registry._owns_event(
+            e, key, lambda evt: _session_owns_notification_event(sid, session, evt), e.get("type") == "async_delegation")
+        # Every dequeued event's owner — this session's and any other session's — stays held until the foreign events
+        # are requeued and ours are routed, so the reapers never see an owner whose notice is in nobody's hands.
+        with _session_profile_runtime_scope(session), drained_for(process_registry, owns) as mine:
             deferred = []
             _notif_handle_ready(
-                sid, session, [event for event, _text in drained],
+                sid, session, [evt for evt in mine if should_surface_notification(evt)],
                 session.setdefault("_notification_emitted", set()), process_registry,
                 format_process_notification, deferred, owned=True)
             for event in deferred:
@@ -1091,7 +1094,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
     if session.get("attachment_fence") is not None:
         return False
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
@@ -1103,7 +1106,8 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
         return False
     images, agent = admitted

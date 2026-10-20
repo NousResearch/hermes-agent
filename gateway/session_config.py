@@ -39,6 +39,11 @@ def _client_config(cfg):
     from hermes_cli.config import redact_config_value
     result = redact_config_value({key: cfg[key] for key in (
         'display', 'approvals', 'paste_collapse_threshold', 'paste_collapse_char_threshold') if key in cfg})
+    if 'display' in result:
+        # Its readers are local surfaces (Ink, Desktop): the local key a local /reasoning show|hide or
+        # /footer saved wins over the global one (T7).
+        from gateway.display_config import local_display_config
+        result['display'] = local_display_config(result['display'])
     # Allowlisted after redaction: ``record_key`` is a keybinding, not a credential, but the
     # structural masker treats every ``*_key`` leaf as one. The voice section's real secrets
     # (``api_key``) never enter the projection.
@@ -59,6 +64,8 @@ async def config_get(connection, ref, params):
     policy = _authorize(connection, ref, params)
     if 'cwd' in params and (key != 'project' or not isinstance(params['cwd'], str)):
         raise RuntimeStoreError('invalid_params')
+    if key == 'voice':
+        return _voice(connection, ref)
     agent = connection.authority.agent(ref) if ref.session_id else None
 
     def read():
@@ -99,6 +106,65 @@ async def config_get(connection, ref, params):
     return await asyncio.to_thread(read)
 
 
+def session_voice_mode(connection, ref):
+    """``off`` / ``voice_only`` / ``all``: the session's ``/voice`` mode as the messaging handler stored it."""
+    runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
+    modes = getattr(runner, '_voice_mode', None) or {}
+    return modes.get(runner._voice_key_for_source(live.source), 'off')
+
+
+def local_voice_enabled(session_id):
+    """True/False for a local session the running owner holds (its gateway ``/voice`` mode), else
+    None (no owner in this process, or not one of its sessions: the sidecar's env flag applies)."""
+    from gateway.run_api import _ACTIVE_RUNNER
+    from gateway.session_authorities import all_authorities
+    if _ACTIVE_RUNNER is None or not isinstance(session_id, str) or not session_id:
+        return None
+    for authority in all_authorities(_ACTIVE_RUNNER):
+        live = getattr(authority, 'sessions', {}).get(session_id)
+        if live is not None:
+            modes = getattr(_ACTIVE_RUNNER, '_voice_mode', None) or {}
+            return modes.get(_ACTIVE_RUNNER._voice_key_for_source(live.source), 'off') != 'off'
+    return None
+
+
+def set_local_voice_mode(session_id, mode):
+    """The one writer for a local session's voice mode outside ``/voice`` (wake, spoken stop): sets
+    and persists the owner's per-session mode. True when the running owner holds the session, else
+    None (the sidecar's env flag applies)."""
+    from gateway.run_api import _ACTIVE_RUNNER
+    from gateway.session_authorities import all_authorities
+    if _ACTIVE_RUNNER is None or not isinstance(session_id, str) or not session_id:
+        return None
+    for authority in all_authorities(_ACTIVE_RUNNER):
+        live = getattr(authority, 'sessions', {}).get(session_id)
+        if live is not None:
+            _ACTIVE_RUNNER._voice_mode[_ACTIVE_RUNNER._voice_key_for_source(live.source)] = mode
+            _ACTIVE_RUNNER._save_voice_modes()
+            local_voice_transition(live.source, mode)
+            return True
+    return None
+
+
+def local_voice_transition(source, mode):
+    """A local session's voice mode went ``off``: end the push-to-talk capture it started in this
+    process (and drop its late callbacks), as the sidecar's ``voice.toggle off`` did. Another
+    session's capture is left alone."""
+    import sys
+    from gateway.config import Platform
+    server = sys.modules.get('tui_gateway.server')
+    if mode == 'off' and server is not None and getattr(source, 'platform', None) == Platform.LOCAL:
+        server._stop_session_voice_capture(source.chat_id)
+
+
+def _voice(connection, ref):
+    """The session's own ``/voice`` mode, so Ink mirrors the gateway's per-session state instead of
+    the sidecar's process-global ``HERMES_VOICE`` (T9)."""
+    if not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    return {'value': session_voice_mode(connection, ref)}
+
+
 def _fast(connection, ref, policy, agent, cfg):
     from agent.fast_mode import parse_service_tier
     if ref.session_id:  # the session's next-turn tier: its /fast pin, else its policy's
@@ -119,7 +185,9 @@ def _reasoning(agent, policy, cfg, connection=None, ref=None):
     elif not isinstance(value, dict):
         value = resolve_reasoning_config(cfg, '')
     effort = 'none' if value and value.get('enabled') is False else (value or {}).get('effort', 'medium')
-    return {'value': effort, 'display': 'show' if cfg.get('display', {}).get('show_reasoning', True) else 'hide'}
+    from gateway.display_config import local_display_config
+    shown = local_display_config(cfg.get('display')).get('show_reasoning', True)
+    return {'value': effort, 'display': 'show' if shown else 'hide'}
 
 
 def _project(params, policy, cfg):

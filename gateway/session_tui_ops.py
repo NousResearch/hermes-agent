@@ -1,6 +1,7 @@
 """Ink's session utilities on the shared owner: ``/save`` (``session.save``), ``/reload``
 (``reload.env``), ``/agents pause|resume`` (``delegation.pause``) and ``/rollback``
-(``rollback.list`` / ``rollback.diff`` / ``rollback.restore``).
+(``rollback.list`` / ``rollback.diff`` / ``rollback.restore``), plus the classic CLI's ``/diff session``
+(``rollback.session_diff``).
 
 Main's per-TUI sidecar served these from its own session table, which never holds a shared-gateway
 session, so the canonical TUI refused them. Each verb reuses main's helpers rather than re-deriving
@@ -10,6 +11,7 @@ them. ``dispatch`` already runs every handler under the owning profile's scope (
 import asyncio
 from datetime import datetime
 import json
+import re
 import uuid
 from functools import partial
 from pathlib import Path
@@ -21,12 +23,15 @@ from hermes_state_runtime import RuntimeStoreError
 
 def handlers(connection):
     return {'session.save': partial(save_session, connection),
+            'session.export': partial(export_session, connection),
             'reload.env': partial(reload_env, connection),
             'delegation.pause': partial(pause_delegation, connection),
             'rollback.list': partial(rollback, connection, kind='list'),
             'rollback.diff': partial(rollback, connection, kind='diff'),
             'rollback.restore': partial(rollback, connection, kind='restore'),
-            'session.context_breakdown': partial(context_breakdown, connection)}
+            'rollback.session_diff': partial(rollback, connection, kind='session_diff'),
+            'session.context_breakdown': partial(context_breakdown, connection),
+            'session.history': partial(session_history, connection)}
 
 
 def _profile_home(authority):
@@ -77,6 +82,55 @@ async def save_session(connection, ref, params):
             raise RuntimeStoreError('storage_unavailable') from exc
         return {'file': str(path)}
     return await asyncio.to_thread(write)
+
+
+async def export_session(connection, ref, params):
+    """``session.export``: the ``/save`` transcript rendered for the CLIENT to write (json/md/html,
+    optional force-redaction). Nothing is written on the gateway host, so a remote Desktop and a
+    local Ink both save to the user's own disk (T10/T11)."""
+    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
+    fmt, redact = params.get('format', 'json'), params.get('redact', False)
+    if not isinstance(fmt, str) or not isinstance(redact, bool):
+        raise RuntimeStoreError('invalid_params')
+    from hermes_cli.session_export import default_save_filename, normalize_save_format
+    try:
+        fmt = normalize_save_format(fmt)
+    except ValueError:
+        raise RuntimeStoreError('invalid_params') from None
+    authority = connection.authority
+    from gateway.session_ancillary import physical_target
+    target = physical_target(authority, ref)
+
+    def render():
+        from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+        from hermes_state import SessionExportTooLargeError
+        try:
+            data = load_save_snapshot(authority.db, target, fmt)
+        except SessionExportTooLargeError as exc:
+            raise RuntimeStoreError('export_too_large') from exc
+        if not data:
+            raise RuntimeStoreError('not_found')
+        if redact:
+            from hermes_cli.session_export_md import redact_session_data
+            data = redact_session_data(data)
+        return render_session_for_save(data, fmt)
+    content = await asyncio.to_thread(render)
+    return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
+
+
+async def session_history(connection, ref, params):
+    """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
+    _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
+    authority = connection.authority
+    from gateway.session_local_recovery import transcript_target
+    # On the loop, as ``attach`` resolves it: a local restore publishes the live entry.
+    target = transcript_target(authority, ref)
+
+    def read():
+        from gateway.session_controls import display_projection
+        rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
+        return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
+    return await asyncio.to_thread(read)
 
 
 async def reload_env(connection, ref, params):
@@ -140,11 +194,16 @@ async def pause_delegation(connection, ref, params):
 
 
 _ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
-                    'restore': {'session_id', 'profile', 'hash', 'file_path'}}
+                    'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
+                    'session_diff': {'session_id', 'profile'}}
+# ``rollback.session_diff`` stat + body bound, in bytes on the wire: half the 8 MiB frame every client
+# accepts (``hermes_cli/gateway_client.py``). Counted JSON-escaped, since a control character is one
+# character but six bytes (``\u0001``); the classic CLI shows 400 lines either way.
+_SESSION_DIFF_BYTES = 4 * 1024 * 1024
 
 
 async def rollback(connection, ref, params, *, kind):
-    """``/rollback [list] | diff <n|hash> | <n|hash> [file]``: main's ``rollback.*`` over this
+    """``/rollback [list] | diff <n|hash> | <n|hash> [file]`` and ``/diff session``: main's ``rollback.*`` over this
     session's checkpoints (the shared ``<profile>/checkpoints`` store, keyed by the frozen launch cwd).
 
     The manager is built from the session's frozen ``checkpoints`` policy rather than read off the
@@ -154,7 +213,8 @@ async def rollback(connection, ref, params, *, kind):
     (main's ``_rewind_active_session_history``) through the owner's fenced ``rewind`` mutation."""
     fields = _ROLLBACK_FIELDS[kind]
     if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
-           for key in ('hash', 'file_path')) or (kind != 'list' and 'hash' not in params):
+           for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
+               params.get('all') is not None and not isinstance(params['all'], bool)):  # nullable: null is omitted
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
@@ -172,15 +232,15 @@ async def rollback(connection, ref, params, *, kind):
     kwargs = _checkpoint_agent_kwargs(policy.config(authority, secrets=False))
     terminal = json.loads(policy.terminal_json)
 
-    def run():
+    def run() -> dict:
         from tools.checkpoint_manager import CheckpointManager
         from tui_gateway.checkpoints import _resolve_checkpoint_hash
         mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
             key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
         cwd = policy.cwd
+        if not mgr.enabled and kind in ('list', 'session_diff'):
+            return {'enabled': False, 'checkpoints': []} if kind == 'list' else {'enabled': False}
         if kind == 'list':
-            if not mgr.enabled:
-                return {'enabled': False, 'checkpoints': []}
             # The TUI renders ``message``; the manager calls it ``reason``.
             return {'enabled': True, 'checkpoints': [
                 {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
@@ -193,6 +253,8 @@ async def rollback(connection, ref, params, *, kind):
             refusal = mgr.unsupported_backend_reason(task_id)
         finally:
             reset_terminal_scope(token)
+        if kind == 'session_diff':
+            return _session_diff(mgr, cwd, refusal)
         try:
             target = _resolve_checkpoint_hash(mgr, cwd, params['hash'])
         except ValueError as exc:
@@ -211,11 +273,48 @@ async def rollback(connection, ref, params, *, kind):
             return payload
         if refusal:
             return {'success': False, 'error': refusal}
-        return mgr.restore(cwd, target, file_path=file_path or None)
+        # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
+        return mgr.restore(cwd, target, file_path=file_path or None,
+                           safe=not file_path and not params.get('all'))
     result = await asyncio.to_thread(run)
     if kind == 'restore' and result.get('success') and not file_path:
         result['history_removed'] = await _rewind_last_turn(connection, ref)
     return result
+
+
+def _session_diff(mgr, cwd, refusal):
+    """``/diff session``: main's ``session_diff`` (earliest retained checkpoint vs the tree) as data,
+    so the classic CLI renders it with its own terminal renderer instead of chat-sized text."""
+    if refusal:
+        return {'enabled': True, 'success': False, 'error': refusal}
+    result = mgr.session_diff(cwd)
+    if not result.get('success'):
+        return {'enabled': True, 'success': False, 'error': str(result.get('error') or '')}
+    diff = result.get('diff', '')
+    stat = _fit_frame(result.get('stat', ''), _SESSION_DIFF_BYTES)
+    body = _fit_frame(diff, _SESSION_DIFF_BYTES - _wire_bytes(stat))
+    return {'enabled': True, 'success': True, 'stat': stat, 'diff': body,
+            'diff_lines': len(diff.splitlines()), 'empty': bool(result.get('empty'))}
+
+
+def _wire_bytes(text):
+    """Bytes ``text`` takes inside a frame: JSON-escaped as ``serialize_frame`` writes it, then UTF-8."""
+    return len(json.dumps(text, ensure_ascii=False).encode('utf-8', 'surrogatepass')) - 2
+
+
+def _fit_frame(text, budget):
+    """The longest whole-line prefix of ``text`` whose wire size fits ``budget`` bytes. The caller
+    reports the uncut line count, so the client names the cut instead of the frame dropping the socket."""
+    if len(text) * 6 <= budget or (len(text) <= budget and _wire_bytes(text) <= budget):
+        return text
+    kept, used = [], 0
+    # Lines end at ``\n`` only (``splitlines`` would also cut at ``\r``, ``\f``, U+2028 inside a diff line).
+    for line in re.split(r'(?<=\n)', text[:budget + 1]):  # chars cost >= 1 byte; +1 keeps a cut line over
+        used += _wire_bytes(line)
+        if used > budget:
+            break
+        kept.append(line)
+    return ''.join(kept).removesuffix('\n')
 
 
 async def _rewind_last_turn(connection, ref):
@@ -225,8 +324,8 @@ async def _rewind_last_turn(connection, ref):
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
     rows = await asyncio.to_thread(local_history, authority, ref)
-    target = next((row['row_id'] for row in reversed(rows)
-                   if isinstance(row.get('row_id'), int) and user_originated_turn_view(row) is not None), None)
+    target = next((row['row_id'] for row in reversed(rows) if isinstance(row.get('row_id'), int)
+                   and not row.get('archived') and user_originated_turn_view(row) is not None), None)
     if target is None:
         return 0
     from gateway.session_mutations import mutate_session

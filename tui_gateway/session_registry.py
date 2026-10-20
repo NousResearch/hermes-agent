@@ -134,9 +134,14 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
 
 
 def _start_session_services(sid: str, key: str, current: dict) -> None:
-    """Start the notification poller and fire the session-reset boundary hook."""
+    """Start the notification poller (exactly one live per session) and fire the session-reset boundary hook."""
     with _sessions_lock:
         if (rec := _sessions.get(sid)) is not None:
+            # An agent rebuild re-enters here for the SAME session: stop the previous poller before
+            # replacing its stop event, or the orphaned old loop keeps draining the process-global
+            # completion queue (and close can only signal the newest event) — #138806.
+            if (old_stop := rec.get("_notif_stop")) is not None:
+                old_stop.set()
             rec["_notif_stop"] = _start_notification_poller(sid, rec)
     _notify_session_boundary("on_session_reset", key, _session_source(current))
 
@@ -362,6 +367,31 @@ def _init_session(
     _schedule_mcp_late_refresh(sid, agent)
 
 
+_AUTO_PRUNE_NOTIFIED: dict[str, float] = {}
+
+
+def _maybe_notify_auto_prune(sid: str, profile_home: str | None) -> None:
+    """Low disk + auto-prune never decided: a sticky notice (TUI status line / Desktop toast) per
+    profile per snooze window, on session create and cold resume. The cheap gate runs inline;
+    the DB estimate runs off-thread."""
+    from hermes_cli import prune_advisor
+    from hermes_constants import get_hermes_home
+    home = Path(profile_home) if profile_home else get_hermes_home()
+    if not prune_advisor.notice_due(home, _AUTO_PRUNE_NOTIFIED):
+        return
+    _AUTO_PRUNE_NOTIFIED[str(home)] = time.time()
+
+    def _work() -> None:
+        advice = prune_advisor.advise(home)
+        if advice is not None and prune_advisor.should_ask(home) is not None:  # not answered meanwhile
+            _emit("notification.show", sid, prune_advisor.notice_payload(advice))
+        else:
+            _AUTO_PRUNE_NOTIFIED.pop(str(home), None)
+
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_work, name="auto-prune-advice").start()
+
+
 def _new_session_key() -> str:
     return new_session_id()
 
@@ -520,6 +550,7 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     def _run():
         if (session := _sessions.get(sid)) is not None:
             _start_agent_build(sid, session)
+            _maybe_notify_auto_prune(sid, session.get("profile_home"))
     timer = threading.Timer(delay, _run)
     timer.daemon = True
     timer.start()

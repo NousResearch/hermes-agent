@@ -49,5 +49,6 @@ async def active_list(connection, ref, params):
                      'last_active': float(row.get('ended_at') or started), 'started_at': started,
                      'message_count': int(row.get('message_count') or 0),
                      'model': str(row.get('model') or ''), 'preview': '', 'title': row.get('title') or '',
+                     'source': row.get('source'),
                      'status': _status(live, handle, authority._pending_rows(candidate))})
     return {'sessions': rows}

@@ -136,6 +136,24 @@ class TestKnownPrefixes:
         text = "fw-tooshort fw_tooshort fpk_tooshort"
         assert redact_sensitive_text(text) == text
 
+    def test_linear_api_key(self):
+        """Linear personal API key. Follow-up invited in #4541."""
+        token = "lin_api_" + "AbCdEfGhIjKlMnOpQrSt"
+        result = redact_sensitive_text(f"leaked {token} in output")
+        assert token not in result
+        assert "..." in result
+
+    def test_short_linear_like_word_unchanged(self):
+        text = "lin_api_tooshort"
+        assert redact_sensitive_text(text) == text
+
+    def test_webhook_signing_secret(self):
+        """Stripe and Standard Webhooks (base64 body) signing secrets; short words untouched."""
+        for token in ("whsec_" + "A1b2C3d4E5f6G7h8I9j0K1l2", "whsec_" + "MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw+/Q=="):
+            result = redact_sensitive_text(f"WEBHOOK secret {token} here")
+            assert token not in result and "whsec_" in result
+        assert redact_sensitive_text("whsec_tooshort") == "whsec_tooshort"
+
 
 
 

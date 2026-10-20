@@ -2701,10 +2701,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         app.add_handler(TelegramMessageHandler(filters.CONTACT, self._handle_contact_message))  # #98598
         media = filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL
         app.add_handler(TelegramMessageHandler(media, self._handle_media_message))
-        # Topic-creation service messages (no text; a routing signal, never a turn): _handle_forum_topic_created.
+        # Topic-creation service messages persist the title and routing signal, never an agent turn.
         created_filter = getattr(getattr(filters, "StatusUpdate", None), "FORUM_TOPIC_CREATED", None)
         if created_filter is not None:
-            app.add_handler(TelegramMessageHandler(created_filter, self._handle_forum_topic_created))
+            app.add_handler(TelegramMessageHandler(created_filter, self._handle_forum_topic_created_with_name))
         self._register_forum_topic_name_handler(app, TelegramMessageHandler, filters.StatusUpdate)
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.

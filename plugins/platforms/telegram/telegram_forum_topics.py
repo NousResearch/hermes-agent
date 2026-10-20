@@ -8,9 +8,16 @@ from gateway.platforms.event import MessageType
 class TelegramForumTopicsMixin:
     def _register_forum_topic_name_handler(self, app, handler_type, status_filters) -> None:
         app.add_handler(handler_type(
-            status_filters.FORUM_TOPIC_CREATED | status_filters.FORUM_TOPIC_EDITED,
+            status_filters.FORUM_TOPIC_EDITED,
             self._handle_forum_topic_name_update,
         ))
+
+    async def _handle_forum_topic_created_with_name(self, update: Any, context: Any) -> None:
+        try:
+            await self._handle_forum_topic_name_update(update, context)
+        finally:
+            # Building metadata reads the explicit thread and clears a pending opener; record it last.
+            await self._handle_forum_topic_created(update, context)
 
     async def _handle_forum_topic_name_update(self, update: Any, context: Any) -> None:
         """Forward an authorized human's forum topic create/rename metadata."""

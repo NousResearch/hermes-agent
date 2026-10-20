@@ -1,0 +1,21 @@
+# Scope the weekly OSV-Scanner scan to production dependencies.
+#
+# osv-scanner reports every entry in a scanned lockfile, including the
+# "dev": true nodes that exist only for local development and CI. That
+# made the weekly Security-tab report read as if dev-only advisories
+# ship to users (issue #116275: the @xmldom/xmldom and electron
+# advisories were reported against this repo although every copy of
+# both packages in every scanned lockfile is a dev-only node).
+#
+# Suppressing the dev group is the scanner's documented way to express a
+# production-only scan; there is no --production flag. The override is
+# loaded via --config from .github/workflows/osv-scanner.yml so it
+# applies to every scanned lockfile (a directory-local osv-scanner.toml
+# does not propagate to other directories). Python entries in uv.lock
+# are unaffected: the scanner does not group them, so uv.lock findings
+# keep reporting. To review suppressed findings, run the scan locally
+# without --config.
+[[PackageOverrides]]
+group = "dev"
+ignore = true
+reason = "dev-group dependencies are not part of the shipped product"

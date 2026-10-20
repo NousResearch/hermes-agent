@@ -1634,8 +1634,8 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "whatsapp": {
-        # reply_prefix: None = built-in "☤ *Hermes Agent*" header; "" disables; \n allowed.
+    "whatsapp": {  # reply_prefix: None = built-in "☤ *Hermes Agent*" header; "" disables; \n allowed.
+        "process_from_me_groups": False,  # Opt-in; group/mention gates still apply.
     },
 
     "telegram": {

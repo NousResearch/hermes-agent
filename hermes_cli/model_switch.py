@@ -1429,7 +1429,9 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     resolve_runtime_provider() resolves by provider NAME and would re-resolve a block named
     "openai" from scratch (or hop to an aggregator), so use the pdef's endpoint directly."""
     user_pdef = None
-    explicit_norm = st.explicit_provider.strip().lower()
+    # `provider/model` prefix syntax leaves explicit_provider unset here; a bare .strip()
+    # crashed the whole switch (AttributeError) before the prefix route could bind creds.
+    explicit_norm = (st.explicit_provider or "").strip().lower()
     if st.explicit_provider and st.user_providers:
         from hermes_cli.providers import resolve_user_provider
         user_pdef = (resolve_user_provider(explicit_norm, st.user_providers)

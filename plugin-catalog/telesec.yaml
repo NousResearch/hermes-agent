@@ -26,6 +26,7 @@ screenshots:
   - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/voice-transcript.png
   - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/owner-panel.png
   - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/stats-panel-en@2x.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/61b4ddcb989bc216db94c33fef12d1d603be1cd6/docs/images/dossier-panel-en@2x.png
 readme: true
 known_issues:
   - Needs in-process plugin mode for native Telegram handlers.

@@ -10,7 +10,7 @@
 > ```html
 > <!-- No CDN needed — uses system fonts -->
 > ```
-> Use `write_file` to create HTML, serve via `generative-widgets` skill (cloudflared tunnel).
+> Use `write_file` to create HTML, then open it with `browser_navigate(url="file:///abs/path/index.html")`.
 > Verify visual accuracy with `browser_vision` after generating.
 
 ## 1. Visual Theme & Atmosphere

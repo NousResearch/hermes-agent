@@ -438,7 +438,15 @@ def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> 
         get_secret = None  # type: ignore
 
     def read(name: str) -> str:
-        value = (get_secret(name, "") or "") if get_secret is not None else os.getenv(name, "")
+        if get_secret is not None:
+            try:
+                value = get_secret(name, "") or ""
+            except Exception:
+                # Multiplex without an installed profile scope: fall back to the host environ
+                # rather than aborting cron delivery (the scope bug is upstream #83182 family).
+                value = os.getenv(name, "")
+        else:
+            value = os.getenv(name, "")
         return value.strip() if strip else value
 
     value = read(env_var + suffix)

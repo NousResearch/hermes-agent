@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => {
     })
   }
 
-  return { ambient, requestGatewayForAgent: vi.fn(), requestModelOptions: vi.fn() }
+  return { ambient, requestGatewayForAgent: vi.fn() }
 })
 
 vi.mock('@/store/gateway', async importOriginal => ({
@@ -31,11 +31,6 @@ vi.mock('@/store/gateway', async importOriginal => ({
   $gateway: atom(mocks.ambient),
   activeGateway: () => mocks.ambient,
   requestGatewayForAgent: mocks.requestGatewayForAgent
-}))
-
-vi.mock('@/lib/model-options', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  requestModelOptions: mocks.requestModelOptions
 }))
 
 const { requestOneShot } = await import('./oneshot')
@@ -59,7 +54,6 @@ beforeEach(() => {
           ? { title: 'Renamed on owner' }
           : {}
   )
-  mocks.requestModelOptions.mockResolvedValue({ providers: [] } satisfies ModelOptionsResult)
   $sessionStates.set({ [RUNTIME]: { storedSessionId: STORED } as never })
   setSessionOwnerHint(STORED, OWNER)
 })
@@ -109,7 +103,10 @@ describe('session_id RPCs go to the session owner, not the ambient socket', () =
     })
   })
 
-  it('Edit Models reads model.options for a secondary-profile session from its owner', async () => {
+  it('Edit Models reads model.options for a secondary-profile session from its owner, under its profile', async () => {
+    const catalog: ModelOptionsResult = { providers: [{ models: ['m-research'], name: 'R', slug: 'r' }] }
+    mocks.requestGatewayForAgent.mockResolvedValue(catalog)
+
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <I18nProvider>
@@ -125,17 +122,16 @@ describe('session_id RPCs go to the session owner, not the ambient socket', () =
       </QueryClientProvider>
     )
 
-    await waitFor(() => expect(mocks.requestModelOptions).toHaveBeenCalled())
-
-    const { request } = mocks.requestModelOptions.mock.calls[0][0] as {
-      request?: (method: string, params?: Record<string, unknown>) => Promise<unknown>
-    }
-
-    expect(request).toBeTypeOf('function')
-    await request!('model.options', { session_id: RUNTIME })
+    await waitFor(() =>
+      expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'model.options', expect.anything())
+    )
     expect(mocks.ambient.request).not.toHaveBeenCalled()
-    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'model.options', {
-      session_id: RUNTIME
-    })
+
+    // The backend lets an explicit profile override session_id: the window's
+    // ambient 'default' would build the launch profile's catalog.
+    const params = mocks.requestGatewayForAgent.mock.calls[0][3] as Record<string, unknown>
+
+    expect(params).toMatchObject({ explicit_only: true, session_id: RUNTIME })
+    expect(params.profile ?? 'research').toBe('research')
   })
 })

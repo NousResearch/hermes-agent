@@ -1155,10 +1155,20 @@ def _desktop_linux_needs_no_sandbox() -> bool:
 
 
 def _desktop_linux_userns_sandbox_available() -> bool:
-    """True when the unprivileged userns sandbox works (probed with ``unshare``, fails closed) — then
-    the setuid ``chrome-sandbox`` helper is never consulted and no sudo prompt is needed."""
+    """True when Chromium can use the unprivileged userns sandbox for this launch."""
     if sys.platform != "linux":
         return False
+    # Ubuntu's AppArmor restriction is profile-sensitive: a successful generic
+    # ``unshare`` probe does not prove that the Electron executable can create
+    # Chromium's sandbox.  Prefer the setuid-helper path when the restriction is
+    # enabled rather than selecting ``--disable-setuid-sandbox`` prematurely.
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        try:
+            with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+                if f.read().strip() == "1":
+                    return False
+        except OSError:
+            pass
     unshare = shutil.which("unshare")
     if not unshare:
         return False

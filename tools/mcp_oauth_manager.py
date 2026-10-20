@@ -98,6 +98,42 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 from tools.mcp_oauth_provider import enforce_refresh_token_issuer
                 enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
 
+    async def _www_auth_resource_metadata(self, client, server_url: str) -> str | None:
+        """The ``resource_metadata`` URL a 401 challenge advertises, else None.
+
+        ``stream=True`` and no body read, deliberately: a streamable-HTTP MCP server answers
+        GET /mcp with ``text/event-stream`` and an endless keepalive, so a normal ``send``
+        awaits a body that never ends -- and the client's timeout is *between chunks*, so the
+        keepalives keep resetting it. The headers are all the extractor reads.
+
+        ``follow_redirects`` is left at httpx's default (off) for the same reason the device
+        path pins it: a redirect hop is not part of this probe, and following one would make a
+        hostile server able to steer discovery.
+
+        Non-fatal by construction: any failure returns None so discovery falls back to the
+        well-known candidates exactly as it does today. The SDK's extractor also returns None
+        for any non-401, so a server that needs no auth probes clean.
+        """
+        from mcp.client.auth.utils import (
+            create_oauth_metadata_request,
+            extract_resource_metadata_from_www_auth,
+        )
+
+        from tools.mcp_oauth_provider import stamp_default_user_agent
+        try:
+            resp = await client.send(
+                stamp_default_user_agent(create_oauth_metadata_request(server_url)),
+                stream=True,
+            )
+        except Exception as exc:
+            logger.debug("MCP OAuth '%s': WWW-Authenticate probe of %s failed: %s",
+                         self._hermes_server_name, server_url, exc)
+            return None
+        try:
+            return extract_resource_metadata_from_www_auth(resp)
+        finally:
+            await resp.aclose()
+
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
         builders/response handlers so we track whatever the pinned SDK expects."""
@@ -116,19 +152,41 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         async def _send(client, url: str, label: str):
             try:
                 return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
-            except httpx.HTTPError as exc:
+            except Exception as exc:
+                # Not httpx.HTTPError: a candidate the *server* chose (the advertised
+                # resource_metadata) can be malformed — httpx2.InvalidURL and the ValueError
+                # behind it are plain Exception subclasses. Letting that escape would abandon
+                # the well-known fallbacks that would have resolved the very same server.
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None
         async with httpx.AsyncClient(timeout=10.0) as client:
+            # SEP-985 / RFC 9728 §5.1: a 401 may advertise where this resource's metadata
+            # lives, and that URL outranks the well-known guesses. Probing first is what lets a
+            # server that hosts metadata under its MCP path but not at the domain root (IBKR:
+            # advertised URL 200, both fallbacks 404) complete discovery at all. The device-code
+            # flow already does this (tools/mcp_oauth_device.py); without it the two paths diverge.
+            challenge = await self._www_auth_resource_metadata(client, server_url)
             # PRM discovery to learn the authorization_server URL.
-            for url in build_protected_resource_metadata_discovery_urls(None, server_url):
+            for url in build_protected_resource_metadata_discovery_urls(challenge, server_url):
                 resp = await _send(client, url, "PRM")
                 prm = await handle_protected_resource_response(resp) if resp is not None else None
-                if prm:
-                    self.context.protected_resource_metadata = prm
-                    if prm.authorization_servers:
-                        self.context.auth_server_url = str(prm.authorization_servers[0])
-                    break
+                if not prm:
+                    continue
+                # RFC 8707: a PRM naming a different resource is not ours to trust. The SDK's own
+                # 401 branch (oauth2.py:622) and the device-code flow (tools/mcp_oauth_device.py:40)
+                # both validate; pre-flight used not to, and honouring an *advertised* URL makes
+                # that reachable from an unauthenticated 401. Skip the candidate, don't abort --
+                # the well-known fallbacks for the real origin may still resolve.
+                try:
+                    await self._validate_resource_match(prm)
+                except Exception as exc:
+                    logger.debug("MCP OAuth '%s': rejecting PRM from %s: %s",
+                                 self._hermes_server_name, url, exc)
+                    continue
+                self.context.protected_resource_metadata = prm
+                if prm.authorization_servers:
+                    self.context.auth_server_url = str(prm.authorization_servers[0])
+                break
             # ASM discovery against auth_server_url (server_url fallback for legacy providers).
             for url in build_oauth_authorization_server_metadata_discovery_urls(self.context.auth_server_url, server_url):
                 resp = await _send(client, url, "ASM")

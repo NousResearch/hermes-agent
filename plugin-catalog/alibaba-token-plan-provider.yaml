@@ -1,0 +1,18 @@
+name: alibaba-token-plan-provider
+title: "Token Plan Chat"
+repo: https://github.com/oliver-mee/hermes-alibaba-token-plan
+sha: cf585f1aa36808388acf8d5757dbf3740170fb6c
+subdir: alibaba-token-plan
+version: "2.0.0"
+description: "Improved standalone chat provider following upstream #52915/#70120; supported overrides replace bundled basic Personal profiles and add Team profiles. Alibaba Token Plan chat with isolated Global/China and Personal/Team accounts, entitlement-aware ordered catalogues, reasoning controls and legacy aliases. Sends the selected profile key and prompts to its regional Token Plan host; no PAYG fallback. Optional account variables are configured only for the selected accounts. /models is not inference health. Read migration guidance before replacing shell installations."
+maintainer: oliver-mee
+tier: community
+category: models
+platforms: [linux, macos]
+docs_url: https://github.com/oliver-mee/hermes-alibaba-token-plan#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

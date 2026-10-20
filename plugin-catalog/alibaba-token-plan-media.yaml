@@ -1,0 +1,19 @@
+name: alibaba-token-plan-media
+title: "Token Plan Media"
+repo: https://github.com/oliver-mee/hermes-alibaba-token-plan
+sha: cf585f1aa36808388acf8d5757dbf3740170fb6c
+subdir: alibaba-token-plan-media
+version: "2.0.0"
+description: "Derived from dashscope-image and dashscope-video; self-contained native image/video, whole-file WebSocket TTS and synchronous file ASR with its own catalogue. Native Token Plan image/video generation, whole-file TTS and synchronous ASR through Hermes tools and voice delivery. Sends the chosen scoped key, prompts and bounded user images/audio to fixed Token Plan hosts; guarded public HTTPS source/artifact transfers and local cached outputs. ASR is Global Personal only and may invoke existing ffmpeg/ffprobe; no binary download, PAYG fallback, telemetry, automatic model substitution, paid resubmission, PCM streaming or realtime calling. Private host-helper compatibility warnings are disclosed. One selected account key is needed, not every optional variable."
+maintainer: oliver-mee
+tier: community
+category: tools
+platforms: [linux, macos]
+docs_url: https://github.com/oliver-mee/hermes-alibaba-token-plan#readme
+readme: true
+requires_hermes: ">=0.22.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -568,8 +568,10 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
         host, port = server_sock.getsockname()[:2]
         rpc_endpoint = f"tcp://{host}:{port}"
     else:
-        from hermes_constants import socket_safe_tmpdir
-        sock_tmpdir = socket_safe_tmpdir()
+        from hermes_constants import routed_tmpdir, socket_safe_tmpdir
+        # The RPC socket belongs with the staging dir under the routed profile's temp root,
+        # not the backend process's boot-time ambient temp (#138501).
+        sock_tmpdir = socket_safe_tmpdir(routed_tmpdir())
         rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(kernel.sock_path)
@@ -610,9 +612,12 @@ def _parent_process_handle(child_env: dict[str, str]):
 
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
+    from hermes_constants import routed_tmpdir
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
-    kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
+    # Stage under the routed profile's scratch, not the backend process's boot-time ambient
+    # temp: a multiplexed backend serves many profiles with one process-global TMPDIR (#138501).
+    kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_", dir=routed_tmpdir())
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
     rpc_endpoint = _bind_rpc_socket(kernel)

@@ -364,7 +364,7 @@ def execute(frame, channel):
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
     try:
-        with policy_scope(policy):
+        with policy_scope(policy, home=frame['home']):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 # delegate_task stays offered: each child is reserved by the owner under this

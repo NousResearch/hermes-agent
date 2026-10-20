@@ -43,20 +43,25 @@ class TerminalPolicyRefusal(dict[str, str]):
         self.reason = reason
 
 
-def set_terminal_scope(mapping: Optional[dict[str, str]]):
+def set_terminal_scope(mapping: Optional[dict[str, str]], *, profile_home: Any = None):
     """Install *mapping* as the current context's terminal policy; returns a token for
     :func:`reset_terminal_scope`.
 
-    A mapping names no profile, so inside a bound local scope it narrows that scope's own policy
-    (a session's frozen policy). Clearing it inside any bound scope, or setting it inside a hosted
-    one, raises ``ScopeSwitchRefused``: either would leave the scope with a policy it does not
-    own."""
+    *profile_home* declares whose policy it is (a session's frozen policy belongs to the profile
+    that owns the session). With no scope bound it is not needed. Inside a bound scope the mapping
+    must belong to the bound agent (a local scope whose agent is *profile_home*); anything else,
+    including clearing the policy, raises ``ScopeSwitchRefused``, since the scope's home and secrets
+    would stay with a policy that is not theirs. To run under another profile's policy, bind that
+    profile (``agent.runtime_scope.bind_profile_scope``)."""
     from hermes_scope import ScopeSwitchRefused, current_scope, push_state
     scope = current_scope()
-    if scope is not None and (mapping is None or not scope.is_local):
-        raise ScopeSwitchRefused(
-            "set_terminal_scope cannot clear a bound scope's terminal policy or set one in a hosted "
-            f"scope (tenant={scope.tenant!r}); bind a scope at the activity's entry point")
+    if scope is not None:
+        from agent.runtime_scope import owns_bound_scope
+        if mapping is None or not owns_bound_scope(profile_home):
+            raise ScopeSwitchRefused(
+                f"set_terminal_scope inside scope (tenant={scope.tenant!r}, agent={scope.agent!r}) needs "
+                f"a policy owned by that agent, got profile_home={profile_home!r}"
+                + (" and no policy" if mapping is None else ""))
     return push_state(terminal=mapping)
 
 
@@ -233,7 +238,7 @@ def install_profile_terminal_scope(hermes_home: Any, *, env_overlay: Optional[di
     from hermes_scope import current_scope, push_state
     if current_scope() is not None:
         from agent.runtime_scope import legacy_switch
-        switched = legacy_switch(hermes_home)
+        switched = legacy_switch(hermes_home, env_overlay=env_overlay)
         if switched is not None:
             return switched
     return push_state(terminal=profile_terminal_policy(hermes_home, env_overlay=env_overlay))

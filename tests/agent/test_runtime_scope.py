@@ -31,6 +31,7 @@ from hermes_scope import (
     current_scope,
 )
 from tools.terminal_scope import (
+    build_profile_terminal_scope,
     get_terminal_scope,
     install_profile_terminal_scope,
     reset_terminal_scope,
@@ -188,15 +189,25 @@ def test_a_local_bind_refuses_inside_a_hosted_scope(two_profiles):
 
 # --- no public path splits a bound scope ---
 
-def test_a_raw_terminal_mapping_narrows_the_bound_scope_without_switching_it(two_profiles):
-    """A mapping names no profile: it narrows the bound scope's own policy (a session's frozen one),
-    and the scope keeps its home and secrets."""
+def test_the_bound_profiles_own_frozen_policy_replaces_its_terminal_policy(two_profiles):
+    """A session's frozen policy, declared as the bound profile's, replaces the scope's policy for the
+    turn; the scope keeps its home and secrets."""
     a, _b = two_profiles
     with bind_profile_scope(a):
-        token = set_terminal_scope({"TERMINAL_ENV": "ssh"})
+        token = set_terminal_scope({"TERMINAL_ENV": "ssh"}, profile_home=a)
         assert _state() == (*_expect(a, "a", "local")[:3], "ssh")
         assert current_scope() == Scope("local", str(a), LOCAL_OWNER)
         reset_terminal_scope(token)
+        assert _state() == _expect(a, "a", "local")
+
+
+@pytest.mark.parametrize("owner", ["other", "undeclared"])
+def test_a_terminal_policy_not_owned_by_the_bound_profile_refuses(two_profiles, owner):
+    """The reviewer's raw-policy case: B's policy inside A's scope would run A's turn with B's backend."""
+    a, b = two_profiles
+    with bind_profile_scope(a):
+        with pytest.raises(ScopeSwitchRefused):
+            set_terminal_scope(build_profile_terminal_scope(b), **({"profile_home": b} if owner == "other" else {}))
         assert _state() == _expect(a, "a", "local")
 
 
@@ -205,15 +216,65 @@ def test_clearing_one_piece_of_a_bound_scope_refuses(two_profiles, clear):
     a, _b = two_profiles
     with bind_profile_scope(a):
         with pytest.raises(ScopeSwitchRefused):
-            set_secret_scope(None) if clear == "secrets" else set_terminal_scope(None)
+            set_secret_scope(None) if clear == "secrets" else set_terminal_scope(None, profile_home=a)
         assert _state() == _expect(a, "a", "local")
 
 
 def test_a_raw_terminal_mapping_refuses_inside_a_hosted_scope():
     with bind_state(Scope("acme", "agent-7", Principal("u1"))):
         with pytest.raises(ScopeSwitchRefused):
-            set_terminal_scope({"TERMINAL_ENV": "local"})
+            set_terminal_scope({"TERMINAL_ENV": "local"}, profile_home="agent-7")
         assert get_terminal_scope() is None
+
+
+def test_a_hosted_scope_cannot_bind_another_hosted_agent_or_tenant():
+    hosted = Scope("acme", "one", Principal("u1"))
+    with bind_state(hosted):
+        for other in (Scope("acme", "two", Principal("u1")), Scope("other", "one", Principal("u1"))):
+            with pytest.raises(ScopeSwitchRefused):
+                bind_state(other)
+        with bind_turn("s1", "t1"):  # a turn of the same agent is not a switch
+            assert current_scope() == TurnScope("acme", "one", Principal("u1"), "s1", "t1")
+        assert current_scope() == hosted
+
+
+def test_a_partial_bind_never_inherits_a_piece_from_an_earlier_change(two_profiles):
+    """The reviewer's replay case: a bind that keeps the current home override copies it, so removing
+    the earlier override it came from cannot take a piece out from under it."""
+    a, _b = two_profiles
+    outer = set_hermes_home_override(str(a))
+    with bind_state(scope_for_profile(a), hydrate_secrets=False, home_override=False):
+        before = _state()
+        reset_hermes_home_override(outer)
+        assert _state() == before
+        assert current_scope() == Scope("local", str(a), LOCAL_OWNER)
+
+
+def test_a_cross_profile_terminal_switch_keeps_the_callers_overlay(two_profiles):
+    a, b = two_profiles
+    with bind_profile_scope(a):
+        with install_profile_terminal_scope(b, env_overlay={"TERMINAL_SSH_HOST": "custom-host"}):
+            assert get_terminal_scope()["TERMINAL_SSH_HOST"] == "custom-host"
+            assert current_scope() == Scope("local", str(b), LOCAL_OWNER)
+
+
+def test_setters_whose_tokens_are_discarded_do_not_grow_the_state(two_profiles):
+    import hermes_scope
+    a, _b = two_profiles
+
+    def depth() -> int:
+        node, n = hermes_scope._STATE.get(), 0
+        while node is not None:
+            node, n = node.parent, n + 1
+        return n
+
+    def run() -> int:
+        for _ in range(500):
+            set_hermes_home_override(str(a))
+        return depth()
+
+    import contextvars
+    assert contextvars.copy_context().run(run) <= 2  # the newest change folds on the next push
 
 
 # --- resets always land on a whole state ---

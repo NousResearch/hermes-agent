@@ -882,7 +882,8 @@ _LEGACY_PROFILE_SETTERS = frozenset({
 
 def _is_legacy_setter(call: ast.Call) -> bool:
     """A call through an imported name: exactly a setter's module path, or, from a relative import
-    (whose package the AST cannot know), a whole-component tail of one."""
+    (whose package the AST cannot know), a whole-component tail of one that still names the module
+    (``.secret_scope.set_secret_scope``; a bare ``from . import set_secret_scope`` is unknowable)."""
     root = call.func
     while isinstance(root, ast.Attribute):
         root = root.value
@@ -890,7 +891,7 @@ def _is_legacy_setter(call: ast.Call) -> bool:
         return False
     name = _call_name(call)
     if getattr(root, "relative", False):
-        return any(f".{setter}".endswith(f".{name}") for setter in _LEGACY_PROFILE_SETTERS)
+        return "." in name and any(f".{setter}".endswith(f".{name}") for setter in _LEGACY_PROFILE_SETTERS)
     return name in _LEGACY_PROFILE_SETTERS
 
 

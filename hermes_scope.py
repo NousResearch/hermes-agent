@@ -23,9 +23,10 @@ scope; a hosted scope refuses) is decided in ``agent/runtime_scope.py``.
 
 from __future__ import annotations
 
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Callable, Mapping, NamedTuple
 
 LOCAL_TENANT = "local"
 
@@ -138,12 +139,17 @@ _EMPTY = ScopeState()
 
 
 class _Change:
-    """One :func:`push_state`: the fields it set, and the scope it was made in (its owner)."""
+    """One :func:`push_state`: the fields it set, the scope it was made in (its owner), and a weak
+    reference to its token. A change whose token is gone can never be reset, so it is permanent."""
 
-    __slots__ = ("fields", "owner")
+    __slots__ = ("fields", "owner", "token")
 
     def __init__(self, fields: dict[str, Any], owner: Scope | None) -> None:
         self.fields, self.owner = fields, owner
+        self.token: Callable[[], StateToken | None] = lambda: None
+
+    def resettable(self) -> bool:
+        return self.token() is not None
 
 
 class _Node(NamedTuple):
@@ -169,10 +175,11 @@ class StateToken:
     """Undoes one :func:`push_state`; usable as a context manager. Resetting twice, or after the
     change was already removed (its owning scope was reset), does nothing."""
 
-    __slots__ = ("_change",)
+    __slots__ = ("__weakref__", "_change")
 
     def __init__(self, change: _Change) -> None:
         self._change = change
+        change.token = weakref.ref(self)
 
     def reset(self) -> None:
         pop_state(self)
@@ -184,13 +191,25 @@ class StateToken:
         pop_state(self)
 
 
+def _fold(node: _Node | None) -> _Node | None:
+    """Merge the top two changes into one while neither can be reset and they share an owner: such
+    changes are permanent and replay together, so a caller that discards its tokens (a set with no
+    reset, repeated in a long-lived process) keeps the chain short."""
+    while (node is not None and node.parent is not None and not node.change.resettable()
+           and not node.parent.change.resettable() and node.change.owner is node.parent.change.owner):
+        merged = _Change({**node.parent.change.fields, **node.change.fields}, node.change.owner)
+        node = _Node(node.state, merged, node.parent.parent)
+    return node
+
+
 def push_state(**fields: Any) -> StateToken:
     """Install the current state with *fields* (of :class:`ScopeState`) changed."""
-    node = _STATE.get()
+    node = _fold(_STATE.get())
     state = node.state if node is not None else _EMPTY
     change = _Change(fields, state.scope)
+    token = StateToken(change)
     _STATE.set(_Node(replace(state, **fields), change, node))
-    return StateToken(change)
+    return token
 
 
 def _agent(scope: Scope | None) -> tuple[str, str] | None:

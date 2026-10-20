@@ -1,6 +1,7 @@
 """Tests for agent.oneshot — shared one-off (stateless) LLM requests."""
 
 import json
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -80,6 +81,11 @@ class TestRunOneshot:
         sent = llm.call_args_list[0].kwargs
         assert sent["task"] == "tern_charts" and sent["extra_body"]["response_format"]["type"] == "json_schema"
         assert secret not in json.dumps(sent["messages"])
+        monkeypatch.setitem(sys.modules, "jsonschema", None)  # a core install has no jsonschema
+        with patch("agent.oneshot.call_llm", return_value=self._mock_response('{"kind": 1}')) as llm:
+            with pytest.raises(ValueError, match="jsonschema"):
+                oneshot_reply(instructions="sys", user_input="x", task="tern_charts", schema=schema)
+        llm.assert_not_called()
 
 class TestHelpers:
 

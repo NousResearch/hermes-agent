@@ -9,6 +9,7 @@ CLI/TUI/desktop. Model selection rides :func:`agent.auxiliary_client.call_llm`:
 resolves a cheap backend.
 """
 
+import importlib.util
 import json
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -142,7 +143,10 @@ def client_task(task: Optional[str]) -> str:
 
 def oneshot_reply(*, schema: Optional[dict[str, Any]] = None, **kwargs: Any) -> dict[str, Any]:
     """``llm.oneshot``'s result: ``{"text"}``, plus ``"parsed"`` (the JSON value, checked against
-    ``schema``) when a schema was given. ValueError when the reply is not JSON or does not match."""
+    ``schema``) when a schema was given. ValueError when the reply is not JSON or does not match, and
+    before any model call when ``jsonschema`` (not a core dependency) is missing to check it."""
+    if schema is not None and importlib.util.find_spec("jsonschema") is None:
+        raise ValueError("schema needs the jsonschema package, which this install does not have")
     text = run_oneshot(schema=schema, **kwargs)
     if schema is None:
         return {"text": text}

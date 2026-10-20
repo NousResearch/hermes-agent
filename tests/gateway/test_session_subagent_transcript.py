@@ -103,3 +103,11 @@ def test_an_in_place_compaction_resets_the_viewer_instead_of_repeating_rows(rece
     assert {m['content'] for m in compacted['messages'] if m.get('archived')} == {'live goal', 'live step one'}
     after = receipt['live_compacted_caught_up']
     assert not after['reset'] and after['messages'] == [], after
+
+
+def test_rows_written_and_compacted_between_polls_reach_the_viewer(receipt):
+    assert receipt['empty']['available'] and receipt['empty']['messages'] == [], receipt['empty']
+    compacted = receipt['empty_compacted']
+    assert compacted['reset'], compacted
+    assert [(m['content'], m.get('archived', False)) for m in compacted['messages']] == [
+        ('empty goal', True), ('empty step', True), ('empty summary', False)], compacted

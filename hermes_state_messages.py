@@ -1549,15 +1549,17 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             f" WHERE id IN ({marks})) FROM messages WHERE session_id IN ({marks}) AND active = 1", (*ids, *ids))
         return (tuple(ids), int(row[0]), int(row[1]), int(row[2]))
 
-    def transcript_cursor_state(self, session_id: str, through_id: int) -> tuple[int, int]:
-        """``(live rows with id <= through_id, transcript_revision)`` of one session. An append moves
-        neither; a compaction, rewind, replace or in-place rewrite of those rows moves one of them, so a
-        reader holding them can take only ``after_id=through_id`` while this pair is unchanged."""
+    def transcript_cursor_state(self, session_id: str, through_id: int) -> tuple[int, int, int]:
+        """``(live rows with id <= through_id, inactive rows, transcript_revision)`` of one session. An
+        append moves none of them. A compaction or rewind (anywhere, including rows appended after
+        *through_id*) moves the inactive count, deleting the rows held moves the first, an in-place
+        rewrite the last; while all three hold, the rows after *through_id* are all that changed."""
         row = self._read_one(
             "SELECT (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1 AND id <= ?),"
+            " (SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0),"
             " (SELECT COALESCE(MAX(transcript_revision), 0) FROM sessions WHERE id = ?)",
-            (session_id, int(through_id), session_id))
-        return int(row[0]), int(row[1])
+            (session_id, int(through_id), session_id, session_id))
+        return int(row[0]), int(row[1]), int(row[2])
 
     def conversation_tail(self, session_id: str, after_id: int) -> list[dict[str, Any]]:
         """``get_messages_as_conversation(include_row_ids=True)``'s live rows of one session with an id

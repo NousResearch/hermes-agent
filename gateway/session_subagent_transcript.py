@@ -8,9 +8,9 @@ children included); a finished one is found by the ``subagent_id`` stamped on it
 (``tools/delegate_tool_sessions.py``), and only when its ancestry reaches this conversation.
 
 The first read is the ``session.resume`` rows (``stored_history``). The opaque ``cursor`` names the
-segment, its newest row and what ``transcript_cursor_state`` said of the rows up to it; while that
-still holds, ``after: cursor`` reads only the rows appended since. Anything else (an in-place
-compaction, a rotation, a rewind, an in-place rewrite) answers the whole transcript with ``reset``.
+segment, its newest row and what ``transcript_cursor_state`` said of the session; while that still
+holds, ``after: cursor`` reads only the rows appended since. Anything else (an in-place compaction,
+a rotation, a rewind, an in-place rewrite) answers the whole transcript with ``reset``.
 """
 import asyncio
 
@@ -20,16 +20,16 @@ from hermes_state_runtime import RuntimeStoreError
 _FIELDS = frozenset({'session_id', 'profile', 'subagent_id', 'after'})
 
 
-def _cursor(session_id, row_id, live, revision):
-    return f'{row_id}.{live}.{revision}.{session_id}'
+def _cursor(session_id, row_id, state):
+    return '.'.join(map(str, (row_id, *state, session_id)))
 
 
 def _held(after, session_id):
-    """``(row_id, (live, revision))`` of a cursor this reply's segment issued, else None."""
-    parts = after.split('.', 3) if isinstance(after, str) else []
-    if len(parts) != 4 or parts[3] != session_id or not all(p.isdigit() for p in parts[:3]):
+    """``(row_id, (live, inactive, revision))`` of a cursor this reply's segment issued, else None."""
+    parts = after.split('.', 4) if isinstance(after, str) else []
+    if len(parts) != 5 or parts[4] != session_id or not all(p.isdigit() for p in parts[:4]):
         return None
-    return int(parts[0]), (int(parts[1]), int(parts[2]))
+    return int(parts[0]), tuple(int(p) for p in parts[1:4])
 
 
 def _read(db, session_id, after):
@@ -41,13 +41,14 @@ def _read(db, session_id, after):
         if db.transcript_cursor_state(session_id, held[0]) == held[1]:
             rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']} for row in tail]
             top = max([held[0], *(row['row_id'] for row in rows)])
-            return rows, _cursor(session_id, top, held[1][0] + len(rows), held[1][1]), False
+            return rows, _cursor(session_id, top, (held[1][0] + len(rows), *held[1][1:])), False
     from gateway.session_local_recovery import stored_history
-    revision = db.transcript_cursor_state(session_id, 0)[1]
+    # Read before the rows: a change landing during the read then fails the next poll's check.
+    _, inactive, revision = db.transcript_cursor_state(session_id, 0)
     rows = stored_history(db, session_id)
     ids = [row['row_id'] for row in rows if isinstance(row.get('row_id'), int)]
     live = sum(1 for row in rows if not row.get('archived'))
-    return rows, _cursor(session_id, max(ids, default=0), live, revision), True
+    return rows, _cursor(session_id, max(ids, default=0), (live, inactive, revision)), True
 
 
 async def subagent_transcript(connection, ref, params):

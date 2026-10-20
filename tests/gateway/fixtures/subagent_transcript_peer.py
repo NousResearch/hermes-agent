@@ -26,6 +26,7 @@ def seed(db, target):
     child('foreign-child', 'foreign-parent', 'sa-0-foreign')
     child('live-child', target, 'sa-0-live')
     child('done-child', target, 'sa-1-done')
+    child('empty-child', target, 'sa-2-empty')
     # The finished child compressed once: the continuation inherits its model_config.
     db.append_message('done-child', role='user', content='done goal')
     db.end_session('done-child', 'compression')
@@ -128,6 +129,12 @@ async def probe():
                     ws, sid, 'sa-0-live', after=receipt['live_compacted']['cursor'])
             finally:
                 _unregister_subagent('sa-0-live', agent=running)
+            # A child read before it wrote anything, then appended and compacted before the next poll.
+            receipt['empty'] = await transcript(ws, sid, 'sa-2-empty')
+            for i, text in enumerate(['empty goal', 'empty step']):
+                authority.db.append_message('empty-child', role='user' if i == 0 else 'assistant', content=text)
+            authority.db.archive_and_compact('empty-child', [{'role': 'user', 'content': 'empty summary'}])
+            receipt['empty_compacted'] = await transcript(ws, sid, 'sa-2-empty', after=receipt['empty']['cursor'])
             # Ended: gone from the registry, still readable from the store.
             receipt['live_ended'] = await transcript(ws, sid, 'sa-0-live')
             for name in ('sa-1-done', 'sa-0-nested', 'sa-0-foreign', 'sa-0-branch', 'sa-9-unknown'):

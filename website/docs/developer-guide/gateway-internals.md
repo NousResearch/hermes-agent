@@ -65,7 +65,7 @@ stored transcript, live or finished, for a viewer of its parent session:
 
 ```json
 {"subagent_id": "sa-0-1a2b3c4d", "available": true, "child_session_id": "20261017_104110_e10994",
- "running": true, "reset": true, "cursor": "42.2.0.20261017_104110_e10994",
+ "running": true, "reset": true, "cursor": "42.2.0.0.20261017_104110_e10994",
  "messages": [{"role": "user", "content": "…", "row_id": 40, "timestamp": 1760697670.1},
               {"role": "assistant", "content": "…", "row_id": 42, "timestamp": 1760697674.8}]}
 ```
@@ -74,9 +74,9 @@ stored transcript, live or finished, for a viewer of its parent session:
 rows the child's compression summarized away carry `archived: true`. `cursor` is opaque:
 pass it back as `after` to receive only the rows written since (`reset: false`, often
 none). When `reset` is true the messages are the whole transcript and replace what the
-caller holds: on the first read (no `after`), and whenever the rows the cursor covered
-changed (the child compacted in place, rotated to a new `child_session_id`, rewound or
-rewrote a row). A cursored poll costs a count and a keyset read of the new rows
+caller holds: on the first read (no `after`), and whenever anything but an append
+changed the child (it compacted in place, rotated to a new `child_session_id`, rewound or
+rewrote a row), including rows written and compacted between two polls. A cursored poll costs a count and a keyset read of the new rows
 (`transcript_cursor_state`, `conversation_tail`), not a transcript
 rebuild. A running child is
 the one the parent's roster names (the `subagent.list` rule, nested children included).

@@ -1294,7 +1294,12 @@ def _dispose_platform_registration(monkeypatch, name: str) -> None:
 
 def _install_none_buildable_context(monkeypatch, runner, platform):
     """Secondary restart for a platform whose creation returns None and cannot heal without a
-    config change (a builtin whose probe fails)."""
+    config change (a builtin whose probe fails).
+
+    The platform must be a real builtin (``_BUILTIN_ADAPTERS``: API_SERVER, WEBHOOK,
+    MSGRAPH_WEBHOOK): a bundled plugin platform such as SIGNAL is exactly the case that now
+    classifies as healable once its registration is gone.
+    """
     _install_secondary_reconnect_context(monkeypatch, runner, _SecondaryRecoveryAdapter())
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
@@ -1365,7 +1370,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         """A builtin whose probe fails needs a config change: no slot, no retry storm."""
         runner = _secondary_recovery_runner()
         built = []
-        _install_none_buildable_context(monkeypatch, runner, Platform.SIGNAL)
+        _install_none_buildable_context(monkeypatch, runner, Platform.MSGRAPH_WEBHOOK)
         monkeypatch.setattr(
             runner, "_create_adapter", lambda platform, config: built.append(platform) or None
         )
@@ -1375,7 +1380,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         )
 
         assert connected == 0
-        assert built == [Platform.SIGNAL]
+        assert built == [Platform.MSGRAPH_WEBHOOK]
         assert list(runner._background_tasks) == []
         assert runner._profile_failed_platforms == {}
 
@@ -1405,11 +1410,11 @@ class TestSecondaryAdapterUnavailableRecovery:
     async def test_attempt_classifies_healable_none_as_retryable(self, monkeypatch):
         """``(None, False)`` keeps the slot; ``(None, None)`` still gives up."""
         runner = _secondary_recovery_runner()
-        _install_none_buildable_context(monkeypatch, runner, Platform.SIGNAL)
+        _install_none_buildable_context(monkeypatch, runner, Platform.MSGRAPH_WEBHOOK)
         monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: None)
 
         assert await runner._secondary_reconnect_attempt(
-            "reviewer", Platform.SIGNAL
+            "reviewer", Platform.MSGRAPH_WEBHOOK
         ) == (None, None)
 
         _install_plugin_platform_context(

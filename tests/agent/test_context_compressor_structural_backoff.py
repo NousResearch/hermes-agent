@@ -48,6 +48,27 @@ def test_insufficient_messages_backs_off_without_strike():
     assert telemetry.get("failure_class") == "insufficient_messages"
 
 
+def test_force_compress_summarizes_short_fat_transcript():
+    """Auto no-ops a 3-row dump; force=/overflow still summarizes the middle."""
+    compressor = _compressor(protect_first_n=0)
+    compressor.protect_last_n = 20
+    messages = [
+        {"role": "user", "content": "listing packet " + ("x" * 800)},
+        {"role": "assistant", "content": "ok " + ("y" * 200)},
+        {"role": "user", "content": "photos " + ("z" * 400)},
+    ]
+
+    auto = compressor.compress(list(messages), current_tokens=90_000, force=False)
+    assert auto == messages
+    assert (compressor._last_compression_telemetry or {}).get("failure_class") == "insufficient_messages"
+
+    with patch.object(compressor, "_summarize_window", return_value="SUMMARY of listing"):
+        forced = compressor.compress(list(messages), current_tokens=90_000, force=True)
+    assert forced != messages
+    assert any("SUMMARY of listing" in str(m.get("content", "")) for m in forced)
+    assert (compressor._last_compression_telemetry or {}).get("failure_class") != "insufficient_messages"
+
+
 def test_no_compressible_window_backs_off_without_strike():
     """Transcript inside the tail budget -> backoff, breaker untouched."""
     compressor = _compressor()

@@ -481,3 +481,15 @@ def test_a_comfortable_start_is_not_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
         runtime.start()
     assert not [m for m in (r.getMessage() for r in caplog.records) if "available" in m]
+
+
+def test_published_env_ignores_marker_from_different_backend(monkeypatch):
+    marker = {"backend": "DockerEnvironment", "container": "old"}
+    env = object()
+    from tools.bot_desktop import sandbox_host
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda create=False: env)
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda value: {"backend": "LocalEnvironment"})
+    monkeypatch.setattr(sandbox_host, "published_env", lambda *_args: pytest.fail("stale marker used"))
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
+    assert runtime.published_env() == {}

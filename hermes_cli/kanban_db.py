@@ -1976,7 +1976,7 @@ def _synthesize_ended_run(
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
-    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
+    block must wait for an operator: an explicit ``kanban_block`` (#28712, including a typed spawn-exhaustion ``capability`` block), or a
     breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
     protocol-violation budget or a systemic same-error wave. Those trip on a
     policy independent of ``consecutive_failures``, so ``recompute_ready``'s

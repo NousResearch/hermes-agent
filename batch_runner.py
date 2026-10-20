@@ -30,6 +30,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from model_tools import TOOL_TO_TOOLSET_MAP
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 from run_agent import AIAgent
 from toolset_distributions import (
     list_distributions,
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Auto-derived from model_tools so it stays in sync as tools are added. Gives every
 # trajectory a consistent tool_stats schema (Arrow/Parquet for HF datasets) and filters
 # corrupted entries (hallucinated tool names) when combining trajectories.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
+ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys()) | set(BRIDGE_TOOL_NAMES)
 
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 _REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_without_reasoning")

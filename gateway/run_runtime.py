@@ -44,7 +44,7 @@ async def _build_profile_authority(runner, name, home, *, register):
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = getattr(runner._session_db, '_db', runner._session_db)
         if db is None:
-            raise RuntimeError(await asyncio.to_thread(_store_open_failure, home))
+            raise RuntimeError(_store_open_failure(runner, home))
         if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
@@ -58,17 +58,18 @@ async def _build_profile_authority(runner, name, home, *, register):
     return authority
 
 
-def _store_open_failure(home):
-    """Why *home*'s ``state.db`` has no handle: the scoped handle cache answers None for a failed open
-    (and while it backs off), so the park reason named an ownership mismatch over the real cause, a
-    legacy store that crashed its migration on every open (#141467)."""
-    from hermes_state_registry import acquire, release
+def _store_open_failure(runner, home):
+    """Why *home*'s ``state.db`` has no handle: the scoped handle caches answer None for a failed open
+    (and while they back off), so the park reason named an ownership mismatch over the real cause, a
+    legacy store that crashed its migration on every open (#141467). The reason is the exception the
+    failed open recorded; reopening here to learn it could create or migrate the store, and would skip
+    the caches' backoff."""
     path = home / 'state.db'
-    try:
-        release(acquire(path))
-    except Exception as exc:  # any open failure is the reason; the traceback goes to the log
-        logger.warning("Session store %s did not open", path, exc_info=True)
-        return f'{path} did not open: {type(exc).__name__}: {exc}'
+    caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
+              getattr(runner, '_session_db_handle_cache', None))
+    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    if error:
+        return f'{path} did not open: {error}'
     return f'{path} is unavailable (its last open failed; retry pending)'
 
 

@@ -380,6 +380,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
 # `tool.started` is dropped on purpose: _on_tool_start already emits the authoritative tool.start with
 # the stable id and args; an id-less duplicate row makes the desktop live view diverge from history.
 
+def _progress_tool_progress(sid, name, preview, kw):
+    # Live MCP progress on a running tool row: tool chrome, so it follows display.tool_progress.
+    if _tool_progress_enabled(sid):
+        from agent.tool_progress_relay import tool_progress_payload
+        _emit("tool.progress", sid, tool_progress_payload(name, preview, kw))
+
+
 def _progress_output_risk(sid, name, preview, kw):
     # A risk badge on a tool row: tool chrome, so it follows display.tool_progress.
     metadata = kw.get("risk_metadata")
@@ -494,7 +501,8 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
 # emitted at all ("name" / "preview" / None).
 _PROGRESS_HANDLERS = {
-    "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
+    "tool.output_risk": (_progress_output_risk, "name"), "tool.progress": (_progress_tool_progress, "name"),
+    "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),
     # Answer-only drops MoA content (references, progress/phase lines that land in the reasoning
     # disclosure or activity log) but keeps this: a bare state transition both clients use only

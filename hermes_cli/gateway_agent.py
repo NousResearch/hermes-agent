@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 import uuid
+from contextlib import suppress
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import DISCONNECTED, CallStopped, lost_before
@@ -57,14 +58,6 @@ class _CompressorView:
         self.compression_count = 0
         self._config_context_length = None
         self.threshold_tokens = 0
-
-
-class _TodoView:
-    def __init__(self):
-        self.items: list = []
-
-    def read(self):
-        return list(self.items)
 
 
 class _Turn:
@@ -161,26 +154,18 @@ class GatewayAgent:
         self._primary_runtime = None
         self._interrupt_requested = False
         self._active_children: list = []
-        self._api_latency_history: list = []
-        self._api_output_history: list = []
-        self._turn_base_usage_anchor = None
-        self._context_tokens = 0
-        self._turn_calls_base = 0
         self._turn_ask_index = None
-        self._turn_api_calls = None
         self._usage_stale = False
         self._current_task_id = self._current_turn_id = self._current_api_request_id = ""
         self._memory_manager = None
         self._memory_store = None
         self._checkpoint_mgr = None
-        self.session_api_calls = 0
-        self.session_total_tokens = 0
-        self.session_prompt_tokens = self.session_input_tokens = 0
-        self.session_completion_tokens = self.session_output_tokens = 0
-        self.session_cache_read_tokens = self.session_cache_write_tokens = 0
-        self.session_reasoning_tokens = 0
         self.context_compressor = _CompressorView()
-        self._todo_store = _TodoView()
+        self._reset_session_figures()
+        # Main's store type, the one /new, /resume and /branch swap in: a read-only mirror of the gateway's
+        # todo snapshot (``_set_todos``), read by the pet's done-plan beat.
+        from tools.todo_tool import TodoStore
+        self._todo_store = TodoStore()
         self._generation = None
         self._admission = None
         self._turn = None  # a turn a later one replaced stops taking frames
@@ -376,6 +361,12 @@ class GatewayAgent:
         self._session_id = value
         if previous is None or value == previous or not value:
             return
+        # The session left behind keeps its own figures: a later frame of its must not repaint this one.
+        left = self.connection.state(previous)
+        with suppress(ValueError):
+            left.usage_listeners.remove(self.apply_session_usage)
+        with suppress(ValueError):
+            left.request_listeners.remove(self._on_request_withdrawn)
         store = self._session_db
         if store is not None and hasattr(store, "attach"):
             try:
@@ -521,8 +512,27 @@ class GatewayAgent:
     def _invalidate_system_prompt(self, *a, **k):
         return None
 
+    def _reset_session_figures(self):
+        """Zero the per-session figures main's bar, spinner and /usage read (context length stays)."""
+        for attr in _COUNTER_FROM_USAGE:
+            setattr(self, attr, 0)
+        compressor = self.context_compressor
+        compressor.last_prompt_tokens, compressor.last_real_prompt_tokens, compressor.compression_count = 0, None, 0
+        self._context_tokens = self._turn_calls_base = 0
+        self._turn_base_usage_anchor = self._turn_api_calls = None
+        self._api_latency_history, self._api_output_history = [], []
+
     def reset_session_state(self, *a, **k):
-        return None
+        """/new, /resume and /branch, after the ``session_id`` switch: drop the previous session's
+        figures, then show the gateway's for this one (``session.stats``, else its cached
+        ``session.usage``). A brand-new session (no transcript, no usage yet) reads zero until its
+        first turn publishes, without a round trip."""
+        self._reset_session_figures()
+        state = self._state()
+        if not (state.messages or state.usage):
+            return
+        if not self._refresh_stats() and state.usage:
+            self.apply_session_usage(state.usage)
 
     def release_clients(self, *a, **k):
         return None
@@ -970,12 +980,19 @@ class GatewayAgent:
             data = json.loads(result) if isinstance(result, str) else result
         except ValueError:
             return
-        if isinstance(data, dict) and isinstance(data.get("todos"), list):
-            self._todo_store.items = list(data["todos"])
+        if isinstance(data, dict):
+            self._set_todos(data)
 
     def _on_todo(self, payload, stream_callback, starts):
-        if isinstance(payload.get("todos"), list):
-            self._todo_store.items = list(payload["todos"])
+        self._set_todos(payload)
+
+    def _set_todos(self, snapshot):
+        """The gateway's ``{todos, revision}`` into the CLI's ``TodoStore`` (``restore``: no new revision)."""
+        if isinstance(snapshot.get("todos"), list):
+            try:
+                self._todo_store.restore(snapshot["todos"], revision=snapshot.get("revision"))
+            except (ValueError, TypeError) as exc:
+                logger.debug("todo snapshot not mirrored: %s", exc)
 
     def _on_control_update(self, payload, stream_callback, starts):
         if self.control_update_callback is not None:

@@ -464,6 +464,7 @@ export function ChatBar({
     replaceTriggerWithChip,
     setTriggerActive,
     slashFreeTextArgStage,
+    slashFreeTextCommand,
     trigger,
     triggerActive,
     triggerActiveExplicit,
@@ -816,6 +817,7 @@ export function ChatBar({
       // the highlight.
       const accept = acceptsTriggerCompletion({
         activeExplicit: triggerActiveExplicit,
+        freeTextCommand: slashFreeTextCommand,
         freeTextArgStage: slashFreeTextArgStage,
         key: event.key,
         kind: trigger.kind,

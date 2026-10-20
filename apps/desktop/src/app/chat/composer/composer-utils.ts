@@ -166,6 +166,9 @@ export interface TriggerAcceptInput {
   /** The user moved the highlight themselves (arrow keys) rather than
    *  inheriting the list's default first row. */
   activeExplicit: boolean
+  /** The typed slash command accepts arbitrary prose, even before its first
+   * argument character has landed in the editor. */
+  freeTextCommand?: boolean
   /** The trigger is a slash command whose argument is arbitrary prose. */
   freeTextArgStage: boolean
   key: string
@@ -186,6 +189,7 @@ export interface TriggerAcceptInput {
  */
 export function acceptsTriggerCompletion({
   activeExplicit,
+  freeTextCommand,
   freeTextArgStage,
   key,
   kind,
@@ -201,7 +205,7 @@ export function acceptsTriggerCompletion({
 
   // Space is slash-only (an `@` mention takes a literal space) and gated to a
   // non-empty query so a bare `/ ` still types a space.
-  return key === ' ' && kind === '/' && Boolean(query.trim()) && !freeTextArgStage
+  return key === ' ' && kind === '/' && Boolean(query.trim()) && !freeTextArgStage && !freeTextCommand
 }
 
 export interface QueueEditState {

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 @pytest.fixture(autouse=True)
 def _isolate_lane_env(monkeypatch):
     for name in ("BROWSER_MCP_URL", "BROWSER_MCP_API_KEY", "BROWSER_CDP_URL",
-                 "CAMOFOX_URL", "CAMOFOX_API_KEY", "SEKRETO_API_KEY"):
+                 "CAMOFOX_URL", "CAMOFOX_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BROWSER_MCP_URL", "https://api.browser-gw.example")
     monkeypatch.setenv("BROWSER_MCP_API_KEY", "k" * 8)

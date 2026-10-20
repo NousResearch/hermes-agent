@@ -18,7 +18,7 @@ so `browser_camofox.py` keeps its external contract (`success`, `snapshot`,
 
 `browser_navigate` creates a NEW server-side tab per call on this transport.
 The gateway now echoes the created tab id in the navigate payload (``Tab: <id>``
-line, wolverine SEK-MT lineage); the transport records it per hermes task session
+line, gateway tab-echo lineage); the transport records it per hermes task session
 (`_TAB_REGISTRY`) and every verb forwards the recorded `tab_id` explicitly — no
 "most recent tab for the key" implicit targeting, which cross-task interleaves
 could misdeliver. Callers may still pass explicit tab ids, which win over the

@@ -196,24 +196,16 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     override), so a launch-profile turn without it was indistinguishable from no turn at all and
     every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
     (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from agent.runtime_scope import bind_state, scope_for_profile
 
     home = Path(launch_home)
-    home_token = secret_token = terminal_token = None
+    # Own home: secrets unstamped (no foreign-home stamp), terminal policy over the frozen overlay.
+    tokens = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
+                        env_overlay=launch_terminal_env())
     try:
-        home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
-        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
         yield
     finally:
-        if terminal_token is not None:
-            reset_terminal_scope(terminal_token)
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+        tokens.reset()
 
 
 def launch_profile_scope_if_multiplexed():

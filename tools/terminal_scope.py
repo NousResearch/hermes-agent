@@ -50,6 +50,10 @@ def set_terminal_scope(mapping: Optional[dict[str, str]]) -> Token:
 
 
 def reset_terminal_scope(token: Token) -> None:
+    from hermes_scope import ScopeTokens
+    if isinstance(token, ScopeTokens):
+        token.reset()
+        return
     _terminal_scope_var.reset(token)
 
 
@@ -205,7 +209,18 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
 
 def install_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> Token:
-    """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
+    """Build AND install a profile's policy; on failure install the refusal scope. Never raises
+    (except ``ScopeSwitchRefused`` below).
+
+    Legacy setter: new code binds a scope (``agent.runtime_scope.bind_profile_scope``). With a
+    runtime scope bound, a call for another profile moves the whole scope to it; in a hosted
+    scope it raises ``ScopeSwitchRefused``."""
+    from hermes_scope import current_scope
+    if current_scope() is not None:
+        from agent.runtime_scope import legacy_switch
+        switched = legacy_switch(hermes_home)
+        if switched is not None:
+            return switched  # type: ignore[return-value]  # reset_terminal_scope accepts it
     try:
         return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
     except TerminalPolicyUnavailable as exc:

@@ -333,6 +333,10 @@ def execute(frame, channel):
     bind_worker_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
+    # This process serves exactly one turn of one profile: bind it as the runtime scope. The
+    # profile state is this process's own (its environment names the home), so only the slot.
+    from hermes_scope import LOCAL_OWNER, LOCAL_TENANT, TurnScope, set_scope
+    set_scope(TurnScope(LOCAL_TENANT, frame['home'], LOCAL_OWNER, scope['session_id'], scope['execution_id']))
     rpc = WorkerRPC(frame['home'])
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:

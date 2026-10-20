@@ -860,6 +860,23 @@ def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 yield node.lineno
 
 
+# The legacy profile setters. Inside a bound runtime scope they cannot split it (a call for another
+# profile moves the whole scope; hosted scopes refuse), but new code binds a scope instead, so each
+# existing call is migrated when its function is next edited.
+_LEGACY_PROFILE_SETTERS = frozenset({
+    "hermes_constants.set_hermes_home_override",
+    "agent.secret_scope.set_secret_scope",
+    "tools.terminal_scope.set_terminal_scope",
+    "tools.terminal_scope.install_profile_terminal_scope",
+})
+
+
+def legacy_profile_setter(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _call_name(node) in _LEGACY_PROFILE_SETTERS:
+            yield node.lineno
+
+
 CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX001": hardcoded_home,
     "HX002": new_env_var,
@@ -874,4 +891,5 @@ CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {
     "HX011": elif_ladder,
     "HX012": raw_thread,
     "HX013": wall_clock_sleep,
+    "HX014": legacy_profile_setter,
 }

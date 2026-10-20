@@ -208,6 +208,7 @@ class _TurnScopes:
     home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
     secret: Any = None
     terminal: Any = None
+    scope: Any = None  # the runtime scope slot (hermes_scope); released with the home
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -677,6 +678,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     bound = _profile_runtime_scope_tokens(session.get("profile_home"))
     if bound is not None:
         scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
+        scopes.scope = bound.scope
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -1057,6 +1059,9 @@ def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
         logger.debug("post-turn memory trim failed", exc_info=True)
     if st.scopes.home is not None:
         reset_hermes_home_override(st.scopes.home)
+    if st.scopes.scope is not None:
+        from hermes_scope import reset_scope
+        reset_scope(st.scopes.scope)
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.

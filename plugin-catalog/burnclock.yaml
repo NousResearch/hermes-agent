@@ -1,0 +1,23 @@
+name: burnclock
+repo: https://github.com/jersilb/burnclock-hermes
+sha: "491da33f4da7536b389e7d0cac55341a2465220c"
+subdir: burnclock
+title: Burnclock
+description: 'Status-bar chip with the provider balance and runway tracked by the MIT burnclock
+  CLI — `DeepSeek $4.68 · 1.6d`, with a green/amber/red runway dot. Cache-first: every 60 s it
+  runs one local `burnclock badge --json` read (no network, no credentials); the CLI is installed
+  and configured separately and owns provider access. Desktop-only; no agent tools, hooks,
+  middleware or env vars.'
+maintainer: jersilb
+tier: community
+category: desktop
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+platforms: [macos]
+docs_url: https://github.com/jersilb/burnclock-hermes
+image: https://raw.githubusercontent.com/jersilb/burnclock-hermes/491da33f4da7536b389e7d0cac55341a2465220c/docs/chip.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

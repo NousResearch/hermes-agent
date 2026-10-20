@@ -583,10 +583,11 @@ def tool_row_emoji(tool_name: str, args: dict | None = None, default: str = "⚡
     return labels[0].emoji if labels else get_tool_emoji(tool_name, default)
 
 
-def get_tool_verb(tool_name: str) -> str | None:
+def get_tool_verb(tool_name: str, friendly_labels: bool | None = None) -> str | None:
     """Friendly verb for a built-in tool, or None (labels disabled / no curated verb);
     callers compose ``f"{verb}{tool_verb_connector(tool)}{preview}"`` themselves."""
-    return _tool_verb(tool_name) if _friendly_tool_labels else None
+    enabled = _friendly_tool_labels if friendly_labels is None else bool(friendly_labels)
+    return _tool_verb(tool_name) if enabled else None
 
 
 def tool_verb_connector(tool_name: str) -> str:
@@ -599,14 +600,17 @@ def verb_drops_preview(tool_name: str) -> bool:
     return tool_name in _TOOL_VERBS_NO_PREVIEW
 
 
-def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
+def build_status_phrase(
+    tool_name: str, args: dict | None, max_len: int = 49, friendly_labels: bool | None = None,
+) -> str | None:
     """Lowercase "is <verb> <preview>…" phrase following the bot's display name (Slack setStatus).
 
     ``args=None`` gives a verb-only phrase (``display.live_status: verb`` keeps previews out
     of shared channels). None for ``_thinking`` or disabled labels so callers use their
     static default. Default ``max_len`` stays under Slack's ~50-char status truncation.
     """
-    if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
+    enabled = _friendly_tool_labels if friendly_labels is None else bool(friendly_labels)
+    if not tool_name or tool_name == "_thinking" or not enabled:
         return None
     verb = _tool_verb(tool_name)
     phrase = (t("display.status_phrase.verb", verb=f"{verb[0].lower()}{verb[1:]}") if verb

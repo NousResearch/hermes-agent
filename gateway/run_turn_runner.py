@@ -336,7 +336,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if line:
                 self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
         render_notification(present, platform=self._ctx.source.platform,
-                            user_config=self._ctx.user_config, diagnostic=diagnostic)
+                            user_config=self._ctx.user_config, source=self._ctx.source,
+                            diagnostic=diagnostic)
 
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the
@@ -466,9 +467,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
-        # display_config.py / runtime_footer.py).
-        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
+        resolver = getattr(ctx, "resolve_display_setting", None)
+        if callable(resolver):
+            mem_notif = resolver(
+                ctx.user_config, getattr(ctx, "platform_key", ""), "memory_notifications", "on",
+            )
+        else:
+            from gateway.display_config import resolve_source_display_setting
+            platform_key = getattr(getattr(ctx.source, "platform", None), "value", ctx.source.platform)
+            mem_notif = resolve_source_display_setting(
+                ctx.user_config, str(platform_key or ""), ctx.source, "memory_notifications", "on",
+            )
         if isinstance(mem_notif, bool):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"

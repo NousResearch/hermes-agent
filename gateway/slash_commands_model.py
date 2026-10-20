@@ -455,7 +455,7 @@ class GatewayModelCommandsMixin:
             from gateway.run import _platform_config_key
             reply += "\n" + self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global and global_error is None)
+                persist_global=ctx.persist_global and global_error is None, source=source)
         return reply + ("\n" + t("gateway.model.local_next_turn") if live is not None else "")
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
@@ -711,6 +711,7 @@ class GatewayModelCommandsMixin:
 
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
+        source=None,
     ) -> str:
         """Apply a /reasoning argument (typed or picked) and return the reply."""
         from hermes_constants import parse_reasoning_effort
@@ -723,7 +724,13 @@ class GatewayModelCommandsMixin:
             self._show_reasoning = show
             if live is not None:
                 live.show_reasoning = show  # what this local session's viewers stream (config.get show_reasoning)
-            self._save_gateway_config_key(f"display.platforms.{platform_key}.show_reasoning", show)
+            from gateway.run import _load_gateway_config
+            from gateway.slash_commands import GatewaySlashCommandsMixin
+            leaf = GatewaySlashCommandsMixin._display_write_leaf(
+                _load_gateway_config(), platform_key, source, ("show_reasoning",),
+                ("display", "platforms", platform_key, "show_reasoning"),
+            )
+            self._save_gateway_config_key(".".join(leaf), show)
             key = "gateway.reasoning.display_set_on" if show else "gateway.reasoning.display_set_off"
             return t(key, platform=platform_key)
         if value == "reset":
@@ -768,7 +775,8 @@ class GatewayModelCommandsMixin:
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle."""
-        from gateway.run import _platform_config_key
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_source_display_setting
         from hermes_constants import VALID_REASONING_EFFORTS
 
         raw_args = event.get_command_args().strip()
@@ -777,7 +785,11 @@ class GatewayModelCommandsMixin:
         # See #30479.
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
-        self._show_reasoning = self._load_show_reasoning()
+        platform_key = _platform_config_key(event.source.platform)
+        self._show_reasoning = bool(resolve_source_display_setting(
+            _load_gateway_config(), platform_key, event.source, "show_reasoning",
+            self._load_show_reasoning(),
+        ))
         from gateway.session_setting_commands import local_live
         if (_live := local_live(self, event.source)) is not None:
             self._show_reasoning = getattr(_live, "show_reasoning", None) is True
@@ -788,14 +800,14 @@ class GatewayModelCommandsMixin:
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source, session_key=session_key, model=_session_model,
         )
-        platform_key = _platform_config_key(event.source.platform)
         if raw_args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+            return self._apply_reasoning_selection(
+                session_key, platform_key, args, persist_global=persist_global, source=event.source,
+            )
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from agent.reasoning_effort import effort_display_label
-        from gateway.run import _load_gateway_config
         from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
@@ -818,7 +830,7 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            return self._apply_reasoning_selection(session_key, platform_key, value, source=event.source)
 
         picker_sent = await self._try_send_choice_picker(
             event,

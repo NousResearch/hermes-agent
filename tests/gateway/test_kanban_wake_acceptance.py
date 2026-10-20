@@ -193,3 +193,53 @@ async def test_suppressed_ping_has_no_sent_receipt_but_wake_executes(tmp_path, m
             conn.close()
     finally:
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_chat_type_suppression_splits_mixed_diagnostic_and_result_wakes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  chat_types:\n    dm:\n      suppress_warning_notifications: true\n"
+    )
+    runner, adapter, _source, key = setup_route()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="mixed", assignee="worker", session_id=key)
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="42",
+            user_id="42", chat_type="dm", delivery_mode="notify+wake",
+        )
+        assert kb.block_task(conn, tid, reason="worker failure", kind="transient")
+        assert kb.unblock_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary="done successfully")
+    finally:
+        conn.close()
+    work = []
+
+    async def handler(event):
+        work.append(event)
+        return "wake handled"
+
+    adapter.set_message_handler(handler)
+    await adapter.connect()
+    try:
+        deliveries = await asyncio.to_thread(
+            _notifier_collect, runner, kb, notifier_profile=None,
+            gc_due=False, gc_retention_days=30,
+        )
+        for delivery in deliveries:
+            await _KanbanNotification(
+                runner, delivery, platform_cls=Platform, sub_fail_counts={},
+            ).deliver()
+        await drain(adapter)
+
+        assert len(work) == 2
+        diagnostic, result = work
+        assert diagnostic.metadata["notification_category"] == "diagnostic"
+        assert "blocked" in diagnostic.text.lower()
+        assert result.metadata["notification_category"] == "result"
+        assert "done successfully" in result.text
+        assert "blocked" not in result.text.lower()
+    finally:
+        await adapter.disconnect()

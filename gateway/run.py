@@ -836,21 +836,31 @@ def _resolve_progress_thread_id(
     return None
 
 
-def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
-    """Return True when display.platforms.<platform> explicitly sets setting."""
+def _has_platform_display_override(
+    user_config: dict, platform_key: str, setting: str, source: Any = None,
+) -> bool:
+    """Return True when a non-null platform or current-chat-type scope sets *setting*."""
     display = user_config.get("display") if isinstance(user_config, dict) else None
     if not isinstance(display, dict):
         return False
     platforms = display.get("platforms")
-    if not isinstance(platforms, dict):
-        return False
-    platform_cfg = platforms.get(platform_key)
-    return isinstance(platform_cfg, dict) and setting in platform_cfg
+    platform_cfg = platforms.get(platform_key) if isinstance(platforms, dict) else None
+    chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+    platform_types = platform_cfg.get("chat_types") if isinstance(platform_cfg, dict) else None
+    platform_type_cfg = (
+        platform_types.get(chat_type) if chat_type and isinstance(platform_types, dict) else None)
+    global_types = display.get("chat_types")
+    global_type_cfg = global_types.get(chat_type) if chat_type and isinstance(global_types, dict) else None
+    return any(
+        isinstance(scope, dict) and scope.get(setting) is not None
+        for scope in (platform_type_cfg, global_type_cfg, platform_cfg)
+    )
 
 
 def _resolve_gateway_display_bool(
     user_config: dict, platform_key: str, setting: str, *, default: bool = False,
-    platform: Any = None, require_platform_override_for: set[Any] | None = None) -> bool:
+    platform: Any = None, source: Any = None,
+    require_platform_override_for: set[Any] | None = None) -> bool:
     """Resolve a boolean display setting with optional platform-only opt-in.
 
     Scratch-text is too noisy for threaded surfaces (Mattermost): they need an explicit per-platform override.
@@ -859,12 +869,12 @@ def _resolve_gateway_display_bool(
     platform_only = {_gateway_platform_value(c) for c in (require_platform_override_for or set())}
     if (
         current_platform in platform_only
-        and not _has_platform_display_override(user_config, platform_key, setting)):
+        and not _has_platform_display_override(user_config, platform_key, setting, source)):
         return False
 
-    from gateway.display_config import resolve_display_setting
+    from gateway.display_config import resolve_source_display_setting
 
-    value = resolve_display_setting(user_config, platform_key, setting, default)
+    value = resolve_source_display_setting(user_config, platform_key, source, setting, default)
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -1968,8 +1978,7 @@ _AGENT_ENV_BRIDGE = {
 _SESSIONS_ENV_BRIDGE = {"cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
 _DISPLAY_ENV_BRIDGE = {
     "busy_input_mode": "HERMES_GATEWAY_BUSY_INPUT_MODE",
-    "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE",
-    "busy_ack_enabled": "HERMES_GATEWAY_BUSY_ACK_ENABLED"}
+    "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE"}
 
 
 def _bridge_section_to_env(section: Any, mapping: dict[str, str]) -> None:
@@ -2091,10 +2100,6 @@ def _bridge_config_to_env(_cfg: dict) -> None:
     _bridge_section_to_env(_cfg.get("sessions", {}), _SESSIONS_ENV_BRIDGE)
     _display_cfg = _cfg.get("display", {})
     _bridge_section_to_env(_display_cfg, _DISPLAY_ENV_BRIDGE)
-    # Documented service-manager override: env wins when set (other display bridges stay config-first).
-    if (isinstance(_display_cfg, dict) and "busy_steer_ack_enabled" in _display_cfg
-            and "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ):
-        os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(_display_cfg["busy_steer_ack_enabled"])
     _tz_cfg = _cfg.get("timezone", "")
     if _tz_cfg and isinstance(_tz_cfg, str):
         os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
@@ -4259,6 +4264,8 @@ class GatewayRunner(
         resolve_display_setting: Any = None
         progress_mode: Any = None
         progress_grouping: Any = None
+        tool_preview_length: Any = None
+        friendly_tool_labels: Any = None
         _display_surface_mode: Any = None
         tool_progress_enabled: Any = None
         _live_status_mode: Any = None

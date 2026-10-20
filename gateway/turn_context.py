@@ -67,6 +67,9 @@ class TurnContext:
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
+    platform_key: str = ""
+    tool_preview_length: int = 0
+    friendly_tool_labels: bool = True
     mute_notification_reply: bool = False
     voice_turn: bool = False  # a voice-note turn: runs on auxiliary.voice_chat
     enabled_toolsets: Any = None

@@ -3,6 +3,7 @@ import json
 import os
 import time
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
@@ -43,6 +44,62 @@ class TestMattermostDisplayHygiene:
             platform=Platform.MATTERMOST,
             require_platform_override_for={Platform.MATTERMOST},
         ) is True
+
+    def test_mattermost_chat_type_opt_in_can_enable_interim_assistant_messages(self):
+        """A platform-scoped chat-type value is explicit enough for the Mattermost guard."""
+        source = SimpleNamespace(platform=Platform.MATTERMOST, chat_type="thread")
+        user_config = {
+            "display": {
+                "platforms": {
+                    "mattermost": {
+                        "chat_types": {"thread": {"interim_assistant_messages": True}},
+                    },
+                },
+            }
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=True,
+            platform=Platform.MATTERMOST,
+            source=source,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
+
+    def test_mattermost_global_chat_type_override_is_an_explicit_opt_in(self):
+        source = SimpleNamespace(platform=Platform.MATTERMOST, chat_type="thread")
+        user_config = {
+            "display": {
+                "chat_types": {"thread": {"interim_assistant_messages": True}},
+            },
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config, "mattermost", "interim_assistant_messages", default=True,
+            platform=Platform.MATTERMOST, source=source,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
+
+    def test_mattermost_null_chat_type_value_does_not_bypass_guard(self):
+        source = SimpleNamespace(platform=Platform.MATTERMOST, chat_type="thread")
+        user_config = {
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {
+                    "mattermost": {
+                        "chat_types": {"thread": {"interim_assistant_messages": None}},
+                    },
+                },
+            },
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config, "mattermost", "interim_assistant_messages", default=True,
+            platform=Platform.MATTERMOST, source=source,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is False
 
 
     def test_global_thinking_progress_still_applies_to_other_platforms(self):

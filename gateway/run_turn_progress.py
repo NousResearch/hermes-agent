@@ -220,7 +220,7 @@ class GatewayTurnProgressMixin:
                 )
                 render_notification(
                     lambda: self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error"),
-                    platform=ctx.source.platform, user_config=ctx.user_config)
+                    platform=ctx.source.platform, user_config=ctx.user_config, source=ctx.source)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)
 
@@ -234,7 +234,10 @@ class GatewayTurnProgressMixin:
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
-                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
+                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(
+                    tool_name, args if ctx._live_status_mode == "full" else None,
+                    friendly_labels=ctx.friendly_tool_labels,
+                ))
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)
@@ -258,11 +261,9 @@ class GatewayTurnProgressMixin:
         except Exception as err:
             logger.debug("tool-progress onboarding hint failed: %s", err)
 
-    @staticmethod
-    def _preview_cap() -> int:
+    def _preview_cap(self) -> int:
         """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
-        from agent.display import get_tool_preview_max_len
-        pl = get_tool_preview_max_len()
+        pl = int(self._ctx.tool_preview_length or 0)
         return pl if pl > 0 else 40
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
@@ -303,10 +304,10 @@ class GatewayTurnProgressMixin:
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
-                from agent.display import get_tool_preview_max_len, verbose_tool_args_text
+                from agent.display import verbose_tool_args_text
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.
-                args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
+                args_str = verbose_tool_args_text(args, int(ctx.tool_preview_length or 0),
                                                   getattr(adapter, "supports_code_blocks", False))
                 code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:
@@ -323,7 +324,7 @@ class GatewayTurnProgressMixin:
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
         # Friendly labels: human-phrased line for built-in tools ("🔍 Searching the web for ...")
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
-        verb = get_tool_verb(tool_name)
+        verb = get_tool_verb(tool_name, friendly_labels=ctx.friendly_tool_labels)
         if not verb:
             return t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview)
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
@@ -920,7 +921,8 @@ class GatewayTurnProgressMixin:
         render_notification(lambda: self._publish_execution("notification.show", {
             "text": str(notice.text).strip(), "level": notice.level, "kind": notice.kind,
             "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id}),
-            platform=ctx.source.platform, user_config=ctx.user_config, diagnostic=is_diagnostic_notice(notice))
+            platform=ctx.source.platform, user_config=ctx.user_config, source=ctx.source,
+            diagnostic=is_diagnostic_notice(notice))
 
     def _local_notice_clear_callback_sync(self, key) -> None:
         """Recovery -> ``notification.clear`` for local viewers (main's TUI payload)."""
@@ -1004,7 +1006,7 @@ class GatewayTurnProgressMixin:
             if fut is not None and ctx._cleanup_progress:
                 fut.add_done_callback(self._track_future_cleanup_id)
         render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
-                            diagnostic=is_warning_status(event_type, message))
+                            source=ctx.source, diagnostic=is_warning_status(event_type, message))
 
 
 def local_viewer_turn(runner) -> bool:

@@ -1895,7 +1895,30 @@ display:
   # busy_ack_detail and show_reasoning are left unset here on purpose: a value
   # set under display: applies to EVERY messaging platform and replaces its
   # built-in default. To change one platform, set it under
-  # display.platforms.<platform> instead.
+  # display.platforms.<platform>. To change one chat type, use
+  # display.chat_types.<chat_type>; the most-specific form is
+  # display.platforms.<platform>.chat_types.<chat_type>.
+  #
+  # Resolution order (first non-null value wins):
+  #   platform + chat type → global chat type → platform → global → built-in
+  # Supported chat-type names come from the adapter (common values: dm, group,
+  # forum, channel, thread). Example: final-answer-first Telegram groups while
+  # keeping normal Telegram DM behavior:
+  #
+  # platforms:
+  #   telegram:
+  #     chat_types:
+  #       group: &quiet_telegram_group
+  #         tool_progress: off
+  #         streaming: false
+  #         interim_assistant_messages: false
+  #         long_running_notifications: false
+  #         busy_ack_detail: false
+  #         busy_ack_enabled: false
+  #         thinking_progress: false
+  #         show_reasoning: false
+  #       forum: *quiet_telegram_group
+  #       channel: *quiet_telegram_group
   #
   # Per-platform defaults can be quieter than the CLI. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
@@ -1957,6 +1980,10 @@ display:
   # platform default), both stay terse: "Interrupting current task" and
   # "⏳ Working — 12 min, terminal".
   # busy_ack_detail: true
+
+  # Send a short acknowledgement when another message arrives while a gateway
+  # turn is already running. The input is still processed when this is false.
+  # busy_ack_enabled: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)

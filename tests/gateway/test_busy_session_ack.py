@@ -3,6 +3,7 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
+import os
 import time
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -36,12 +37,12 @@ from gateway.platforms.event import MessageEvent, MessageType
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_event(text="hello", chat_id="123", platform_val="telegram"):
+def _make_event(text="hello", chat_id="123", platform_val="telegram", chat_type="private"):
     """Build a minimal MessageEvent."""
     source = SessionSource(
         platform=MagicMock(value=platform_val),
         chat_id=chat_id,
-        chat_type="private",
+        chat_type=chat_type,
         user_id="user1",
     )
     evt = MessageEvent(
@@ -226,6 +227,58 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Steered" in content or "steer" in content.lower()
         assert "Interrupting" not in content
+
+    def test_chat_type_override_beats_global_busy_steer_ack_config(self, monkeypatch):
+        import gateway.run as _gr
+
+        config = {
+            "display": {
+                "busy_steer_ack_enabled": True,
+                "platforms": {
+                    "telegram": {
+                        "chat_types": {"group": {"busy_steer_ack_enabled": False}},
+                    },
+                },
+            },
+        }
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        _gr._bridge_config_to_env(config)
+        assert "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED" not in os.environ
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: config)
+        runner, _sentinel = _make_runner()
+        event = _make_event(chat_type="group")
+
+        assert runner._busy_steer_ack_enabled(event, build_session_key(event.source)) is False
+
+    @pytest.mark.asyncio
+    async def test_chat_type_override_beats_global_busy_ack_config(self, monkeypatch):
+        import gateway.run as _gr
+
+        config = {
+            "display": {
+                "busy_ack_enabled": True,
+                "platforms": {
+                    "telegram": {"chat_types": {"group": {"busy_ack_enabled": False}}},
+                },
+            },
+        }
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+        _gr._bridge_config_to_env(config)
+        assert "HERMES_GATEWAY_BUSY_ACK_ENABLED" not in os.environ
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: config)
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(chat_type="group")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        adapter._send_with_retry.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):

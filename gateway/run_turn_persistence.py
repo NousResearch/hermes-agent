@@ -162,7 +162,7 @@ class GatewayTurnPersistenceMixin:
             _show_reasoning_effective = _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
                 default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
-                require_platform_override_for={Platform.MATTERMOST},
+                source=source, require_platform_override_for={Platform.MATTERMOST},
             )
         except Exception:
             _show_reasoning_effective = (
@@ -180,9 +180,10 @@ class GatewayTurnPersistenceMixin:
             display_reasoning = last_reasoning.strip()
         # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
         try:
-            from gateway.display_config import resolve_display_setting
-            _reasoning_style = resolve_display_setting(
-                _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
+            from gateway.display_config import resolve_source_display_setting
+            _reasoning_style = resolve_source_display_setting(
+                _load_gateway_config(), _platform_config_key(source.platform), source,
+                "reasoning_style", "code",
             )
         except Exception:
             _reasoning_style = "code"
@@ -207,7 +208,8 @@ class GatewayTurnPersistenceMixin:
             from gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(
                 user_config=_load_gateway_config(),
-                platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
+                platform_key=_platform_config_key(source.platform), source=source,
+                model=agent_result.get("model"),
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,

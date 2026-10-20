@@ -798,8 +798,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         # Global master switch first: skips the config.yaml re-read on the default (off) path.
         if not _scfg.globally_enabled:
             return None
-        from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
+        from gateway.display_config import resolve_source_display_setting
+        _plat_streaming = resolve_source_display_setting(
+            _load_gateway_config(), _platform_config_key(source.platform), source, "streaming",
+        )
         if not _scfg.enabled_for(_plat_streaming):
             return None
         try:
@@ -1007,32 +1009,32 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             _platform_config_key,
         )
         from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
+        from gateway.display_config import resolve_source_display_setting, resolve_source_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, source)
         from gateway.session_authorities import active_authority
         user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
+
+        def resolve_display_setting(config, key, setting, fallback=None):
+            return resolve_source_display_setting(config, key, source, setting, fallback)
+
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
             enabled_toolsets = list(policy.current_toolsets(user_config))
         adapter = self._delivery_adapter_for(source)
-        # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
-        for _setter, _setting, _default, _cast in (
-            ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
-            ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
-        ):
-            with suppress(Exception):
-                from agent import display as _agent_display
-                _val = resolve_display_setting(user_config, platform_key, _setting, _default)
-                getattr(_agent_display, _setter)(_cast(_val))
+        # These values stay turn-local: concurrent chats may choose different rendering policies.
+        tool_preview_length = int(
+            resolve_display_setting(user_config, platform_key, "tool_preview_length", 0) or 0)
+        friendly_tool_labels = bool(
+            resolve_display_setting(user_config, platform_key, "friendly_tool_labels", True))
 
         # Resolve the mode and its provenance together: null inherits, tier off is not intent.
         # A raw os.getenv here reads whichever profile's env loaded last under multiplexing
         # (#116898); get_secret resolves through the active profile's scope instead.
-        progress_mode, _tool_progress_explicit = resolve_tool_progress(
-            user_config, platform_key, get_secret("HERMES_TOOL_PROGRESS_MODE"),
+        progress_mode, _tool_progress_explicit = resolve_source_tool_progress(
+            user_config, platform_key, source, get_secret("HERMES_TOOL_PROGRESS_MODE"),
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
@@ -1049,7 +1051,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 platform_only = {_gateway_platform_value(item) for item in require_platform_override_for}
                 if (
                     current_platform in platform_only
-                    and not _has_platform_display_override(user_config, platform_key, setting)
+                    and not _has_platform_display_override(user_config, platform_key, setting, source)
                 ):
                     return "off"
             value = resolve_display_setting(user_config, platform_key, setting, default)
@@ -1111,6 +1113,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
+            tool_preview_length=tool_preview_length, friendly_tool_labels=friendly_tool_labels,
             _display_surface_mode=_display_surface_mode,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
@@ -1124,8 +1127,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
-        "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
+        "progress_grouping", "tool_preview_length", "friendly_tool_labels",
+        "tool_progress_enabled", "log_queue", "resolve_display_setting",
+        "user_config", "platform_key", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
     )
 
@@ -1164,7 +1168,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         )
         turn_runner = TurnRunner(self, turn_ctx)
         turn_ctx.mute_notification_reply = diagnostic_turn_muted(
-            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
+            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config, source)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback

@@ -498,6 +498,37 @@ def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch,
     assert disp.progress_mode == "all"
 
 
+def test_chat_type_preview_and_labels_are_turn_local(monkeypatch, tmp_path):
+    import hermes_yaml as yaml
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+        "display": {
+            "tool_preview_length": 80,
+            "friendly_tool_labels": True,
+            "platforms": {
+                "telegram": {
+                    "chat_types": {
+                        "group": {"tool_preview_length": 7, "friendly_tool_labels": False},
+                    },
+                },
+            },
+        },
+    }), encoding="utf-8")
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    group = SessionSource(platform=Platform.TELEGRAM, chat_id="G1", chat_type="group")
+    dm = SessionSource(platform=Platform.TELEGRAM, chat_id="D1", chat_type="dm")
+
+    group_display = runner._run_agent_display_settings(group)
+    dm_display = runner._run_agent_display_settings(dm)
+
+    assert (group_display.tool_preview_length, group_display.friendly_tool_labels) == (7, False)
+    assert (dm_display.tool_preview_length, dm_display.friendly_tool_labels) == (80, True)
+    assert (group_display.tool_preview_length, group_display.friendly_tool_labels) == (7, False)
+
+
 def test_tool_progress_mode_follows_profile_through_the_real_scoping_seam(monkeypatch, tmp_path):
     """An A -> B -> A profile cycle driven through ``_profile_scope_for_source`` itself (the seam
     ``_run_agent``/``_run_agent_inner`` actually enter for every turn), not a manually pre-installed

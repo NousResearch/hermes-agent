@@ -2419,9 +2419,11 @@ Example footer appended to a Telegram/Discord/Slack reply:
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
 
-### Per-platform progress overrides
+### Per-platform and per-chat-type display overrides
 
-Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:
+Different platforms and chat types have different verbosity needs. Gateway turn-rendering settings
+handled by the display policy can be overridden globally by chat type, by platform, or by platform
+and chat type together. Adapter-owned options remain under that adapter's configuration block:
 
 ```yaml
 display:
@@ -2435,9 +2437,40 @@ display:
       tool_progress: 'off'    # quiet in shared Slack workspace
 ```
 
+The resolution order is:
+
+1. `display.platforms.<platform>.chat_types.<chat_type>.<setting>`
+2. `display.chat_types.<chat_type>.<setting>`
+3. `display.platforms.<platform>.<setting>`
+4. `display.<setting>`
+5. the platform tier and built-in defaults
+
+`null` inherits from the next broader scope. Common chat types are `dm`, `group`, `forum`, `channel`,
+and `thread`; adapters may expose additional types. For example, this keeps Telegram DMs unchanged
+while making groups and forum topics final-answer-first:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      chat_types:
+        group: &quiet_telegram_group
+          tool_progress: 'off'
+          streaming: false
+          interim_assistant_messages: false
+          long_running_notifications: false
+          busy_ack_detail: false
+          busy_ack_enabled: false
+          thinking_progress: false
+          show_reasoning: false
+        forum: *quiet_telegram_group
+```
+
+The same keys can be placed under `display.chat_types.group` to affect group chats on every platform.
+
 From the CLI, use the canonical path — `hermes config set display.platforms.telegram.streaming false`. The shorthand `hermes config set platforms.telegram.streaming false` is accepted too: because per-platform *display* settings (`streaming`, `show_reasoning`, `tool_progress`, …) are only ever read from `display.platforms`, `config set`/`get`/`unset` redirect that shorthand to the canonical key and print a note. Connection keys under the top-level `platforms.<name>` block (`token`, `enabled`, `reply_to_mode`, `extra`) are not redirected. Writing them under the nested prefix (`hermes config set gateway.platforms.telegram.enabled true`) is redirected to the top-level `platforms.telegram.enabled` with a note: the gateway reads both blocks, but the top-level one wins on shared keys, so a nested write would be silently shadowed by an existing top-level value.
 
-Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, plus the name of any plugin platform (e.g. `homeassistant` from the Home Assistant plugin). The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+Platforms and chat types without an override fall back through the order above. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, plus the name of any plugin platform (e.g. `homeassistant` from the Home Assistant plugin). The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 

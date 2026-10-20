@@ -719,8 +719,10 @@ def test_comment_rejects_caller_supplied_author(worker_env):
         conn.close()
 
 
-def test_create_happy_path(worker_env):
+def test_create_happy_path(worker_env, tmp_path):
     from tools import kanban_tools as kt
+    (tmp_path / ".hermes" / "profiles" / "peer").mkdir(parents=True)
+    (tmp_path / ".hermes" / "profiles" / "peer" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     out = kt._handle_create({
         "title": "child task",
         "assignee": "peer",
@@ -756,6 +758,8 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
 
     repo = tmp_path / "repo"
     repo.mkdir()
+    (tmp_path / ".hermes" / "profiles" / "peer").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".hermes" / "profiles" / "peer" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     with pdb.connect_closing() as pconn:
         project_id = pdb.create_project(pconn, name="Ambient", primary_path=str(repo))
     kb.write_board_metadata("default", project_id=project_id)
@@ -877,7 +881,7 @@ def test_worker_lifecycle_through_tools(worker_env):
     # 4. spawn a child task for follow-up
     child_out = json.loads(kt._handle_create({
         "title": "write integration test",
-        "assignee": "qa",
+        "assignee": "default",
         "parents": [worker_env],
     }))
     assert child_out["ok"]
@@ -1118,7 +1122,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "auto-sub gateway",
-        "assignee": "peer",
+        "assignee": "default",
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1152,7 +1156,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "auto-sub tui",
-        "assignee": "peer",
+        "assignee": "default",
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1178,7 +1182,7 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
 
     out = kt._handle_create({
         "title": "no sub cli",
-        "assignee": "peer",
+        "assignee": "default",
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1212,7 +1216,7 @@ def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(mon
 
     out = kt._handle_create({
         "title": "auto-sub tui post-fork",
-        "assignee": "peer",
+        "assignee": "default",
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1284,7 +1288,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "no sub gated",
-        "assignee": "peer",
+        "assignee": "default",
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -1311,7 +1315,7 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 
     out = kt._handle_create({
         "title": "auto-sub tolerates add_notify_sub failure",
-        "assignee": "peer",
+        "assignee": "default",
     })
     d = json.loads(out)
     assert d["ok"] is True, d

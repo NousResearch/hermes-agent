@@ -5,6 +5,7 @@ remote environments transactionally.  Used by SSH, Modal, and Daytona.
 Docker and Singularity use bind mounts (live host FS view) and don't need this.
 """
 
+import errno
 import hashlib
 import logging
 import os
@@ -20,7 +21,12 @@ import time
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows — file locking skipped
+    fcntl = None  # Windows — POSIX flock unavailable
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # POSIX — Windows byte-range locking unavailable
 from pathlib import Path
 from typing import Callable
 
@@ -186,6 +192,36 @@ def _sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# 0.1 s per attempt, so this is a warning every ~30 s of waiting.
+_MSVCRT_LOCK_LOG_EVERY = 300
+
+
+def _lock_with_msvcrt(lock_fd) -> None:
+    """Wait for the Windows byte-range lock the way ``flock(LOCK_EX)`` waits on POSIX.
+
+    ``msvcrt.locking`` has no blocking mode: ``LK_LOCK`` retries internally for about
+    ten seconds and then raises, so a sync-back slower than that fails instead of
+    queueing behind the holder — which is the window the gateway hits. ``LK_NBLCK``
+    returns at once and lets this loop wait as long as POSIX would, with a periodic
+    warning so a stuck holder is visible instead of silent.
+    """
+    lock_fd.seek(0)
+    attempts = 0
+    while True:
+        try:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EACCES:
+                raise
+            attempts += 1
+            if attempts % _MSVCRT_LOCK_LOG_EVERY == 0:
+                logger.warning(
+                    "sync_back: still waiting for the host lock after %ds",
+                    attempts // 10)
+            _sleep(0.1)
 
 
 class FileSyncManager:
@@ -373,21 +409,34 @@ class FileSyncManager:
                     signal.raise_signal(signal.SIGINT)
 
     def _sync_back_locked(self, lock_path: Path) -> None:
-        """Sync-back under file lock (serializes concurrent gateways)."""
-        if fcntl is None:
-            # Windows: no flock — run without serialization
+        """Serialize host writes with flock on POSIX or byte-range locking on Windows."""
+        if fcntl is None and msvcrt is None:
+            logger.warning(
+                "sync_back: no file-locking module available — "
+                "proceeding without serialization"
+            )
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w", encoding="utf-8")
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            self._sync_back_impl()
-        finally:
+        # "a+b", never "w": msvcrt locks a byte range, and truncating would touch a
+        # byte another process may already hold locked.
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_bytes(b"\0")  # msvcrt needs a non-empty range to lock
+        with open(lock_path, "a+b") as lock_fd:
+            if fcntl:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            else:
+                _lock_with_msvcrt(lock_fd)
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            lock_fd.close()
+                self._sync_back_impl()
+            finally:
+                try:
+                    if fcntl:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    else:
+                        lock_fd.seek(0)
+                        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
 
     def _sync_back_impl(self) -> None:
         """Download, diff, and apply remote changes to host."""

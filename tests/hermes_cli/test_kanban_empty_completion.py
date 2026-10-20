@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
@@ -63,7 +64,7 @@ def test_whitespace_stored_result_does_not_count(conn):
 def test_review_approval_exempt(conn):
     tid = kb.create_task(conn, title="review-me", assignee="coder")
     assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
-    assert kb.request_review(conn, tid, summary="please look") is True
+    assert kbr.request_review(conn, tid, summary="please look") is True
     assert kb.get_task(conn, tid).status == "review"
     assert kb.complete_task(conn, tid) is True
     assert kb.get_task(conn, tid).status == "done"

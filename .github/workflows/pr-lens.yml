@@ -1,0 +1,23 @@
+name: PR Lens
+
+on:
+  pull_request:
+
+permissions:
+  contents: write # to publish the rendered SVGs
+  pull-requests: write # to post the comment
+
+concurrency: # one run per pull request; a push supersedes the last
+  group: pr-lens-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the diff is between two commits, so both must be here
+      - uses: coldteadotai/pr-lens/packages/action@v0
+        with:
+          api-key: ${{ secrets.GEMINI_API_KEY }}

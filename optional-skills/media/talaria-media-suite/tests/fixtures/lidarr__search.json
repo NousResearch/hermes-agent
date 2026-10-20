@@ -1,0 +1,11 @@
+[
+ {
+  "albumTitle": "Mock Album",
+  "albumType": "album",
+  "artist": "Mock Artist",
+  "artistName": "Mock Artist",
+  "releaseDate": "2020-05-01T00:00:00Z",
+  "title": "Mock Album",
+  "type": "album"
+ }
+]

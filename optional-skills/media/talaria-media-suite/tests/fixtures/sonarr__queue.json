@@ -1,0 +1,41 @@
+{
+ "page": 1,
+ "pageSize": 10,
+ "records": [
+  {
+   "estimatedCompletionTime": "2026-01-01T00:00:00Z",
+   "id": 1,
+   "size": 1000000000,
+   "sizeleft": 400000000,
+   "status": "downloading",
+   "statusMessages": [],
+   "timeleft": "00:04:00",
+   "title": "Mock Series Alpha S01E01"
+  },
+  {
+   "id": 2,
+   "size": 900000000,
+   "sizeleft": 500000000,
+   "status": "warning",
+   "statusMessages": [
+    {
+     "messages": [
+      "stalled download"
+     ],
+     "title": "warning"
+    }
+   ],
+   "timeleft": "00:05:00",
+   "title": "Mock Series Alpha S01E02"
+  },
+  {
+   "id": 3,
+   "size": 800000000,
+   "sizeleft": 0,
+   "status": "completed",
+   "statusMessages": [],
+   "title": "Mock Series Alpha S01E03"
+  }
+ ],
+ "totalRecords": 2
+}

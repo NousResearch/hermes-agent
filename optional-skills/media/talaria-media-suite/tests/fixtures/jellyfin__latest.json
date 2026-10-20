@@ -1,0 +1,25 @@
+[
+ {
+  "DateCreated": "2026-01-03T00:00:00Z",
+  "Genres": [
+   "Science Fiction"
+  ],
+  "Id": "77ee",
+  "Name": "Mock Movie Alpha",
+  "ProductionYear": 2021,
+  "RunTimeTicks": 73200000000,
+  "Type": "Movie"
+ },
+ {
+  "DateCreated": "2026-01-02T00:00:00Z",
+  "Genres": [
+   "Drama"
+  ],
+  "Id": "77ef",
+  "Name": "Mock Series Alpha S01E03",
+  "ProductionYear": 2020,
+  "RunTimeTicks": 18000000000,
+  "SeriesName": "Mock Series Alpha",
+  "Type": "Episode"
+ }
+]

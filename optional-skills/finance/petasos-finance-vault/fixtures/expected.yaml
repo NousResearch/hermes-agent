@@ -1,0 +1,75 @@
+# Fixture expectations — every fixture must parse to these values (subset match:
+# every key listed must equal the parsed value; extra parsed fields are fine).
+# After fixing a bank's email shape, capture the new email as a fixture here and
+# update its expect block from --probe output, cross-checked against the ledger.
+# ALL bundled fixtures are SYNTHETIC samples shaped like real bank emails
+# (owner decision 14/10: the public repo carries no personal data or samples).
+# Capture YOUR real emails vault-side (_Ledger/fixtures/) — they shadow these.
+
+acb__balance-alert__voucher.txt:
+  expect:
+    kind: ACB
+    acct: "12345678"
+    bal_after: 15000000
+    date: "01/12/2026"
+    amount: 200000
+    dir: OUT
+    content: "VOUCHER EXCHANGE-011226-15:12:53 0113813889"
+
+acb__balance-alert__atm.txt:
+  expect:
+    kind: ACB
+    acct: "12345678"
+    bal_after: 9000000
+    date: "01/12/2026"
+    amount: 5000000
+    dir: OUT
+
+bidv__outbound-transfer.txt:
+  expect:
+    kind: BIDV_XFER
+    datetime: "01/12/2026 17:57:04"
+    ref: EXAMPLE1BIDV2X3Y4Z
+    amount: 3500000
+    beneficiary: NGUYEN VAN EXAMPLE
+    src: "1900123456"
+
+bidv__card-spend.txt:
+  expect:
+    kind: BIDV_CARD
+    card: 4111xx1111
+    amount: 49487
+    ccy: VND
+    datetime: "01/12/2026 10:25:55"
+    merchant: "ExampleMart* STORE-01"
+
+bidv__credit-card-payment__synthetic.txt:
+  synthetic: true
+  expect:
+    kind: BIDV_CCPAY
+    datetime: "14/10/2026 09:30:00"
+    ref: REF12345
+    amount: 2500000
+    card: 4519xx1234
+    src: "9988776655"
+
+hsbc__card-alert__synthetic.txt:
+  synthetic: true
+  expect:
+    kind: HSBC_CC
+    card: X8204
+    amount: 1234
+    ccy: VND
+    merchant: HIGHLANDS COFFEE
+    date: "01/12/2026"
+    debt: 16247640
+
+hsbc__account-change__synthetic.txt:
+  synthetic: true
+  expect:
+    kind: HSBC_ACC
+    acct: 013-123456-001
+    amount: 1234567
+    date: "2026-12-01"
+    avail: 2000000
+    dir: IN

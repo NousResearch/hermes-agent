@@ -1,0 +1,19 @@
+{
+ "page": 1,
+ "records": [
+  {
+   "date": "2026-01-02T00:00:00Z",
+   "eventType": 3,
+   "id": 1,
+   "movie": {
+    "title": "Mock Movie Alpha"
+   },
+   "quality": {
+    "quality": {
+     "name": "BLURAY-1080p"
+    }
+   },
+   "sourceTitle": "Mock.Movie.Alpha.2021"
+  }
+ ]
+}

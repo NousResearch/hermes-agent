@@ -1,0 +1,69 @@
+{
+ "Items": [
+  {
+   "Genres": [
+    "Science Fiction"
+   ],
+   "Id": "88cd",
+   "Name": "Mock Movie Alpha",
+   "ProductionYear": 2021,
+   "RunTimeTicks": 73200000000,
+   "Type": "Movie",
+   "UserData": {
+    "LastPlayedDate": "2026-01-02T09:00:00.0000000Z",
+    "PlayCount": 3,
+    "Played": true
+   }
+  },
+  {
+   "Genres": [
+    "Drama"
+   ],
+   "Id": "89ab",
+   "Name": "Mock Movie Beta",
+   "ProductionYear": 2022,
+   "RunTimeTicks": 66000000000,
+   "Type": "Movie",
+   "UserData": {
+    "LastPlayedDate": "2026-01-05T22:00:00.0000000Z",
+    "PlayCount": 1,
+    "Played": true
+   }
+  },
+  {
+   "Genres": [
+    "Drama"
+   ],
+   "Id": "91ff",
+   "Name": "Mock Series Alpha S01E01",
+   "ProductionYear": 2020,
+   "RunTimeTicks": 18000000000,
+   "SeriesName": "Mock Series Alpha",
+   "Type": "Episode",
+   "UserData": {
+    "LastPlayedDate": "2026-01-01T20:00:00.0000000Z",
+    "PlayCount": 2,
+    "Played": true
+   }
+  },
+  {
+   "Genres": [
+    "Drama",
+    "Thriller"
+   ],
+   "Id": "92cd",
+   "Name": "Mock Series Alpha S01E02",
+   "ProductionYear": 2020,
+   "RunTimeTicks": 18000000000,
+   "SeriesName": "Mock Series Alpha",
+   "Type": "Episode",
+   "UserData": {
+    "LastPlayedDate": "2026-01-01T21:00:00.0000000Z",
+    "PlayCount": 2,
+    "Played": true
+   }
+  }
+ ],
+ "StartIndex": 0,
+ "TotalRecordCount": 4
+}

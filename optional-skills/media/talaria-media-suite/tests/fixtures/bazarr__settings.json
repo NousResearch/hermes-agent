@@ -1,0 +1,13 @@
+{
+ "settings": {
+  "general": {
+   "enabled_languages": [
+    "en",
+    "de"
+   ],
+   "movie_default_enabled": true,
+   "serie_default_enabled": true,
+   "single_language": false
+  }
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "createdAt": "2026-01-01T10:00:00.000Z",
+ "id": 101,
+ "media": {
+  "id": 1,
+  "mediaType": "movie",
+  "status": 3,
+  "title": "Mock Movie Gamma",
+  "tmdbId": 100003
+ },
+ "name": "Mock Movie Gamma",
+ "requestedBy": {
+  "displayName": "Mock User",
+  "email": "mock@users.test",
+  "id": 1
+ },
+ "status": 1,
+ "type": "movie"
+}

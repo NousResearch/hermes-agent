@@ -129,6 +129,7 @@ hermes skills uninstall <skill-name>
 | [**excel-author**](../user-guide/skills/optional/finance/finance-excel-author.md) | Build auditable financial workbooks headless via openpyxl. |
 | [**lbo-model**](../user-guide/skills/optional/finance/finance-lbo-model.md) | Build leveraged buyout workbooks with IRR/MOIC in Excel. |
 | [**merger-model**](../user-guide/skills/optional/finance/finance-merger-model.md) | Build M&A accretion/dilution workbooks in Excel. |
+| [**petasos-finance-vault**](../user-guide/skills/optional/finance/finance-petasos-finance-vault.md) | Run an Obsidian household-finance ledger vault with gates. |
 | [**polymarket**](../user-guide/skills/optional/finance/finance-polymarket.md) | Query Polymarket: markets, prices, orderbooks, history. |
 | [**pptx-author**](../user-guide/skills/optional/finance/finance-pptx-author.md) | Build PowerPoint decks headless with python-pptx. |
 | [**stocks**](../user-guide/skills/optional/finance/finance-stocks.md) | Stock quotes, history, search, compare, crypto via Yahoo. |
@@ -154,6 +155,12 @@ hermes skills uninstall <skill-name>
 | [**fastmcp**](../user-guide/skills/optional/mcp/mcp-fastmcp.md) | Build, test, and deploy Python MCP servers. |
 | [**mcp-oauth-remote-gateway**](../user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) | Manual OAuth for remote MCP servers on headless gateways. |
 | [**mcporter**](../user-guide/skills/optional/mcp/mcp-mcporter.md) | List, auth, and call MCP servers/tools from the terminal. |
+
+## media
+
+| Skill | Description |
+|-------|-------------|
+| [**talaria-media-suite**](../user-guide/skills/optional/media/media-talaria-media-suite.md) | Control a self-hosted *arr media stack from the terminal. |
 
 ## migration
 

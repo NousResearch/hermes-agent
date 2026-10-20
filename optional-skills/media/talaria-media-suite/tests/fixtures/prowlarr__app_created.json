@@ -1,0 +1,7 @@
+{
+ "configContract": "SonarrSettings",
+ "id": 7,
+ "implementation": "Sonarr",
+ "name": "Sonarr",
+ "syncLevel": "fullSync"
+}

@@ -1,0 +1,11 @@
+[
+ {
+  "Id": "92aa",
+  "IndexNumber": 4,
+  "Name": "Mock Episode Four",
+  "ParentIndexNumber": 1,
+  "RunTimeTicks": 18000000000,
+  "SeriesName": "Mock Series Alpha",
+  "Type": "Episode"
+ }
+]

@@ -1,0 +1,14 @@
+[
+ {
+  "HasPassword": true,
+  "Id": "11aa22bb33cc44dd11aa22bb33cc44dd",
+  "LastLoginDate": "2026-01-02T08:00:00.0000000Z",
+  "Name": "MockUserOne"
+ },
+ {
+  "HasPassword": true,
+  "Id": "22bb33cc44dd11aa22bb33cc44dd11aa",
+  "LastLoginDate": "2026-01-01T08:00:00.0000000Z",
+  "Name": "MockUserTwo"
+ }
+]

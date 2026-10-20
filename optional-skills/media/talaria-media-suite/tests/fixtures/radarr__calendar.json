@@ -1,0 +1,12 @@
+[
+ {
+  "digitalRelease": "2026-01-20T00:00:00Z",
+  "title": "Mock Movie Delta",
+  "year": 2026
+ },
+ {
+  "physicalRelease": "2026-01-25T00:00:00Z",
+  "title": "Mock Movie Epsilon",
+  "year": 2026
+ }
+]

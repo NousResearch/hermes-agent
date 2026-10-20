@@ -1,0 +1,16 @@
+{
+ "page": 1,
+ "pageSize": 10,
+ "records": [
+  {
+   "id": 1,
+   "size": 8000000000,
+   "sizeleft": 3000000000,
+   "status": "downloading",
+   "statusMessages": [],
+   "timeleft": "00:10:00",
+   "title": "Mock Movie Alpha"
+  }
+ ],
+ "totalRecords": 1
+}

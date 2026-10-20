@@ -1,0 +1,55 @@
+[
+ {
+  "CollectionType": "movies",
+  "ItemId": "vf-movies",
+  "LibraryOptions": {},
+  "Locations": [
+   "/media-mock/movies"
+  ],
+  "Name": "Mock Movies",
+  "RefreshProgress": 0.0,
+  "RefreshStatus": ""
+ },
+ {
+  "CollectionType": "tvshows",
+  "ItemId": "vf-shows",
+  "LibraryOptions": {},
+  "Locations": [
+   "/media-mock/tv"
+  ],
+  "Name": "Mock Shows",
+  "RefreshProgress": 0.0,
+  "RefreshStatus": ""
+ },
+ {
+  "CollectionType": "music",
+  "ItemId": "vf-music",
+  "LibraryOptions": {},
+  "Locations": [
+   "/media-mock/music"
+  ],
+  "Name": "Mock Music",
+  "RefreshProgress": 0.0,
+  "RefreshStatus": ""
+ },
+ {
+  "CollectionType": "boxsets",
+  "ItemId": "vf-collections",
+  "LibraryOptions": {},
+  "Locations": [],
+  "Name": "Mock Collections",
+  "RefreshProgress": 0.0,
+  "RefreshStatus": ""
+ },
+ {
+  "CollectionType": "tvshows",
+  "ItemId": "vf-unorganized",
+  "LibraryOptions": {},
+  "Locations": [
+   "/media-mock/unorganized"
+  ],
+  "Name": "Mock Unorganized Shows",
+  "RefreshProgress": 0.0,
+  "RefreshStatus": ""
+ }
+]

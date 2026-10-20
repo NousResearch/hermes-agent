@@ -1,0 +1,9 @@
+{
+ "Id": "mock-server-id",
+ "LocalAddress": "http://127.0.0.1:8096",
+ "OperatingSystem": "Linux",
+ "ProductName": "Jellyfin Server",
+ "ServerName": "mock-jf",
+ "StartupWizardCompleted": true,
+ "Version": "10.10.7-mock"
+}

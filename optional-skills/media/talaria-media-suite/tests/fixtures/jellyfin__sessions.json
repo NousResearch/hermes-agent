@@ -1,0 +1,62 @@
+[
+ {
+  "ApplicationVersion": "10.10.7",
+  "Client": "Jellyfin Web",
+  "DeviceName": "Chrome",
+  "DeviceType": "Desktop",
+  "Id": "sess-active-1",
+  "IsActive": true,
+  "LastActivityDate": "2026-01-02T09:00:00.0000000Z",
+  "NowPlayingItem": {
+   "Genres": [
+    "Science Fiction"
+   ],
+   "Id": "88cd",
+   "IndexNumber": null,
+   "Name": "Mock Movie Alpha",
+   "ProductionYear": 2021,
+   "RunTimeTicks": 73200000000,
+   "SeriesName": null,
+   "Type": "Movie"
+  },
+  "PlayState": {
+   "AudioStreamIndex": 1,
+   "IsMuted": false,
+   "IsPaused": false,
+   "PlayMethod": "Transcode",
+   "PositionTicks": 18400000000,
+   "RepeatMode": "RepeatNone",
+   "SubtitleStreamIndex": 2
+  },
+  "TranscodingInfo": {
+   "AudioCodec": "aac",
+   "Bitrate": 8000000,
+   "CompletionPercentage": 24.6,
+   "Container": "mp4",
+   "Height": 1080,
+   "IsAudioDirect": false,
+   "IsVideoDirect": true,
+   "TranscodeReasons": [
+    "ContainerNotSupported"
+   ],
+   "VideoCodec": "hevc",
+   "Width": 1920
+  },
+  "UserId": "11aa22bb33cc44dd11aa22bb33cc44dd",
+  "UserName": "MockUserOne"
+ },
+ {
+  "ApplicationVersion": "0.16-mock",
+  "Client": "Android TV",
+  "DeviceName": "Shield",
+  "DeviceType": "Android",
+  "Id": "sess-idle-1",
+  "IsActive": false,
+  "LastActivityDate": "2026-01-01T20:00:00.0000000Z",
+  "NowPlayingItem": null,
+  "PlayState": null,
+  "TranscodingInfo": null,
+  "UserId": "22bb33cc44dd11aa22bb33cc44dd11aa",
+  "UserName": "MockUserTwo"
+ }
+]

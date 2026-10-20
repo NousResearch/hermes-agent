@@ -1,0 +1,14 @@
+[
+ {
+  "images": [
+   {
+    "coverType": "poster",
+    "url": "http://127.0.0.1/mock.jpg"
+   }
+  ],
+  "overview": "Synthetic fixture movie.",
+  "title": "Mock Movie Alpha",
+  "tmdbId": 100001,
+  "year": 2021
+ }
+]

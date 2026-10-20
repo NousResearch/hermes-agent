@@ -1,0 +1,41 @@
+[
+ {
+  "id": 1,
+  "monitored": true,
+  "statistics": {
+   "episodeCount": 12,
+   "episodeFileCount": 10,
+   "seasonCount": 2,
+   "sizeOnDisk": 50000000000,
+   "totalEpisodeCount": 12
+  },
+  "title": "Mock Series Alpha",
+  "year": 2020
+ },
+ {
+  "id": 2,
+  "monitored": true,
+  "statistics": {
+   "episodeCount": 6,
+   "episodeFileCount": 6,
+   "seasonCount": 1,
+   "sizeOnDisk": 20000000000,
+   "totalEpisodeCount": 6
+  },
+  "title": "Mock Series Beta",
+  "year": 2019
+ },
+ {
+  "id": 3,
+  "monitored": false,
+  "statistics": {
+   "episodeCount": 8,
+   "episodeFileCount": 0,
+   "seasonCount": 1,
+   "sizeOnDisk": 0,
+   "totalEpisodeCount": 8
+  },
+  "title": "Mock Series Gamma",
+  "year": 2018
+ }
+]

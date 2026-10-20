@@ -1,0 +1,13 @@
+{
+ "page": 1,
+ "pageSize": 50,
+ "records": [
+  {
+   "hasFile": false,
+   "monitored": true,
+   "title": "Mock Movie Beta",
+   "year": 2022
+  }
+ ],
+ "totalRecords": 1
+}

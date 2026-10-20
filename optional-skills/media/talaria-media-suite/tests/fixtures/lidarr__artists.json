@@ -1,0 +1,13 @@
+[
+ {
+  "artistName": "Mock Artist",
+  "id": 1,
+  "monitored": true,
+  "statistics": {
+   "albumCount": 3,
+   "sizeOnDisk": 10000000000,
+   "trackCount": 30,
+   "trackFileCount": 25
+  }
+ }
+]

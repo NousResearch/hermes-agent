@@ -1,0 +1,12 @@
+{
+ "indexers": [
+  {
+   "averageResponseTime": 100,
+   "failedQueries": 0,
+   "grabs": 2,
+   "indexerId": 1,
+   "indexerName": "Mock Indexer One",
+   "queries": 10
+  }
+ ]
+}

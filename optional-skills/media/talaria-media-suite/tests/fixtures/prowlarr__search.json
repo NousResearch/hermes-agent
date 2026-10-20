@@ -1,0 +1,14 @@
+[
+ {
+  "indexer": "Mock Indexer One",
+  "protocol": "torrent",
+  "size": 1500000000,
+  "title": "Mock Result Alpha"
+ },
+ {
+  "indexer": "Mock Indexer Two",
+  "protocol": "usenet",
+  "size": 900000000,
+  "title": "Mock Result Beta"
+ }
+]

@@ -1,0 +1,8 @@
+[
+ {
+  "id": 1,
+  "implementation": "Sonarr",
+  "name": "Sonarr",
+  "syncLevel": "fullSync"
+ }
+]

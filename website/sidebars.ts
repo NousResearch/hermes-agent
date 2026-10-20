@@ -451,6 +451,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/finance/finance-excel-author',
                     'user-guide/skills/optional/finance/finance-lbo-model',
                     'user-guide/skills/optional/finance/finance-merger-model',
+                    'user-guide/skills/optional/finance/finance-petasos-finance-vault',
                     'user-guide/skills/optional/finance/finance-polymarket',
                     'user-guide/skills/optional/finance/finance-pptx-author',
                     'user-guide/skills/optional/finance/finance-stocks',
@@ -485,6 +486,15 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mcp/mcp-fastmcp',
                     'user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway',
                     'user-guide/skills/optional/mcp/mcp-mcporter',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'media',
+                  key: 'skills-optional-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/media/media-talaria-media-suite',
                   ],
                 },
                 {

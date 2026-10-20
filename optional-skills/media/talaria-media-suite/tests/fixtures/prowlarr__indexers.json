@@ -1,0 +1,26 @@
+[
+ {
+  "enable": true,
+  "fields": [],
+  "id": 1,
+  "name": "Mock Indexer One",
+  "priority": 25,
+  "protocol": "torrent"
+ },
+ {
+  "enable": true,
+  "fields": [],
+  "id": 2,
+  "name": "Mock Indexer Two",
+  "priority": 50,
+  "protocol": "usenet"
+ },
+ {
+  "enable": false,
+  "fields": [],
+  "id": 3,
+  "name": "Mock Indexer Three",
+  "priority": 25,
+  "protocol": "torrent"
+ }
+]

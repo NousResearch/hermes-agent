@@ -1,0 +1,20 @@
+[
+ {
+  "airDateUtc": "2026-01-09T00:00:00Z",
+  "episodeNumber": 5,
+  "seasonNumber": 1,
+  "series": {
+   "title": "Mock Series Alpha"
+  },
+  "title": "Mock Episode Five"
+ },
+ {
+  "airDateUtc": "2026-01-12T00:00:00Z",
+  "episodeNumber": 6,
+  "seasonNumber": 1,
+  "series": {
+   "title": "Mock Series Alpha"
+  },
+  "title": "Mock Episode Six"
+ }
+]

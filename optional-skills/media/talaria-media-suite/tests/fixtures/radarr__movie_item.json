@@ -1,0 +1,12 @@
+{
+ "hasFile": false,
+ "id": 1,
+ "isAvailable": true,
+ "monitored": true,
+ "qualityProfileId": 1,
+ "rootFolderPath": "/movies-mock",
+ "sizeOnDisk": 0,
+ "title": "Mock Movie Alpha",
+ "tmdbId": 100001,
+ "year": 2021
+}

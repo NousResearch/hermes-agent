@@ -1,0 +1,8 @@
+{
+ "id": 1,
+ "monitored": true,
+ "qualityProfileId": 1,
+ "seasonFolder": true,
+ "title": "Mock Series Alpha",
+ "tvdbId": 123456
+}

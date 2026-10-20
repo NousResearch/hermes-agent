@@ -1,0 +1,50 @@
+{
+ "page": 1,
+ "pageInfo": {
+  "page": 1,
+  "pageSize": 20,
+  "pages": 1,
+  "results": 2
+ },
+ "pageSize": 20,
+ "results": [
+  {
+   "id": 101,
+   "media": {
+    "id": 1,
+    "mediaType": "movie",
+    "status": 3,
+    "title": "Mock Movie Gamma",
+    "tmdbId": 100003
+   },
+   "name": "Mock Movie Gamma",
+   "requestedBy": {
+    "displayName": "Mock User",
+    "email": "mock@users.test",
+    "id": 1
+   },
+   "status": 1,
+   "type": "movie"
+  },
+  {
+   "id": 102,
+   "media": {
+    "id": 2,
+    "mediaType": "tv",
+    "status": 2,
+    "title": "Mock Series Delta",
+    "tvdbId": 234567
+   },
+   "name": "Mock Series Delta",
+   "requestedBy": {
+    "displayName": "Mock User",
+    "email": "mock@users.test",
+    "id": 1
+   },
+   "status": 2,
+   "type": "tv"
+  }
+ ],
+ "totalPages": 1,
+ "totalResults": 2
+}

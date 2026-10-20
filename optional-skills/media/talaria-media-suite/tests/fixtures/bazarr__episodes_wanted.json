@@ -1,0 +1,20 @@
+{
+ "data": [
+  {
+   "episodeTitle": "S01E01",
+   "missing": [],
+   "missingCount": 2,
+   "missing_subtitles": [
+    {
+     "code2": "en",
+     "code3": "eng",
+     "forced": false,
+     "hi": false,
+     "name": "English"
+    }
+   ],
+   "seriesTitle": "Mock Series Alpha"
+  }
+ ],
+ "total": 2
+}

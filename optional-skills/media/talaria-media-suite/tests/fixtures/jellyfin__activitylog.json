@@ -1,0 +1,28 @@
+{
+ "Items": [
+  {
+   "Date": "2026-01-02T09:00:00.0000000Z",
+   "Id": 1,
+   "ItemId": null,
+   "Name": "MockUserOne has played Mock Movie Alpha",
+   "Overview": null,
+   "Severity": "Info",
+   "ShortOverview": null,
+   "Type": "PlaybackStart",
+   "UserId": "11aa22bb33cc44dd11aa22bb33cc44dd"
+  },
+  {
+   "Date": "2026-01-01T21:00:00.0000000Z",
+   "Id": 2,
+   "ItemId": null,
+   "Name": "MockUserTwo has stopped Mock Series Alpha",
+   "Overview": null,
+   "Severity": "Info",
+   "ShortOverview": null,
+   "Type": "PlaybackStop",
+   "UserId": "22bb33cc44dd11aa22bb33cc44dd11aa"
+  }
+ ],
+ "StartIndex": 0,
+ "TotalRecordCount": 2
+}

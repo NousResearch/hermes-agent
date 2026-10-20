@@ -1,0 +1,12 @@
+{
+ "data": [
+  {
+   "action": "synthetic-subtitle-download",
+   "language": "en",
+   "provider": "mockprovider",
+   "seriesTitle": "Mock Series Alpha",
+   "timestamp": "2026-01-01T10:30:00.000000Z",
+   "title": "Mock Series Alpha S01E01"
+  }
+ ]
+}

@@ -1,0 +1,6 @@
+{
+ "Id": "mock-server-id",
+ "OperatingSystem": "Linux",
+ "ServerName": "mock-jf",
+ "Version": "10.10.7-mock"
+}

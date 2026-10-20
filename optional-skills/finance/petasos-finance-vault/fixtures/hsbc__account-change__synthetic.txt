@@ -1,0 +1,2 @@
+Subject: Biến động số dư
+Tài khoản 013-123456-001 của Quý Khách đã phát sinh biến động số dư +1,234,567 VND vào ngày 2026-12-01. Số dư khả dụng hiện tại là 2.000.000 VND

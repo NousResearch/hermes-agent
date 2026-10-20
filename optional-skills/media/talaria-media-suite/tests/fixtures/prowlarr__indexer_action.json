@@ -1,0 +1,11 @@
+{
+ "configContract": "CardigannSettings",
+ "enable": true,
+ "fields": [],
+ "id": 1,
+ "implementation": "Cardigann",
+ "implementationName": "Cardigann",
+ "name": "Mock Indexer One",
+ "priority": 25,
+ "protocol": "torrent"
+}

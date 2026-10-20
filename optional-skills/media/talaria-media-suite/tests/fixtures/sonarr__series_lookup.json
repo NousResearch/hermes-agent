@@ -1,0 +1,16 @@
+[
+ {
+  "overview": "Synthetic fixture series.",
+  "seasons": [
+   {
+    "seasonNumber": 1
+   },
+   {
+    "seasonNumber": 2
+   }
+  ],
+  "title": "Mock Series Alpha",
+  "tvdbId": 123456,
+  "year": 2020
+ }
+]

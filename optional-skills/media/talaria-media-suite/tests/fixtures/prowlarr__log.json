@@ -1,0 +1,19 @@
+{
+ "page": 1,
+ "pageSize": 20,
+ "records": [
+  {
+   "id": 1,
+   "level": "info",
+   "message": "Mock log line one",
+   "time": "2026-01-02T10:00:00Z"
+  },
+  {
+   "id": 2,
+   "level": "warn",
+   "message": "Mock log line two",
+   "time": "2026-01-02T09:00:00Z"
+  }
+ ],
+ "totalRecords": 2
+}

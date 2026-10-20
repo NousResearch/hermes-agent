@@ -1,0 +1,51 @@
+[
+ {
+  "added": "2026-01-01T00:00:00Z",
+  "genres": [
+   "Science Fiction"
+  ],
+  "hasFile": true,
+  "id": 1,
+  "isAvailable": true,
+  "monitored": true,
+  "qualityProfileId": 1,
+  "size": 8000000000,
+  "sizeOnDisk": 8000000000,
+  "studio": "Mock Studio One",
+  "title": "Mock Movie Alpha",
+  "year": 2021
+ },
+ {
+  "added": "2026-01-03T00:00:00Z",
+  "genres": [
+   "Drama",
+   "Thriller"
+  ],
+  "hasFile": false,
+  "id": 2,
+  "isAvailable": false,
+  "monitored": true,
+  "qualityProfileId": 1,
+  "size": 0,
+  "sizeOnDisk": 0,
+  "studio": "Mock Studio Two",
+  "title": "Mock Movie Beta",
+  "year": 2022
+ },
+ {
+  "added": "2026-01-04T00:00:00Z",
+  "genres": [
+   "Drama"
+  ],
+  "hasFile": false,
+  "id": 3,
+  "isAvailable": false,
+  "monitored": false,
+  "qualityProfileId": 1,
+  "size": 0,
+  "sizeOnDisk": 0,
+  "studio": "Mock Studio One",
+  "title": "Mock Movie Gamma",
+  "year": 2020
+ }
+]

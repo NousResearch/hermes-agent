@@ -1,0 +1,7 @@
+{
+ "apiVersion": "v1",
+ "authMethods": [
+  "local"
+ ],
+ "version": "1.0.0-mock"
+}

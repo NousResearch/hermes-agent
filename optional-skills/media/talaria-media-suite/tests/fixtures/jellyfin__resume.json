@@ -1,0 +1,26 @@
+[
+ {
+  "Id": "88cd",
+  "Name": "Mock Movie Alpha",
+  "ProductionYear": 2021,
+  "RunTimeTicks": 73200000000,
+  "Type": "Movie",
+  "UserData": {
+   "PlayCount": 3,
+   "PlaybackPositionTicks": 18400000000,
+   "Played": false
+  }
+ },
+ {
+  "Id": "91ff",
+  "Name": "Mock Series Alpha S01E02",
+  "RunTimeTicks": 18000000000,
+  "SeriesName": "Mock Series Alpha",
+  "Type": "Episode",
+  "UserData": {
+   "PlayCount": 1,
+   "PlaybackPositionTicks": 6000000000,
+   "Played": false
+  }
+ }
+]

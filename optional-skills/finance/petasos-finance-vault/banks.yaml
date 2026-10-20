@@ -1,0 +1,141 @@
+# Petasos bank adapters — maintained HERE, not in Python.
+#
+# One bank per top-level key. Each bank holds:
+#   amount.decimal_separator  how that bank writes decimals (".00" / ",00"); stripped
+#                             before thousands-separators are removed (wrong choice = x100 bug)
+#   formats[]                one entry per alert-email type:
+#     name                    human label (probe/test output)
+#     subject_any[]           any substring here in the email subject selects this format
+#     kind                    transaction kind emitted (feeds pipeline classification)
+#     fields[]                list of regexes; NAMED GROUPS (?P<name>...) become fields
+#     requires[]              fields that must all capture, else the email is "no match"
+#     amounts[]               captured groups to convert to int per the bank's separators
+#     direction               how OUT/IN is derived:
+#       marker: {group, out_contains[], in_contains[]}   e.g. ACB "Ghi nợ"/"Ghi có"
+#       sign_of: <field>                                  e.g. HSBC "+1,234"/"-1,234"
+#     defaults{}              value to emit when an optional field's regex misses
+#
+# After ANY edit:
+#   python3 scripts/bank_adapters.py --test                 # fixtures must stay green
+#   python3 scripts/bank_adapters.py --probe <email.txt>    # paste a real email, see
+#                                                           # per-field match results
+# Fixtures live in fixtures/ (real captured bodies where possible). When a bank
+# changes its email shape: fix the regexes here, capture the new email as a fixture,
+# add expected values to fixtures/expected.yaml, re-run --test.
+#
+# Chain-gate assumption (F-5, t_d2548b02): the ledger chain gate chains every
+# bal_after-bearing row as ONE account (the row schema is frozen without an
+# account field). Today only ACB captures bal_after. Adding a SECOND
+# bal_after-capturing bank here (pure data) would interleave two accounts into
+# that single chain and false-fail gates — resolve with the owner first
+# (schema additive key or account inference).
+
+ACB:
+  name: Asia Commercial Bank
+  amount:
+    decimal_separator: "."          # 1,234,567.00 VND
+  formats:
+    - name: balance alert
+      subject_any: ["bao so du"]
+      kind: ACB
+      fields:
+        - 'tài khoản (?P<acct>\d+) của'
+        - 'Số dư mới[^:]*:\s*(?P<bal_after>[\d,.]+)\s*VND tính đến (?P<date>\d{2}/\d{2}/\d{4})'
+        - 'Giao dịch mới nhất:\s*(?P<dir_marker>Ghi (?:nợ|có))\s*[-+]?(?P<amount>[\d,.]+)\s*VND'
+        - 'Nội dung giao dịch:\s*(?P<content>.+?)\s*\.'
+      requires: [bal_after, amount]
+      amounts: [bal_after, amount]
+      direction:
+        marker:
+          group: dir_marker
+          out_contains: ["nợ"]
+          in_contains: ["có"]
+      defaults:
+        acct: "?"
+        content: ""
+
+BIDV:
+  name: Bank for Investment and Development of Vietnam
+  amount:
+    decimal_separator: "."          # 3,500,000 VND (no decimals in practice)
+  formats:
+    - name: outbound transfer receipt
+      subject_any: ["chuyển tiền ngoài BIDV"]
+      kind: BIDV_XFER
+      fields:
+        # BIDV receipts are HTML tables — tag-stripping yields SPACES, never '|',
+        # so separators must stay optional. Years are 2 or 4 digits.
+        - 'Transaction time: ?\|? ?(?P<datetime>\d{2}/\d{2}/\d{2,4} \d{2}:\d{2}:\d{2})'
+        - 'Reference number: ?\|? ?(?P<ref>\S+)'
+        - 'Transaction amount: ?\|? ?(?P<amount>[\d,]+) VND'
+        - 'Beneficiary name: ?\|? ?(?P<beneficiary>.+?)(?= Số tài khoản|\|)'
+        - 'Debit account: ?\|? ?(?P<src>\d+)'
+      requires: [datetime, amount]
+      amounts: [amount]
+      defaults:
+        ref: "?"
+        src: "?"
+        beneficiary: "?"
+
+    - name: card spend alert
+      subject_any: ["GIAO DỊCH THẺ THÀNH CÔNG"]
+      kind: BIDV_CARD
+      fields:
+        - 'Số thẻ/ Card Number : (?P<card>\S+)'
+        - 'Original amount : (?P<amount>[\d,.]+) (?P<ccy>\w+)'
+        - 'Time : (?P<datetime>\d{2}/\d{2}/\d{2,4} \d{2}:\d{2}:\d{2})'
+        - 'At : (?P<merchant>.+?)(?= Mã giao dịch|\||$)'
+      requires: [amount, datetime]
+      amounts: [amount]
+      defaults:
+        card: "?"
+        merchant: "?"
+
+    - name: credit card payment
+      subject_any: ["thanh toán thẻ tín dụng"]
+      kind: BIDV_CCPAY
+      fields:
+        - 'Transaction time: ?\|? ?(?P<datetime>\d{2}/\d{2}/\d{2,4} \d{2}:\d{2}:\d{2})'
+        - 'Reference number: ?\|? ?(?P<ref>\S+)'
+        - 'Transaction amount: ?\|? ?(?P<amount>[\d,]+) VND'
+        - 'Credit card number: ?\|? ?(?P<card>\S+)'
+        - 'Debit account: ?\|? ?(?P<src>\d+)'
+      requires: [datetime, amount]
+      amounts: [amount]
+      defaults:
+        ref: "?"
+        src: "?"
+        card: "?"
+      # NOTE: no real capture yet — fixture is synthetic; replace with a real email
+      # (probe: python3 scripts/bank_adapters.py --probe <email.txt>) when one arrives.
+
+HSBC:
+  name: HSBC Vietnam
+  amount:
+    decimal_separator: "."          # dot-thousands: 1.234.567 VND
+  formats:
+    - name: credit card alert
+      subject_any: ["Thẻ TD HSBC"]
+      kind: HSBC_CC
+      fields:
+        - 'thẻ tín dụng (?P<card>X\d+) .{0,120}?số tiền (?P<amount>[\d,.]+) (?P<ccy>\w+) tại (?P<merchant>.+?) vào ngày (?P<date>\d{2}/\d{2}/\d{4})'
+        - 'Dư nợ hiện tại là (?P<debt>[\d,.]+) VND'
+      requires: [amount]
+      amounts: [amount, debt]
+      defaults:
+        debt: "?"
+      # NOTE: synthetic fixture — replace with a real capture when an HSBC card email arrives.
+
+    - name: account balance change
+      subject_any: ["Biến động số dư"]
+      kind: HSBC_ACC
+      fields:
+        - 'Tài khoản (?P<acct>\S+) của Quý Khách đã phát sinh biến động số dư (?P<amount>[\-\+.,\d]+) VND vào ngày (?P<date>\d{4}-\d{2}-\d{2})'
+        - 'Số dư khả dụng hiện tại là (?P<avail>[\d,.]+) VND'
+      requires: [amount]
+      amounts: [amount, avail]
+      direction:
+        sign_of: amount              # "+..." = IN, else OUT
+      defaults:
+        avail: "?"
+      # NOTE: synthetic fixture — replace with a real capture when an HSBC account email arrives.

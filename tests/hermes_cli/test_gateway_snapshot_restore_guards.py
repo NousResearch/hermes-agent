@@ -30,6 +30,11 @@ def _restore_error(sid):
     raise OSError("fixture restore refused")
 
 
+def _corrupt_manifest(sid):
+    import json
+    return json.loads("{")  # what a truncated manifest.json raises out of the restore
+
+
 @pytest.mark.parametrize("case, restore, supervisor, expected", [
     ("restored", lambda sid: True, "manual", "Restored state from"),
     ("restore-error", _restore_error, "manual", "fixture restore refused"),
@@ -38,6 +43,7 @@ def _restore_error(sid):
     ("invalid-id", lambda sid: False, "manual", "Snapshot not found: ../outside"),
     ("other-pid-paused", None, "manual", "Gateway refused the snapshot maintenance handoff"),
     ("satellite-unserve-error", None, "manual", "nothing was restored. Park the profile with `hermes -p state"),
+    ("corrupt-manifest", _corrupt_manifest, "manual", "was not fully restored"),
     # A remote gateway's chat restores this host's snapshot offline, as on main, and stays connected.
     ("remote", lambda sid: True, None, "Restart recommended"),
 ])

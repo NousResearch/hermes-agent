@@ -47,7 +47,7 @@ def restore_snapshot_command(cli, parts):
                     local_db.close()
                     cli._session_db = None
             restored = restore_quick_snapshot(snap_id)
-    except (GatewayClientError, OSError) as exc:
+    except (GatewayClientError, OSError, ValueError) as exc:  # ValueError: a corrupt manifest.json
         logger.warning("Snapshot restore failed: %s", exc, exc_info=True)
         return _pr(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}", f"  {exc}")
     if restored:

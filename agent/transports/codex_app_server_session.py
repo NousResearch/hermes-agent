@@ -52,11 +52,32 @@ class TurnResult:
     thread_id: Optional[str] = None
     # Exact turn/start text distinguishes the input echo from a new user event.
     submitted_user_text: Optional[str] = None
+    submitted_user_input: list[dict] = field(default_factory=list)
+    input_echo_id: Optional[str] = None
+    input_echo_started: bool = False
+    input_echo_completed: bool = False
     token_usage_last: Optional[dict[str, Any]] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
     # Codex likely wedged (turn timeout, dead subprocess, token refresh failure): caller respawns next turn.
     should_retire: bool = False
+    # Native quota recovery is allowed only for a typed terminal failure before any activity.
+    terminal_status: Optional[str] = None
+    native_quota_failure: Optional[str] = None
+    native_quota_scope_valid: bool = False
+    api_calls: int = 1
+    saw_item: bool = False
+    saw_server_request: bool = False
+    saw_nonterminal_activity: bool = False
+
+
+# These notifications describe the turn/input or session state; they do not
+# prove that the model has produced output or executed work. Everything else
+# remains replay-unsafe unless it is the exact user-message echo or terminal.
+_SAFE_NONWORK_NOTIFICATIONS = frozenset({
+    "account/rateLimits/updated", "thread/status/changed", "thread/tokenUsage/updated",
+})
+_USER_INPUT_ECHO_METHODS = frozenset({"item/started", "item/completed"})
 
 
 # Some codex versions stream ``<turn_aborted>`` as raw agentMessage text when an
@@ -100,6 +121,89 @@ def _notification_belongs_to_turn(note: dict, *, thread_id: Optional[str], turn_
         expected is not None and seen is not None and str(seen) != str(expected)
         for expected, seen in zip((thread_id, turn_id), observed)
     )
+
+
+def _native_quota_scope_matches(note: dict, *, thread_id: Optional[str], turn_id: Optional[str]) -> bool:
+    """Require native terminal/error evidence to name this exact accepted thread and turn."""
+    if not isinstance(note, dict) or not isinstance(thread_id, str) or not thread_id.strip():
+        return False
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        return False
+    params = note.get("params")
+    if not isinstance(params, dict) or params.get("threadId") != thread_id:
+        return False
+    turn = params.get("turn")
+    turn = turn if isinstance(turn, dict) else {}
+    item = params.get("item")
+    item = item if isinstance(item, dict) else {}
+    method = note.get("method")
+    if method == "turn/completed":
+        if turn.get("id") != turn_id:
+            return False
+    elif method == "error":
+        if params.get("turnId") != turn_id:
+            return False
+    else:
+        return False
+    for source in (params, turn, item):
+        for key in ("threadId", "thread_id"):
+            value = source.get(key)
+            if value is not None and value != thread_id:
+                return False
+        for key in ("turnId", "turn_id"):
+            value = source.get(key)
+            if value is not None and value != turn_id:
+                return False
+    nested_turn_id = turn.get("id")
+    return nested_turn_id is None or nested_turn_id == turn_id
+
+
+def _normalize_user_echo_content(content: Any) -> Optional[list[dict[str, str]]]:
+    """Canonicalize only known native UserInput variants; unknown payloads are not replay-safe."""
+    if not isinstance(content, list):
+        return None
+    normalized: list[dict[str, str]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            return None
+        variant = part.get("type")
+        if variant == "text" and set(part) <= {"type", "text", "text_elements"}:
+            text = part.get("text")
+            elements = part.get("text_elements", [])
+            if not isinstance(text, str) or elements != []:
+                return None
+            normalized.append({"type": "text", "text": text})
+        elif variant == "image" and set(part) <= {"type", "url", "detail"}:
+            url, detail = part.get("url"), part.get("detail")
+            if not isinstance(url, str) or detail is not None:
+                return None
+            normalized.append({"type": "image", "url": url})
+        elif variant == "localImage" and set(part) <= {"type", "path", "detail"}:
+            path, detail = part.get("path"), part.get("detail")
+            if not isinstance(path, str) or detail is not None:
+                return None
+            normalized.append({"type": "localImage", "path": path})
+        else:
+            return None
+    return normalized
+
+
+def _record_user_input_echo(result: TurnResult, method: str, item: dict) -> bool:
+    """Allow only one exact submitted-input item with a matching nonempty started/completed id pair."""
+    item_id = item.get("id")
+    expected = _normalize_user_echo_content(result.submitted_user_input)
+    observed = _normalize_user_echo_content(item.get("content"))
+    if (not isinstance(item_id, str) or not item_id.strip() or expected is None or observed != expected):
+        return False
+    if method == "item/started" and result.input_echo_id is None:
+        result.input_echo_id = item_id
+        result.input_echo_started = True
+        return True
+    if (method == "item/completed" and result.input_echo_started and not result.input_echo_completed
+            and result.input_echo_id == item_id):
+        result.input_echo_completed = True
+        return True
+    return False
 
 
 _TEXT_PART_TYPES = frozenset({"text", "input_text"})
@@ -215,6 +319,7 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        host_auth: Any = None,
         model: Optional[str] = None, model_provider: Optional[str] = None,
         developer_instructions: Optional[str] = None, resume_thread_id: Optional[str] = None,
         history_seed: Optional[str] = None,
@@ -229,7 +334,13 @@ class CodexAppServerSession:
         # custom provider's id in codex's own ``[model_providers.<id>]`` table; only the id travels, codex
         # reads base_url/env_key itself.
         self._model = (model or "").strip() or None
-        self._model_provider = (model_provider or "").strip() or None
+        requested_model_provider = (model_provider or "").strip()
+        if host_auth is not None:
+            if requested_model_provider and requested_model_provider.lower() != "openai":
+                from agent.transports.codex_app_server_host_auth import CodexAppServerHostAuthError
+                raise CodexAppServerHostAuthError()
+            requested_model_provider = "openai"
+        self._model_provider = requested_model_provider or None
         # The tier this thread last received on turn/start; None = codex's own default, never overridden.
         self._service_tier_sent: Any = None
         # Hermes' composed system prompt (SOUL.md, memory, channel overrides). Sent ONCE per thread as
@@ -247,6 +358,7 @@ class CodexAppServerSession:
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
+        self._host_auth = host_auth
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
@@ -262,11 +374,28 @@ class CodexAppServerSession:
         """Spawn, handshake, and ``thread/start`` (or ``thread/resume`` for a stored id); idempotent, returns
         the codex thread id. A failed resume raises :class:`CodexThreadResumeError` once; the next call
         starts a fresh thread on the same handshaken client."""
+        if self._host_auth is not None:
+            self._host_auth.validate_current()
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
-            self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
+            client_options: dict[str, Any] = {"codex_bin": self._codex_bin, "codex_home": self._codex_home}
+            if self._host_auth is not None:
+                client_options["extra_args"] = [
+                    "--config", 'cli_auth_credentials_store="ephemeral"',
+                    "--config", 'model_provider="openai"',
+                ]
+                client_options["env"] = {"OPENAI_API_KEY": None, "OPENAI_BASE_URL": None}
+            self._client = self._client_factory(**client_options)
+            if self._host_auth is None:
+                self._client.initialize(
+                    client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version(),
+                )
+            else:
+                self._host_auth.initialize(
+                    self._client, client_name="hermes", client_title="Hermes Agent",
+                    client_version=_get_hermes_version(),
+                )
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
         # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
@@ -324,6 +453,8 @@ class CodexAppServerSession:
                 self._client.close()
         self._client = None
         self._thread_id = None
+        if self._host_auth is not None:
+            self._host_auth.clear()
 
     def request_interrupt(self) -> None:
         """Idempotent: signal the active turn loop to issue turn/interrupt and unwind."""
@@ -384,7 +515,14 @@ class CodexAppServerSession:
         """ensure_started(); startup failures become a retiring TurnResult.error instead of raw exceptions."""
         try:
             self.ensure_started()
-        except (CodexAppServerError, TimeoutError) as exc:
+        except CodexAppServerError as exc:
+            from agent.transports.codex_app_server_host_auth import CodexAppServerHostAuthError
+            message = str(exc) if isinstance(exc, CodexAppServerHostAuthError) else self._format_error_with_stderr(
+                "codex app-server startup failed", exc,
+            )
+            self._retire(result, message)
+            return False
+        except TimeoutError as exc:
             self._retire(result, self._format_error_with_stderr("codex app-server startup failed", exc))
             return False
         assert self._client is not None and self._thread_id is not None
@@ -428,6 +566,28 @@ class CodexAppServerSession:
 
         Returns (projection, aborted); aborted = agent text carried a terminal ``<turn_aborted>`` marker.
         """
+        method = note.get("method", "") if isinstance(note, dict) else ""
+        params = note.get("params") if isinstance(note, dict) else None
+        params = params if isinstance(params, dict) else {}
+        item = params.get("item")
+        is_user_input_echo = (
+            method in _USER_INPUT_ECHO_METHODS and isinstance(item, dict) and item.get("type") == "userMessage"
+            and _record_user_input_echo(result, method, item)
+        )
+        terminal_quota_error = False
+        if method == "error":
+            from agent.transports.codex_app_server_quota import typed_native_quota_failure
+            quota_failure = typed_native_quota_failure(params.get("error"))
+            terminal_quota_error = (
+                params.get("willRetry") is False and quota_failure is not None
+                and _native_quota_scope_matches(note, thread_id=self._thread_id, turn_id=result.turn_id)
+            )
+        if method.startswith("item/") and not is_user_input_echo:
+            result.saw_item = True
+        safe_metadata = method in _SAFE_NONWORK_NOTIFICATIONS
+        if (method not in {"turn/started", "turn/completed"} and not safe_metadata
+                and not is_user_input_echo and not terminal_quota_error):
+            result.saw_nonterminal_activity = True
         if self._on_event is not None:
             try:
                 self._on_event(note)
@@ -476,6 +636,7 @@ class CodexAppServerSession:
                 result.interrupted = True
             else:
                 input_items, result.submitted_user_text = _build_turn_input(user_input)
+                result.submitted_user_input = input_items
                 params: dict[str, Any] = {"threadId": self._thread_id, "input": input_items}
                 if model:
                     params["model"] = model
@@ -517,6 +678,7 @@ class CodexAppServerSession:
 
         def on_server_request(sreq: dict) -> bool:
             nonlocal last_tool_completion_at
+            result.saw_server_request = True
             # Drain pending notifications first (bounded) so _pending_file_changes is
             # current for the approval decision and display events still reach on_event.
             turn_complete = False
@@ -547,6 +709,14 @@ class CodexAppServerSession:
                 return aborted
             turn_obj = (note.get("params") or {}).get("turn") or {}
             turn_status = turn_obj.get("status")
+            result.terminal_status = turn_status if isinstance(turn_status, str) else None
+            result.interrupted = result.interrupted or turn_status == "interrupted"
+            from agent.transports.codex_app_server_quota import typed_native_quota_failure
+            result.native_quota_failure = typed_native_quota_failure(turn_obj.get("error"))
+            result.native_quota_scope_valid = (
+                result.native_quota_failure is not None
+                and _native_quota_scope_matches(note, thread_id=self._thread_id, turn_id=result.turn_id)
+            )
             if turn_status and turn_status not in {"completed", "interrupted"} and turn_obj.get("error"):
                 err_msg = _format_responses_error(turn_obj["error"], str(turn_status))
                 self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
@@ -707,6 +877,8 @@ class CodexAppServerSession:
         method = req.get("method", "")
         rid = req.get("id")
         params = req.get("params") or {}
+        if self._host_auth is not None and self._host_auth.handle_server_request(client, req):
+            return
         handler = self._SERVER_REQUEST_HANDLERS.get(method)
         if handler is None:
             logger.warning("Unknown codex server request: %s", method)

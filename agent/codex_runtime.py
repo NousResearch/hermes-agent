@@ -152,12 +152,13 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
     the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
     estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
-    agent.session_api_calls += 1
+    api_calls = max(1, int(getattr(turn, "api_calls", 1) or 1))
+    agent.session_api_calls += api_calls
     usage = getattr(turn, "token_usage_last", None)
     compressor = getattr(agent, "context_compressor", None)
 
     def billing(**extra):
-        return dict(model=agent.model, billing_provider=agent.provider, billing_base_url=agent.base_url, api_call_count=1, **extra)
+        return dict(model=agent.model, billing_provider=agent.provider, billing_base_url=agent.base_url, api_call_count=api_calls, **extra)
     if not isinstance(usage, dict) or not usage:
         if compressor is not None and getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage cannot adjudicate the pending compaction; unlatch preflight deferral.
@@ -650,6 +651,11 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     agent._codex_session_model_provider = model_provider
     from agent.codex_runtime_history_seed import render_history_seed
     history_seed = render_history_seed(messages) or None
+    host_auth = None
+    if (getattr(agent, "provider", None) == "openai-codex"
+            and getattr(agent, "_credential_pool", None) is not None):
+        from agent.transports.codex_app_server_host_auth import CodexAppServerHostAuth
+        host_auth = CodexAppServerHostAuth.from_agent(agent)
     # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
     # so omitting it ran codex's own default instead of the selection.
     agent._codex_session = CodexAppServerSession(
@@ -659,7 +665,7 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
         model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
-        resume_thread_id=resume_thread_id, history_seed=history_seed,
+        resume_thread_id=resume_thread_id, history_seed=history_seed, host_auth=host_auth,
     )
 
 
@@ -732,20 +738,34 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression_checkpoint import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent, messages)
+    selected_pool_host_auth = (
+        getattr(agent, "provider", None) == "openai-codex"
+        and getattr(agent, "_credential_pool", None) is not None
+    )
+    replay_policy = {"automatic_replay_prohibited": True} if selected_pool_host_auth else {}
     try:
+        _ensure_codex_session(agent, messages)
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
         turn = agent._codex_session.run_turn(
             user_input=user_message,
             model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
             service_tier=_codex_turn_service_tier(agent))
+        from agent.transports.codex_app_server_quota import recover_codex_app_server_quota
+        turn = recover_codex_app_server_quota(
+            agent, turn,
+            retry_turn=lambda: agent._codex_session.run_turn(
+                user_input=user_message,
+                model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
+                service_tier=_codex_turn_service_tier(agent)),
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)
         return _turn_result(
             _consume_user_interrupt(agent), messages, api_calls=0, completed=False, error=str(exc),
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
+            **replay_policy,
         )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
     # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
@@ -761,10 +781,11 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
+        interrupt, messages, api_calls=getattr(turn, "api_calls", 1),
+        completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
-        **usage_result,
+        **replay_policy, **usage_result,
     )
 
 

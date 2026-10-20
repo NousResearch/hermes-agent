@@ -175,9 +175,12 @@ async def test_oneshot_keeps_its_own_created_source_and_stays_out_of_cli(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch):
+@pytest.mark.parametrize('admission', [None, 'queued', 'unknown'])
+async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch, admission):
     """CLI-31: the insert stamps the surface, so a 0-message launch stub left by a crash or a
-    failed resume is the newest CLI row. Neither ``session.resume latest`` nor ``-c`` picks it."""
+    failed resume is the newest CLI row. Neither ``session.resume latest`` nor ``-c`` picks it.
+    A newer session whose first prompt is admitted (queued, or ``unknown`` after a restart) but
+    not yet written is a conversation, not a stub: both still pick it."""
     store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
     try:
         ids = []
@@ -192,16 +195,22 @@ async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch):
         authority.db.append_message(real, 'user', 'hello')
         with authority.db._lock:
             authority.db._conn.execute("UPDATE sessions SET started_at = started_at + 60 WHERE id = ?", (stub,))
+            if admission:
+                authority.db._conn.execute(
+                    "INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,"
+                    "lineage_json,payload_json,payload_digest,intent,status) "
+                    "VALUES('adm','req','human',?,'[]','{}','d','queue',?)", (stub, admission))
             authority.db._conn.commit()
         authority.sessions.clear()
-
-        resumed = await _call(owner, 'session.resume', latest='cli')
-        assert isinstance(resumed, dict) and resumed['session_id'] == real, resumed
+        expected = stub if admission else real
 
         from hermes_cli.main import _resolve_last_session
         monkeypatch.setattr('hermes_cli.main._resolve_workspace_key', lambda: None)
         monkeypatch.setattr('hermes_cli.main.get_hermes_home', lambda: authority.db.db_path.parent)
-        assert _resolve_last_session('cli') == real
+        assert _resolve_last_session('cli') == expected
+
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == expected, resumed
     finally:
         await owner.close()
         store.close_all_db_handles()

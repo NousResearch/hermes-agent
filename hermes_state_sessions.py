@@ -21,7 +21,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause, emit_session_deleted,
+    _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP
 
@@ -1547,14 +1547,14 @@ class SessionSessionsMixin:
     def search_sessions(
         self, source: str | Sequence[str] | None = None, limit: int = 20, offset: int = 0,
         workspace_key: str | None = None, local_created_sources: Sequence[str] | None = None,
-        min_message_count: int = 0,
+        skip_launch_stubs: bool = False,
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
         ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET, and
-        ``min_message_count`` drops shorter rows (empty launch stubs) before it too."""
-        where_clauses = ["s.message_count >= ?"] if min_message_count > 0 else []
-        params: list = [min_message_count] if min_message_count > 0 else []
+        ``skip_launch_stubs`` drops empty launch stubs (launch_stub_filter_sql) before it too."""
+        where_clauses = [launch_stub_filter_sql(self)] if skip_launch_stubs else []
+        params: list = []
         if source:
             sources = [source] if isinstance(source, str) else list(source)
             clause, bound = _source_match_clause(sources, local_created_sources)

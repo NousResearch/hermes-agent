@@ -1350,6 +1350,21 @@ def backfill_legacy_session_owners(db):
     return stamped
 
 
+def backfill_compression_created_sources(db):
+    """List conversations compressed before write-time stamping under their surface again: a chain
+    root without a created_source takes its nearest stamped continuation's. Idempotent and never
+    overwrites a known value, so every start runs it, like the owner backfill above."""
+    import logging
+    try:
+        stamped = db.stamp_legacy_compression_chains()
+    except Exception:
+        logging.getLogger(__name__).warning('Compression created_source repair failed for %s', db.db_path, exc_info=True)
+        return 0
+    if stamped:
+        logging.getLogger(__name__).info('Stamped created_source on %d compressed session row(s)', stamped)
+    return stamped
+
+
 async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
@@ -1369,6 +1384,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_unattended_unknown import settle_recovered_unattended
     await asyncio.to_thread(settle_recovered_unattended, db, epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
+    await asyncio.to_thread(backfill_compression_created_sources, db)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
     # authority is published, so the recovery below only reads.

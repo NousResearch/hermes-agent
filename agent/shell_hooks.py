@@ -86,8 +86,11 @@ def _utc_now_iso() -> str:
 
 def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Common stdin/POST payload fields (shared with outbound webhooks); key order is wire order."""
+    from agent.runtime_cwd import resolve_context_cwd
+
     try:
-        cwd = str(Path.cwd())
+        configured_cwd = resolve_context_cwd()
+        cwd = str(configured_cwd if configured_cwd is not None else Path.cwd())
     except OSError:
         cwd = ""
     from hermes_cli.profiles import get_active_profile_name

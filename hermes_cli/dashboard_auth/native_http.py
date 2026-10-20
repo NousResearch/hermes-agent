@@ -82,10 +82,11 @@ async def _check_profile_scope(request, profile_id):
             raise PermissionError('profile_scope_mismatch')
     elif path.startswith('/api/profiles/'):
         suffix = path.removeprefix('/api/profiles/')
+        collection = profile_collection_route(path, request.method)
         aggregate_selector = {
             'sessions': 'profile', 'sessions/sidebar': 'recents_profile',
             'projects/tree': 'profile', 'sessions/pull-requests': 'profile',
-        }.get(suffix)
+        }.get(collection)
         if aggregate_selector:
             values = request.query_params.getlist(aggregate_selector)
             if not values:
@@ -93,32 +94,94 @@ async def _check_profile_scope(request, profile_id):
             for value in values:
                 # These routes interpret absent/all differently from /api/config.
                 _own_profile(value, profile_id, current=False)
-        elif suffix == 'active' and request.method == 'GET':
+        elif collection == 'active' and request.method == 'GET':
             return  # Discovery of sticky defaults does not switch this daemon.
-        elif suffix in {'active', 'import'}:
+        elif collection in {'active', 'import'}:
             raise PermissionError('profile_scope_mismatch')
         else:
             _own_profile(suffix.split('/', 1)[0], profile_id, current=False)
             if request.method in {'PATCH', 'DELETE'}:
-                # Moving/deleting the reserved home is not an in-place operation.
+                # Moving/deleting a home is a registry operation, not a profile REST write: it
+                # rides the dedicated ``native-profile-registry`` grant (_check_registry_scope).
                 raise PermissionError('profile_scope_mismatch')
 
 
+# ``/api/profiles/<suffix>`` collection routes, by method (hermes_cli/web_routers/profiles.py). Every
+# other method on these paths is the per-profile ``/api/profiles/{name}`` route of a profile NAMED
+# ``active``/``import``/``sessions``/…: valid profile names (PROFILE_ID_RE, not reserved).
+# Desktop mirror: apps/desktop/electron/profile-routes.ts.
+PROFILE_COLLECTION_ROUTES = {
+    'active': frozenset({'GET', 'POST'}), 'import': frozenset({'POST'}),
+    'projects/tree': frozenset({'GET'}), 'sessions': frozenset({'GET'}),
+    'sessions/pull-requests': frozenset({'POST'}), 'sessions/sidebar': frozenset({'GET'}),
+}
+
+
+def profile_collection_route(path, method):
+    """The collection suffix ``method path`` serves, or None when the path names a profile."""
+    suffix = path.rstrip('/').removeprefix('/api/profiles/')
+    if suffix == path.rstrip('/'):
+        return None
+    return suffix if method.upper() in PROFILE_COLLECTION_ROUTES.get(suffix, ()) else None
+
+
+def _registry_target(request):
+    """The profile a ``PATCH``/``DELETE /api/profiles/<name>`` names, or None for any other route."""
+    if request.method not in {'PATCH', 'DELETE'}:
+        return None
+    suffix = request.url.path.rstrip('/').removeprefix('/api/profiles/')
+    if suffix == request.url.path.rstrip('/') or not suffix or '/' in suffix:
+        return None
+    return suffix
+
+
+def _check_registry_scope(request, profile_id, launch_home):
+    """A registry grant renames or deletes exactly the profile it was minted for (#140345).
+
+    Never the gateway's launch home, which this live process is running in: deleting it or moving
+    its directory pulls the runtime out from under itself. The default root's rename stays allowed,
+    because it only sets a presentation ``display_name`` and never moves the directory.
+    """
+    target = _registry_target(request)
+    for value in request.query_params.getlist('profile'):
+        _own_profile(value, profile_id, current=False)
+    _own_profile(target, profile_id, current=False)
+    if launch_home is None:
+        # Fail closed: with no known launch home the guard below cannot tell it apart.
+        raise PermissionError('profile_scope_mismatch')
+    from hermes_constants import get_default_hermes_root, hermes_home_key
+    # Compared by hermes_home_key, as SessionAuthorities keys homes (symlinks, case, separators).
+    launch = hermes_home_key(launch_home)
+    if hermes_home_key(profile_id) == launch and not (
+            request.method == 'PATCH' and launch == hermes_home_key(get_default_hermes_root())):
+        raise PermissionError('profile_scope_mismatch')
+
+
 def _redeem_http_ticket(store, ticket, request):
+    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     try:
         grant = store.redeem(ticket, profile_id=None, purpose='native-http')
-        expected = frozenset({'http:owner'})
     except PermissionError:
-        # Only this host-management operation accepts the dedicated same-user grant.
+        # Only these host-management operations accept a dedicated same-user grant.
         # Wrong-purpose redemption does not consume a ticket; ordinary profile grants
-        # still reach _check_profile_scope and remain unable to create other profiles.
-        if request.method != 'POST' or request.url.path.rstrip('/') != '/api/profiles':
+        # still reach _check_profile_scope and remain unable to create, move or delete profiles.
+        if request.method == 'POST' and request.url.path.rstrip('/') == '/api/profiles':
+            grant = store.redeem(ticket, profile_id=None, purpose='native-profile-create')
+        elif _registry_target(request) is not None:
+            grant = store.redeem(ticket, profile_id=None, purpose='native-profile-registry')
+        else:
             raise
-        grant = store.redeem(ticket, profile_id=None, purpose='native-profile-create')
-        expected = frozenset({'profiles:create'})
-    if grant['capabilities'] != expected:
+    # The issuer's own purpose -> capability table, not a second copy of it.
+    if grant['capabilities'] != _PURPOSE_CAPABILITIES[grant['purpose']]:
         raise PermissionError('invalid native grant')
     return grant
+
+
+def _launch_home(runner):
+    from gateway.session_authorities import all_authorities
+    registry = getattr(runner, 'session_authorities', None)
+    launch = registry.launch if registry is not None else (all_authorities(runner) or [None])[0]
+    return launch.profile_id if launch is not None else None
 
 
 def _native_store(conn, tickets):
@@ -207,7 +270,9 @@ async def authenticate_native_http(request):
     except PermissionError:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
-        if grant['purpose'] != 'native-profile-create':
+        if grant['purpose'] == 'native-profile-registry':
+            _check_registry_scope(request, grant['profile_id'], _launch_home(runner))
+        elif grant['purpose'] != 'native-profile-create':
             await _check_profile_scope(request, grant['profile_id'])
     except PermissionError:
         return JSONResponse({'detail': 'profile_scope_mismatch'}, status_code=403)

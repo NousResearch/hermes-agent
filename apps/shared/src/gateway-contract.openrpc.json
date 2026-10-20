@@ -5092,6 +5092,18 @@
             "default": null,
             "title": "Update Available"
           },
+          "update_target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Target"
+          },
           "pinned_sha": {
             "anyOf": [
               {
@@ -8483,6 +8495,53 @@
         "title": "CanonicalControlParams",
         "type": "object"
       },
+      "CanonicalCorrectionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "redirected",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "delivered": {
+            "anyOf": [
+              {
+                "const": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivered"
+          }
+        },
+        "required": [
+          "status",
+          "text",
+          "execution_generation",
+          "authority_epoch"
+        ],
+        "title": "CanonicalCorrectionAck",
+        "type": "object"
+      },
       "CanonicalCorrectionParams": {
         "additionalProperties": false,
         "properties": {
@@ -8520,38 +8579,16 @@
         "type": "object"
       },
       "CanonicalCorrectionResult": {
-        "additionalProperties": false,
-        "properties": {
-          "status": {
-            "enum": [
-              "queued",
-              "redirected",
-              "rejected"
-            ],
-            "title": "Status",
-            "type": "string"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalCorrectionAck"
           },
-          "text": {
-            "title": "Text",
-            "type": "string"
-          },
-          "execution_generation": {
-            "title": "Execution Generation",
-            "type": "integer"
-          },
-          "authority_epoch": {
-            "title": "Authority Epoch",
-            "type": "integer"
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
           }
-        },
-        "required": [
-          "status",
-          "text",
-          "execution_generation",
-          "authority_epoch"
         ],
-        "title": "CanonicalCorrectionResult",
-        "type": "object"
+        "description": "``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``\nwhen the busy-time text was a bare stop phrase that ended the LOCAL voice chat.",
+        "title": "CanonicalCorrectionResult"
       },
       "CanonicalCreateParams": {
         "additionalProperties": false,
@@ -9053,6 +9090,18 @@
             ],
             "default": null,
             "title": "Provider"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
           }
         },
         "required": [
@@ -10188,6 +10237,23 @@
             "default": null,
             "title": "Cwd"
           },
+          "edit_approval_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ask",
+                  "workspace_session",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit Approval Policy"
+          },
           "launch_request": {
             "anyOf": [
               {
@@ -10595,6 +10661,28 @@
           },
           "info": {
             "$ref": "#/components/schemas/CanonicalSnapshotInfo"
+          },
+          "pending_connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionRequestPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "todo_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TodoState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10921,6 +11009,23 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "edit_approval_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ask",
+                  "workspace_session",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edit Approval Policy"
           },
           "launch_request": {
             "anyOf": [
@@ -11300,6 +11405,18 @@
         "title": "CanonicalSubmitParams",
         "type": "object"
       },
+      "CanonicalSubmitResult": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AdmissionStatus"
+          },
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
+          }
+        ],
+        "description": "``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``.",
+        "title": "CanonicalSubmitResult"
+      },
       "CanonicalTurnAuthor": {
         "additionalProperties": false,
         "properties": {
@@ -11346,6 +11463,22 @@
           }
         },
         "title": "CanonicalTurnAuthor",
+        "type": "object"
+      },
+      "CanonicalVoiceStopped": {
+        "additionalProperties": false,
+        "description": "A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was\nadmitted (TUI-26).",
+        "properties": {
+          "voice_stopped": {
+            "const": true,
+            "title": "Voice Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "voice_stopped"
+        ],
+        "title": "CanonicalVoiceStopped",
         "type": "object"
       },
       "CapabilityEntry": {
@@ -19103,6 +19236,21 @@
           "max_log_limit": {
             "title": "Max Log Limit",
             "type": "integer"
+          },
+          "seatable_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seatable Profiles"
           }
         },
         "required": [
@@ -27222,6 +27370,46 @@
         "title": "PluginLiveSkill",
         "type": "object"
       },
+      "PluginScanFinding": {
+        "additionalProperties": false,
+        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "properties": {
+          "pattern_id": {
+            "title": "Pattern Id",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern_id",
+          "severity",
+          "category",
+          "file",
+          "line",
+          "description"
+        ],
+        "title": "PluginScanFinding",
+        "type": "object"
+      },
       "PluginServerRow": {
         "additionalProperties": false,
         "properties": {
@@ -27458,7 +27646,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -27618,7 +27806,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities`` \u2014 or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /\n``scan_findings`` (retry a caution verdict with ``force``); ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -27905,6 +28093,45 @@
             ],
             "default": null,
             "title": "Delta Lines"
+          },
+          "scan_blocked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scan Blocked"
+          },
+          "scan_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scan Verdict"
+          },
+          "scan_findings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginScanFinding"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scan Findings"
           },
           "error": {
             "anyOf": [
@@ -31969,6 +32196,30 @@
             ],
             "default": null,
             "title": "Turn Isolation"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "forwarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Forwarded"
           }
         },
         "title": "PromptSubmitResult",
@@ -34554,6 +34805,18 @@
             "title": "Session Key",
             "type": "string"
           },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
           "started_at": {
             "title": "Started At",
             "type": "number"
@@ -36440,6 +36703,18 @@
             ],
             "default": null,
             "title": "Last Seen"
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
           }
         },
         "required": [
@@ -36551,6 +36826,68 @@
           "max_bytes_process"
         ],
         "title": "SessionEventsStatsResult",
+        "type": "object"
+      },
+      "SessionExportParams": {
+        "additionalProperties": false,
+        "description": "``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "format": {
+            "default": "json",
+            "title": "Format",
+            "type": "string"
+          },
+          "redact": {
+            "default": false,
+            "title": "Redact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionExportParams",
+        "type": "object"
+      },
+      "SessionExportResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default\nfile name. The client writes it (the gateway may be remote); nothing is written on the host.",
+        "properties": {
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "filename",
+          "content"
+        ],
+        "title": "SessionExportResult",
         "type": "object"
       },
       "SessionForeignIdParams": {
@@ -37326,7 +37663,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project.",
+        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -43487,6 +43824,67 @@
         "title": "ToolOutputRiskPayload",
         "type": "object"
       },
+      "ToolProgressPayload": {
+        "additionalProperties": false,
+        "description": "``agent.tool_progress_relay.tool_progress_payload`` \u2014 an MCP server's\n``notifications/progress`` for a running call, throttled to one per 500 ms per call.",
+        "properties": {
+          "tool_id": {
+            "title": "Tool Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "number"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Percent"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          }
+        },
+        "required": [
+          "tool_id",
+          "name",
+          "progress"
+        ],
+        "title": "ToolProgressPayload",
+        "type": "object"
+      },
       "ToolShowRow": {
         "additionalProperties": false,
         "properties": {
@@ -47323,7 +47721,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/AdmissionStatus"
+          "$ref": "#/components/schemas/CanonicalSubmitResult"
         }
       }
     },
@@ -47436,6 +47834,24 @@
       }
     },
     {
+      "name": "session.export",
+      "summary": "The /save transcript rendered for the client to write (the gateway writes nothing).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionExportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionExportResult"
+        }
+      }
+    },
+    {
       "name": "session.info",
       "summary": "Frozen launch policy projection of one local session.",
       "params": [
@@ -47491,7 +47907,7 @@
     },
     {
       "name": "session.mutate",
-      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import).",
+      "summary": "Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).",
       "params": [
         {
           "name": "params",
@@ -48833,6 +49249,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolOutputRiskPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tool.progress",
+      "summary": "Live progress of a running tool call (MCP notifications/progress).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ToolProgressPayload"
           }
         }
       ]

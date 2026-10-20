@@ -117,7 +117,8 @@ def test_local_session_settings_run_the_messaging_handlers_and_read_back_through
     out, home, config = _run(tmp_path, steps)
     saved = _yaml(home)
     # /reasoning: a session level is this session's next turn, config.yaml untouched; --global saves
-    # AND applies to this session (which never re-reads config.yaml); reset falls back to its policy.
+    # AND applies to this session (which never re-reads config.yaml); reset gives the level back to the
+    # profile (config.yaml, now low), as its reply says and a resume would re-read it.
     assert 'medium' in out['reasoning'] and 'Scope' in out['reasoning'], out['reasoning']
     assert 'session only' in out['reasoning high'] and out['get high']['value'] == 'high', out
     assert out['get show']['value'] == '1' and 'Display:** on' in out['reasoning status'], out
@@ -127,7 +128,7 @@ def test_local_session_settings_run_the_messaging_handlers_and_read_back_through
     assert out['turn low'].get('reasoning_effort') == 'low', out['turn low']
     assert 'saved to config' in out['reasoning --global low'] and out['get low']['value'] == 'low', out
     assert saved['agent']['reasoning_effort'] == 'low'
-    assert out['get reset']['value'] == 'medium', out['get reset']
+    assert out['get reset']['value'] == 'low', out['get reset']
     # /busy: saved like the messaging handler and applied to this session.
     assert '`queue`' in out['busy queue'] and out['get busy']['value'] == 'queue', out
     assert '`queue`' in out['busy'] and saved['display']['busy_input_mode'] == 'queue', out['busy']
@@ -140,7 +141,8 @@ def test_local_session_settings_run_the_messaging_handlers_and_read_back_through
     assert 'OFF' in out['yolo off'] and out['get yolo off']['value'] == '0', out
     # /footer: `status` reports without toggling (the handler parsed its argument from a missing field).
     assert 'OFF' in out['footer status'] and 'ON' in out['footer on'] and 'ON' in out['footer status 2'], out
-    assert saved['display']['runtime_footer']['enabled'] is True
+    # The per-platform key (T7): every local surface reads display.platforms.cli.
+    assert saved['display']['platforms']['cli']['runtime_footer']['enabled'] is True
     # /voice: the LOCAL chat's voice state (playback stays in the client).
     assert 'On' in out['voice status'] and out['voice off'], out
     # /approvals and /personality: profile settings, saved to config.yaml as on every surface.

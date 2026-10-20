@@ -864,16 +864,19 @@ def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False
 #              the signature and all previous messages"; Bedrock ignores older turns server-side for free).
 #   strip    — DeepSeek-R1 (AWS's multi-turn sample removes reasoningContent) and Kimi K3 (Converse raises
 #              InternalServerException "when reasoning content from earlier turns is included"): prior turns
-#              lose reasoning, the in-flight loop replays the model's own blocks as captured. Also OpenAI's
-#              reasoning GPTs (gpt-6 family): they reject readable reasoningText in assistant history too
-#              ("This model doesn't support the reasoningContent.reasoningText.text field").
+#              lose reasoning, the in-flight loop replays the model's own blocks as captured.
+#   issuer   — OpenAI's reasoning GPTs (gpt-6 family) reject readable reasoningText in assistant history ("This
+#              model doesn't support the reasoningContent.reasoningText.text field") and stall on another GPT's
+#              sealed blobs: only turns the answering model stamped keep reasoning, verbatim so the replayed
+#              prefix stays stable; every other turn replays none, in the in-flight loop too.
 #   unsigned — every other model: prior turns carry readable reasoningText only, since their signatures and
 #              redacted blobs may be another model's (a /model switch from Claude) and non-Claude models
 #              reject them ("This model doesn't support the reasoningContent.reasoningText.signature field");
 #              the in-flight loop was produced by the model now answering and replays as captured.
 # A turn stamped by another model (CONVERSE_ISSUER_TYPE) never gets the in-flight verbatim replay: a fallback or
 # switch mid-loop hands the loop to a model that cannot open the previous one's sealed blobs (_reasoning_filter).
-_CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3", "openai.gpt-6")
+_CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3")
+_CONVERSE_REPLAY_ISSUER_PATTERNS = ("openai.gpt-6",)  # not gpt-oss: it takes readable reasoningText
 
 
 # reasoning_details record naming the model that minted a turn's Converse reasoning: its signatures are that
@@ -896,6 +899,8 @@ def _converse_replay_policy(model: Optional[str]) -> str:
     lowered = model.lower()
     if "claude" in lowered:
         return "signed"
+    if any(p in lowered for p in _CONVERSE_REPLAY_ISSUER_PATTERNS):
+        return "issuer"
     return "strip" if any(p in lowered for p in _CONVERSE_REPLAY_STRIP_PATTERNS) else "unsigned"
 
 
@@ -919,6 +924,7 @@ _REASONING_FILTERS = {  # policy -> (before the in-flight tool loop, inside it)
     "signed": (_verbatim, _verbatim),
     "strip": (_without_reasoning, _verbatim),
     "unsigned": (_unsigned_reasoning, _verbatim),
+    "issuer": (_without_reasoning, _without_reasoning),
 }
 
 
@@ -931,11 +937,14 @@ def _reasoning_filter(policy: str, issuer: Optional[str], own: bool, *, in_loop:
     model (fallback or ``/model`` switch, including mid tool loop) loses the in-flight loop's verbatim replay:
     sealed ``redactedContent`` opens only for its issuer, and Claude rejects another family's blobs outright
     (``Invalid `data` in `redacted_thinking` block``), so a non-Claude turn replays no reasoning to Claude.
-    Unstamped turns (older sessions) keep the policy, and the rejection-driven resend covers them."""
+    Unstamped turns (older sessions) keep the policy, and the rejection-driven resend covers them; under
+    ``issuer`` only the answering model's own stamped turns keep any reasoning."""
     prior, loop = _REASONING_FILTERS[policy]
-    if issuer is not None and not own:
+    if own:
+        return _verbatim if in_loop or policy in ("unsigned", "issuer") else prior
+    if issuer is not None:
         return _without_reasoning if policy == "signed" and _converse_replay_policy(issuer) != "signed" else prior
-    return loop if in_loop or (own and policy == "unsigned") else prior
+    return loop if in_loop else prior
 
 
 def convert_messages_to_converse(

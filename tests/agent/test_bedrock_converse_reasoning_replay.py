@@ -5,7 +5,7 @@ error, so a Claude turn captured in Anthropic shape (``anthropic_content_blocks`
 thinking ahead of its toolUse. AWS docs: Claude needs the signature and all previous messages; DeepSeek-R1's
 sample removes prior reasoning; Kimi K3 raises InternalServerException on prior-turn reasoning; non-Claude
 models reject the ``reasoningText.signature`` field; OpenAI's reasoning GPTs (gpt-6) reject ``reasoningText``
-in assistant history outright.
+in assistant history outright, so they get back only the reasoning they stamped themselves.
 """
 
 from __future__ import annotations
@@ -66,9 +66,6 @@ def _reasoning(blocks):
         ("global.moonshotai.kimi-k3", [], [{"text": "own sig_loop"}]),
         # gpt-oss rejects reasoningText.signature: prior turns go back as readable text only.
         ("openai.gpt-oss-120b-1:0", [{"text": "own sig_prior"}], [{"text": "own sig_loop"}]),
-        # Reasoning GPTs reject readable reasoningText in assistant history outright (#140177): prior
-        # turns lose their reasoning; the in-flight loop still replays the model's own blocks.
-        ("global.openai.gpt-6.1-sol", [], [{"text": "own sig_loop"}]),
     ],
 )
 def test_converse_replays_each_models_reasoning_contract(model, prior, loop):
@@ -171,17 +168,19 @@ def _replayed_reasoning(kwargs):
 
 @pytest.mark.parametrize("reloaded", [False, True])
 @pytest.mark.parametrize("issuer, target, expect", [
-    # The issuing model gets its own sealed blobs back, prior turn and in-flight loop alike.
+    # The issuing model gets its own reasoning back verbatim, prior turn and in-flight loop alike, so the
+    # replayed prefix never changes under it.
     (GPT, GPT, [["reasoningText", "redactedContent"]] * 2),
     # Fallback or switch to Claude, including mid-loop: Claude cannot read another family's reasoning at all.
     (GPT, OPUS, [[], []]),
-    # Another GPT cannot open the blob either (it hangs on it): readable text only, in the loop too.
-    (GPT, "global.openai.gpt-6-sol", [["reasoningText"]] * 2),
+    # Another GPT stalls on the blob and rejects readable reasoningText: nothing, in the loop too.
+    (GPT, "global.openai.gpt-6-sol", [[], []]),
+    # The reverse fallback: GPT rejects Claude's reasoningText in assistant history (#140177).
+    (OPUS, GPT, [[], []]),
 ])
-def test_reasoning_another_model_minted_never_replays_sealed(issuer, target, expect, reloaded):
-    """Invariant: a sealed redactedContent blob reaches only the model that minted it. Coatue field report:
-    a GPT-6.1 session fell back to Opus 5.5 after two read timeouts and every call 400'd on
-    ``Invalid `data` in `redacted_thinking` block`` because GPT's blobs were replayed verbatim."""
+def test_cross_model_replay_drops_reasoning_the_target_cannot_take(issuer, target, expect, reloaded):
+    """Invariant: a sealed redactedContent blob reaches only the model that minted it, and a reasoning GPT
+    replays no reasoning it did not mint (a fallback in either direction otherwise fails every retry)."""
     history = _session(issuer, reloaded=reloaded)
     before = copy.deepcopy(history)
     kwargs = BedrockTransport().build_kwargs(model=target, messages=history)
@@ -197,3 +196,10 @@ def test_claude_minted_reasoning_still_replays_to_claude():
     history = _session("global.anthropic.claude-sonnet-5-5", reloaded=False)
     kwargs = BedrockTransport().build_kwargs(model=OPUS, messages=history)
     assert _replayed_reasoning(kwargs) == [["reasoningText", "redactedContent"]] * 2
+
+
+def test_reasoning_gpt_replays_no_unstamped_reasoning_mid_loop():
+    """The AnthropicBedrock path stamps nothing, so a Claude → GPT fallback inside Claude's tool loop must
+    still drop Claude's thinking from the in-flight turn, not replay it as readable reasoningText."""
+    kwargs = BedrockTransport().build_kwargs(model=GPT, messages=_history())
+    assert "reasoningContent" not in repr(kwargs["messages"])

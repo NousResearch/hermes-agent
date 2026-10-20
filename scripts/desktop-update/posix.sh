@@ -130,6 +130,18 @@ owed_followup_steps() { # $OUT -> the distinct owed steps, space-separated, in p
     | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ *$//'
 }
 
+update_output_tail() { # $OUT -> the updater's last non-empty output lines, one line each
+  # The shim window and the next-boot result dialog are the only surfaces a
+  # user can reach when the update failed; the exit code alone never names
+  # the failing layer (#137327). $OUT is the run's slice of the hand-off log,
+  # which interleaves our own log() lines (a leading ISO timestamp) with the
+  # updater's output — keep only the updater's, strip progress escapes (ANSI,
+  # CR), and bound it: three lines of at most 120 characters each.
+  printf '%s' "$OUT" | tr -d '\r' | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" \
+    | grep -v -e '^[[:space:]]*$' -e '^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}T' | tail -n 3 \
+    | while IFS= read -r _tail_line; do printf '%s\n' "${_tail_line:0:120}"; done
+}
+
 # The marker (contract C1/C2 + the A7 lock): parsing, identity, claim, delegate,
 # release and the Desktop's helper ops live in marker.sh.
 MY_PID=$$ MY_CT=""
@@ -1303,6 +1315,11 @@ elif [ "$CODE" -ne 2 ] && update_committed_after_exit; then
   add_warning "update" "hermes update exited $CODE after the commit point (receipt outcome: $RECEIPT_OUTCOME)"
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # Name the failing layer where the user can see it: the updater's own tail
+  # rides the result file and the shim message (empty output keeps the
+  # original generic copy, byte-identical).
+  FAIL_EXCERPT="$(update_output_tail | tr '\n' ' ' | sed 's/ *$//')"
+  [ -z "$FAIL_EXCERPT" ] || FINAL_MSG="$FINAL_MSG Last output: $FAIL_EXCERPT"
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).

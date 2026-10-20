@@ -120,3 +120,55 @@ class TestHealthyTurnStillRuns:
 
         assert cli._pending_input.empty()
         assert mgr.state.status == "done"
+
+_JUDGE_CONTINUE = ("continue", "needs more steps", False, None, False)
+
+class TestFailedTurnSkipsJudge:
+    """A failed provider turn has no model reply: the newest assistant row is the failed-turn
+    notice (or an earlier turn's reply). Judging it re-queued continuations into the same failure
+    until the turn budget ran out."""
+
+    def _cli_after_failed_turn(self, result):
+        from agent.turn_failure_copy import FAILED_TURN_NOTICE
+        cli, mgr = _make_cli_with_goal(f"sid-failed-{uuid.uuid4().hex}")
+        cli.conversation_history = [
+            {"role": "user", "content": "do cycle 3"},
+            {"role": "assistant", "content": "Cycle 3 done; validate PASS. Next: cycle 4."},
+            {"role": "user", "content": "[Continuing toward your standing goal]"},
+            {"role": "assistant", "content": FAILED_TURN_NOTICE},
+        ]
+        cli._last_turn_result = result
+        return cli, mgr
+
+    @pytest.mark.parametrize("reason", ["billing", "auth", "auth_permanent"])
+    def test_billing_or_auth_failure_pauses_without_judging(self, hermes_home, reason):
+        cli, mgr = self._cli_after_failed_turn(
+            {"failed": True, "completed": False, "failure_reason": reason, "final_response": None})
+        with patch("hermes_cli.goals.judge_goal", return_value=_JUDGE_CONTINUE) as judge:
+            cli._maybe_continue_goal_after_turn()
+        judge.assert_not_called()
+        assert cli._pending_input.empty()
+        assert mgr.state.status == "paused"
+        assert reason in mgr.state.paused_reason
+
+    def test_transient_failure_skips_judge_and_keeps_goal_active(self, hermes_home):
+        cli, mgr = self._cli_after_failed_turn(
+            {"failed": True, "completed": False, "failure_reason": "server_error"})
+        with patch("hermes_cli.goals.judge_goal", return_value=_JUDGE_CONTINUE) as judge:
+            cli._maybe_continue_goal_after_turn()
+        judge.assert_not_called()
+        assert cli._pending_input.empty()
+        assert mgr.state.status == "active"
+        assert mgr.state.turns_used == 0
+
+    def test_max_iterations_handoff_still_reaches_the_judge(self, hermes_home):
+        """#102213: a non-failed max-iterations handoff is a turn boundary, not a failure."""
+        cli, mgr = self._cli_after_failed_turn({
+            "failed": False, "interrupted": False, "completed": False,
+            "turn_exit_reason": "max_iterations_reached(90/90)",
+            "final_response": "Summary of progress so far."})
+        cli.conversation_history.append({"role": "assistant", "content": "Summary of progress so far."})
+        with patch("hermes_cli.goals.judge_goal", return_value=_JUDGE_CONTINUE) as judge:
+            cli._maybe_continue_goal_after_turn()
+        judge.assert_called_once()
+        assert not cli._pending_input.empty()

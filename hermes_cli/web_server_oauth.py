@@ -92,6 +92,25 @@ def _claude_code_only_status() -> dict[str, Any]:
     return dict(_LOGGED_OUT)
 
 
+def _copilot_status() -> dict[str, Any]:
+    """Expose Copilot's runtime token sources on the dashboard's external login card."""
+    from hermes_cli.auth import get_api_key_provider_status, resolve_api_key_provider_credentials
+
+    raw = get_api_key_provider_status("copilot")
+    token_preview = None
+    if raw.get("logged_in"):
+        try:
+            creds = resolve_api_key_provider_credentials("copilot")
+            token_preview = _truncate_token(creds.get("api_key"))
+        except Exception:
+            logging.exception("Copilot token preview unavailable")
+    return {
+        "logged_in": bool(raw.get("logged_in")), "source": "copilot_token",
+        "source_label": raw.get("key_source") or "GitHub token", "token_preview": token_preview,
+        "expires_at": None, "has_refresh_token": False,
+    }
+
+
 def _copilot_acp_status() -> dict[str, Any]:
     """Status for copilot-acp. ``logged_in`` only on positive evidence (env token or known on-disk
     store); the CLI may hold its session in an OS keychain Hermes can't read, so the unverified
@@ -138,8 +157,8 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
 # Hand-tuned OAuth/account cards: the bits not derivable from the unified provider catalog
 # (``flow``, ``status_fn``, ``cli_command``, display order). OVERRIDE BASE for
 # ``_build_oauth_catalog()``, which unions them with every accounts-tab provider so new
-# providers appear automatically. Also carries two non-catalog rows the Accounts tab needs:
-# the Anthropic credential-status card and the synthetic ``claude-code`` row.
+# providers appear automatically. Also carries credential-status cards for Anthropic,
+# Copilot (classified as an API-key provider), and the synthetic ``claude-code`` row.
 # ``flow``: ``device_code`` = show code + URL + poll; ``external`` = delegated to a terminal/CLI.
 _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     # status_fn None → dispatched via auth.get_<provider>_auth_status.
@@ -159,6 +178,8 @@ _OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "xai-oauth", "name": "xAI Grok OAuth (SuperGrok / Premium+)", "flow": "device_code",
      "cli_command": "hermes auth add xai-oauth",
      "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth", "status_fn": None},
+    {"id": "copilot", "name": "GitHub Copilot", "flow": "external", "cli_command": "gh auth login",
+     "docs_url": "https://docs.github.com/en/copilot", "status_fn": _copilot_status},
     # `copilot login` is the non-interactive subcommand; `copilot /login` is not valid
     # (slash-commands only exist inside an interactive session).
     {"id": "copilot-acp", "name": "GitHub Copilot (ACP)", "flow": "external", "cli_command": "copilot login",

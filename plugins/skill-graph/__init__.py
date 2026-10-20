@@ -190,6 +190,7 @@ def _get_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA wal_autocheckpoint=400")
     return conn
 
 
@@ -520,6 +521,16 @@ def _full_rebuild(conn: sqlite3.Connection) -> int:
         _upsert_skill(conn, name, path, now)
     conn.commit()
 
+    # Embeddings are optional on older bundled copies of the plugin.  When the
+    # embedding rebuild hook is present, checkpoint only after it completes.
+    embedding_rebuild = globals().get("_rebuild_embeddings")
+    if embedding_rebuild is not None:
+        embedding_rebuild(conn)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError:
+        logger.debug("skill-graph: WAL checkpoint after full rebuild unavailable")
+
     logger.info("Skill graph rebuilt: %d skills", len(deduped))
     return len(deduped)
 
@@ -576,6 +587,17 @@ def _incremental_sync(conn: sqlite3.Connection) -> int:
         conn.execute("DELETE FROM skill_terms WHERE skill_name = ?", (name,))
 
     conn.commit()
+
+    # Embeddings are optional on older bundled copies of the plugin.  When the
+    # embedding rebuild hook is present, checkpoint only after it completes.
+    embedding_rebuild = globals().get("_rebuild_embeddings")
+    if embedding_rebuild is not None:
+        embedding_rebuild(conn)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError:
+        logger.debug("skill-graph: WAL checkpoint after incremental sync unavailable")
+
     logger.info(
         "Skill graph synced: %d parsed, %d unchanged, %d removed, %d total",
         parsed_count, skipped_count, len(stale), len(deduped),

@@ -80,7 +80,7 @@ type CacheEntry =
   | { kind: 'kitty'; frameMs: number; frames: string[]; placeholder: string[]; color: string }
 
 const FRAME_MS = 160
-const POLL_MS = 2500
+const POLL_MS = 15_000
 
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
 // when piped (or running under the dashboard PTY the gateway resolves to
@@ -290,16 +290,28 @@ export function usePet(): PetRender {
   )
 
   // Pull frames whenever the state changes (if not already cached for the
-  // active pet), plus a steady poll that catches adopt/switch/disable.
+  // active pet). Gateway change events are the primary invalidation signal;
+  // the slow backstop preserves compatibility with older gateways and catches
+  // changes that happened before this client connected.
   useEffect(() => {
     if (!cache.current.has(`${slugRef.current}:${petState}`)) {
       void sync(petState)
     }
 
+    const onEvent = (event: { type?: string }) => {
+      if (event.type === 'pet.changed') {
+        void sync(stateRef.current)
+      }
+    }
+
+    gw.on('event', onEvent)
     const timer = setInterval(() => void sync(stateRef.current), POLL_MS)
 
-    return () => clearInterval(timer)
-  }, [petState, sync])
+    return () => {
+      gw.off('event', onEvent)
+      clearInterval(timer)
+    }
+  }, [gw, petState, sync])
 
   useEffect(() => releaseKitty, [releaseKitty])
 

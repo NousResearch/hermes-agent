@@ -826,3 +826,37 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+class TestFillEgressRegistration:
+    def test_payment_fill_registers_only_the_secret_fields(self, monkeypatch):
+        """Cardholder name, expiry dates and postal code never feed the substring scrub
+        (#120655), while the short CVC registers as a known secret so the length floor
+        cannot drop it."""
+        from agent import redact
+        from tools import browser_vault_tool
+
+        calls = []
+        monkeypatch.setattr(
+            redact, "register_vault_redaction_value",
+            lambda v, **kw: calls.append((v, kw.get("known_secret"))))
+
+        secret = {
+            "card_number": "4242424242424242", "cardholder_name": "Ada Lovelace",
+            "exp_month": "09", "exp_year": "26", "cvc": "313",
+            "billing_postal_code": "08001",
+        }
+        browser_vault_tool._register_fill_secrets_for_egress("payment", secret)
+        assert calls == [("4242424242424242", True), ("313", True)]
+
+    def test_login_fill_registers_the_password_as_a_known_secret(self, monkeypatch):
+        from agent import redact
+        from tools import browser_vault_tool
+
+        calls = []
+        monkeypatch.setattr(
+            redact, "register_vault_redaction_value",
+            lambda v, **kw: calls.append((v, kw.get("known_secret"))))
+
+        browser_vault_tool._register_fill_secrets_for_egress("login", {"password": "hunter2", "username": "ada"})
+        assert calls == [("hunter2", True)]

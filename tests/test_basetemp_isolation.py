@@ -82,6 +82,29 @@ def test_fallback_root_escapes_a_repo_checked_out_inside_the_native_home(tmp_pat
     assert relocated is not None and not relocated.resolve().is_relative_to(native.resolve())
 
 
+def test_read_only_var_tmp_falls_back_to_system_temp(tmp_path, monkeypatch):
+    native = tmp_path / "native-home"
+    native.mkdir()
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
+    monkeypatch.setattr(suite_conftest.os.path, "isdir", lambda path: str(path) == "/var/tmp")
+    monkeypatch.setattr(suite_conftest.tempfile, "gettempdir", lambda: str(tmp_path))
+    real_mkdir = Path.mkdir
+
+    def deny_var_tmp(path, *args, **kwargs):
+        if str(path).startswith("/var/tmp/"):
+            raise PermissionError("read-only test fixture")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny_var_tmp)
+    config = _config_with_basetemp(native / ".repro")
+
+    suite_conftest._relocate_basetemp_outside_operator_home(config)
+
+    relocated = config._tmp_path_factory._given_basetemp
+    uid_suffix = f"-{suite_conftest.os.getuid()}" if hasattr(suite_conftest.os, "getuid") else ""
+    assert relocated is not None and relocated.parent == tmp_path / f"hermes-pytest{uid_suffix}"
+
+
 def test_relocation_root_sweeps_basetemps_of_killed_runs_and_keeps_live_ones(tmp_path, monkeypatch):
     import os
     import time

@@ -657,6 +657,37 @@ def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:
     assert mine.parent == tmp_path and theirs.parent == tmp_path
 
 
+def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, monkeypatch) -> None:
+    """A visible but read-only /var/tmp must not prevent the canonical runner from starting."""
+    import importlib
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    runner = importlib.import_module("run_tests_parallel")
+
+    real_makedirs = runner.os.makedirs
+    real_isdir = runner.os.path.isdir
+    monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(runner.os.path, "isdir",
+                        lambda path: True if str(path) == "/var/tmp" else real_isdir(path))
+
+    def deny_var_tmp(path, *args, **kwargs):
+        if str(path).startswith("/var/tmp/"):
+            raise PermissionError("read-only test fixture")
+        return real_makedirs(path, *args, **kwargs)
+
+    monkeypatch.setattr(runner.os, "makedirs", deny_var_tmp)
+    uid_suffix = ""
+    if hasattr(runner.os, "getuid"):
+        monkeypatch.setattr(runner.os, "getuid", lambda: 1000)
+        uid_suffix = "-1000"
+
+    root = Path(runner._runner_scratch_root())
+
+    assert root == tmp_path / f"hermes-pytest{uid_suffix}"
+    assert root.is_dir()
+
+
 def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Path) -> None:
     """A green local run must say which platforms() tests were skipped and where
     they run; specs are resolved (posix is not off-host on Linux or macOS)."""

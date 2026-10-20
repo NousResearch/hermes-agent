@@ -506,7 +506,8 @@ def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPlug
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
-    """Import-compatible wrapper for the shared PluginManager MCP probe; directory scanning lives
-    in :mod:`hermes_cli.plugins` so startup gating and full plugin discovery cannot drift apart."""
-    from hermes_cli.plugins import has_enabled_agent_plugin_mcp as _probe
-    return _probe(raw_config)
+    """Whether config enables a portable package with MCP servers: a manifest-only scan on a fresh
+    PluginManager (imports nothing, mutates no registry), so startup gating and full plugin discovery
+    share one directory scan and cannot drift apart."""
+    from hermes_cli.plugins import PluginManager
+    return PluginManager().has_enabled_portable_mcp(raw_config)

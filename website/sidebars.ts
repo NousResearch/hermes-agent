@@ -828,6 +828,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/observer-hooks',
                 'developer-guide/middleware',
                 'developer-guide/subagent-lifecycle-api',
+                'developer-guide/plugin-models-api',
                 'developer-guide/desktop-plugin-sdk',
                 'developer-guide/memory-provider-plugin',
                 'developer-guide/context-engine-plugin',

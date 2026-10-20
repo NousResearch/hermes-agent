@@ -64,6 +64,15 @@ _PUBLIC = frozenset({
 
 _SHOWN = 10
 
+# Private names that now have a public ctx replacement: the warning names it.
+_REPLACEMENTS = {
+    "hermes_cli.models._provider_has_credentials": "ctx.models.ready(provider)",
+    "hermes_cli.models.provider_model_ids": "ctx.models.list(provider)",
+    "hermes_cli.models.cached_provider_model_ids": "ctx.models.list(provider)",
+    "hermes_cli.models.parse_model_input": "ctx.models.parse(spec)",
+    "hermes_cli.models.list_available_providers": "ctx.models.providers()",
+}
+
 
 @lru_cache(maxsize=1)
 def _hermes_packages() -> frozenset:
@@ -119,7 +128,7 @@ def _private_target(module: str, name: str, core: frozenset, local: set[str]) ->
 
 
 def private_import_findings(plugin_dir: Path) -> list[str]:
-    """``["<rel>:<line> <module>[.<name>]", ...]`` for every import of a private Hermes core module:
+    """``["<rel>:<line> <module>[.<name>][ (use ctx...)]", ...]`` for every import of a private Hermes core module:
     the first site of each distinct module first (so a truncated list still shows the breadth),
     then the rest, each group in file/line order."""
     plugin_dir = Path(plugin_dir)
@@ -144,7 +153,8 @@ def private_import_findings(plugin_dir: Path) -> list[str]:
     seen: set[str] = set()
     first = [site for site in sorted(found) if site[3] not in seen and not seen.add(site[3])]
     rest = sorted(found.difference(first))
-    return [f"{rel}:{line} {target}" for rel, line, target, _module in first + rest]
+    return [f"{rel}:{line} {target}" + (f" (use {_REPLACEMENTS[target]})" if target in _REPLACEMENTS else "")
+            for rel, line, target, _module in first + rest]
 
 
 def check_private_imports(report, plugin_dir: Path) -> None:

@@ -388,6 +388,12 @@ class PluginContext:
         from agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
         return SubagentLifecycleService(get_active_subagent_parent)
 
+    @cached_property
+    def models(self) -> Any:
+        """Read-only model catalog (:class:`hermes_cli.plugins_models.PluginModels`) in this plugin's profile."""
+        from hermes_cli.plugins_models import PluginModels
+        return PluginModels(self._manager.home_path)
+
     @property
     def profile_name(self) -> str:
         """Active profile name (``"default"``, the ``~/.hermes/profiles/<name>`` id, or ``"custom"``),
@@ -1746,12 +1752,6 @@ def _reset_plugin_managers_for_tests() -> None:
         clear_providers()
     except Exception:
         logger.debug("dashboard-auth registry clear failed", exc_info=True)
-
-
-def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
-    """Whether config enables a portable package with MCP servers (manifest-only scan on a fresh
-    manager; imports nothing, mutates no registry)."""
-    return PluginManager().has_enabled_portable_mcp(raw_config)
 
 
 def discover_plugins(force: bool = False) -> None:

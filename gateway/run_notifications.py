@@ -765,6 +765,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             refusals = int(evt.get("_watch_injection_attempts") or 0) + 1
             evt["_watch_injection_attempts"] = refusals
             if refusals >= _MAX_COMPLETION_INJECTION_ATTEMPTS:
+                # Dropped for good, so nothing is owed any more: settle it, or the finished entry
+                # would stay "notification pending" and pinned against pruning forever.
+                from tools.process_registry import process_registry
+                process_registry.settle_notification(evt)
                 logger.warning(
                     "Watch notification for %s chat=%s (type=%s session_id=%s) was refused "
                     "%d times; dropping the queued event (output remains available via "

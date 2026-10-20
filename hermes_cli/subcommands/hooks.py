@@ -37,6 +37,17 @@ def build_hooks_parser(subparsers, *, cmd_hooks: Callable) -> None:
     _hk_revoke.add_argument(
         "command", help="The exact command string to revoke (as declared in config.yaml)")
 
+    _hk_accept = hooks_subparsers.add_parser(
+        "accept",
+        help="Approve configured hook(s) into the allowlist without a TTY prompt "
+             "(the supported path for non-interactive / cron / gateway environments)")
+    _hk_accept.add_argument(
+        "commands", nargs="*",
+        help="Command string(s) to approve, exactly as declared in config.yaml")
+    _hk_accept.add_argument(
+        "--all", dest="all", action="store_true",
+        help="Approve every configured hook that is not allowlisted yet")
+
     hooks_subparsers.add_parser(
         "doctor",
         help="Check each configured hook: exec bit, allowlist, mtime drift, "

@@ -15,6 +15,7 @@ import {
   overlayLiveLanes,
   overlayLivePreviews,
   projectOwnerBySessionId,
+  projectPrimaryWithin,
   reconcileEnteredProjectSessions,
   sessionBucketId,
   sessionMatchesProjectFilter,
@@ -39,6 +40,33 @@ describe('baseName', () => {
     expect(baseName('/www/hermes-agent/')).toBe('hermes-agent')
     expect(baseName('C:\\repos\\app')).toBe('app')
     expect(baseName('')).toBeUndefined()
+  })
+})
+
+describe('projectPrimaryWithin (#138445)', () => {
+  it('returns the primary when it sits strictly inside the repo root', () => {
+    expect(projectPrimaryWithin('/work/customer-x/engagement', '/work/customer-x')).toBe('/work/customer-x/engagement')
+  })
+
+  it('folds separator, case and trailing-slash spellings (Windows paths)', () => {
+    expect(projectPrimaryWithin('C:\\Work\\Customer-X\\engagement\\', 'c:/work/customer-x')).toBe(
+      'C:\\Work\\Customer-X\\engagement'
+    )
+  })
+
+  it('returns null when the primary IS the root, so the lane keeps its own path', () => {
+    expect(projectPrimaryWithin('/work/customer-x/', '/work/customer-x')).toBeNull()
+  })
+
+  it('returns null for a sibling that only shares a name prefix', () => {
+    expect(projectPrimaryWithin('/work/customer-x2', '/work/customer-x')).toBeNull()
+  })
+
+  it('returns null when the primary sits outside the root (another repo, a parent, blank)', () => {
+    expect(projectPrimaryWithin('/work/other-repo', '/work/customer-x')).toBeNull()
+    expect(projectPrimaryWithin('/work', '/work/customer-x')).toBeNull()
+    expect(projectPrimaryWithin('', '/work/customer-x')).toBeNull()
+    expect(projectPrimaryWithin('/work/customer-x/engagement', null)).toBeNull()
   })
 })
 

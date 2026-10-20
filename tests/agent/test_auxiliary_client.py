@@ -669,7 +669,7 @@ class TestAnthropicOAuthFlag:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, *, model=None):
                 return _Entry()
 
         with (
@@ -771,7 +771,7 @@ class TestBuildCodexClient:
             def peek(self):
                 return self.entry
 
-            def select(self):
+            def select(self, *, model=None):
                 return self.entry
 
         pool = _Pool()
@@ -1134,7 +1134,7 @@ class TestGetTextAuxiliaryClient:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, *, model=None):
                 return _Entry()
 
         with (
@@ -1255,7 +1255,7 @@ class TestAuxiliaryPoolAwareness:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, *, model=None):
                 return _Entry(stale_token)
 
             def try_refresh_current(self):
@@ -2149,7 +2149,7 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
 
     pool_selected = []
 
-    def mock_select_pool_entry(provider_id):
+    def mock_select_pool_entry(provider_id, model=None):
         pool_selected.append(provider_id)
         return False, None
 

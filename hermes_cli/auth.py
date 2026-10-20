@@ -1056,6 +1056,17 @@ def _merge_disk_cooldown_state(
             PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
         )
 
+        # A ``hermes auth reset`` newer than this snapshot (disk ``status_cleared_at`` later than the
+        # one the snapshot was loaded with) also clears MODEL cooldowns: drop the snapshot's stale map
+        # instead of max-merging it back, or a long-lived process re-benches the credential on its next
+        # flush — a 365-day entitlement bench then survives the reset and, via model-less (auxiliary)
+        # selection, blocks every model. Cooldowns observed after the reset are re-learned on the next
+        # failing call, the same trade-off the status fields make below.
+        disk_cleared = _parse_absolute_timestamp(disk_entry.get("status_cleared_at")) or 0.0
+        mem_cleared = _parse_absolute_timestamp(entry.get("status_cleared_at")) or 0.0
+        if disk_cleared > mem_cleared and entry.get("model_cooldowns"):
+            entry = {**entry, "model_cooldowns": None}
+
         # Model cooldowns are independent observations: keep the latest reset per model so a
         # writer that just cooled one model cannot erase another process's cooldown for another.
         from agent.credential_pool_model_cooldowns import merge_model_cooldowns

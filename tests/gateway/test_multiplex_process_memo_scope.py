@@ -67,7 +67,7 @@ def test_aux_nous_auth_reads_routed_profile_auth_json(two_homes, monkeypatch):
             "version": 1, "active_provider": "nous",
             "providers": {"nous": {"agent_key": token, "access_token": token}},
         }), encoding="utf-8")
-    monkeypatch.setattr(aux, "_select_pool_entry", lambda _provider: (False, None))
+    monkeypatch.setattr(aux, "_select_pool_entry", lambda _provider, _model=None: (False, None))
 
     assert (aux._read_nous_auth() or {}).get("access_token") == "TOKEN_A"
     assert (_under(b, aux._read_nous_auth) or {}).get("access_token") == "TOKEN_B"

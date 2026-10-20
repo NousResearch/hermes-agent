@@ -364,8 +364,9 @@ export function ModelCatalogMenu({
   // match in its provider's place.
   const favoriteSet = useMemo(() => new Set(favoriteKeys), [favoriteKeys])
   // Favorites that mix providers name each provider once, as a quiet label
-  // over its rows (two labs can serve the same model name). With one provider
-  // the label would only repeat the section.
+  // over its rows (two labs can serve the same model name). The label is the
+  // short name — a plan parenthetical is not a heading. With one provider
+  // the label would only repeat the section, so a long name goes on the row.
   const favoritesSpanProviders = new Set(favoriteRows.map(row => row.provider.slug)).size > 1
 
   const groups = useMemo(
@@ -637,10 +638,19 @@ export function ModelCatalogMenu({
     return true
   }
 
+  // Which row's options submenu is open (controlled). Nested list scroll does
+  // not reliably keep a portaled SubContent glued to its trigger — Floating
+  // UI's rAF strategy tracks the parent Content, not this inner overflow
+  // pane — so the OPTIONS panel drifts off its row while the user scrolls.
+  // Closing on list scroll is the honest fix; reopen by hovering again.
+  const [openSubKey, setOpenSubKey] = useState<string | null>(null)
+
   // Only the sub THIS row opened from the keyboard owes focus back to the
   // search field; during mouse use focus never left it, and hover open/close
   // fires constantly.
   const handleSubOpenChange = (open: boolean, key: string) => {
+    setOpenSubKey(prev => (open ? key : prev === key ? null : prev))
+
     const claim = keyboardSubRef.current
 
     if (open || claim?.key !== key) {
@@ -664,10 +674,41 @@ export function ModelCatalogMenu({
 
   // Keep the selected row in view while arrowing through the scrollable list.
   const listRef = useRef<HTMLDivElement>(null)
+  // scrollIntoView fires a scroll event only when the row actually moves.
+  // Swallow that one event so keyboard navigation does not close an open
+  // options sub. A row already in view must NOT arm the flag — otherwise the
+  // user's next wheel is dropped and the OPTIONS panel drifts off its row.
+  const ignoreListScrollRef = useRef(false)
 
+  // One-shot flag for the scroll handler, not a mirrored atom value.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    listRef.current?.querySelector('[data-kb-active]')?.scrollIntoView({ block: 'nearest' })
+    const list = listRef.current
+    const active = list?.querySelector('[data-kb-active]')
+
+    if (!list || !active) {
+      return
+    }
+
+    const top = list.scrollTop
+
+    ignoreListScrollRef.current = true
+    active.scrollIntoView({ block: 'nearest' })
+
+    if (list.scrollTop === top) {
+      ignoreListScrollRef.current = false
+    }
   }, [kbActiveKey])
+
+  const closeSubOnListScroll = () => {
+    if (ignoreListScrollRef.current) {
+      ignoreListScrollRef.current = false
+
+      return
+    }
+
+    setOpenSubKey(null)
+  }
 
   const kbRowProps = (key: string) => {
     const active = kbActiveKey === key
@@ -744,33 +785,53 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
+        <div
+          className="dt-portal-scrollbar dt-portal-scrollbar-always max-h-[max(150px,30dvh)] overflow-y-auto overscroll-contain py-0.5 [scrollbar-gutter:stable]"
+          onScroll={closeSubOnListScroll}
+          ref={listRef}
+        >
           {/* Favorites first — the shortcut the star exists for. The section
               paints nothing with no favorites, and nothing while searching,
               where every match is listed in its provider's place instead. */}
           {favoriteRows.length > 0 ? (
             <DropdownMenuGroup className="py-0.5">
               <DropdownMenuLabel className={catalogGroupLabel}>{copy.favorites}</DropdownMenuLabel>
-              {favoriteRows.map(({ family, provider }, index) => (
-                <Fragment key={`${provider.slug}:${family.id}`}>
-                  {favoritesSpanProviders && favoriteRows[index - 1]?.provider.slug !== provider.slug ? (
-                    <DropdownMenuLabel className={favoriteProviderLabel}>{provider.name}</DropdownMenuLabel>
-                  ) : null}
-                  <ModelFamilyRow
-                    controller={controller}
-                    current={current}
-                    defaultEffort={defaultEffort}
-                    family={family}
-                    favorite
-                    kbProps={kbRowProps(`${provider.slug}:${family.id}`)}
-                    loadingModels={loadingModels}
-                    onSelect={selectFamily}
-                    onSubOpenChange={handleSubOpenChange}
-                    provider={provider}
-                    search={search}
-                  />
-                </Fragment>
-              ))}
+              {favoriteRows.map(({ family, provider }, index) => {
+                const providerLabel = shortProviderName(provider.name)
+
+                // A long OAuth name ("… (SuperGrok / Premium+)") is shortened
+                // once. Mixed sections name the provider in the heading; a
+                // single-provider section has no heading, so the short name
+                // sits on the row instead of the plan parenthetical.
+                const providerSubtitle =
+                  !favoritesSpanProviders && providerLabel !== provider.name ? providerLabel : undefined
+
+                return (
+                  <Fragment key={`${provider.slug}:${family.id}`}>
+                    {favoritesSpanProviders && favoriteRows[index - 1]?.provider.slug !== provider.slug ? (
+                      <DropdownMenuLabel className={cn(favoriteProviderLabel, 'truncate')}>
+                        {providerLabel}
+                      </DropdownMenuLabel>
+                    ) : null}
+                    <ModelFamilyRow
+                      controller={controller}
+                      current={current}
+                      defaultEffort={defaultEffort}
+                      family={family}
+                      favorite
+                      fullId
+                      kbProps={kbRowProps(`${provider.slug}:${family.id}`)}
+                      loadingModels={loadingModels}
+                      onSelect={selectFamily}
+                      onSubOpenChange={handleSubOpenChange}
+                      openSub={openSubKey === `${provider.slug}:${family.id}`}
+                      provider={provider}
+                      providerSubtitle={providerSubtitle}
+                      search={search}
+                    />
+                  </Fragment>
+                )
+              })}
             </DropdownMenuGroup>
           ) : null}
           {groups.map(group => {
@@ -816,6 +877,7 @@ export function ModelCatalogMenu({
                       loadingModels={loadingModels}
                       onSelect={selectFamily}
                       onSubOpenChange={handleSubOpenChange}
+                      openSub={openSubKey === `${group.provider.slug}:${family.id}`}
                       provider={group.provider}
                       search={search}
                     />
@@ -978,8 +1040,17 @@ interface ModelFamilyRowProps {
   onSelect: (family: ModelFamily, provider: ModelOptionProvider) => Promise<boolean | void> | void
   /** Keyboard-focus round trip for the sub this row opens (#86966). */
   onSubOpenChange?: (open: boolean, key: string) => void
+  /** Controlled open state for the options submenu — host closes it on list
+   *  scroll so a portaled OPTIONS panel cannot drift off its trigger row. */
+  openSub?: boolean
   provider: ModelOptionProvider
+  /** Short provider name under a favorite's full model id. Set only when the
+   *  section heading is not already naming that provider. */
+  providerSubtitle?: string
   search: string
+  /** Paint the full model id (wrapped, no prettify/truncate). Set in the
+   *  Favorites section, where the id is the row's identity. */
+  fullId?: boolean
 }
 
 /** One model family row: the favorite star, the trigger that commits the
@@ -992,11 +1063,14 @@ function ModelFamilyRow({
   defaultEffort,
   family,
   favorite,
+  fullId = false,
   kbProps,
   loadingModels,
   onSelect,
   onSubOpenChange,
+  openSub = false,
   provider,
+  providerSubtitle,
   search
 }: ModelFamilyRowProps): ReactElement {
   const { t } = useI18n()
@@ -1082,7 +1156,7 @@ function ModelFamilyRow({
   const favoriteLabel = favorite ? copy.removeFavorite : copy.addFavorite
 
   return (
-    <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)}>
+    <DropdownMenuSub onOpenChange={open => onSubOpenChange?.(open, rowKey)} open={openSub}>
       <DropdownMenuSubTrigger
         onClick={event => {
           // Shift-click stars, the same gesture that pins a chat row in the
@@ -1103,7 +1177,15 @@ function ModelFamilyRow({
           }
         }}
         {...kbProps}
-        className={cn(kbProps.className, 'group/model')}
+        className={cn(
+          kbProps.className,
+          'group/model min-w-0',
+          // Favorites rows wrap the full model id onto as many lines as it
+          // needs. `items-start` keeps the star aligned to the first line;
+          // without `whitespace-normal` the menu's default single-line flex
+          // lets overflow-x-hidden on the panel clip the id mid-token.
+          fullId && 'h-auto items-start whitespace-normal'
+        )}
       >
         {/* The star IS the favorite control: filled when starred, a quiet
             outline otherwise. Its click never reaches the row, so starring
@@ -1130,12 +1212,29 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
+        <span className={cn('flex min-w-0 flex-1 gap-1.5', fullId ? 'items-start' : 'items-center', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
-          <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
+          <span className="min-w-0 flex-1 overflow-hidden">
+            {/* Full model id on favorites: wrap anywhere so a long slug never
+                gets clipped by the panel's overflow-x-hidden. Provider groups
+                keep the single-line truncate + pretty name. */}
+            <span
+              className={cn('block max-w-full', fullId ? 'whitespace-normal break-all' : 'truncate')}
+              style={fullId ? { overflowWrap: 'anywhere', wordBreak: 'break-word' } : undefined}
+              // Native title tooltips park on the viewport and drift while the
+              // list scrolls — same class of bug as the OPTIONS panel. Skip
+              // when the full id is already the primary label (favorites).
+              title={fullId ? undefined : family.id}
+            >
+              <HighlightMatches foldSeparators query={search} text={fullId ? family.id : name} />
+            </span>
+            {providerSubtitle ? (
+              <span className="block max-w-full truncate text-[0.625rem] leading-tight text-(--ui-text-tertiary)">
+                {providerSubtitle}
+              </span>
+            ) : null}
           </span>
-          {tag ? <ModelChip>{tag}</ModelChip> : null}
+          {tag && !fullId ? <ModelChip>{tag}</ModelChip> : null}
           {decoration.badge ? (
             <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}
@@ -1203,6 +1302,15 @@ const catalogGroupLabel =
 // in normal case and indented to the model names it labels, so it reads as
 // a sub-group rather than a sibling section.
 const favoriteProviderLabel = 'pt-1.5 pb-0 pr-2 pl-7.75 text-[0.625rem] text-(--ui-text-tertiary)'
+
+/** Drop a trailing plan/subscription parenthetical. The catalog name is the
+ *  legal label ("xAI Grok OAuth (SuperGrok / Premium+)"); a favorites heading
+ *  or row subtitle only has room for the name. */
+function shortProviderName(name: string): string {
+  const short = name.replace(/\s*\([^)]*\)\s*$/, '').trim()
+
+  return short || name
+}
 
 /** The picker's chips: a filled tag for what the model IS (its variant), an
  *  outlined one for how this row is SET (fast, effort), so the two read as

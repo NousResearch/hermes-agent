@@ -163,6 +163,7 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
                         "model": "review-model",
                         "base_url": "http://127.0.0.1:18479/v1",
                         "api_key": "test-only",
+                        "fallback_chain": list(DECLARED_CHAIN),
                     }
                 },
             }
@@ -193,7 +194,7 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
 
     assert captured["model"] == "review-model"
     assert captured["base_url"] == "http://127.0.0.1:18479/v1"
-    assert captured["fallback_model"] is None
+    assert captured["fallback_model"] == DECLARED_CHAIN
 
 
 def test_declared_child_chain_activates_on_primary_failure():
@@ -234,7 +235,7 @@ def test_declared_child_chain_activates_on_primary_failure():
             side_effect=lambda model, _provider: model,
         ),
     ):
-        assert child._try_activate_fallback(FailoverReason.rate_limit) is True
+        assert child._try_activate_fallback(FailoverReason.auth) is True
 
     assert child.model == "deepseek-chat"
     assert child.provider == "deepseek"

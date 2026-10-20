@@ -314,6 +314,14 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
             authority.runner._evict_cached_agent(live.route)
         if applied:
             live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+            if operation == 'notice':
+                # The transcript is durable; this event is only the immediate desktop/TUI projection.
+                text = result['text']
+                key = f"operation.{result['notice_message_uid']}"
+                live.event_stream.publish(ref.session_id, {
+                    'text': text, 'detail': text, 'level': 'info', 'kind': 'sticky',
+                    'ttl_ms': None, 'key': key, 'id': key,
+                }, event_type='notification.show')
             from gateway.session_local_mcp import announce_tools_changed
             announce_tools_changed(live, ref.session_id, result)
 

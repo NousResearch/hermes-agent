@@ -15,6 +15,9 @@ def validate_action(operation, payload):
         from hermes_constants import parse_reasoning_effort
         if 'reasoning' not in payload or parse_reasoning_effort(payload['reasoning']) is not None:
             return
+    if (operation == 'notice' and set(payload) == {'text'} and isinstance(payload['text'], str)
+            and payload['text'].strip() and len(payload['text']) <= 4000):
+        return
     if operation == 'branch' and _valid_branch_payload(payload):
         return
     # Session-scope ``/reasoning <level>`` and Desktop's Move to project: revision-fenced edits of
@@ -87,6 +90,9 @@ def _valid_compress_payload(payload):
 
 
 def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
+    if operation == 'notice':
+        from hermes_state_mutation_notice import notice_in_transaction
+        return notice_in_transaction(db, conn, session_id, payload)
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)

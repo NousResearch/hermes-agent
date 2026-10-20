@@ -694,7 +694,8 @@ class CLIModalMixin:
     def _connection_callback(self, payload):
         if not isinstance(payload, dict):
             return
-        self._capture_modal_input_snapshot()
+        if self._connection_state is None:  # a recovery re-open keeps the draft the first open saved
+            self._capture_modal_input_snapshot()
         self._connection_show_target(payload, 0)
         state = self._connection_state
         if state is not None and state["phase"] != "waiting":
@@ -752,10 +753,14 @@ class CLIModalMixin:
         self._connection_send("connection_retry", str(target.get("name") or ""))
 
     def _connection_continue(self) -> None:
+        # Stays open (waiting) until the gateway's settling update closes it, so a refused answer
+        # shows on the card instead of vanishing with it.
         state = self._connection_state
-        if state:
-            self._connection_send("connection_respond", state["payload"].get("op_id"), {"settled_by": "continue"})
-        self._connection_close()
+        if not state:
+            return
+        state["phase"] = "waiting"
+        self._paint_now()
+        self._connection_send("connection_respond", state["payload"].get("op_id"), {"settled_by": "continue"})
 
     def _connection_open_url(self) -> None:
         state = self._connection_state
@@ -771,7 +776,12 @@ class CLIModalMixin:
 
     def _connection_on_change(self, snapshot) -> None:
         state = self._connection_state
-        if not state or not isinstance(snapshot, dict) or snapshot.get("op_id") != state["payload"].get("op_id"):
+        if not state or not isinstance(snapshot, dict):
+            return
+        if "op_id" not in snapshot and snapshot.get("settled"):
+            self._connection_close()  # a replay-gap recovery found no open operation: the card is stale
+            return
+        if snapshot.get("op_id") != state["payload"].get("op_id"):
             return
         if int(snapshot.get("seq") or 0) < int(state["payload"].get("seq") or 0):
             return  # an older frame than the one the card holds

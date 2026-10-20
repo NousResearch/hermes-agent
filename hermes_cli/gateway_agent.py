@@ -898,6 +898,7 @@ class GatewayAgent:
             if row.get("status") == "unknown":
                 return lost  # its completion was the one the hole lost: no other is owed
             turn.gapped |= row.get("status") != "queued"  # one still queued lost nothing
+            self._restore_connection_card(snapshot.get("pending_connection"))
             for prompt in snapshot.get("prompts") or []:
                 if row.get("status") == "started" and prompt.get("execution_generation") == row.get("execution_generation") \
                         and prompt.get("prompt_id") not in turn.answered and not stop():
@@ -1108,6 +1109,15 @@ class GatewayAgent:
     def _on_connection_update(self, payload, stream_callback, starts):
         if self.connection_update_callback is not None:
             self.connection_update_callback(payload)
+
+    def _restore_connection_card(self, pending):
+        """After a replay gap, the resume snapshot's open operation: (re)open the card from it, or
+        close a stale card when none remains (the gap may have eaten the request or the settle)."""
+        if pending:
+            if self.connection_callback is not None:
+                self.connection_callback(pending)
+        elif self.connection_update_callback is not None:
+            self.connection_update_callback({"settled": True})
 
     def connection_respond(self, op_id, result):
         """The card's answer to the gateway's open operation (``connection.respond``); returns its result."""

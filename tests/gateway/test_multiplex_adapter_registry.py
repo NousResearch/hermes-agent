@@ -165,6 +165,7 @@ class TestProfileRuntimeStatus:
         adapter = _ConcreteAdapter.__new__(_ConcreteAdapter)
         adapter.platform = Platform.DISCORD
         adapter._runtime_status_platform_key = "reviewer:discord"
+        adapter._runtime_status_owned = True
         writes = []
         monkeypatch.setattr(
             "gateway.status.publish_runtime_status",

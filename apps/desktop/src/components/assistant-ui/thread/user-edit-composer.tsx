@@ -122,7 +122,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
-  const slash = useSlashCompletions({ gateway })
+  const slash = useSlashCompletions({ gateway, sessionId })
   const emoji = useEmojiCompletions()
 
   // Timers this composer schedules must not outlive it. Every callback below

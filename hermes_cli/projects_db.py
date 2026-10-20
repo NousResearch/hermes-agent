@@ -122,7 +122,15 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
     def _initialize(conn: sqlite3.Connection) -> None:
         if resolved in _INITIALIZED_PATHS:
-            return
+            try:
+                cur = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'"
+                )
+                if cur.fetchone() is not None:
+                    return
+                _INITIALIZED_PATHS.discard(resolved)
+            except Exception:
+                _INITIALIZED_PATHS.discard(resolved)
         conn.executescript(SCHEMA_SQL)
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
         for col in _OPTIONAL_PROJECT_COLUMNS:

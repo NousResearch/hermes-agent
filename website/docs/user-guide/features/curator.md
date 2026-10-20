@@ -403,6 +403,8 @@ hermes curator restore <skill-name>
 
 This moves the skill back from `~/.hermes/skills/.archive/` to the active tree and resets its state to `active`. The restore refuses if a bundled or hub-installed skill has since been installed under the same name (would shadow upstream).
 
+Archived skills are out of the skill index, so the agent can't see them. When the agent creates a new skill and an archived skill covers a similar topic, the `skill_manage` create result names it, says how long ago it was archived, and points at `hermes curator restore`. The archived skill stays archived. The match compares the new skill's name and description with each archived skill's, so unrelated archives produce no hint.
+
 ## Disabling per environment
 
 The curator is on by default. To turn it off:

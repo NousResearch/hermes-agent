@@ -27,3 +27,24 @@ def test_cli_install_goes_through_the_shared_installer(monkeypatch):
     args = parser.parse_args(["screen", "install", "-y"])
     assert args.screen_func(args) == 0
     assert calls == [(True, True)]
+
+
+def test_cli_install_reports_a_preflight_abort_as_a_clean_exit(monkeypatch, capsys):
+    """#136688: the shared installer's dnf preflight failure must exit as a plain one-line error, not
+    fall into the raw `installer exited -3` branch."""
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: ["Xvnc"])
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo dnf install -y tigervnc-x11-server")
+
+    def fake_install(*, ask_password, on_line, **kw):
+        on_line("Bot Desktop: this host's repositories do not carry the Fedora package set; "
+                "unavailable: tigervnc-x11-server")
+        return install.PREFLIGHT_UNAVAILABLE
+
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    parser = argparse.ArgumentParser()
+    build_screen_parser(parser.add_subparsers(), lambda sub, help_text: sub.add_argument("--json", action="store_true"))
+    args = parser.parse_args(["screen", "install", "-y"])
+    assert args.screen_func(args) == 1
+    out = capsys.readouterr().out
+    assert "preflight lines above" in out and "installer exited" not in out

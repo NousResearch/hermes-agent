@@ -145,7 +145,7 @@ def _bedrock_turn(model, tag, tool_id, *, reloaded):
         {"toolUse": {"toolUseId": tool_id, "name": "read_file", "input": {"path": "a"}}},
     ]}}, "stopReason": "tool_use", "usage": {}})
     data = dict(normalized.provider_data)
-    if reloaded:  # bedrock_content_blocks is live-only; a state.db reload keeps reasoning_details
+    if reloaded:  # simulates a state.db reload: bedrock_content_blocks is live-only, reasoning_details persists
         data.pop("bedrock_content_blocks")
     call = {"id": tool_id, "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a"}'}}
     return {"role": "assistant", "content": "", "tool_calls": [call], "reasoning_content": f"think {tag}", **data}
@@ -188,6 +188,25 @@ def test_cross_model_replay_drops_reasoning_the_target_cannot_take(issuer, targe
     toolus = [b["toolUse"]["toolUseId"] for m in kwargs["messages"] for b in m["content"] if "toolUse" in b]
     assert toolus == ["call_1", "call_2"]
     assert history == before
+
+
+@pytest.mark.parametrize("reloaded", [False, True])
+def test_reasoning_gpt_own_reasoning_replays_exactly_across_user_turns(reloaded):
+    """GPT's own reasoning (text, signature, sealed bytes) replays unchanged, and stays unchanged once the
+    next user message moves its turn out of the in-flight loop, so the replayed prefix stays cacheable."""
+    reasoning = [{"reasoningContent": {"reasoningText": {"text": "exact thought", "signature": "exact-sig"}}},
+                 {"reasoningContent": {"redactedContent": b"\x00sealed\xff"}}]
+    transport = BedrockTransport()
+    transport.build_kwargs(model=GPT, messages=[{"role": "user", "content": "Q"}])
+    data = dict(transport.normalize_response({"output": {"message": {"role": "assistant", "content": [
+        *copy.deepcopy(reasoning), {"text": "A"}]}}, "stopReason": "end_turn", "usage": {}}).provider_data or {})
+    if reloaded:
+        data.pop("bedrock_content_blocks")
+    history = [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A", **data}]
+    in_loop = transport.build_kwargs(model=GPT, messages=history)["messages"][1]["content"]
+    later = transport.build_kwargs(model=GPT, messages=[*history, {"role": "user", "content": "next"}])
+    assert later["messages"][1]["content"] == in_loop
+    assert [b for b in in_loop if "reasoningContent" in b] == reasoning
 
 
 def test_claude_minted_reasoning_still_replays_to_claude():

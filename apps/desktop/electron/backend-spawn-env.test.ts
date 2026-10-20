@@ -23,3 +23,33 @@ test('desktopBackendSpawnEnv keeps the base env and stamps stay_alive last', () 
   // back into the failure exit.
   assert.equal(env.GATEWAY_ON_ALL_ADAPTERS_DOWN, 'stay_alive')
 })
+
+test.each(['darwin', 'linux', 'win32'] as const)('a %s backend drops foreign session identity without changing provider config', platform => {
+  const base: NodeJS.ProcessEnv = {
+    CODEX_THREAD_ID: 'parent-codex-thread',
+    CODEX_SESSION_ID: 'parent-codex-session',
+    CLAUDE_SESSION_ID: 'parent-claude-session',
+    ...(platform === 'win32' ? { Codex_Thread_Id: 'case-insensitive-parent' } : {}),
+    CODEX_HOME: '/tmp/codex-config',
+    HERMES_CODEX_BASE_URL: 'http://localhost:1234',
+    HERMES_HOME: '/tmp/hermes-profile',
+    HERMES_SESSION_ID: 'hermes-owned-session',
+    HERMES_SESSION_PROFILE: 'work',
+    PATH: '/usr/bin'
+  }
+
+  const before = { ...base }
+
+  const env = desktopBackendSpawnEnv(base, platform)
+
+  assert.equal(env.CODEX_THREAD_ID, undefined)
+  assert.equal(env.CODEX_SESSION_ID, undefined)
+  assert.equal(env.CLAUDE_SESSION_ID, undefined)
+  assert.equal(env.Codex_Thread_Id, undefined)
+
+  for (const key of ['CODEX_HOME', 'HERMES_CODEX_BASE_URL', 'HERMES_HOME', 'HERMES_SESSION_ID', 'HERMES_SESSION_PROFILE', 'PATH']) {
+    assert.equal(env[key], base[key])
+  }
+
+  assert.deepEqual(base, before)
+})

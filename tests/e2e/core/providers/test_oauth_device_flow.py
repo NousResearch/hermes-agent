@@ -51,10 +51,6 @@ KNOWN: dict[str, tuple[str, str]] = {
         r"client polled faster than the server allows \(server interval 3s, .*required at least \[3\.0, 3\.0\]",
         "#121163 (dup #87432) device-code poll interval is capped to 1s "
         "(DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS used as a ceiling)"),
-    "slow_down_adds_five_seconds": (
-        r"client polled faster than the server allows \(server interval 1s, .*'slow_down'.*"
-        r"required at least \[1\.0, 6\.0, 6\.0\]",
-        "#121254 slow_down grows the poll interval by 1s, RFC 8628 3.5 requires +5s"),
 }
 
 

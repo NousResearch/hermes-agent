@@ -36,7 +36,7 @@ def profile_b(tmp_path, monkeypatch):
 
 
 def test_worker_profile_scope_installs_the_assigned_profiles_terminal_policy(profile_b):
-    """The toolset-resolution seam (``bind_home=True``) reads config under B's own policy."""
+    """The toolset-resolution seam reads config under B's own policy."""
     with kanban_db_dispatch._worker_profile_scope(str(profile_b)):
         scope = get_terminal_scope() or {}
     assert scope.get("TERMINAL_ENV") == "docker"

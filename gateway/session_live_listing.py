@@ -95,6 +95,8 @@ async def live_entries(authority, actor) -> list[LiveEntry]:
         if not batch:
             continue
         rows, pending = await asyncio.to_thread(_store_facts, authority.db, batch)
+        if authority.retiring or authority.retired:
+            return []  # parked or unserved during the read: nothing here is this profile's to list any more
         for sid in batch:
             live, row = authority.sessions.get(sid), rows.get(sid)
             if live is None or row is None:

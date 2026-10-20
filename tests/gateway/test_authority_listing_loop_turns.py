@@ -122,3 +122,20 @@ async def test_a_session_retired_during_the_read_is_not_listed_or_restored(owner
     monkeypatch.setattr(session_live_listing, '_store_facts', retire_midway)
     ids = {row['id'] for row in await owner.listing('session.active_list')}
     assert gone not in ids and gone not in owner.authority.sessions
+
+
+@pytest.mark.asyncio
+async def test_a_profile_parked_during_the_off_loop_read_lists_nothing(owner, monkeypatch):
+    """The store read is an await: a park (unserve) can retire the authority while it runs, and the
+    batch read for it belongs to the home's next owner, not to this listing."""
+    from gateway import session_live_listing
+    real = session_live_listing._store_facts
+
+    def parked_mid_read(db, batch):
+        owner.authority.retiring = True
+        return real(db, batch)
+
+    monkeypatch.setattr(session_live_listing, '_store_facts', parked_mid_read)
+    actor = SimpleNamespace(profile_id='live', subject='viewer', capabilities=frozenset({'session:read'}))
+    monkeypatch.setattr(owner.authority, 'authorize', lambda *a: None)
+    assert await session_live_listing.live_entries(owner.authority, actor) == []

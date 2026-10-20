@@ -230,6 +230,22 @@ def test_no_range_fallback_downloads_full_body(dl_server, tmp_path):
     assert r[str(dest)] == [(0, len(payload))]
 
 
+def test_probe_403_falls_back_to_plain_get(dl_server, tmp_path):
+    """A middlebox that 403s every Range-carrying request (corporate
+    TLS inspection) no longer kills the install at the probe: the probe
+    retries without Range, and the transfer downloads single-stream."""
+    _Handler.range_forbidden = True
+    payload = _payload(1 << 20)
+    _Handler.payloads["/rf"] = payload
+    dest = tmp_path / "rf.bin"
+    dl = Download([Source(_url(dl_server, "/rf"), dest, _sha(payload))],
+                  partials_dir=tmp_path / "partials")
+    moved = dl.run()
+    assert moved == [dest]
+    assert dest.read_bytes() == payload
+    assert _Handler.ranges_seen == []  # the body itself never used Range
+
+
 def test_no_range_short_body_raises_and_leaves_no_dest(dl_server, tmp_path):
     """The fallback errors when the server sends FEWER bytes than its
     declared Content-Length (connection dropped mid-body), leaving the

@@ -89,7 +89,7 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
         return ["gateway-model-a", "gateway-model-b"]
 
     monkeypatch.setattr(models_mod, "fetch_api_models", fake_fetch_api_models)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
 
     def open_picker():
         return ms.list_authenticated_providers(

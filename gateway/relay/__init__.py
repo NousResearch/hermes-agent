@@ -12,6 +12,7 @@ unless the effective relay platform configuration explicitly disables it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -48,7 +49,7 @@ def _load_cfg() -> dict:
         from gateway.run import _load_gateway_config  # late import to avoid cycle
 
         cfg = _load_gateway_config()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
     return cfg if isinstance(cfg, dict) else {}
 
@@ -57,6 +58,25 @@ def _gateway_cfg() -> dict:
     """The ``gateway:`` block of config.yaml, or ``{}``."""
     block = _load_cfg().get("gateway")
     return block if isinstance(block, dict) else {}
+
+
+def _launch_profile_scope():
+    """The launch profile's runtime scope once the gateway multiplexes, ``nullcontext`` before.
+
+    Self-provision runs at startup, before any turn binds a profile, and under multiplexing the
+    Nous Portal and inference routing overrides only resolve inside a profile scope. The scope is
+    built from the profile's files like a turn's (``gateway.run._profile_runtime_scope``), not via
+    ``launch_profile_scope_if_multiplexed``, whose first entry freezes the launch env snapshot
+    before startup has written ``GATEWAY_RELAY_*`` into ``os.environ``.
+    """
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return contextlib.nullcontext()
+    from gateway.run import _profile_runtime_scope  # late import to avoid cycle
+    from hermes_constants import get_process_hermes_home
+
+    return _profile_runtime_scope(get_process_hermes_home())
 
 
 def _env_or_cfg(env_var: str, cfg_key: str) -> str:
@@ -86,7 +106,7 @@ def relay_explicitly_disabled() -> bool:
 
     try:
         cfg = read_yaml_layers(get_hermes_home())
-    except Exception:  # noqa: BLE001 - same fallback as load_gateway_config: no YAML layer at all
+    except Exception:
         return False
     if not isinstance(cfg, dict):
         return False
@@ -142,7 +162,7 @@ def _relay_bot_ids_map() -> dict:
     try:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("GATEWAY_RELAY_BOT_IDS is not valid JSON; treating as empty")
         return {}
 
@@ -218,7 +238,7 @@ def relay_display_name() -> Optional[str]:
             from hermes_cli.skin_engine import get_active_skin  # late import: boot-safe
 
             value = str(get_active_skin().get_branding("agent_name", "") or "").strip()
-        except Exception:  # noqa: BLE001 - branding absence must never crash boot
+        except Exception:
             value = ""
         # The stock brand is identical on every default install: forwarding it would
         # prefix every reply "**Hermes Agent:**" and shadow the connector's
@@ -304,7 +324,7 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
             free_response = [str(c).strip() for c in frc if str(c).strip()]
         elif isinstance(frc, str) and frc.strip():
             free_response = [c.strip() for c in frc.split(",") if c.strip()]
-    except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+    except Exception:
         pass
 
     # Same gate as the gateway's own authz_mixin DISCORD_ALLOW_BOTS bypass.
@@ -358,7 +378,7 @@ def _post_provision(
         detail = ""
         try:
             detail = (json.loads(exc.read().decode()) or {}).get("error", "")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         raise RuntimeError(
             f"connector returned HTTP {exc.code}" + (f": {detail}" if detail else "")
@@ -427,7 +447,10 @@ def _resolve_relay_identity_token() -> str:
     if not token_url:
         from hermes_cli.auth import resolve_nous_access_token
 
-        return resolve_nous_access_token()
+        # Only the Nous refresh is scoped: the gateway config read above and the IdP modes below
+        # keep resolving ``${VAR}`` refs from the launch env, as they always have.
+        with _launch_profile_scope():
+            return resolve_nous_access_token()
 
     if not client_id and not client_secret:
         # Mode 1b — plain GET; the body is the token, raw or JSON-enveloped.
@@ -510,7 +533,7 @@ def self_provision_relay() -> bool:
 
     try:
         access_token = _resolve_relay_identity_token()
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token failure
+    except Exception as exc:
         logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
         return False
 
@@ -518,7 +541,7 @@ def self_provision_relay() -> bool:
     # gatewayId default mirrors the enroll CLI's hostname-based slug.
     try:
         host = socket.gethostname().strip()
-    except Exception:  # noqa: BLE001
+    except Exception:
         host = ""
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
     endpoint = relay_endpoint()
@@ -638,7 +661,7 @@ def send_relay_policy() -> bool:
         from gateway.relay.auth import make_upgrade_token
 
         token = make_upgrade_token(gateway_id, secret)
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token-build failure
+    except Exception as exc:
         logger.warning("relay policy declaration failed to build token (%s); connector keeps prior policy", exc)
         return False
 
@@ -650,7 +673,7 @@ def send_relay_policy() -> bool:
             continue
         try:
             status = _post_policy(policy_url=policy_url, token=token, policy=policy)
-        except Exception as exc:  # noqa: BLE001 - boot must survive a policy-declare failure
+        except Exception as exc:
             logger.warning(
                 "relay policy declaration failed for platform=%s (%s); continuing", platform, exc
             )
@@ -737,22 +760,3 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
         )
     )
     return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform (e.g. Telegram's
-    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
-    ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
-    """
-    entry = _relay_bot_ids_map().get(platform)
-    if isinstance(entry, dict):
-        username = entry.get("username")
-        if username:
-            return str(username).lstrip("@")
-    return None
-# ---- END PLUGIN-COMPAT ----

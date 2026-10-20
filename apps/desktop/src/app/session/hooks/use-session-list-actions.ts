@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
-import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -28,8 +28,10 @@ import {
   keepFailedProfileMeta,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  messagingListServerForFetch,
   setCorruptSessionStores,
   setCronSessions,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -37,9 +39,16 @@ import {
   setSessionProfilesUsage,
   setSessions,
   setSessionsLoadError,
-  setSessionsLoading
+  setSessionsLoading,
+  stampMessagingRowsWithListServer
 } from '@/store/session'
-import { $removedSessionIds } from '@/store/session-removal'
+import {
+  $removedSessionIds,
+  captureSessionTombstoneGenerations,
+  sessionRemovalIntersected,
+  type SessionTombstoneGenerationSnapshot,
+  tombstoneRowIds
+} from '@/store/session-removal'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
@@ -50,8 +59,20 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// interleaving gateway threads that bury them. ACP rows are editor-driven
+// conversations: every editor wake mints an auto-titled row, so they would
+// bury local chats — and they were never ended before #118216, which also
+// kept prune/archive away from them.
+const SIDEBAR_EXCLUDED_SOURCES = [
+  'acp',
+  'cron',
+  'kanban',
+  'oneshot',
+  'subagent',
+  'tool',
+  ...MESSAGING_SESSION_SOURCE_IDS
+]
+
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -63,13 +84,46 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 // Honoring the optimistic tombstone at every ingestion point keeps the removal
 // stable; the tombstone self-clears once projects.tree confirms the delete,
 // and a failed delete untombstones immediately, so nothing is filtered on the
-// non-destructive paths.
+// non-destructive paths. A tombstone matches the row on ANY id the
+// conversation has answered to (tip, root, and every intermediate lineage
+// segment) — armed on one name, it must still catch the same conversation
+// returning under another (#123685).
 function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
   const tombstones = $removedSessionIds.get()
 
-  return tombstones.size
-    ? sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
-    : sessions
+  if (!tombstones.size) {
+    return sessions
+  }
+
+  const tombstoned = (session: SessionInfo): boolean => tombstoneRowIds(session).some(id => tombstones.has(id))
+
+  const kept = sessions.filter(session => !tombstoned(session))
+
+  return kept.length === sessions.length ? sessions : kept
+}
+
+// A fetch whose page was READ before an archive/delete committed can land
+// after the projects.tree prune has already dropped the tombstone (the tree is
+// right to prune — the id is gone from its snapshot), so `dropTombstoned` has
+// nothing left to honor and the stale row resurrected through the keep set
+// (#123685). The tombstone's generation counter survives the prune: capture it
+// at fetch start, and reject any row whose removal lifecycle moved toward
+// removal underneath the request. A release edge (failed RPC, unarchive)
+// re-admits the row as before.
+function dropRemovalRaced(sessions: SessionInfo[], snapshot: SessionTombstoneGenerationSnapshot): SessionInfo[] {
+  const raced = (session: SessionInfo): boolean =>
+    tombstoneRowIds(session).some(id => sessionRemovalIntersected(snapshot, id))
+
+  const kept = sessions.filter(session => !raced(session))
+
+  return kept.length === sessions.length ? sessions : kept
+}
+
+function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): SessionInfo[] {
+  const server = messagingListServerForFetch(scopeProfile, getApiRequestConnection())
+  setMessagingListServer(server)
+
+  return stampMessagingRowsWithListServer(rows, server)
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:
@@ -137,6 +191,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const requestId = refreshMessagingSessionsRequestRef.current + 1
     refreshMessagingSessionsRequestRef.current = requestId
 
+    // Same removal-race guard as the recents refresh (#123685).
+    const removalSnapshot = captureSessionTombstoneGenerations()
+
     const owns = () =>
       refreshMessagingSessionsRequestRef.current === requestId &&
       sidebarProfileForScope(profileScopeRef.current) === sessionProfile
@@ -163,7 +220,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source)))
+      const rows = publishMessagingRows(
+        dropRemovalRaced(dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source))), removalSnapshot),
+        sessionProfile
+      )
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -193,6 +253,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
       const loaded = $messagingSessions.get().filter(inPlatform).length
 
+      // Same removal-race guard as the recents refresh: this page was read
+      // before an archive could commit and can outlive the tombstone prune.
+      const removalSnapshot = captureSessionTombstoneGenerations()
+
       const owns = () =>
         loadMoreMessagingRequestRef.current[requestKey] === requestId &&
         sidebarProfileForScope(profileScopeRef.current) === sessionProfile
@@ -221,7 +285,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         return
       }
 
-      const incoming = dropTombstoned(result.sessions.filter(inPlatform))
+      const incoming = publishMessagingRows(
+        dropRemovalRaced(dropTombstoned(result.sessions.filter(inPlatform)), removalSnapshot),
+        sessionProfile
+      )
 
       setMessagingSessions(prev => [
         ...prev.filter(s => !inPlatform(s)),
@@ -281,6 +348,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         refreshSessionsRequestRef.current === requestId &&
         sidebarProfileForScope(profileScopeRef.current) === sessionProfile
 
+      // Snapshot the removal lifecycle BEFORE the first read: a page read
+      // pre-archive-commit can land post-prune, and only the generation
+      // delta (not tombstone membership) still names the doomed row then.
+      const removalSnapshot = captureSessionTombstoneGenerations()
+
       try {
         const limit = $sessionsLimit.get()
 
@@ -327,10 +399,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
 
+          const scopedRetry =
+            recents.retry === true ||
+            (sessionProfile !== 'all' && recents.profiles_failed?.[sessionProfile]?.retry === true) ||
+            result.profiles_failed?.[sessionProfile]?.retry === true
+
           setCorruptSessionStores(result.storage)
           // A damaged store already has its own notice; Retry can't repair it.
           const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
-          setSessionsLoadError(Boolean(showLoading && retryableErrors?.length && recents.sessions.length === 0))
+          setSessionsLoadError(
+            Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0)
+          )
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.
@@ -345,7 +424,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
               carryForwardFailedProfileSessions(prev, recents.sessions ?? [], recents.errors ?? result.errors)
             )
 
-            const next = mergeSessionPage(prev, incoming, sessionsToKeep())
+            // Filter AFTER the merge: the guard must also catch survivors
+            // (a stale previous slice can still hold the doomed row through
+            // the keep set once the tombstone prune has cleared membership).
+            const next = dropRemovalRaced(mergeSessionPage(prev, incoming, sessionsToKeep()), removalSnapshot)
 
             return sameCronSignature(prev, next) ? prev : next
           })
@@ -377,11 +459,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           })
 
           // Cron section: latest N cron sessions (kept so a pinned cron run still
-          // resolves via sessionByAnyId), signature-gated like above.
+          // resolves via sessionByAnyId), signature-gated like above. The
+          // optimistic tombstone applies here too — the batched page can carry
+          // a cron run whose delete/archive RPC is still in flight (#50928).
           setCronSessions(prev => {
             const incoming = carryForwardFailedProfileSessions(
               prev,
-              result.cron.sessions ?? [],
+              dropRemovalRaced(dropTombstoned(result.cron.sessions ?? []), removalSnapshot),
               result.cron.errors ?? result.errors
             )
 
@@ -392,17 +476,22 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // didn't catch (custom sources stay in local recents), then split per
           // platform in the UI.
           const messagingErrors = result.messaging.errors ?? result.errors
-          setMessagingSessions(prev => {
-            const messagingRows = dropTombstoned(
-              carryForwardFailedProfileSessions(
-                prev,
-                (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
-                messagingErrors
-              )
-            )
 
-            return sameCronSignature(prev, messagingRows) ? prev : messagingRows
-          })
+          const messagingRows = publishMessagingRows(
+            dropRemovalRaced(
+              dropTombstoned(
+                carryForwardFailedProfileSessions(
+                  $messagingSessions.get(),
+                  (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
+                  messagingErrors
+                )
+              ),
+              removalSnapshot
+            ),
+            sessionProfile
+          )
+
+          setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
           // Hit the cap → at least one platform may have more on disk than loaded.
           setMessagingTruncated(prev =>
             messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT

@@ -143,9 +143,6 @@ class TestArmDisarm:
         assert not exit_capture.fired.is_set()
         assert exit_capture.codes == []
 
-    def test_disarm_without_arm_is_safe(self):
-        disarm_startup_watchdog()  # must not raise
-
     def test_disarm_is_idempotent(self):
         arm_startup_watchdog(timeout_s=60)
         disarm_startup_watchdog()

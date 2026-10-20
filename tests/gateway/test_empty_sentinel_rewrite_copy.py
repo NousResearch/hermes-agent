@@ -9,7 +9,6 @@ import pytest
 from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
 from gateway.run_turn import GatewayTurnMixin
 
-
 class _Runner(GatewayTurnMixin):
     def __init__(self):
         self.async_session_store = SimpleNamespace(clear_resume_pending=self._noop)
@@ -19,7 +18,6 @@ class _Runner(GatewayTurnMixin):
 
     async def _clear_restart_failure_count(self, *_a, **_k):
         return None
-
 
 @pytest.mark.asyncio
 async def test_empty_sentinel_rewrite_uses_the_shared_explanation_with_the_model_name():
@@ -33,5 +31,3 @@ async def test_empty_sentinel_rewrite_uses_the_shared_explanation_with_the_model
     )
     assert silent is False
     assert EMPTY_RESPONSE_EXPLANATION.format(model="llama3") in response
-
-

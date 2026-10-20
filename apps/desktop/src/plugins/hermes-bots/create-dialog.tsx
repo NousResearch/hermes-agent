@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
   Textarea,
+  Tip,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -43,6 +44,10 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { registerCanonicalGroup } from './canonical-group-registry'
+import type { CanonicalGroupOrigin } from './canonical-group-registry'
+import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -111,11 +116,67 @@ interface CapabilityCatalog {
 }
 interface CreateAgentDialogProps {
   onClose: () => void
+  /** Opens the editor for a just-created local bot whose model is not ready. */
+  onConfigureModel?: (bot: RosterRow) => void
   open: boolean
   roster: RosterRow[]
 }
 
-export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogProps) {
+/** The live Capabilities surface needs a real profile. Materialize it whenever
+ *  the tab is showing a valid, untaken name that has no draft yet, not only on
+ *  the tab click: a user who opens the tab first and names the bot after (or
+ *  renames it) otherwise sat on a spinner forever. Debounced so typing a name
+ *  does not mint a draft per keystroke. */
+function useCapabilitiesDraft(ready: boolean, slug: string, draft: null | string, materialize: () => void) {
+  // The timer is keyed on the name, but must run the LATEST callback: a title
+  // or description typed during the wait belongs in the created profile.
+  const latest = useRef(materialize)
+  latest.current = materialize
+
+  useEffect(() => {
+    if (!ready || draft === slug) {
+      return
+    }
+
+    const timer = window.setTimeout(() => latest.current(), 800)
+
+    return () => window.clearTimeout(timer)
+  }, [ready, slug, draft])
+}
+
+/** New Bot's live Capabilities tab: a hint until the name is usable, a spinner
+ *  until its draft profile exists, then the real surface pinned to that draft. */
+function CapabilitiesTab({ connection, draft, hint }: { connection?: string; draft: null | string; hint: null | string }) {
+  const b = useBots()
+  const note = 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)'
+
+  if (hint) {
+    return <div className={note}>{hint}</div>
+  }
+
+  if (!draft) {
+    return (
+      <div className="flex justify-center py-4">
+        <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+      </div>
+    )
+  }
+
+  // The tab list is gated on the same export, so this is only reachable via
+  // persisted tab state on a build that lacks it — a message rather than
+  // rendering `undefined` as a component, which throws.
+  if (!CapabilitiesView) {
+    return <div className={note}>{b.editor.newerDesktop}</div>
+  }
+
+  return (
+    <ResizableFrame>
+      <CapabilitiesView embedded fixedProfile={draft} {...(connection ? { fixedConnection: connection } : {})} />
+    </ResizableFrame>
+  )
+}
+
+export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const [name, setName] = useState('')
@@ -211,6 +272,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const { slug, title: botTitle } = botProfileIdentity(name, title)
+  const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
@@ -299,6 +361,13 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // switched must not key the preview (or the describe call) either.
   const capSource = cloneFrom === '__none__' || remoteTarget ? 'default' : cloneFrom
 
+  const materializeForCaps = () =>
+    void ensureAgentCreated()
+      .then(created => created && setCreatedForCaps(created))
+      .catch(err => host.notifyError(err, b.bot.createFailed))
+
+  useCapabilitiesDraft(advTab === 'capabilities' && valid && !taken, slug, createdForCaps, materializeForCaps)
+
   const ensureCaps = () => {
     if ((caps && caps.source === capSource) || capsFailed) {
       return
@@ -363,8 +432,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // (its consumers — the taken check, draft discard on cancel, the MCP setup
   // button's profile param — all read a string); flightRef shares the
   // in-flight creation promise so simultaneous MCP setup / Create clicks fire
-  // ONE profiles.create. A settled flight clears its slot: failures retry,
-  // and a null result (form invalid at flight time) isn't sticky.
+  // ONE profiles.create. A failed flight clears its slot so a retry can run.
   const ensureAgentCreated = (): Promise<null | string> => {
     // Renamed since the draft materialized? The old draft is orphaned —
     // discard it and create fresh under the new slug.
@@ -377,12 +445,14 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       return Promise.resolve(createdRef.current)
     }
 
-    const flight = singleFlight(flightRef, async () => {
-      if (!valid || taken) {
-        return null
-      }
+    // Never start a flight for an unusable name: singleFlight only clears its
+    // slot on failure, so a null result would be returned to every later
+    // caller and the draft could never be created once a name is typed.
+    if (!valid || taken) {
+      return Promise.resolve(null)
+    }
 
-      const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
+    const flight = singleFlight(flightRef, async () => {
       await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -514,12 +584,38 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return
       }
 
-      host.notify({
-        kind: 'success',
-        message: remoteTarget
-          ? b.editor.createdOn(displayName({ name: slug, title: botTitle }), targetLabel)
-          : b.editor.created(displayName({ name: slug, title: botTitle }))
-      })
+      // The intro turn is a real model call. Probe the new profile's route
+      // first so a bot whose machine has no usable credential lands as
+      // "created, needs a model" instead of a doomed "No LLM provider" turn.
+      // Only an explicit `ok: false` counts; older gateways proceed as before.
+      const readiness = await requestForTarget<{ error?: string; ok?: boolean }>('setup.runtime_check', {
+        profile: slugCreated
+      }).catch(() => null)
+
+      const needsModel = readiness?.ok === false
+      const who = displayName({ name: slug, title: botTitle })
+      const createdMessage = remoteTarget ? b.editor.createdOn(who, targetLabel) : b.editor.created(who)
+
+      const bot: RosterRow = {
+        name: slugCreated,
+        description: descriptionText,
+        title: botTitle,
+        ...(remoteTarget ? { connectionId: targetConnection, remoteSource: true } : {})
+      }
+
+      host.notify(
+        needsModel
+          ? {
+              kind: 'warning',
+              title: createdMessage,
+              message: b.editor.needsModel,
+              detail: readiness?.error,
+              ...(!remoteTarget && onConfigureModel
+                ? { action: { label: b.editor.configureModel, onClick: () => onConfigureModel(bot) } }
+                : {})
+            }
+          : { kind: 'success', message: createdMessage }
+      )
       const wasRemote = remoteTarget
       reset()
       onClose()
@@ -545,7 +641,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // Agent creation. Click-path resolution (openBotCanonicalChat) mints
         // silently so a resolution miss never burns a turn (ScottFive).
         const sid = await createCanonicalChat(slug, {
-          kickoff: true
+          kickoff: !needsModel
         })
 
         if (!sid && typeof host.newChat === 'function') {
@@ -703,12 +799,9 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   setCapFilter('')
 
                   if (id === 'capabilities') {
-                    // The live surface needs a real profile —
-                    // materialize it now (same lazy-create door
-                    // the MCP setup buttons use).
-                    void ensureAgentCreated()
-                      .then(created => created && setCreatedForCaps(created))
-                      .catch(err => host.notifyError(err, b.bot.createFailed))
+                    // The live surface needs a real profile; a name typed later
+                    // is picked up by useCapabilitiesDraft.
+                    materializeForCaps()
                   } else if (id !== 'general') {
                     ensureCaps()
                   }
@@ -783,7 +876,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   )}
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={shareAuth} onCheckedChange={value => setShareAuth(Boolean(value))} />
-                    {b.editor.shareKeys}
+                    {remoteTarget ? b.editor.shareKeysOn(targetLabel) : b.editor.shareKeys}
                   </label>
                   <div className="pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
                     {b.editor.shareKeysHint}
@@ -794,33 +887,11 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   </label>
                 </div>
               ) : advTab === 'capabilities' ? (
-                !valid || taken ? (
-                  <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                    {taken ? b.editor.nameTakenHint : b.editor.nameFirstHint}
-                  </div>
-                ) : !createdForCaps ? (
-                  <div className="flex justify-center py-4">
-                    <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
-                  </div>
-                ) : CapabilitiesView ? (
-                  <ResizableFrame height={440} minHeight={280}>
-                    <CapabilitiesView
-                      embedded
-                      fixedProfile={createdForCaps}
-                      {...(remoteTarget
-                        ? {
-                            fixedConnection: targetConnection
-                          }
-                        : {})}
-                    />
-                  </ResizableFrame>
-                ) : (
-                  // The tab list is gated on the same export, so this is only
-                  // reachable via persisted tab state on a build that lacks it
-                  // — a message rather than rendering `undefined` as a
-                  // component, which throws.
-                  <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.newerDesktop}</div>
-                )
+                <CapabilitiesTab
+                  connection={remoteTarget ? targetConnection : undefined}
+                  draft={createdForCaps === slug ? createdForCaps : null}
+                  hint={!valid ? b.editor.nameFirstHint : taken ? b.editor.nameTakenHint : null}
+                />
               ) : capsFailed ? (
                 <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.newerGateway}</div>
               ) : !caps ? (
@@ -1104,7 +1175,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
 
 interface CreateGroupChatDialogProps {
   onClose: () => void
-  onCreated?: (group: string) => void
+  onCreated?: (group: string, origin: CanonicalGroupOrigin) => void
   open: boolean
   roster: RosterRow[]
 }
@@ -1145,10 +1216,38 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
-  const create = () => {
+  const creating = useRef(false)
+
+  const create = async () => {
+    if (creating.current) {return}
+    creating.current = true
+
+    try {
     const base = (name.trim() || placeholder).slice(0, 64)
 
     if (selected.length < 2 || !base) {
+      return
+    }
+
+    const route = captureCanonicalGroupRoute()
+    const sourceCurrent = groupCreationSource(route)
+
+    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+    const mode = groupExecutionMode(capabilities)
+
+    if (!sourceCurrent() || mode === 'unavailable') {
+      throw new Error(b.canonical.driverUnavailable)
+    }
+
+    if (mode === 'canonical') {
+      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+
+      // Creation already succeeded; leave it on its owner without adopting a stale result.
+      if (!sourceCurrent()) {return}
+      const key = registerCanonicalGroup(route, created.room)
+      onClose()
+      onCreated?.(key, 'key')
+
       return
     }
 
@@ -1194,7 +1293,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       message: `“${groupName}” created with ${selected.length} bots`
     })
     onClose()
-    onCreated?.(groupName)
+    onCreated?.(groupName, 'name')
+    } catch (error) {
+      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+    } finally { creating.current = false }
   }
 
   return (
@@ -1231,18 +1333,19 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                 key={botRosterKey(bot)}
                 variant="muted"
               >
-                <RowButton
-                  onClick={() =>
-                    setChecked(prev => ({
-                      ...prev,
-                      [botRosterKey(bot)]: false
-                    }))
-                  }
-                  title={b.group.removeFromSelection}
-                >
-                  {displayName(bot, botRosterMeta(bot, allMeta))}
-                  <Codicon className="text-[0.6rem]" name="close" />
-                </RowButton>
+                <Tip label={b.group.removeFromSelection}>
+                  <RowButton
+                    onClick={() =>
+                      setChecked(prev => ({
+                        ...prev,
+                        [botRosterKey(bot)]: false
+                      }))
+                    }
+                  >
+                    {displayName(bot, botRosterMeta(bot, allMeta))}
+                    <Codicon className="text-[0.6rem]" name="close" />
+                  </RowButton>
+                </Tip>
               </Badge>
             ))}
           </div>

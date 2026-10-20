@@ -23,8 +23,8 @@ _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running 
 
 def _routermint_headers() -> dict:
     """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli import __version__ as _HERMES_VERSION
-    return {"User-Agent": f"HermesAgent/{_HERMES_VERSION}"}
+    from hermes_cli.version_info import get_version_info
+    return {"User-Agent": f"HermesAgent/{get_version_info().base_version}"}
 
 
 def _qwen_portal_headers() -> dict:
@@ -112,6 +112,11 @@ class ClientLifecycleMixin:
             owners = getattr(self, "_process_owner_task_ids", ())
             for process in process_registry.list_sessions():
                 if process["owner_task_id"] in owners and process["status"] == "running":
+                    # An explicitly persisted job (terminal persist_on_release=true) survives
+                    # agent close — session end, compression, error recovery (#41225). The
+                    # user can still stop it on purpose via process_manage kill.
+                    if process.get("persist_on_release"):
+                        continue
                     process_registry.kill_process(
                         process["session_id"], source="agent_close", consume_output=True,
                     )
@@ -186,7 +191,7 @@ class ClientLifecycleMixin:
 
     _create_openai_client = _forward("agent.agent_runtime_helpers", "create_openai_client")
     _force_close_tcp_sockets = _forward_static("agent.agent_runtime_helpers", "force_close_tcp_sockets")
-    _cleanup_dead_connections = _forward("agent.agent_runtime_helpers", "cleanup_dead_connections")
+    _cleanup_dead_connections = _forward("agent.agent_runtime_helpers_dead_connections", "cleanup_dead_connections")
     _run_codex_stream = _forward("agent.codex_runtime", "run_codex_stream")
     _recover_with_credential_pool = _forward("agent.agent_runtime_helpers", "recover_with_credential_pool")
 
@@ -671,7 +676,11 @@ class ClientLifecycleMixin:
         exp, account = claims.get("exp"), claims.get("sub")
         if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
             return False
-        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
+        try:
+            return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
+        except Exception:
+            logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+            return False
 
 
     def _resolve_env_credentials(self) -> Optional[tuple]:
@@ -904,7 +913,25 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
+        old_token = self._anthropic_api_key
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
+        # Claude Code revokes the old token on refresh: every holder of it (agent.api_key, the compressor's
+        # main_runtime, the fallback-restore snapshot) must move too, or compression 401s for the session's life.
+        if self.api_key == old_token:
+            self.api_key = new_token
+        cc = getattr(self, "context_compressor", None)
+        if cc is not None and getattr(cc, "api_key", None) == old_token:
+            cc.api_key = new_token
+        rt = getattr(self, "_primary_runtime", None) or {}
+        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
+            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
+        for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
+            if rt.get(k) == old_token:
+                rt[k] = new_token
+        # The turn's aux runtime was published before the first request triggered this refresh, so
+        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
+        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        rotate_runtime_main_api_key(old_token, new_token)
         return True
 
     # ------------------------------------------------------------------ route-derived client config

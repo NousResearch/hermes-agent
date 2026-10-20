@@ -6,12 +6,9 @@ leaking in under an api_mode-flip race. The Anthropic SDK raises a
 non-retryable ``TypeError`` on any of them, killing the whole turn.
 """
 
-
-
 from agent.anthropic_adapter import (
     sanitize_anthropic_kwargs,
 )
-
 
 def _fake_anthropic_call(**kwargs):
     """Mimic the Anthropic SDK's strict kwarg signature."""
@@ -24,12 +21,9 @@ def _fake_anthropic_call(**kwargs):
     if bad:
         raise TypeError(
             "Messages.stream() got an unexpected keyword argument "
-            f"{sorted(bad)[0]!r}"
+            f"{min(bad)!r}"
         )
     return "OK"
-
-
-
 
 def test_strips_all_responses_only_keys():
     payload = {
@@ -43,13 +37,3 @@ def test_strips_all_responses_only_keys():
     assert out is payload  # mutates in place and returns same dict
     assert payload == {"model": "claude-sonnet-4-6"}
     assert _fake_anthropic_call(**payload) == "OK"
-
-
-
-
-
-
-
-
-
-

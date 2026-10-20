@@ -22,7 +22,6 @@ from agent.review_engine import (
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 
-
 @pytest.fixture(autouse=True)
 def _clean_state():
     ad._reset_for_tests()
@@ -35,7 +34,6 @@ def _clean_state():
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
-
 
 # ---------------------------------------------------------------------------
 # snapshot_recent_messages
@@ -53,7 +51,6 @@ def test_snapshot_takes_last_ten_chat_messages_only():
     assert snap[-1]["text"] == "m14"
     assert all(m["role"] == "user" for m in snap)
 
-
 def test_snapshot_skips_toolcall_stub_assistant_messages():
     msgs = [
         {"role": "user", "content": "make a PR"},
@@ -67,7 +64,6 @@ def test_snapshot_skips_toolcall_stub_assistant_messages():
         "PR #123: https://example.com/pr/123",
     ]
 
-
 def test_snapshot_handles_multimodal_content_lists():
     msgs = [{
         "role": "user",
@@ -79,13 +75,11 @@ def test_snapshot_handles_multimodal_content_lists():
     snap = snapshot_recent_messages(msgs)
     assert snap[0]["text"] == "look at this\n[image_url]"
 
-
 def test_snapshot_caps_oversized_messages():
     msgs = [{"role": "user", "content": "x" * 50_000}]
     snap = snapshot_recent_messages(msgs)
     assert len(snap[0]["text"]) < 13_000
     assert snap[0]["text"].endswith("[... truncated ...]")
-
 
 # ---------------------------------------------------------------------------
 # build_review_task
@@ -105,9 +99,6 @@ def test_build_review_task_includes_excerpt_and_prompt():
     assert "[USER]" in context and "[PRIMARY AGENT]" in context
     assert "PR #99 opened" in context
     assert prompt.strip() in context
-
-
-
 
 # ---------------------------------------------------------------------------
 # auxiliary.review credential resolution
@@ -130,7 +121,6 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         "api_mode": "",
     }
 
-
 def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly",
@@ -138,13 +128,11 @@ def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     )
     assert re_mod._load_review_credentials_cfg() is None
 
-
 def test_load_review_credentials_cfg_missing_section(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
     )
     assert re_mod._load_review_credentials_cfg() is None
-
 
 # ---------------------------------------------------------------------------
 # delegate_task credentials_cfg override (the internal /review routing hook)
@@ -158,7 +146,6 @@ def _fake_parent():
     parent._active_children = []
     parent._active_children_lock = None
     return parent
-
 
 def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
     """The per-call credentials_cfg dict must reach the credential resolver
@@ -197,7 +184,6 @@ def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
     parsed = json.loads(out)
     assert parsed["status"] == "dispatched"
     assert seen["cfg"] == override
-
 
 # ---------------------------------------------------------------------------
 # start_review end-to-end through the async delegation rail
@@ -258,16 +244,13 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     assert evt is not None and evt["type"] == "async_delegation"
     assert evt["results"][0]["summary"] == "REVIEW: looks good"
 
-
 def test_start_review_rejects_empty_conversation():
     with pytest.raises(ValueError, match="empty"):
         start_review(_fake_parent(), [], "")
 
-
 def test_start_review_requires_agent():
     with pytest.raises(ValueError, match="No active agent"):
         start_review(None, [{"role": "user", "content": "x"}], "")
-
 
 # ---------------------------------------------------------------------------
 # collect_parent_loaded_skills — reviewer inherits the parent's working skills
@@ -303,7 +286,6 @@ def test_collect_skills_from_preloaded_prompt_and_history():
     names = collect_parent_loaded_skills(parent, msgs)
     assert names == ["hermes-agent-dev", "github-pr-workflow"]
 
-
 def test_collect_skills_empty_when_none_loaded():
     from agent.review_engine import collect_parent_loaded_skills
 
@@ -312,7 +294,6 @@ def test_collect_skills_empty_when_none_loaded():
     assert collect_parent_loaded_skills(parent, [
         {"role": "user", "content": "hi"},
     ]) == []
-
 
 def test_collect_skills_caps_at_limit():
     from agent.review_engine import collect_parent_loaded_skills
@@ -330,15 +311,11 @@ def test_collect_skills_caps_at_limit():
     cap = inspect.signature(collect_parent_loaded_skills).parameters["limit"].default
     assert len(collect_parent_loaded_skills(parent, msgs)) == cap < 15
 
-
 def test_briefing_includes_loaded_skills_instruction():
     snap = [{"role": "user", "text": "review my PR"}]
     _, context = build_review_task(snap, "", ["hermes-agent-dev", "xitter"])
     assert "hermes-agent-dev, xitter" in context
     assert "skill_view" in context
-
-
-
 
 def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     import tools.delegate_tool as dt
@@ -380,7 +357,6 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     assert "hermes-agent-dev" in built["context"]
     assert "skill_view" in built["context"]
 
-
 # ---------------------------------------------------------------------------
 # Workspace context files — ALL subagents (reviewer included) get AGENTS.md
 # et al. in their child system prompt (tools/delegate_tool.py)
@@ -399,13 +375,6 @@ def test_child_system_prompt_embeds_workspace_context(tmp_path):
         "do the thing", None, workspace_path=str(workspace)
     )
     assert "sibling call sites" in prompt
-
-
-
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # Registry sync: `review` must be a first-class slot in every aux-task surface
@@ -432,7 +401,6 @@ def test_review_registered_in_every_aux_surface():
     assert "review" in _AUX_TASK_SLOTS, \
         "review missing from _AUX_TASK_SLOTS (dashboard REST API)"
 
-
 # ---------------------------------------------------------------------------
 # format_dispatch_note
 # ---------------------------------------------------------------------------
@@ -444,5 +412,3 @@ def test_format_dispatch_note_dispatched():
     )
     assert "security" not in note and "\n" not in note
     assert len(note) < 80
-
-

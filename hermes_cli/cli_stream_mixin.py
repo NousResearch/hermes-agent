@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from rich.markup import escape as _escape
 
+from agent.i18n import t
 from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
@@ -25,15 +26,21 @@ _OPEN_TAGS = THINK_OPEN_TAGS
 _CLOSE_TAGS = THINK_CLOSE_TAGS
 _MAX_CLOSE_TAG_LEN = max(len(t) for t in _CLOSE_TAGS)
 
-# Ordered (prefix, status) rows for _slow_command_status — first match wins.
+# Ordered (prefix, catalog key) rows for _slow_command_status — first match wins; the key is
+# resolved through t() at call time so the active language applies.
 _SLOW_COMMAND_STATUS = (
-    ("/skills search", "Searching skills..."), ("/skills browse", "Loading skills..."),
-    ("/skills inspect", "Inspecting skill..."), ("/skills install", "Installing skill..."),
-    ("/skills", "Processing skills command..."), ("/browser", "Configuring browser..."))
+    ("/skills search", "cli.stream.busy_skills_search"), ("/skills browse", "cli.stream.busy_skills_browse"),
+    ("/skills inspect", "cli.stream.busy_skills_inspect"), ("/skills install", "cli.stream.busy_skills_install"),
+    ("/skills", "cli.stream.busy_skills"), ("/browser", "cli.stream.busy_browser"))
 _SLOW_COMMAND_STATUS_EXACT = {
-    "/reload-mcp": "Reloading MCP servers...",
-    "/reload-skills": "Reloading skills...",
-    "/reload_skills": "Reloading skills..."}
+    "/reload-mcp": "cli.stream.busy_reload_mcp",
+    "/reload-skills": "cli.stream.busy_reload_skills",
+    "/reload_skills": "cli.stream.busy_reload_skills"}
+
+
+def _thinking_prefix() -> str:
+    """``  [thinking] `` — the reasoning-preview label; also measured for wrap width."""
+    return f"  {t('cli.stream.thinking_label')} "
 
 
 def _terminal_columns(default: int = 80) -> int:
@@ -118,7 +125,7 @@ class CLIStreamMixin:
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
-        wrap_width = max(30, _terminal_columns() - len("  [thinking] ") - 2)
+        wrap_width = max(30, _terminal_columns() - len(_thinking_prefix()) - 2)
         paragraphs = []
         for paragraph in re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n")):
             compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
@@ -128,14 +135,14 @@ class CLIStreamMixin:
         if not preview_text:
             return
         if self.verbose:
-            _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
+            _cprint(f"{_DIM}{_thinking_prefix()}{preview_text}{_RST}")
             return
         lines = preview_text.splitlines()
         if len(lines) > 5:
-            preview = "\n".join(lines[:5]) + f"\n  ... ({len(lines) - 5} more lines)"
+            preview = "\n".join(lines[:5]) + f"\n  {t('cli.stream.thinking_more_lines', count=len(lines) - 5)}"
         else:
             preview = preview_text
-        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+        _cprint(f"{_DIM}{_thinking_prefix()}{preview}{_RST}")
 
     def _flush_reasoning_preview(self, *, force: bool = False) -> None:
         """Flush buffered reasoning text at natural boundaries.
@@ -146,7 +153,7 @@ class CLIStreamMixin:
         buf = getattr(self, "_reasoning_preview_buf", "")
         if not buf:
             return
-        target_width = max(40, _terminal_columns() - len("  [thinking] ") - 4)
+        target_width = max(40, _terminal_columns() - len(_thinking_prefix()) - 4)
         flush_text = ""
         if force:
             flush_text, buf = buf, ""
@@ -178,8 +185,10 @@ class CLIStreamMixin:
             f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
             if getattr(self, "show_timestamps", False) else "")
         lines = user_input.split("\n")
+        from hermes_cli.cli_modern_layout import is_modern, prompt_glyph
+        mark = _escape(prompt_glyph()) if is_modern(self) else "●"
         if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+            return f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
 
         first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
         last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
@@ -191,11 +200,11 @@ class CLIStreamMixin:
             hidden_middle_count = 0
             tail = []
 
-        preview_lines = [f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
+        preview_lines = [f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
         preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
         if hidden_middle_count > 0:
-            noun = "line" if hidden_middle_count == 1 else "lines"
-            preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
+            key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
+            preview_lines.append(f"[dim]{_escape(t(key, count=hidden_middle_count))}[/]")
         preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
         return "\n".join(preview_lines)
 
@@ -212,8 +221,8 @@ class CLIStreamMixin:
             # check and read (TOCTOU), silently dropping the input.
             try:
                 # See #17666.
-                return path.read_text(encoding="utf-8")
-            except (OSError, IOError):
+                return path.read_text(encoding="utf-8-sig")
+            except OSError:
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
 
@@ -221,17 +230,26 @@ class CLIStreamMixin:
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
-        from cli import ChatConsole, _accent_hex
+        from cli import ChatConsole, _accent_hex, _cprint
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from gateway.warning_notifications import render_notification
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        modern = getattr(self, "_modern_layout", False)
+        if modern:
+            from hermes_cli.cli_modern_layout import separator
+            _cprint("\n" + separator(True))
+        else:
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
+            # soft_wrap in the glyph layout: the terminal wraps a long prompt, so a resize re-flows it.
+            ChatConsole().print(self._format_submitted_user_message_preview(text), soft_wrap=modern)
+        elif modern:
+            from hermes_cli.cli_modern_layout import user_echo_markup
+            ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
@@ -248,10 +266,26 @@ class CLIStreamMixin:
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import reasoning_text_line, separator
+            if not getattr(self, "_reasoning_box_opened", False):
+                self._reasoning_box_opened, self._reasoning_started_at = True, time.monotonic()
+                self._reasoning_buf, self._reasoning_full_text = "", ""
+                _cprint("\n" + separator(False))
+            self._reasoning_full_text = getattr(self, "_reasoning_full_text", "") + text
+            self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+            # Live, as classic: complete lines now, long partial lines force-flushed.
+            while "\n" in self._reasoning_buf:
+                line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+                _cprint(reasoning_text_line(line))
+            if len(self._reasoning_buf) > 80:
+                _cprint(reasoning_text_line(self._reasoning_buf))
+                self._reasoning_buf = ""
+            return
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = self._scrollback_box_width()
-            r_label = " Reasoning "
+            r_label = f" {t('cli.chat.reasoning_label')} "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
 
@@ -285,9 +319,20 @@ class CLIStreamMixin:
             _cprint(line)
 
     def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open, then flush deferred content."""
+        """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
         from cli import _DIM, _RST, _cprint
         if not getattr(self, "_reasoning_box_opened", False):
+            return
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import reasoning_text_line, thought_line
+            if getattr(self, "_reasoning_buf", ""):
+                _cprint(reasoning_text_line(self._reasoning_buf))
+            started = getattr(self, "_reasoning_started_at", 0.0)
+            _cprint(thought_line(time.monotonic() - started if started else None,
+                                 getattr(self, "_reasoning_full_text", "")))
+            self._reasoning_buf, self._reasoning_full_text, self._reasoning_box_opened = "", "", False
+            if not getattr(self, "_stream_box_live", False):
+                self._release_held_status_lines()
             return
         buf = getattr(self, "_reasoning_buf", "")
         if buf:
@@ -298,10 +343,6 @@ class CLIStreamMixin:
         self._reasoning_box_opened = False
         if not getattr(self, "_stream_box_live", False):
             self._release_held_status_lines()
-        deferred = getattr(self, "_deferred_content", "")
-        if deferred:
-            self._deferred_content = ""
-            self._emit_stream_text(deferred)
 
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
@@ -422,10 +463,8 @@ class CLIStreamMixin:
             HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
         if not text:
             return
-        # Defer content while the reasoning box renders so reasoning always lands BEFORE it.
-        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
+        # Close a still-open reasoning box on the first content token so the answer streams
+        # token-by-token; _close_reasoning_box renders the reasoning tail first, so ordering holds.
         self._close_reasoning_box()
 
         # Open the response box header on the very first visible text
@@ -450,10 +489,18 @@ class CLIStreamMixin:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            if getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import answer_label
+                _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
+                                     if self.show_timestamps else ""))
+            else:
+                w = self._scrollback_box_width()
+                fill = w - 2 - HermesCLI._status_bar_display_width(label)
+                _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
+        # Turn-level record of what actually reached the screen; survives _reset_stream_state at
+        # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
+        self._streamed_text_this_turn = getattr(self, "_streamed_text_this_turn", "") + text
         self._stream_buf += text
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
@@ -515,7 +562,7 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
+        if self._stream_box_opened and getattr(self, "_stream_box_live", False) and not getattr(self, "_modern_layout", False):
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
         self._stream_box_live = False
@@ -533,7 +580,6 @@ class CLIStreamMixin:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
-        self._deferred_content = ""
         # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
         self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
@@ -545,11 +591,11 @@ class CLIStreamMixin:
         cmd_lower = command.lower().strip()
         exact = _SLOW_COMMAND_STATUS_EXACT.get(cmd_lower)
         if exact:
-            return exact
-        for prefix, status in _SLOW_COMMAND_STATUS:
+            return t(exact)
+        for prefix, key in _SLOW_COMMAND_STATUS:
             if cmd_lower.startswith(prefix):
-                return status
-        return "Processing command..."
+                return t(key)
+        return t("cli.stream.processing_command")
 
     def _command_spinner_frame(self) -> str:
         """Return the current spinner frame for slow slash commands."""
@@ -596,7 +642,7 @@ class CLIStreamMixin:
                 continue
             size_kb = img_path.stat().st_size // 1024
             if announce:
-                _cprint(f"  {_DIM}👁️  analyzing {img_path.name} ({size_kb}KB)...{_RST}")
+                _cprint(f"  {_DIM}{t('cli.stream.vision_analyzing', name=img_path.name, size_kb=size_kb)}{_RST}")
             try:
                 result_json = _asyncio.run(
                     vision_analyze_tool(image_url=str(img_path), user_prompt=analysis_prompt))
@@ -608,14 +654,14 @@ class CLIStreamMixin:
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {img_path}]")
                     if announce:
-                        _cprint(f"  {_DIM}✓ image analyzed{_RST}")
+                        _cprint(f"  {_DIM}{t('cli.stream.vision_analyzed')}{_RST}")
                 else:
                     enriched_parts.append(
                         f"[The user attached an image but it couldn't be analyzed. "
                         f"You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]")
                     if announce:
-                        render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}"),
+                        render_notification(lambda: _cprint(f"  {_DIM}{t('cli.stream.vision_failed')}{_RST}"),
                                             platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
             except Exception as e:
                 enriched_parts.append(
@@ -623,7 +669,7 @@ class CLIStreamMixin:
                     f"You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]")
                 if announce:
-                    render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}"),
+                    render_notification(lambda: _cprint(f"  {_DIM}{t('cli.stream.vision_error')}{_RST}"),
                                         platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
         # Vision descriptions first, then the user's original text
@@ -658,9 +704,13 @@ class CLIStreamMixin:
         announced.add(tool_name)
         from agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
-        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {what}…")
+        if getattr(self, "_modern_layout", False):  # the composer rule shows it; scrollback stays quiet
+            self._spinner_text = f"{get_tool_emoji(tool_name, default='⚡')} {t('cli.modern.preparing', what=what)}"
+            self._invalidate()
+            return
+        _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
 
-    def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
+    def _on_tool_progress(self, event_type: str, function_name: str | None = None, preview: str | None = None, function_args: dict | None = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
 
         Drives the TUI spinner (tool.started stamps the elapsed timer); in "all"/"new"/"verbose"
@@ -670,11 +720,12 @@ class CLIStreamMixin:
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":
-            label = function_name or "reference"
+            label = function_name or t("cli.stream.reference_noun")
             text = preview or ""
             idx = kwargs.get("moa_index")
             count = kwargs.get("moa_count")
-            header = f"Reference {idx}/{count} — {label}" if idx and count else f"Reference — {label}"
+            header = (t("cli.stream.reference_header_indexed", index=idx, count=count, label=label) if idx and count
+                      else t("cli.stream.reference_header", label=label))
             try:
                 self._flush_reasoning_preview(force=True)
             except Exception:
@@ -689,7 +740,7 @@ class CLIStreamMixin:
             return
         if event_type == "moa.aggregating":
             agg = function_name or ""
-            self._spinner_text = f"◆ aggregating ({agg})" if agg else "◆ aggregating"
+            self._spinner_text = t("cli.stream.aggregating_detail", detail=agg) if agg else t("cli.stream.aggregating")
             self._invalidate()
             return
 
@@ -727,9 +778,9 @@ class CLIStreamMixin:
                     return
                 self._last_scrollback_tool = function_name
                 try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    from hermes_cli.cli_modern_layout import completed_tool_line
+                    _cprint(completed_tool_line(self, function_name, stored_args, duration, kwargs.get("result"),
+                                                kwargs.get("is_error", False)))
                 except Exception:
                     pass
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched
@@ -788,16 +839,17 @@ class CLIStreamMixin:
                 parsed = {}
             if isinstance(parsed, dict) and parsed.get("status") == "dispatched" and parsed.get("mode") == "background":
                 n = parsed.get("count") or 1
-                noun, tail = ("task", "it finishes") if n == 1 else (f"{n} tasks", "they finish")
+                key = "cli.stream.background_running_one" if n == 1 else "cli.stream.background_running_other"
                 try:
-                    _cprint(f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m")
+                    _cprint(f"\033[2m{t(key, count=n)}\033[0m")
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
             from agent.display import render_edit_diff_with_delta
+            from hermes_cli.cli_modern_layout import diff_printer
             render_edit_diff_with_delta(
                 function_name, function_result, function_args=function_args, snapshot=snapshot,
-                print_fn=_cprint)
+                print_fn=diff_printer(_cprint))
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)

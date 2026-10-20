@@ -216,16 +216,16 @@ class TestTruncatedPartJoining:
     def test_glued_parts_get_a_newline(self):
         from agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts(
-            ["Edited index.html", "Review the 5 changes"]
+            [("Edited index.html", False), ("Review the 5 changes", False)]
         ) == "Edited index.html\nReview the 5 changes"
 
     def test_existing_whitespace_is_not_doubled(self):
         from agent.conversation_loop import _join_truncated_parts
-        assert _join_truncated_parts(["line one\n", "line two"]) == "line one\nline two"
-        assert _join_truncated_parts(["word", " next"]) == "word next"
+        assert _join_truncated_parts([("line one\n", False), ("line two", False)]) == "line one\nline two"
+        assert _join_truncated_parts([("word", False), (" next", False)]) == "word next"
 
     def test_degenerate_inputs(self):
         from agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts([]) == ""
-        assert _join_truncated_parts(["only"]) == "only"
-        assert _join_truncated_parts(["a", "", "b"]) == "a\nb"
+        assert _join_truncated_parts([("only", False)]) == "only"
+        assert _join_truncated_parts([("a", False), ("", False), ("b", False)]) == "a\nb"

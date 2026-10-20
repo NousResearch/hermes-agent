@@ -12,10 +12,8 @@ from toolsets import (
     get_toolset_info,
 )
 
-
 def _dummy_handler(args, **kwargs):
     return "{}"
-
 
 def _make_schema(name: str, description: str = "test tool"):
     return {
@@ -24,9 +22,7 @@ def _make_schema(name: str, description: str = "test tool"):
         "parameters": {"type": "object", "properties": {}},
     }
 
-
 class TestGetToolset:
-
 
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
@@ -42,7 +38,6 @@ class TestGetToolset:
         ts = get_toolset("web")
         assert ts is not None
         assert {"web_search", "web_search_plus"} <= set(ts["tools"])
-
 
     def test_static_and_mcp_alias_with_same_name_are_merged(self, monkeypatch):
         # An MCP server named like a built-in toolset registers a bare alias to its
@@ -62,9 +57,7 @@ class TestGetToolset:
         finally:
             del TOOLSETS["_mergetest"]
 
-
 class TestResolveToolset:
-
 
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A
@@ -78,7 +71,6 @@ class TestResolveToolset:
         finally:
             del TOOLSETS["_cycle_a"]
             del TOOLSETS["_cycle_b"]
-
 
     def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
         reg = ToolRegistry()
@@ -99,14 +91,7 @@ class TestResolveToolset:
 
         assert resolve_toolset("plugin_example") == ["plugin_a", "plugin_b"]
 
-
-
-
-
-
-
 class TestValidateToolset:
-
 
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
@@ -127,15 +112,12 @@ class TestValidateToolset:
         assert validate_toolset("mcp-dynserver") is True
         assert "mcp__dynserver__ping" in resolve_toolset("dynserver")
 
-
 class TestGetToolsetInfo:
 
     def test_composite(self):
         info = get_toolset_info("debugging")
         assert info["is_composite"] is True
         assert info["tool_count"] > len(info["direct_tools"])
-
-
 
 class TestCreateCustomToolset:
     def test_runtime_creation(self):
@@ -153,7 +135,6 @@ class TestCreateCustomToolset:
         finally:
             del TOOLSETS["_test_custom"]
 
-
 class TestRegistryOwnedToolsets:
     def test_registry_membership_is_live(self, monkeypatch):
         reg = ToolRegistry()
@@ -170,7 +151,6 @@ class TestRegistryOwnedToolsets:
         assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
         assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
 
-
 class TestToolsetConsistency:
     """Verify structural integrity of the built-in TOOLSETS dict."""
 
@@ -179,9 +159,6 @@ class TestToolsetConsistency:
             assert "description" in ts, f"{name} missing description"
             assert "tools" in ts, f"{name} missing tools"
             assert "includes" in ts, f"{name} missing includes"
-
-
-
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):
@@ -198,10 +175,6 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
-
-
-
-
 
 class TestResolveToolsetIncludeRegistry:
     """include_registry flag exposes the static (pre-registry-merge) view used
@@ -232,7 +205,6 @@ class TestResolveToolsetIncludeRegistry:
         assert "__probe_registry_only_tool__" in merged
         assert "__probe_registry_only_tool__" not in static
 
-
     def test_static_view_threads_through_includes(self):
         # 'debugging' has direct tools [terminal, process] and includes [web, file]
         static = set(resolve_toolset("debugging", include_registry=False))
@@ -240,14 +212,11 @@ class TestResolveToolsetIncludeRegistry:
         assert "web_search" in static
         assert "read_file" in static
 
-
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
 
-
 class TestResolveToolsetMemo:
     """Measured-work pins for the generation-keyed resolution memo."""
-
 
     def test_generation_bump_invalidates_memo(self, monkeypatch):
         """A registry mutation (generation bump) must force a fresh resolve."""
@@ -273,5 +242,3 @@ class TestResolveToolsetMemo:
         assert get_toolset_calls["n"] == 2, (
             "generation bump must invalidate the memo and re-resolve"
         )
-
-

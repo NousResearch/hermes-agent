@@ -15,10 +15,7 @@ between ``HERMES_BACKEND_READY`` and the first prompt. Three fixes:
 
 from unittest.mock import patch
 
-
-
 # ─── Fix 1: copilot_auth skips gh CLI when env var is set ──────────────
-
 
 class TestCopilotAuthSkipsGhCli:
     """resolve_copilot_token must not call _try_gh_cli_token when any
@@ -69,7 +66,6 @@ class TestCopilotAuthSkipsGhCli:
         assert source == "gh auth token"
         mock_cli.assert_called_once()
 
-
 # ─── Fix 2: resolve_skin runs via to_thread in handle_ws ───────────────
 
 
@@ -119,5 +115,3 @@ def test_handle_ws_resolves_skin_off_the_loop_thread(monkeypatch):
 
 
 # ─── Fix 3: _warm_gateway_module pre-imports heavy chains ──────────────
-
-

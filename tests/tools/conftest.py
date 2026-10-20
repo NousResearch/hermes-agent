@@ -15,10 +15,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_host_browser_use_cli():
-    """Keep the host's browser-use/uvx install out of tests.
+    """Keep the host's PM-managed browser-use install out of tests.
 
     Browser Use mode is default-on when the CLI is runnable, so a developer
-    machine with uvx on PATH would silently flip every built-in-browser test
+    machine with the CLI installed would silently flip every built-in-browser test
     into CLI mode. Pin discovery to "not installed"; tests that exercise the
     CLI path monkeypatch ``bu_cli._find_cli`` themselves.
     """
@@ -28,10 +28,24 @@ def _no_host_browser_use_cli():
         yield
         return
     # Keep a handle to the real discovery function so TestFindCli (and any
-    # test that wants genuine PATH probing) can restore it explicitly.
+    # test that wants genuine PM discovery) can restore it explicitly.
     if not hasattr(bu_cli, "_find_cli_unpatched"):
         bu_cli._find_cli_unpatched = bu_cli._find_cli
     with patch.object(bu_cli, "_find_cli", lambda: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_shared_temp_socket_dirs():
+    """A served profile's over-budget harness runtime dir is moved to a private ``hbh-<hash>`` dir
+    in the shared temp root (sun_path budget). Unit tests never claim one there: fake CLIs would
+    leave latch files behind. The dir keeps its long path; tests of the claim restore the real one."""
+    try:
+        import tools.browser_harness_dirs as harness_dirs
+    except Exception:
+        yield
+        return
+    with patch.object(harness_dirs, "claim_private_dir", lambda path: False):
         yield
 
 

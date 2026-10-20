@@ -128,6 +128,9 @@ class StoredSessionRow(OpenModel):
     handoff_state: str | None = None
     lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
     lineage_ids: list[str] | None = Field(default=None, alias="_lineage_ids")
+    # #121148: provenance of a projected continuation tip — 'compression' when the row
+    # continues a sealed segment (automatic rotation), None for plain rows and branches.
+    continuation_kind: str | None = None
 
 
 class ToolLabelKind(WireEnum):

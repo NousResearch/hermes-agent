@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import httpx
@@ -39,24 +39,26 @@ class TestResolveVerifyFallback:
         else:
             assert result is True
 
-    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path, monkeypatch):
+    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path):
         import ssl
+
+        import certifi
+        from truststore._ssl_constants import _original_SSLContext
+
         from hermes_cli.auth import _resolve_verify
 
-        ca_file = tmp_path / "ca-bundle.pem"
-        ca_file.write_text("fake cert")
-
-        # Avoid loading actual PEM — just verify the return type
-        mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        monkeypatch.setattr(ssl, "create_default_context", lambda **kw: mock_ctx)
-
         result = _resolve_verify(auth_state={
-            "tls": {"insecure": False, "ca_bundle": str(ca_file)},
+            "tls": {"insecure": False, "ca_bundle": certifi.where()},
         })
-        assert isinstance(result, ssl.SSLContext), (
-            f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
-        )
 
+        # An explicitly pinned bundle must NOT come back as a truststore
+        # context — that would silently verify against the machine's store
+        # instead of the bundle the connection asked for.
+        assert isinstance(result, _original_SSLContext), (
+            f"Expected the pinned-bundle context but got {type(result).__name__}: {result!r}"
+        )
+        assert not type(result).__module__.startswith("truststore")
+        assert result.verify_mode == ssl.CERT_REQUIRED
 
     def test_insecure_takes_precedence_over_missing_ca(self):
         from hermes_cli.auth import _resolve_verify
@@ -80,6 +82,38 @@ class TestResolveVerifyFallback:
 
         result = _resolve_verify(auth_state={"tls": {"insecure": "true"}})
         assert result is False
+
+
+class TestDefaultVerifyAfterAnInstallRotation:
+    """The Nous credential exchange can be the first TLS client a long-lived gateway builds
+    after the package manager replaced the environment certifi was imported from (#137255).
+
+    It must never hand httpx a bundle path that no longer exists.
+    """
+
+    @pytest.mark.platforms("macos")
+    def test_credential_verify_re_derives_the_rotated_bundle(self, tmp_path, monkeypatch):
+        import ssl
+
+        from hermes_cli.auth import _resolve_verify
+
+        for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            monkeypatch.delenv(var, raising=False)
+        from tests.agent.test_ssl_verify import _rotated_certifi
+
+        _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+
+        verify = _resolve_verify(auth_state={"tls": {"insecure": False}})
+
+        # Nothing in the process points at the deleted environment, and httpx builds a client.
+        import certifi
+
+        assert Path(certifi.where()).is_file()
+        with httpx.Client(verify=verify) as client:
+            from typing import Any, cast
+
+            transport = cast(Any, client._transport)
+            assert transport._pool._ssl_context.verify_mode == ssl.CERT_REQUIRED
 
 
 def _setup_nous_auth(
@@ -121,7 +155,6 @@ def _setup_nous_auth(
     }
     (hermes_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
 
-
 def _jwt_with_claims(claims: dict) -> str:
     def _part(payload: dict) -> str:
         raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -129,10 +162,8 @@ def _jwt_with_claims(claims: dict) -> str:
 
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
-
 def _future_iso(seconds: int = 3600) -> str:
-    return datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc).isoformat()
-
+    return datetime.fromtimestamp(time.time() + seconds, tz=UTC).isoformat()
 
 def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke") -> str:
     return _jwt_with_claims({
@@ -140,7 +171,6 @@ def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke") -> s
         "scope": scope,
         "exp": int(time.time() + seconds),
     })
-
 
 def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     tmp_path,
@@ -175,18 +205,17 @@ def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     assert pool_entries[0]["agent_key"] == token
     assert pool_entries[0]["source"] == auth_mod.NOUS_DEVICE_CODE_SOURCE
 
-
 def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
     tmp_path,
     monkeypatch,
 ):
     import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     exp = int(time.time() + 3600)
-    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    expires_at = datetime.fromtimestamp(exp, tz=UTC).isoformat()
     token = _jwt_with_claims({
         "sub": "test-user",
         "scope": auth_mod.DEFAULT_NOUS_SCOPE,
@@ -255,7 +284,6 @@ def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
         == original_obtained_at
     )
 
-
 def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
     tmp_path,
     monkeypatch,
@@ -289,14 +317,13 @@ def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
     assert payload["providers"]["nous"]["agent_key"] is None
     assert "credential_pool" not in payload or not payload["credential_pool"].get("nous")
 
-
 def test_nous_inference_auth_logs_do_not_include_secret_values(
     tmp_path,
     monkeypatch,
     caplog,
 ):
     import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     hermes_home = tmp_path / "hermes"
     token = _invoke_jwt(seconds=3600)
@@ -341,7 +368,6 @@ def test_nous_inference_auth_logs_do_not_include_secret_values(
     assert refreshed_token not in logged
     assert refresh_token not in logged
 
-
 def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     """get_nous_auth_status() should find Nous credentials in the pool
     even when the auth store has no Nous provider entry — this is the
@@ -382,7 +408,6 @@ def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     assert status["logged_in"] is True
     assert "example.com" in str(status.get("portal_base_url", ""))
 
-
 def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch):
     """get_nous_auth_status() returns logged_in=False when both pool
     and auth store are empty.
@@ -416,7 +441,7 @@ class TestLoginNousSkipKeepsCurrent:
     """
 
     def _setup_home_with_openrouter(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -440,7 +465,7 @@ class TestLoginNousSkipKeepsCurrent:
     def _patch_login_internals(self, monkeypatch, *, prompt_returns):
         """Patch OAuth + model-list + prompt so _login_nous doesn't hit network."""
         import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
+        from hermes_cli import auth_nous
         import hermes_cli.models as models_mod
         from hermes_cli import models_pricing
         import hermes_cli.nous_subscription as ns
@@ -470,7 +495,6 @@ class TestLoginNousSkipKeepsCurrent:
 
         def _check_nous_free_tier(**kwargs):
             free_tier_calls.append(kwargs)
-            return None
 
         monkeypatch.setattr(models_mod, "check_nous_free_tier", _check_nous_free_tier)
         monkeypatch.setattr(
@@ -483,10 +507,10 @@ class TestLoginNousSkipKeepsCurrent:
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
         """User picks Skip → config.yaml untouched, Nous creds still saved."""
         import argparse
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
-        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+        _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
         self._patch_login_internals(monkeypatch, prompt_returns=None)
@@ -514,10 +538,10 @@ class TestLoginNousSkipKeepsCurrent:
     def test_picking_model_switches_to_nous(self, tmp_path, monkeypatch):
         """User picks a Nous model → provider flips to nous with that model."""
         import argparse
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
-        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+        _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
         self._patch_login_internals(
@@ -541,7 +565,7 @@ class TestLoginNousSkipKeepsCurrent:
         """Fresh install (no prior active_provider) → Skip clears active_provider
         instead of leaving it as nous."""
         import argparse
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
         hermes_home = tmp_path / "hermes"
@@ -598,7 +622,6 @@ def _full_state_fixture() -> dict:
         "tls": {"insecure": False, "ca_bundle": None},
     }
 
-
 def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path, monkeypatch):
     """Re-running persist must upsert — not accumulate duplicate device_code rows.
 
@@ -644,7 +667,6 @@ def test_persist_nous_credentials_idempotent_no_duplicate_pool_entries(tmp_path,
         e["source"].startswith("manual:") for e in pool_entries
     )
 
-
 def test_refresh_token_reuse_detection_surfaces_actionable_message():
     """Regression for #15099.
 
@@ -685,31 +707,40 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
 
 
 @pytest.mark.parametrize(
-    "status_code, body, expected_code, expected_terminal",
+    "status_code, body, headers, expected_code, expected_terminal",
     [
-        (500, None, "temporarily_unavailable", False),
-        (503, None, "temporarily_unavailable", False),
-        (599, None, "temporarily_unavailable", False),
-        (429, {"code": "429", "message": "rate limited"}, None, False),
-        (404, {"message": "not found"}, None, False),
-        (400, ValueError("not json"), None, False),
-        (401, {"message": "unauthorized"}, "invalid_grant", True),
-        (403, ValueError("not json"), "invalid_grant", True),
-        (400, ["not", "a", "dict"], None, False),
-        (401, "unauthorized", "invalid_grant", True),
+        (500, None, {}, "temporarily_unavailable", False),
+        (503, None, {}, "temporarily_unavailable", False),
+        (599, None, {}, "temporarily_unavailable", False),
+        (429, {"code": "429", "message": "rate limited"}, {}, None, False),
+        (404, {"message": "not found"}, {}, None, False),
+        (400, ValueError("not json"), {}, None, False),
+        (401, {"message": "unauthorized"}, {}, "invalid_grant", True),
+        (403, ValueError("not json"), {}, "invalid_grant", True),
+        (400, ["not", "a", "dict"], {}, None, False),
+        (401, "unauthorized", {}, "invalid_grant", True),
+        # Vercel Security Checkpoint in front of the Portal (#120602): the edge, not the token
+        # endpoint, refused the request -- the refresh token is still good.
+        (403, ValueError("not json"), {"x-vercel-mitigated": "deny"}, "upstream_blocked", False),
+        (429, ValueError("not json"), {"x-vercel-mitigated": "challenge", "Retry-After": "30"},
+         "upstream_blocked", False),
+        # A 401 is the token endpoint speaking even behind the edge header: stays terminal.
+        (401, ValueError("not json"), {"x-vercel-mitigated": "deny"}, "invalid_grant", True),
     ],
 )
 def test_refresh_token_exchange_error_classification(
-    status_code, body, expected_code, expected_terminal
+    status_code, body, headers, expected_code, expected_terminal
 ):
     """A Portal 5xx is transient even when its body is not OAuth JSON (#120976), and a
     non-5xx body that carries no OAuth ``error`` code must not be treated as a dead grant --
-    except a 401/403, which always means the refresh token itself was rejected."""
+    except a 401/403, which always means the refresh token itself was rejected, unless the
+    403/429 carries ``x-vercel-mitigated`` (the edge firewall answered, not the Portal; #120602)."""
     from hermes_cli.auth import _is_terminal_nous_refresh_error, _refresh_access_token
 
     class _FakeResponse:
         def __init__(self):
             self.status_code = status_code
+            self.headers = dict(headers)
 
         def json(self):
             if body is None:
@@ -733,14 +764,29 @@ def test_refresh_token_exchange_error_classification(
     assert exc_info.value.code == expected_code
     assert exc_info.value.relogin_required is expected_terminal
     assert _is_terminal_nous_refresh_error(exc_info.value) is expected_terminal
-    if expected_code == "temporarily_unavailable":
+    if expected_code in {"temporarily_unavailable", "upstream_blocked"}:
         assert exc_info.value.retryable is True
+    if "Retry-After" in headers:
+        assert exc_info.value.retry_after == 30.0
 
 
-def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypatch):
-    """The real runtime resolver must not quarantine credentials during a Portal outage (#120976)."""
+@pytest.mark.parametrize(
+    ("status_code", "headers", "json_body", "expected_code"),
+    [
+        (503, {}, {}, "temporarily_unavailable"),
+        (403, {"x-vercel-mitigated": "deny"}, None, "upstream_blocked"),
+        (429, {"x-vercel-mitigated": "challenge"}, None, "upstream_blocked"),
+    ],
+    ids=["portal-503", "edge-deny-403", "edge-challenge-429"],
+)
+def test_runtime_refresh_503_preserves_nous_oauth_credentials(
+    tmp_path, monkeypatch, status_code, headers, json_body, expected_code
+):
+    """The real runtime resolver must not quarantine a still-valid refresh token or demand a
+    re-login during a Portal outage (#120976) or a Vercel Security Checkpoint deny/challenge on
+    the token endpoint (#120602)."""
     import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     hermes_home = tmp_path / "hermes"
     access_token = _invoke_jwt(seconds=3600)
@@ -755,10 +801,14 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypa
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     class _FakeResponse:
-        status_code = 503
+        def __init__(self):
+            self.status_code = status_code
+            self.headers = headers
 
         def json(self):
-            return {}
+            if json_body is None:
+                raise ValueError("edge block page is not JSON")
+            return json_body
 
     class _FakeClient:
         def __enter__(self):
@@ -779,7 +829,7 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(tmp_path, monkeypa
     assert state["access_token"] == access_token
     assert state["refresh_token"] == refresh_token
     assert "last_auth_error" not in state
-    assert exc_info.value.code == "temporarily_unavailable"
+    assert exc_info.value.code == expected_code
     assert exc_info.value.relogin_required is False
     assert exc_info.value.retryable is True
 
@@ -842,7 +892,6 @@ def shared_store_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
     return shared_dir
 
-
 def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
     """Without HERMES_SHARED_AUTH_DIR override, the seat belt must trip.
 
@@ -857,7 +906,7 @@ def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
     with pytest.raises(RuntimeError, match="shared Nous auth store"):
         _nous_shared_store_path()
 
-
+@pytest.mark.platforms("linux")
 def test_shared_store_write_and_read_roundtrip(shared_store_env):
     """Write → read must preserve refresh_token + OAuth URLs."""
     from hermes_cli.auth import (
@@ -886,7 +935,6 @@ def test_shared_store_write_and_read_roundtrip(shared_store_env):
     # (24h TTL, profile-specific — only long-lived OAuth tokens are
     # cross-profile useful).
     assert "agent_key" not in loaded
-
 
 def test_persist_nous_credentials_mirrors_to_shared_store(
     tmp_path, monkeypatch, shared_store_env,
@@ -922,14 +970,13 @@ def test_persist_nous_credentials_mirrors_to_shared_store(
     # Shared file path lives under the tmp override, NOT the real home
     assert str(_nous_shared_store_path()).startswith(str(shared_store_env))
 
-
 def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     """Happy path: stored refresh_token is accepted, forced refresh
     returns a fresh access_token JWT, and the returned dict has
     every field persist_nous_credentials() needs.
     """
     from hermes_cli import auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     auth_mod._write_shared_nous_state(_full_state_fixture())
     fresh_jwt = _invoke_jwt(seconds=7200)
@@ -958,7 +1005,6 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     assert result["portal_base_url"] == "https://portal.example.com"
     assert result["client_id"] == "hermes-cli"
 
-
 class TestStalePortalBaseUrlMigration:
     """_migrate_stale_nous_portal_url auto-corrects stale portal_base_url on load."""
 
@@ -983,13 +1029,12 @@ class TestStalePortalBaseUrlMigration:
         nous = store["providers"]["nous"]
         assert nous["portal_base_url"] == DEFAULT_NOUS_PORTAL_URL
 
-
     def test_runtime_credentials_rejects_http_for_production_portal(
         self, tmp_path, monkeypatch,
     ):
         """An allowlisted production host is still unsafe over plain HTTP."""
         from hermes_cli import auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
+        from hermes_cli import auth_nous
 
         hermes_home = tmp_path / "hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))

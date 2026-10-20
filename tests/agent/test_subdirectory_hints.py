@@ -133,7 +133,7 @@ class TestSubdirectoryHintTracker:
             result = tracker.check_tool_call("read_file", {"path": str(sub / "file.py")})
         assert result is not None
         assert "HEAD-MARKER" in result and "TAIL-MARKER" in result
-        assert "truncated AGENTS.md" in result and "bigdir/AGENTS.md" in result
+        assert "truncated AGENTS.md" in result and str(Path("bigdir") / "AGENTS.md") in result
         assert len(result) < len(body)
         assert any("TRUNCATED" in r.message and "AGENTS.md" in r.message for r in caplog.records)
         # A preview capped by a constant is not a context_file_max_chars problem: no chat status warning is
@@ -248,6 +248,7 @@ class TestContentDeduplication:
     """The same context content must never be injected twice (ref: symlinked
     shared workspaces, hardlinks, and copied backups all alias one file)."""
 
+    @pytest.mark.require_symlinks
     def test_symlinked_duplicate_not_reinjected(self, tmp_path):
         """Two directories whose AGENTS.md is the same file yield one injection."""
         real = tmp_path / "real"
@@ -410,3 +411,77 @@ class TestSymlinkedHintTargets:
         assert result is not None and "Shared in-tree instructions" in result
         result = tracker.check_tool_call("read_file", {"path": str(plain / "f.py")})
         assert result is not None and "Legit subdirectory rules" in result
+
+
+class TestHomeWorkingDirGuard:
+    """$HOME is not a project (#76902): the packaged Desktop with no default project dir
+    pins cwd (and TERMINAL_CWD) to home, making containment vacuously true for the whole
+    home subtree — every AGENTS.md/CLAUDE.md/.cursorrules under ~ would inject on tool calls."""
+
+    @pytest.fixture
+    def home_tree(self, tmp_path, monkeypatch):
+        """A fake $HOME holding unrelated hint files across its subtree."""
+        monkeypatch.setenv("HOME", str(tmp_path))  # Path.home() reads os.environ on macOS fallback
+        for rel in ("notes/AGENTS.md", ".hermes/AGENTS.md", ".hermes/skills/s1/AGENTS.md",
+                    "projects/whatever/CLAUDE.md"):
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"HOME-SUBTREE-HINT {rel}", encoding="utf-8")
+        return tmp_path
+
+    def _home_tracker(self, home) -> SubdirectoryHintTracker:
+        return SubdirectoryHintTracker(working_dir=str(home))
+
+    def test_home_cwd_never_injects_subtree_hints(self, home_tree):
+        tracker = self._home_tracker(home_tree)
+        assert tracker.check_tool_call(
+            "read_file", {"path": str(home_tree / ".hermes" / "skills" / "s1" / "x.py")}
+        ) is None
+        assert tracker.check_tool_call(
+            "terminal", {"command": f"cat {home_tree / 'notes' / 'AGENTS.md'}"}
+        ) is None
+
+    def test_home_guard_blocks_direct_load_path(self, home_tree):
+        """check_tool_call suppression alone is not enough: _load_hints_for_directory
+        (the other reachable entry) must refuse home-rooted loads too."""
+        tracker = self._home_tracker(home_tree)
+        assert tracker._load_hints_for_directory(home_tree / "notes") is None
+
+    def test_session_workspace_adoption_rebinds_discovery(self, home_tree):
+        """A home-pinned tracker whose session adopted a real project resumes hint
+        discovery, scoped to that project."""
+        project = home_tree / "projects" / "app"
+        project.mkdir(parents=True)
+        (project / "src").mkdir()
+        (project / "src" / "AGENTS.md").write_text("App src rules", encoding="utf-8")
+
+        tracker = self._home_tracker(home_tree)
+        assert tracker.check_tool_call("read_file", {"path": str(project / "src" / "f.py")}) is None
+        tracker.rebind_working_dir(str(project))
+        assert tracker.working_dir == project.resolve()
+        result = tracker.check_tool_call("read_file", {"path": str(project / "src" / "f.py")})
+        assert result is not None and "App src rules" in result
+
+    def test_rebound_tracker_stays_inside_the_project(self, home_tree):
+        """After rebind, hints outside the adopted project stay suppressed (a stray
+        read of ~/.hermes does not resurrect the home-subtree scan)."""
+        project = home_tree / "projects" / "app2"
+        project.mkdir(parents=True)
+        (project / "AGENTS.md").write_text("App2 rules", encoding="utf-8")
+
+        tracker = self._home_tracker(home_tree)
+        tracker.rebind_working_dir(str(project))
+        assert tracker.check_tool_call(
+            "read_file", {"path": str(home_tree / ".hermes" / "skills" / "s1" / "x.py")}
+        ) is None
+
+    def test_real_project_cwd_keeps_discovery(self, home_tree):
+        """A non-home working dir keeps today's containment behavior."""
+        project = home_tree / "projects" / "app3"
+        sub = project / "pkg"
+        sub.mkdir(parents=True)
+        (sub / "AGENTS.md").write_text("Package rules", encoding="utf-8")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None and "Package rules" in result

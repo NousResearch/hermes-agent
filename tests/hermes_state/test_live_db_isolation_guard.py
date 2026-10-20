@@ -24,6 +24,9 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from hermes_state import SessionDB
 
+# These probe the live-DB guard against the real root on purpose.
+pytestmark = pytest.mark.allow_real_home_io
+
 # Must match the root the guard itself computes.  Hardcoding ``~/.hermes``
 # silently disarmed every assertion below on Windows, where the real root is
 # ``%LOCALAPPDATA%\hermes``: the paths under test were then *correctly*
@@ -163,6 +166,7 @@ class TestSubprocessChildCovered:
             text=True,
             env=env,
             timeout=120,
+            check=False,
         )
         assert proc.returncode != 0
         assert "live-system guard" in proc.stderr
@@ -189,6 +193,7 @@ class TestSubprocessChildCovered:
             text=True,
             env=env,
             timeout=120,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "OK" in proc.stdout

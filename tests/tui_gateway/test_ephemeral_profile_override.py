@@ -26,9 +26,7 @@ import pytest
 
 from tui_gateway import server as srv
 
-
 PROFILE_HOME = "/home/user/.hermes/profiles/work"
-
 
 class _InlineThread:
     """Drop-in for ``threading.Thread`` that runs the target synchronously.
@@ -45,13 +43,11 @@ class _InlineThread:
         if self._target is not None:
             self._target()
 
-
 @pytest.fixture
 def fake_session():
     """A minimal session carrying a non-default ``profile_home``."""
     agent = MagicMock()
     return {"agent": agent, "session_key": "sess_k", "profile_home": PROFILE_HOME}
-
 
 @pytest.fixture
 def override_calls():
@@ -83,13 +79,11 @@ def override_calls():
             "agent": agent_instance,
         }
 
-
 def _run(method_name, params, session):
     """Invoke a registered RPC handler with ``_sess`` patched to our session."""
     handler = srv._methods[method_name]
     with patch("tui_gateway.server._sess", return_value=(session, None)):
         return handler("rid1", params)
-
 
 class TestBackgroundProfileOverride:
     def test_background_binds_and_restores_profile_home(self, fake_session, override_calls):
@@ -100,7 +94,6 @@ class TestBackgroundProfileOverride:
         override_calls["reset"].assert_called_once_with("TOK")
         override_calls["agent"].run_conversation.assert_called_once()
 
-
     def test_background_restores_override_on_error(self, fake_session, override_calls):
         """A failing turn must still restore the override (finally-block parity)."""
         override_calls["agent"].run_conversation.side_effect = RuntimeError("boom")
@@ -108,7 +101,6 @@ class TestBackgroundProfileOverride:
 
         override_calls["set"].assert_called_once_with(PROFILE_HOME)
         override_calls["reset"].assert_called_once_with("TOK")
-
 
 class TestPreviewRestartProfileOverride:
     def test_preview_binds_and_restores_profile_home(self, fake_session, override_calls):
@@ -135,4 +127,3 @@ class TestPreviewRestartProfileOverride:
         # A task-wide AIAgent.close() would kill every process for this task_id,
         # tearing down the very background server the restart just launched.
         override_calls["agent"].close.assert_not_called()
-

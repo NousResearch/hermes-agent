@@ -48,6 +48,43 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('strips Markdown code delimiters from discovered link artifacts', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Preview URL: `https://voice.qwickapps.com`',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'https://voice.qwickapps.com',
+      kind: 'link',
+      value: 'https://voice.qwickapps.com'
+    })
+  })
+
+  it('stops a URL capture at a closing backtick even when punctuation follows it', () => {
+    // The closing delimiter can carry trailing punctuation (`…`,) — the
+    // trailing-punctuation trim alone would leave the backtick behind, so the
+    // capture itself must refuse it.
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Deployed at `https://voice.qwickapps.com`, take a look.',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'https://voice.qwickapps.com',
+      kind: 'link',
+      value: 'https://voice.qwickapps.com'
+    })
+  })
+
   it('does not index passive links and paths observed in tool output', () => {
     const messages: SessionMessage[] = [
       {
@@ -85,6 +122,64 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts).toHaveLength(0)
   })
 
+  it('indexes files reported in terminal output text', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-session' }), [
+      {
+        content: JSON.stringify({
+          output: 'wrote: /home/example/project/figure_variance.png and /home/example/project/report.pdf',
+          exit_code: 0
+        }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    const values = artifacts.map(artifact => artifact.value)
+
+    expect(values).toContain('/home/example/project/figure_variance.png')
+    expect(values).toContain('/home/example/project/report.pdf')
+  })
+
+  it('indexes MEDIA-delivered files from terminal stdout', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-media-session' }), [
+      {
+        content: JSON.stringify({ output: 'done\nMEDIA:/tmp/plot.png', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/plot.png')
+  })
+
+  it('does not scan generic keys of non-terminal tools as shell output', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'search-noise-session' }), [
+      {
+        content: JSON.stringify({ output: 'see /tmp/generated/figure.png for details', query: 'x' }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'web_search'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(0)
+  })
+
+  it('indexes files under a path-only key from terminal output', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-path-session' }), [
+      {
+        content: JSON.stringify({ path: '/tmp/generated/results.csv', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/generated/results.csv')
+  })
+
   it('keeps explicit generated artifacts from tool output', () => {
     const artifacts = collectArtifactsForSession(makeSession({ id: 'generated-session' }), [
       {
@@ -113,7 +208,7 @@ describe('collectArtifactsForSession', () => {
       },
       {
         content: JSON.stringify({
-          file_path: '/tmp/generated/voice.ogg',
+          file_path: '`/tmp/generated/transcript.md`',
           media_tag: 'MEDIA:/tmp/generated/voice.ogg',
           success: true
         }),
@@ -128,7 +223,8 @@ describe('collectArtifactsForSession', () => {
       '/tmp/generated/report.pdf',
       '/tmp/generated/notes.md',
       'https://cdn.example.com/generated/data.csv',
-      '/tmp/generated/voice.ogg'
+      '/tmp/generated/voice.ogg',
+      '/tmp/generated/transcript.md'
     ])
   })
 
@@ -191,6 +287,36 @@ ${payload}
       '/tmp/hermes browser/summary screenshot.png',
       'C:\\Users\\Example User\\.hermes\\screenshot.png'
     ])
+  })
+
+  // #52972: pip logs every download with its full URL when the index is not
+  // files.pythonhosted.org (a mirror), and on Windows reports sdists under
+  // its cache dir. None of that is something the session produced.
+  it('does not index pip downloads or cache files from terminal output', () => {
+    const mirror = 'https://mirror.example.com/pypi/packages/7a/1b/0f3c'
+    const report = '/home/example/project/report.pdf'
+    const release = 'https://github.com/example/tool/archive/refs/tags/v1.0.tar.gz'
+
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'pip-session' }), [
+      {
+        content: JSON.stringify({
+          output: [
+            'Collecting anthropic',
+            `  Downloading ${mirror}/anthropic-0.46.0-py3-none-any.whl.metadata (23 kB)`,
+            `  Downloading ${mirror}/anthropic-0.46.0-py3-none-any.whl (223 kB)`,
+            `  Downloading ${mirror}/jiter-0.8.2.tar.gz (163 kB)`,
+            '  Saved C:\\Users\\Alice\\AppData\\Local\\pip\\Cache\\http-v2\\a\\b\\docstring_parser-0.16.tar.gz',
+            `Wrote ${report}; upstream release: ${release}`
+          ].join('\n'),
+          exit_code: 0
+        }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value).sort()).toEqual([report, release].sort())
   })
 
   it('does not treat an arbitrary dotted absolute path as an artifact', () => {
@@ -482,7 +608,51 @@ ${payload}
 })
 
 describe('loadArtifactsForSessions', () => {
-  it('loads transcripts serially and continues after a session fails', async () => {
+  it('indexes oldest-first pages incrementally and keeps the first duplicate', async () => {
+    const session = makeSession()
+    const duplicate = 'https://example.com/shared.pdf'
+    const requestedPages: Array<{ limit: number; offset: number }> = []
+
+    const pages: SessionMessage[][] = [
+      [
+        { content: duplicate, role: 'assistant', timestamp: 1000 },
+        { content: 'https://example.com/first.png', role: 'assistant', timestamp: 1500 }
+      ],
+      [
+        {
+          content: `${duplicate} https://example.com/last.pdf`,
+          role: 'assistant',
+          timestamp: 3000
+        }
+      ]
+    ]
+
+    const result = await loadArtifactsForSessions(
+      [session],
+      async (_session, page) => {
+        requestedPages.push(page)
+        const messages = pages[page.offset === 0 ? 0 : 1] || []
+
+        return {
+          messages,
+          pagination: { limit: 2, offset: page.offset, order: 'oldest', returned: messages.length }
+        }
+      },
+      { maxPageJsonChars: 200 }
+    )
+
+    expect(requestedPages.map(page => page.offset)).toEqual([0, 2])
+    expect(requestedPages.every(page => page.limit > 0)).toBe(true)
+    expect(result.artifacts.map(artifact => artifact.value)).toEqual([
+      duplicate,
+      'https://example.com/first.png',
+      'https://example.com/last.pdf'
+    ])
+    expect(result.artifacts.find(artifact => artifact.value === duplicate)?.timestamp).toBe(1_000_000)
+    expect(result.failures).toEqual([])
+  })
+
+  it('discards a failed session and continues after an oversized later page', async () => {
     const sessions = [
       makeSession({ id: 'session-1' }),
       makeSession({ id: 'session-2' }),
@@ -493,42 +663,60 @@ describe('loadArtifactsForSessions', () => {
     let activeLoads = 0
     let maxActiveLoads = 0
 
-    const result = await loadArtifactsForSessions(sessions, async session => {
-      activeLoads += 1
-      maxActiveLoads = Math.max(maxActiveLoads, activeLoads)
-      callOrder.push(`start:${session.id}`)
+    const result = await loadArtifactsForSessions(
+      sessions,
+      async (session, page) => {
+        activeLoads += 1
+        maxActiveLoads = Math.max(maxActiveLoads, activeLoads)
+        callOrder.push(`start:${session.id}:${page.offset}`)
 
-      try {
-        await Promise.resolve()
+        try {
+          await Promise.resolve()
 
-        if (session.id === 'session-2') {
-          throw new Error('Session transcript exceeds the Desktop safe-load limit')
-        }
-
-        return [
-          {
-            content: `https://example.com/${session.id}.png`,
-            role: 'assistant',
-            timestamp: 2000
+          if (session.id === 'session-2' && page.offset === 0) {
+            return {
+              messages: [
+                {
+                  content: 'https://example.com/session-2-partial.png',
+                  role: 'assistant',
+                  timestamp: 2000
+                }
+              ],
+              pagination: { limit: 1, offset: 0, order: 'oldest', returned: 1 }
+            }
           }
-        ]
-      } finally {
-        callOrder.push(`end:${session.id}`)
-        activeLoads -= 1
-      }
-    })
+
+          return {
+            messages: [
+              {
+                content: session.id === 'session-2' ? 'x'.repeat(500) : `https://example.com/${session.id}.png`,
+                role: 'assistant',
+                timestamp: 2000
+              }
+            ]
+          }
+        } finally {
+          callOrder.push(`end:${session.id}:${page.offset}`)
+          activeLoads -= 1
+        }
+      },
+      { maxPageJsonChars: 200 }
+    )
 
     expect(maxActiveLoads).toBe(1)
     expect(callOrder).toEqual([
-      'start:session-1',
-      'end:session-1',
-      'start:session-2',
-      'end:session-2',
-      'start:session-3',
-      'end:session-3'
+      'start:session-1:0',
+      'end:session-1:0',
+      'start:session-2:0',
+      'end:session-2:0',
+      'start:session-2:1',
+      'end:session-2:1',
+      'start:session-3:0',
+      'end:session-3:0'
     ])
     expect(result.artifacts.map(artifact => artifact.sessionId)).toEqual(['session-1', 'session-3'])
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
+    expect(String(result.failures[0]?.error)).toContain('transcript page exceeds the Desktop safe-load limit')
   })
 })

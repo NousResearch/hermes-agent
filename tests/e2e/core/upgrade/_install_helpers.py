@@ -7,7 +7,8 @@ of that this module stages what a real user machine looks like to the installer 
   the official clone URLs are rewritten to by the sandbox's own ``~/.gitconfig``, plus a ``git``
   wrapper that reports the official URL for ``remote get-url origin`` (``insteadOf`` would
   otherwise expose the local path and send the updater down the fork path);
-* a managed ``$HERMES_HOME/bin/uv`` pointing at the host's uv (warm cache, no download);
+* the real host uv on PATH, which the installer must ignore: it always provisions the pinned
+  PM artifact;
 * ``TMPDIR`` inside the sandbox root (the host's is not writable in the sandbox).
 """
 
@@ -37,7 +38,7 @@ def real_uv() -> str | None:
 
 def git(*args: str, cwd: Path, check: bool = True, env: dict | None = None) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -50,12 +51,19 @@ def head_sha() -> str:
 
 
 def make_origin(root: Path, ref: str) -> Path:
-    """Bare origin with ``main`` at ``ref``."""
+    """Bare origin with ``main`` at ``ref``.
+
+    ``--single-branch``: only this checkout's branch is copied, never every local branch of the
+    host repository (a blobless developer clone holds branches whose blobs it never fetched, and
+    serving those makes the installer's clone die with ``unable to read <sha>``).
+    ``uploadpack.allowFilter``: a blobless host checkout's object store is itself partial, and the
+    installer's clone of this origin needs the filter capability to be served from it."""
     origin = root / "origin.git"
-    git("clone", "-q", "--bare", "--shared", "--no-tags", str(H.WORKTREE), str(origin), cwd=root)
+    git("clone", "-q", "--bare", "--shared", "--no-tags", "--single-branch", str(H.WORKTREE), str(origin), cwd=root)
     git("update-ref", "refs/heads/main", ref, cwd=origin)
     git("symbolic-ref", "HEAD", "refs/heads/main", cwd=origin)
     git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
+    git("config", "uploadpack.allowFilter", "true", cwd=origin)
     return origin
 
 
@@ -100,9 +108,22 @@ class Sandbox:
         """The command the installer put on PATH, as a user's shell resolves it."""
         return str(self.home / ".local" / "bin" / "hermes")
 
+    @property
+    def python(self) -> str:
+        """The installed PM generation's selected interpreter, not a legacy checkout venv."""
+        from pm.environments import install_key
+
+        facts = self.hermes_home / "installs" / install_key(self.checkout) / "facts.json"
+        assert facts.is_file(), f"installer did not publish PM facts at {facts}"
+        selected = json.loads(facts.read_text(encoding="utf-8"))["packages"]["venv"]["environment"]
+        python = Path(selected) / "bin" / "python"
+        assert python.is_file(), f"selected PM Python missing: {python}"
+        return str(python)
+
     def run(self, argv: list[str], *, timeout: float = 600, cwd: Path | None = None,
-            input: str | None = None) -> subprocess.CompletedProcess:
-        return H.run(argv, env=self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout, input=input)
+            input: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        return H.run(argv, env=env or self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout,
+                     input=input)
 
     def cli(self, *args: str, timeout: float = 600) -> subprocess.CompletedProcess:
         return self.run([self.hermes, *args], timeout=timeout)
@@ -119,11 +140,6 @@ def new_sandbox(root: Path, origin: Path | None = None, *, pythonpath: Path | No
     env["TMPDIR"] = str(root / "tmp")
     env["SHELL"] = "/bin/bash"
     # A fresh machine: ~/.local/bin is NOT on PATH yet; the installer must wire it up.
-    managed = home / ".hermes" / "bin"
-    managed.mkdir(parents=True)
-    uv = managed / "uv"
-    uv.write_text(f'#!/bin/sh\nif [ "$1" = self ]; then exit 0; fi\nexec "{real_uv()}" "$@"\n', encoding="utf-8")
-    uv.chmod(0o755)
     if origin is not None:
         (home / ".gitconfig").write_text(
             f'[url "file://{origin}"]\n  insteadOf = {OFFICIAL_HTTPS}\n  insteadOf = {OFFICIAL_SSH}\n', encoding="utf-8")
@@ -146,8 +162,28 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
     """HEAD's scripts/install.sh, non-interactive, as the documented `curl | bash` run does it."""
     script = sb.root / "install.sh"
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    return sb.run(["bash", str(script), "--skip-setup", "--skip-browser", "--skip-computer-use", "--non-interactive"],
-                  timeout=timeout, input="")
+    return sb.run(["bash", str(script), "--non-interactive"], timeout=timeout, input="",
+                  env=fresh_install_env(sb))
+
+
+def fresh_install_env(sb: Sandbox) -> dict[str, str]:
+    """The sandbox env, plus `main` as the channel for a FRESH install: sandbox origins publish
+    commits on main and no release tags, so the stable default has nothing to install. The
+    install saves the choice, which carries every rerun (a rerun passes nothing, as users do)."""
+    if sb.checkout.exists():
+        return sb.env
+    return {**sb.env, "HERMES_INSTALL_CHANNEL": "main"}
+
+
+def pin_main_channel(sb: Sandbox) -> None:
+    """Follow every commit on main, as `hermes update --set-channel main` records it.
+
+    An official-origin source checkout defaults to the stable channel (the latest published GitHub
+    release). These sandboxes publish commits on main and no releases, and their subject is moving
+    between commits; channel resolution has its own suites (test_release_channel_records,
+    tests/hermes_cli/test_source_release_channels.py)."""
+    cp = sb.cli("update", "--set-channel", "main", timeout=120)
+    assert cp.returncode == 0 and "Update channel for" in cp.stdout, "could not pin the main channel:\n" + describe(cp)
 
 
 def provider_config(base_url: str, version: int | None, extra: str = "") -> str:

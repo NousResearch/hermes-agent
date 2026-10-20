@@ -57,6 +57,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -305,6 +306,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -340,6 +342,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -375,6 +378,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
@@ -425,6 +429,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
           fetch-tags: true
       - uses: ./.github/actions/setup-pm
         with:
@@ -615,6 +620,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false

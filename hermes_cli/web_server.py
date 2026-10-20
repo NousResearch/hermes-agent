@@ -686,7 +686,7 @@ GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
 _LAST_GATEWAY_RESTART: Optional[tuple[float, subprocess.Popen, tuple[str, ...]]] = None
 
 
-def _spawn_gateway_restart(profile: Optional[str] = None) -> tuple[subprocess.Popen, bool]:
+def _spawn_gateway_restart(profile: Optional[str] = None, *, interrupt: bool = False) -> tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight or recent restart.
 
     Concurrent children race each other on the kill-and-start path, so a live
@@ -699,7 +699,10 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> tuple[subprocess.Po
     """
     global _LAST_GATEWAY_RESTART
 
-    subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
+    # ``interrupt``: ``POST /api/gateway/restart`` is the user-commanded force path that supersedes a
+    # drain (D6 of the safe-shutdown plan, 19b26244046); a config-save auto-restart is not, and its
+    # child refuses while sessions are live.
+    subcommand = _gateway_mod._gateway_subcommand(profile, "restart") + ["--interrupt"] * interrupt
     existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
         existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")

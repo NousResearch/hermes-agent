@@ -302,7 +302,10 @@ function ModelResults({
       return [...models]
     }
 
-    return fuzzyRank(models, q, model => `${modelSearchText(model)} ${provider.model_aliases?.[model] ?? ""}`).map(r => r.item)
+    return fuzzyRank(models, q, model => {
+      const alias = provider.model_aliases?.[model]
+      return alias ? `${modelSearchText(model)} ${alias}` : modelSearchText(model)
+    }).map(r => r.item)
   }
 
   // Only configured providers (those with curated models) are selectable

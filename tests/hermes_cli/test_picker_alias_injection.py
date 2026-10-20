@@ -15,6 +15,8 @@ The unit tests exercise the helper in isolation by monkeypatching
 shared payload builder to cover the full picker path without network or auth.
 """
 
+import pytest
+
 from hermes_cli import model_switch, model_switch_providers
 from hermes_cli.inventory import build_models_payload, load_picker_context
 from hermes_cli.model_switch import DirectAlias
@@ -120,7 +122,11 @@ def test_alias_matches_user_defined_provider_row(monkeypatch):
     assert rows[1]["total_models"] == 2
 
 
-def test_config_alias_is_injected_into_picker_payload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("configured_models", [
+    "configured-model",
+    "aliased-model, configured-model",
+])
+def test_config_alias_is_injected_into_picker_payload(tmp_path, monkeypatch, configured_models):
     """A config.yaml alias reaches the picker payload with its UI label."""
     home = tmp_path / "hermes"
     home.mkdir()
@@ -131,7 +137,7 @@ def test_config_alias_is_injected_into_picker_payload(tmp_path, monkeypatch):
         "providers:\n"
         "  static-gateway:\n"
         "    base_url: https://router.example.test/v1\n"
-        "    models: [configured-model]\n"
+        f"    models: [{configured_models}]\n"
         "model_aliases:\n"
         "  picker-alias:\n"
         "    model: aliased-model\n"
@@ -146,3 +152,6 @@ def test_config_alias_is_injected_into_picker_payload(tmp_path, monkeypatch):
     row = next(row for row in payload["providers"] if row["slug"] == "static-gateway")
     assert row["models"] == ["aliased-model", "configured-model"]
     assert row["model_aliases"] == {"aliased-model": "picker-alias"}
+    assert row["total_models"] == len(row["models"])
+    assert payload["model"] == "configured-model"
+    assert payload["provider"] == "static-gateway"

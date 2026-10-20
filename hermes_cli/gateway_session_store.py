@@ -34,6 +34,7 @@ _READS = frozenset({
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
     "session_count", "sanitize_title", "session_yolo_enabled",
+    "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({
@@ -120,20 +121,26 @@ class GatewaySessionStore:
         self.connection.state(sid).adopt_snapshot(snapshot)
         return sid
 
-    def attach(self, session_id):
-        """``session.resume`` once per session id this viewer uses (idempotent)."""
+    def attach(self, session_id, *, typed=False):
+        """``session.resume`` once per session id this viewer uses (idempotent), carrying this CLI's launch
+        key as the thin client does (``GatewayConnection.resume``, the reconnect's too). A session that does
+        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is. ``typed``
+        (only :meth:`open_session`'s startup resume, where the user typed ``--api-key`` for that session)
+        refuses it instead, as the thin client does."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        snapshot = self.call("session.resume", session_id=session_id)
+        snapshot = self.connection.resume(self.call, session_id, typed=typed)
         self._adopt(snapshot)
         return snapshot
 
     def open_session(self, cli, launch=None):
         """Create (or resume) the gateway session for this CLI and adopt its id. A resume target the
         gateway does not know is left as is: main's own "Session not found" path reports it."""
+        key = self.connection.launch_api_key = (launch or {}).get("api_key") or None
+        self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
         if getattr(cli, "_resumed", False):
             try:
-                snapshot = self.attach(cli.session_id)
+                snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
             except GatewayClientError as exc:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None
@@ -191,8 +198,8 @@ class GatewaySessionStore:
         self._adopt(self.attach(child))
         return child
 
-    def _mutate(self, session_id, operation, payload):
-        snapshot = self.call("session.resume", session_id=session_id)
+    def _mutate(self, session_id, operation, payload, snapshot=None):
+        snapshot = snapshot or self.call("session.resume", session_id=session_id)
         fence = {}
         if operation in _GENERATION_FENCED:
             fence["expected_generation"] = snapshot["execution_generation"]
@@ -223,7 +230,7 @@ class GatewaySessionStore:
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = list(snapshot.get("messages") or [])
+        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -276,7 +283,23 @@ class GatewaySessionStore:
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
-        self._mutate(session_id, "delete", {})
+        snapshot = self.call("session.resume", session_id=session_id)
+        # The owner answers and subscribes under the id it resolved the read to (a compression
+        # segment maps to its logical owner), and reuses a subscription this viewer already holds.
+        resolved = snapshot.get("session_id") or session_id
+        state = self.connection.states.get(resolved)
+        held = state is not None and state.subscription_id is not None
+        try:
+            self._mutate(session_id, "delete", {}, snapshot)
+        except GatewayClientError:
+            # Hand back only the attachment the read made, with a plain detach: an end_reason would
+            # run the owner's viewer close (fencing the session's delegations, ending it at idle).
+            if not held and snapshot.get("subscription_id"):
+                try:
+                    self.call("session.detach", session_id=resolved, subscription_id=snapshot["subscription_id"])
+                except GatewayClientError as exc:
+                    logger.debug("session.detach after a refused delete failed: %s", exc)
+            raise
         self._leave(session_id)
         return True
 
@@ -290,6 +313,8 @@ class GatewaySessionStore:
             try:
                 # Hung up: redial first, so the detach names the subscription the reconnect resumed.
                 self.connection.start()
+                if state.gaps != state.attached_gaps:  # a replay gap retired it: re-attach, so the detach lands
+                    self.connection.reattach(session_id)
             except GatewayClientError as exc:
                 logger.debug("redial for session.detach failed: %s", exc)
                 reachable = False

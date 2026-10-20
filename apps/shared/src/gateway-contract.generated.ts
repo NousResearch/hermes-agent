@@ -2744,6 +2744,8 @@ export interface PromptSubmitResult {
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
+  admission_id?: string | null
+  forwarded?: boolean | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
 export interface ClipboardPasteParams {
@@ -3278,6 +3280,7 @@ export interface SessionActiveItem {
   model: string
   preview: string
   session_key: string
+  source?: string | null
   started_at: number
   status: LiveSessionStatus
   title: string
@@ -3617,6 +3620,7 @@ export interface SessionEventsSinceParams {
   session_id: string
   profile?: string | null
   last_seen?: number | null
+  replay_epoch?: string | null
 }
 export interface SessionEventsSinceResult {
   events: Record<string, unknown>[]
@@ -3865,6 +3869,7 @@ export interface RollbackRestoreParams {
   hash: string
   file_path?: string | null
   profile?: string | null
+  all?: boolean | null
 }
 /** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
 export interface RollbackRestoreResult {
@@ -4547,7 +4552,7 @@ export interface PromptResolveUnknownParams {
   admission_id: string
   execution_generation: number
 }
-/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. */
+/** ``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``; ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace. ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy`` (``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes). */
 export interface SessionMutateParams {
   session_id: string
   request_id: string
@@ -4611,6 +4616,7 @@ export interface CanonicalSessionInfo {
   desktop_protocol: string
   profile_name: string
   cwd?: string | null
+  edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
@@ -4668,6 +4674,19 @@ export interface RollbackSessionDiffResult {
   diff_lines?: number
   empty?: boolean
   error?: string | null
+}
+/** ``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``). */
+export interface SessionExportParams {
+  session_id: string
+  profile?: string | null
+  format?: string
+  redact?: boolean
+}
+/** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
+export interface SessionExportResult {
+  format: string
+  filename: string
+  content: string
 }
 export interface SessionAutomationParams {
   session_id: string
@@ -4929,6 +4948,7 @@ export interface CanonicalSnapshot {
   pending: CanonicalPendingAdmission[]
   prompts: CanonicalPendingPrompt[]
   info: CanonicalSnapshotInfo
+  pending_connection?: ConnectionRequestPayload | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -4940,6 +4960,8 @@ export interface CanonicalPendingAdmission {
   execution_generation: number | null
   input_id: string
   text: string
+  controls?: ('steer' | 'replace')[] | null
+  steering?: boolean | null
 }
 export interface CanonicalPendingPrompt {
   kind: 'approval' | 'clarify'
@@ -4978,6 +5000,7 @@ export interface CanonicalSnapshotInfo {
   profile_id?: string | null
   profile_name?: string | null
   cwd?: string | null
+  edit_approval_policy?: 'ask' | 'workspace_session' | 'session' | null
   launch_request?: Record<string, unknown> | null
   reasoning_effort?: string | null
   reasoning_effort_wire?: string | null
@@ -5048,11 +5071,17 @@ export interface CanonicalCorrectionParams {
   execution_generation: number
   text: string
 }
-export interface CanonicalCorrectionResult {
+/** ``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}`` when the busy-time text was a bare stop phrase that ended the LOCAL voice chat. */
+export type CanonicalCorrectionResult = CanonicalCorrectionAck | CanonicalVoiceStopped
+export interface CanonicalCorrectionAck {
   status: 'queued' | 'redirected' | 'rejected'
   text: string
   execution_generation: number
   authority_epoch: number
+}
+/** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
+export interface CanonicalVoiceStopped {
+  voice_stopped: true
 }
 export interface CanonicalEventsParams {
   profile?: string | null
@@ -5115,13 +5144,32 @@ export interface CanonicalTurnAuthor {
 export interface CanonicalModelOverride {
   model: string
   provider?: string | null
+  reasoning?: string | null
 }
+/** ``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``. */
+export type CanonicalSubmitResult = AdmissionStatus | CanonicalVoiceStopped
 export interface CanonicalApprovalParams {
   profile?: string | null
   session_id: string
   execution_generation: number
   prompt_id: string
   choice: string
+}
+export interface CanonicalSteerQueuedParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+}
+/** The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail. */
+export interface CanonicalReplaceQueuedParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+  submission_id: string
+  text: string
+  attachments?: CanonicalAttachment[] | null
+  display_kind?: 'hidden' | null
+  title_preview?: string | null
 }
 export interface CanonicalConfigGetResult {
   value?: string | null
@@ -5605,7 +5653,7 @@ export interface StatusUpdatePayload {
   kind: string
   text: string
 }
-/** ``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level: published after every API call and at turn end, what main's classic CLI read off its agent. */
+/** ``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call and at turn end (``gateway/session_usage.py::usage_frame``). Read this. Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats`` dict) that the gateway frame also carries. They are kept for existing readers; new readers use ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them. */
 export interface SessionUsagePayload {
   usage?: Usage | null
   input_tokens?: number | null
@@ -6688,6 +6736,9 @@ export interface CanonicalRpcMethods {
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
+  'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
   /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
@@ -6719,9 +6770,13 @@ export interface CanonicalRpcMethods {
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
   /** Current receipt of one admission the caller submitted (or controls). */
   'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }
+  /** Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found. */
+  'prompt.replace_queued': { params: CanonicalReplaceQueuedParams; result: AdmissionStatus }
   /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
   'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
-  'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
+  /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
+  'prompt.steer_queued': { params: CanonicalSteerQueuedParams; result: AdmissionStatus }
+  'prompt.submit': { params: CanonicalSubmitParams; result: CanonicalSubmitResult }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
@@ -6732,11 +6787,13 @@ export interface CanonicalRpcMethods {
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
   'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
+  /** The /save transcript rendered for the client to write (the gateway writes nothing). */
+  'session.export': { params: SessionExportParams; result: SessionExportResult }
   /** Frozen launch policy projection of one local session. */
   'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
   'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
   'session.list': { params: CanonicalListParams; result: CanonicalListResult }
-  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, compress, import). */
+  /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import). */
   'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
   /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
   'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
@@ -6759,6 +6816,8 @@ export const CANONICAL_RPC_METHODS = [
   'a2a.forward',
   'approval.respond',
   'bot_relay.deliver',
+  'bot_relay.settle',
+  'clarify.lock',
   'clarify.respond',
   'command.observe',
   'config.get',
@@ -6778,7 +6837,9 @@ export const CANONICAL_RPC_METHODS = [
   'profiles.list',
   'prompt.cancel',
   'prompt.receipt',
+  'prompt.replace_queued',
   'prompt.resolve_unknown',
+  'prompt.steer_queued',
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
@@ -6786,6 +6847,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.create',
   'session.detach',
   'session.events.since',
+  'session.export',
   'session.info',
   'session.interrupt',
   'session.list',
@@ -6972,6 +7034,8 @@ export interface BackendGatewayEventMap {
   'sessions.changed': ChangeSignalPayload
   /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
   'setup.ready': SetupReadyPayload
+  /** A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway. */
+  'skills.changed': ChangeSignalPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
   'skin.changed': SkinPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
@@ -7074,6 +7138,7 @@ export const GATEWAY_EVENT_TYPES = [
   'session.usage',
   'sessions.changed',
   'setup.ready',
+  'skills.changed',
   'skin.changed',
   'status.update',
   'subagent.complete',

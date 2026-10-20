@@ -232,6 +232,12 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+// A micro-compaction merge (`display_metadata.model_only`) is the model's copy of prompts whose originals
+// the history shows: the owner's resume snapshot keeps it as an undo target, and it is never painted.
+function isPainted(message: SessionMessage): boolean {
+  return parseDisplayMetadata(message.display_metadata)?.model_only !== true
+}
+
 // `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
 // kept on its boundary row so a reopened session shows it after the live frame is gone.
 function failedTurnError(
@@ -444,7 +450,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
-  messages.forEach((message, index) => {
+  // `index` stays the stored row position (it keys tool-part and message ids), so skipped merges shift nothing.
+  const painted = messages.flatMap((message, index) => (isPainted(message) ? [{ index, message }] : []))
+
+  painted.forEach(({ message, index }) => {
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {

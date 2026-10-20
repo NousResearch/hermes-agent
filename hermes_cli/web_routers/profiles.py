@@ -274,9 +274,9 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
     the open fails or ``fn`` raises (warned once, recorded in ``errors`` when given).
 
     Read-only on the healthy path: this runs on every sidebar refresh, so it must not
-    routinely DDL/write-lock another profile's live DB. The open helper's stale-schema probe
-    performs a ONE-TIME writable open when the store predates a schema addition — read-only
-    opens skip column reconciliation and would otherwise fail here on every refresh."""
+    routinely DDL/write-lock another profile's live DB. A store that predates a schema addition
+    gets the missing declared tables/columns ONCE from the open helper, and only while no gateway
+    owns it; an owned store is reported in ``errors`` with the restart remedy (#140315)."""
     db_path = Path(home) / "state.db"
     if not db_path.exists():
         return None
@@ -503,7 +503,14 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    if archived == "only":
+        # Pinned live chats back-fill this view, but cannot consume positions
+        # in its archived-only cursor (whose total counts only archived rows).
+        window = _pinned_window([s for s in merged if s.get("archived")], offset, limit)
+        # Keep backfill after the window: clients retain only limit rows plus pins.
+        window.extend(s for s in merged if s.get("pinned") and not s.get("archived"))
+    else:
+        window = _pinned_window(merged, offset, limit)
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,

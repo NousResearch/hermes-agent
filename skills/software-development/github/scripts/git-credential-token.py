@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Print the first unambiguous GitHub token in a git credential-store file."""
 
+from __future__ import annotations
+
 from pathlib import Path
 import re
 import sys

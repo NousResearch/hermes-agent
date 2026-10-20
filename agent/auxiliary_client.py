@@ -4804,9 +4804,9 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
 
 
 def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[Any], Optional[str]]:
-    """Google Vertex AI: Gemini via the OpenAI-compatible endpoint with an OAuth2 bearer (standard OpenAI client)."""
+    """Google Vertex AI: Gemini → native ``generateContent`` (GeminiNativeClient) with an OAuth2 bearer; anything else → OpenAI-compat."""
     try:
-        from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        from agent.vertex_adapter import get_vertex_config, has_vertex_credentials, vertex_base_url_for_model
     except ImportError:
         logger.warning("resolve_provider_client: vertex requested but google-auth not installed")
         return None, None
@@ -4818,6 +4818,11 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
         logger.warning("resolve_provider_client: vertex requested but could not mint token / resolve project")
         return None, None
     final_model = _normalize_resolved_model(model or "google/gemini-3-flash-preview", provider)
+    base_url = vertex_base_url_for_model(base_url, final_model)
+    from agent.gemini_native_adapter import GeminiNativeClient, bare_gemini_model_id, is_native_gemini_base_url
+    if is_native_gemini_base_url(base_url) and bare_gemini_model_id(final_model).lower().startswith("gemini"):
+        logger.debug("resolve_provider_client: vertex gemini native (%s)", final_model)
+        return GeminiNativeClient(api_key=token, base_url=base_url), final_model
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
         from openai import OpenAI as _VertexOpenAI

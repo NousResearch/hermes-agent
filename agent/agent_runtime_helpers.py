@@ -2033,7 +2033,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return provider_client
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
+    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES or agent.provider == "vertex":
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client

@@ -102,7 +102,7 @@ def test_gateway_backed_cli_resolves_vertex_route_without_minting(monkeypatch, t
     assert mints == [], "the CLI process minted a Vertex token the gateway mints again"
     assert shell.provider == "vertex"
     assert shell.base_url == (
-        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/sa-proj/locations/us-central1/endpoints/openapi")
+        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/sa-proj/locations/us-central1/publishers/google")
     assert callable(shell.api_key)
     # A caller that really sends from this process still gets a token, minted once and reused.
     assert shell.api_key() == shell.api_key() == "ya29.minted-1"

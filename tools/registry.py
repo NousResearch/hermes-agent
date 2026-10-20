@@ -226,6 +226,9 @@ class ToolEntry:
     description: str
     emoji: str
     max_result_size_chars: int | float | None = None
+    # Registry metadata so plugins can expose non-name-based Kanban hand-off tools.
+    kanban_terminal: bool = False
+    kanban_terminal_guidance: str = ""
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
@@ -539,6 +542,17 @@ class ToolRegistry:
         with self._lock:
             return self._lookup(name, scope or self.current_scope_key(), explicit_scope=scope is not None)
 
+    def kanban_terminal_tool_names(self, tool_names: Optional[set[str]] = None) -> set[str]:
+        """Return registered terminal hand-off tools, optionally limited to a session surface."""
+        return set(self.kanban_terminal_tool_guidance(tool_names))
+
+    def kanban_terminal_tool_guidance(self, tool_names: Optional[set[str]] = None) -> dict[str, str]:
+        """Return terminal hand-off guidance, optionally limited to a session surface."""
+        entries = self._snapshot_entries()
+        allowed = set(tool_names) if tool_names is not None else None
+        return {entry.name: entry.kanban_terminal_guidance for entry in entries
+                if entry.kanban_terminal and (allowed is None or entry.name in allowed)}
+
     def _lookup(self, name: str, scope_key: Optional[str], *, explicit_scope: bool = True) -> Optional[ToolEntry]:
         """``_merged_tools(scope).get(name)`` without building the merged dict. An implicit scope
         (the caller passed none) also sees the current session's tool overlay, as the merge does."""
@@ -711,7 +725,8 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None, execution_timeout: float | None = None):
+        scope: Optional[str] = None, execution_timeout: float | None = None,
+        kanban_terminal: bool = False, kanban_terminal_guidance: str = ""):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -776,6 +791,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
+                kanban_terminal=bool(kanban_terminal),
+                kanban_terminal_guidance=str(kanban_terminal_guidance or ""),
                 dynamic_schema_overrides=dynamic_schema_overrides)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->

@@ -1292,6 +1292,18 @@ def _handle_link(args: dict, **kw) -> str:
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
 _ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# A board lifecycle hand-off is a semantic property, not a required tool-name prefix.
+_KANBAN_TERMINAL_TOOLS = frozenset({
+    "kanban_complete", "kanban_block", "kanban_schedule",
+    "kanban_request_review", "kanban_request_changes",
+})
+_KANBAN_TERMINAL_GUIDANCE = {
+    "kanban_complete": "Work is done and needs no review; include a concise summary and any artifact paths.",
+    "kanban_block": "You are blocked and need human input; explain what is needed.",
+    "kanban_schedule": "The task should resume later; provide the schedule details required by the tool.",
+    "kanban_request_review": "This code change needs same-card review; summarize the work for the reviewer.",
+    "kanban_request_changes": "You are reviewing and need to return the task for revisions; explain the required changes.",
+}
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1312,4 +1324,5 @@ _TOOLS = (
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
-                      check_fn=_gate)
+                      check_fn=_gate, kanban_terminal=_name in _KANBAN_TERMINAL_TOOLS,
+                      kanban_terminal_guidance=_KANBAN_TERMINAL_GUIDANCE.get(_name, ""))

@@ -67,11 +67,21 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
     if (target / "node_modules").is_dir() and (staged / "package.json").is_file() and (
             not (staged / "node_modules").is_dir()
             or any(_bytes(target / name) != _bytes(staged / name) for name in ("package.json", "package-lock.json"))):
-        reason = install_node_sidecar(staged, explicit=True)
-        if reason:
-            raise pc.PluginOperationError(
-                f"Node dependencies could not be refreshed: {reason}. "
-                "The installed plugin and active environment are unchanged.")
+        if pc._node_sidecar_requires_install(staged):
+            reason = install_node_sidecar(staged, explicit=True)
+            if reason:
+                raise pc.PluginOperationError(
+                    f"Node dependencies could not be refreshed: {reason}. "
+                    "The installed plugin and active environment are unchanged.")
+        else:
+            # A package that only carries build tooling has no runtime sidecar
+            # to refresh. Catalog re-pins start from a fresh clone, and custom
+            # pulls must not publish the old dev toolchain into that clone.
+            modules = staged / "node_modules"
+            if modules.is_symlink() or modules.is_file():
+                modules.unlink()
+            elif modules.is_dir():
+                shutil.rmtree(modules)
     if target.resolve() not in enabled_plugin_dirs(installing=target):
         return  # a disabled plugin's deps are admitted (and consented) by `hermes plugins enable`
     before, after = read_python_declaration(target), read_python_declaration(staged)

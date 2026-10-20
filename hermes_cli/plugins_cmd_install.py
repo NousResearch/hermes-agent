@@ -7,6 +7,7 @@ imported late here, never at module level).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -66,6 +67,53 @@ class _ConsentRefusal(str):
         return refusal
 
 
+def _node_sidecar_requires_install(target: Path) -> bool:
+    """Whether the plugin's package metadata indicates npm install work at runtime.
+
+    Development-only manifests are common when a prebuilt JavaScript bundle is
+    committed. Keep npm consent for runtime packages and install-time build
+    hooks, but don't install a dev toolchain that the plugin never uses.
+    Invalid or unusual manifests stay on the existing consent path.
+    """
+    package_json = target / "package.json"
+    if not package_json.is_file():
+        return False
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return True
+    if not isinstance(package, dict):
+        return True
+
+    for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+        if field not in package:
+            continue
+        value = package.get(field)
+        if not isinstance(value, dict) or value:
+            return True
+
+    bundled = package.get("bundledDependencies", package.get("bundleDependencies"))
+    if bundled:
+        return True
+
+    # npm workspaces can declare runtime dependencies below this package root.
+    workspaces = package.get("workspaces")
+    if workspaces and not isinstance(workspaces, (dict, list)):
+        return True
+    if workspaces:
+        return True
+
+    scripts = package.get("scripts")
+    if scripts is not None and not isinstance(scripts, dict):
+        return True
+    if isinstance(scripts, dict) and any(
+        scripts.get(name) for name in ("preinstall", "install", "postinstall", "prepare", "prepublish")
+    ):
+        return True
+
+    return (target / "binding.gyp").is_file()
+
+
 def _install_plugin_python_deps(
     manifest: dict, target: Path, console, *, assume_yes: bool = False
 ) -> tuple[bool, Optional[str]]:
@@ -91,16 +139,19 @@ def _install_plugin_python_deps(
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
     has_python = declaration.is_member
-    has_package_json = (target / "package.json").is_file()
-    if not has_python and not has_package_json:
+    has_node_install = _node_sidecar_requires_install(target)
+    if not has_python and not has_node_install:
         return True, None  # no declared deps at all
 
     # Node sidecar (package.json): the npm ci executor — separate consent
     # question, same try-then-enable posture. Failure never blocks the
     # python path below.
     node_reason = None
-    if has_package_json:
-        console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
+    if has_node_install:
+        console.print(
+            f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node runtime dependencies "
+            "or install-time build steps (package.json)."
+        )
         node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
             ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
         if node_ok:

@@ -166,6 +166,31 @@ describe("mobile IME double-send dedup (#115505)", () => {
     expect(forwarder.filterTerminalData("again ")).toBe(" ");
   });
 
+  it("drops a CJK commit whose compositionend lands well after xterm's onData", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    // Pinyin: onData carries 你, compositionend trails it by ~150ms.
+    forwarder.noteTerminalData("你");
+    vi.advanceTimersByTime(150);
+    forwarder.onCompositionEnd("你");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("forwards a CJK commit xterm never delivered", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("表格");
+    vi.advanceTimersByTime(16);
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("表格");
+  });
+
   it("keeps real repeats and unrelated input: outside the echo window and for different text", () => {
     vi.useFakeTimers();
     const send = vi.fn();
@@ -173,7 +198,7 @@ describe("mobile IME double-send dedup (#115505)", () => {
 
     forwarder.onCompositionEnd("hello");
     vi.advanceTimersByTime(16);
-    vi.advanceTimersByTime(100);
+    vi.advanceTimersByTime(400);
     forwarder.onCompositionEnd("hello");
     vi.advanceTimersByTime(16);
     expect(send).toHaveBeenCalledTimes(2);
@@ -184,7 +209,7 @@ describe("mobile IME double-send dedup (#115505)", () => {
     expect(send).toHaveBeenLastCalledWith("xyz");
 
     expect(forwarder.filterTerminalData("other")).toBe("other");
-    vi.advanceTimersByTime(100);
+    vi.advanceTimersByTime(400);
     expect(forwarder.filterTerminalData("xyz")).toBe("xyz");
   });
 });

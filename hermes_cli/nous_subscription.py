@@ -75,7 +75,7 @@ _ALL_GATEWAY_KEYS = tuple(_GATEWAY_SECTION_FIELDS)
 _GATEWAY_TOOL_LABELS = {k: _FEATURES[k].offer_label for k in _ALL_GATEWAY_KEYS}
 # Sections apply_*_defaults always materialise before writing selections.
 _DEFAULT_SECTIONS = ("web", "tts", "stt", "browser")
-MANAGED_IMAGE_DEFAULT_KREA_MODEL = "krea-2-medium-turbo"
+MANAGED_IMAGE_DEFAULT_KREA_MODEL = "krea-3"
 
 
 def _uses_gateway(section: object) -> bool:
@@ -479,8 +479,8 @@ def _has_managed_default_direct(key: str) -> bool:
 
 
 def _krea_image_default(config: dict[str, object], account_info) -> Optional[str]:
-    """Krea 2 Medium Turbo for accounts entitled to Krea when no image model is stored; the free
-    pool is not entitled and keeps the FAL default."""
+    """Krea 3 for accounts entitled to Krea when no image model is stored; the free pool is not
+    entitled and keeps the FAL default."""
     if _section(config, "image_gen").get("model") or not (account_info and account_info.tool_gateway_entitled_for("krea")):
         return None
     return MANAGED_IMAGE_DEFAULT_KREA_MODEL

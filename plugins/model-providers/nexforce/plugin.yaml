@@ -1,0 +1,5 @@
+name: nexforce-provider
+kind: model-provider
+version: 1.0.0
+description: Nexforce Router (OpenAI-compatible multi-provider endpoint)
+author: vitti

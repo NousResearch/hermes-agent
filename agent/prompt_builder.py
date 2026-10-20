@@ -1318,6 +1318,29 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         skills_by_category.setdefault(category, []).append((entry["load_name"], desc))
 
 
+def _configured_names_only_categories() -> frozenset[str]:
+    """``skills.index_names_only_categories``: category prefixes rendered as names-only lines.
+
+    A catalog-sized library (``bio-*``, ``csd-bencao/*``, textbook chapters) is a lookup table
+    whose names are self-describing, so listing every description costs prompt tokens on EVERY
+    turn. Nothing is hidden: the names stay listed and ``skills_list`` carries descriptions on
+    demand. Prefix match (``bio-`` also matches ``bio-alignment-bwa``); exact category names work
+    too.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        skills_cfg = cfg.get("skills") if isinstance(cfg, dict) else None
+        raw = skills_cfg.get("index_names_only_categories") if isinstance(skills_cfg, dict) else None
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, (list, tuple)):
+            return frozenset(str(p).strip().rstrip("/") for p in raw if str(p).strip())
+    except Exception:
+        logger.debug("skills.index_names_only_categories read failed", exc_info=True)
+    return frozenset()
+
+
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
@@ -1329,6 +1352,11 @@ def _render_skills_index(
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
     demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    _names_only_prefixes = _configured_names_only_categories()
+    if _names_only_prefixes:
+        demoted |= frozenset(
+            cat for cat in skills_by_category
+            if any(cat == p or cat.startswith(p) for p in _names_only_prefixes))
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
@@ -1409,6 +1437,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        tuple(sorted(_configured_names_only_categories())),
         _oneshot_prompt_variant(), tuple(plugin_rows),
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)

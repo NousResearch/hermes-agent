@@ -1476,6 +1476,10 @@ DEFAULT_CONFIG = {
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
+        # Category prefixes listed names-only in the prompt's skill index (`bio-`, `csd-bencao`, ...).
+        # Names stay visible and skills_list still returns descriptions; this only drops the per-turn
+        # description text for catalog-sized categories.
+        "index_names_only_categories": [],
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:

@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import type { SessionInfo } from '@/types/hermes'
 
+import { completeFlow } from './desktop-metrics'
 import { $selectedStoredSessionId, $sessions } from './session'
 
 // Mac-style session switcher (^Tab). Quick tap jumps on keydown; the HUD opens
@@ -95,8 +96,7 @@ export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
   return sessions[nextIndex]?.id ?? null
 }
 
-export const highlightedSessionId = (): string | null =>
-  $switcherSessions.get()[$switcherIndex.get()]?.id ?? null
+export const highlightedSessionId = (): string | null => $switcherSessions.get()[$switcherIndex.get()]?.id ?? null
 
 export const slotSessionId = (slot: number): string | null =>
   ($switcherOpen.get() || pendingBrowse ? $switcherSessions.get() : $sessions.get())[slot - 1]?.id ?? null
@@ -118,6 +118,11 @@ export function commitOnCtrlUp(): string | null {
   }
 
   const target = highlightedSessionId()
+
+  if (target) {
+    completeFlow('session_switcher')
+  }
+
   closeSwitcher()
 
   return target

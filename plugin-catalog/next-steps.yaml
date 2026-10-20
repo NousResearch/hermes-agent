@@ -1,0 +1,15 @@
+name: next-steps
+repo: https://github.com/Agantila/next-steps
+sha: 7baab9e7e644546db17318baacdb7f1c6e2e19fa
+description: "Next-step suggestions under the Hermes Desktop composer after each turn: local Ollama inference, per-session state, target routing (session, new tab, bots, kanban), tiny-model capacity profiles, EN/DE UI. No API keys. Disclosure — after every agent turn, sends the last 8 messages (each cut to 200 chars) plus the working directory to Ollama on localhost; clicking a suggestion immediately submits it as a prompt in the current session, a new session, or another profile's session, or creates a kanban card, and for non-current targets also attaches the working directory and the last 6 messages (on by default, can be turned off under Targets)."
+maintainer: Agantila
+tier: community
+category: desktop
+version: "11.1.0"
+docs_url: https://github.com/Agantila/next-steps#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

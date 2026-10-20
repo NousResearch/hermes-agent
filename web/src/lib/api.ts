@@ -1,3 +1,21 @@
+import {
+  buildHermesWebSocketUrl,
+  type ModelOptionProvider,
+  type ModelOptionsResult,
+} from "@hermes/shared";
+import { createDashboardSessionMutations } from "./session-mutations";
+
+const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
+
+import type { AuxiliaryModelsResponse } from "./api-aux";
+import type { AgentPluginUpdateResponse } from "./api-plugins";
+import type {
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
+import { dashboardServingProfile } from "./profile-bootstrap";
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -18,6 +36,12 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import {
+  attemptDashboardTokenReloadOnce,
+  clearDashboardTokenReloadAttempt,
+} from "@/lib/dashboard-auth-reload";
+import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -32,7 +56,6 @@ declare global {
     __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }
-let _sessionToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 function setSessionHeader(headers: Headers, token: string): void {
@@ -54,14 +77,24 @@ export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
 }
 
+/**
+ * The profile every management call targets: the switcher's selection, or —
+ * before it has resolved / on a host with no switcher interaction — the profile
+ * this backend itself serves.
+ *
+ * The fallback is not a guess: the backend injects a name only when it provably
+ * resolves back to its own home, so it names exactly the home an unnamed request
+ * already reached. Without it the dashboard sends no `?profile=` at all and every
+ * destructive route 400s as soon as the host has a second profile directory.
+ */
 export function getManagementProfile(): string {
-  return _managementProfile;
+  return _managementProfile || dashboardServingProfile();
 }
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// pairing, cron (which has its own per-job profile params), profiles
-// themselves — is machine-global or self-scoped and must NOT be rewritten.
+// _profile_scope or explicit per-profile DB opens). Anything else — cron (which
+// has its own per-job profile params), profiles themselves — is machine-global or
+// self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
@@ -73,19 +106,61 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/mcp",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
+  "/api/messaging/whatsapp/onboarding",
+  // OAuth/account state is profile-owned too: status, login sessions, polling,
+  // cancellation, and disconnect must all follow the selected management
+  // profile rather than silently targeting the dashboard process's profile.
+  "/api/providers/oauth",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
+  "/api/model/moa",
   "/api/model/options",
+  // A named profile keeps its own pairing whitelist, and its gateway only
+  // consults that one — approving into the global store would grant access
+  // the running gateway never sees.
+  "/api/pairing",
+  // Memory files, the curator state file, webhook subscriptions, shell hooks,
+  // checkpoints, backups/imports and the dashboard's own theme/font/plugin
+  // preferences all live in a profile home. One backend now serves every
+  // profile, so the switcher's selection has to ride on the request or a reset
+  // lands on the launch profile's data.
+  "/api/memory",
+  "/api/curator",
+  "/api/webhooks",
+  "/api/ops",
+  "/api/logs",
+  "/api/portal",
+  // Pool entries live in the profile's home, and DELETE /api/credentials/pool/{provider}/{index}
+  // is destructive — without this prefix the dashboard's remove button never named a profile and
+  // a multi-profile host refused it outright.
+  "/api/credentials",
+  // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
+  // into the named profile's config.yaml (same key as PUT /api/memory/provider).
+  "/api/dashboard/plugin-providers",
+  // Model/runtime activation persists into config.yaml; the read routes ignore an extra param.
+  "/api/model/recommended-default",
+  "/api/local-models",
+  "/api/dashboard/theme",
+  "/api/dashboard/font",
+  "/api/dashboard/plugins",
+  "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
+  // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
+  "/api/shared-metrics",
 ];
 
+// The dashboard's own profile when nothing else named one. The backend injects it only
+// when it provably resolves back to the serving home, so this can never retarget another
+// profile — it just says out loud what an unnamed request already meant. Without it every
+// destructive route 400s on a host that merely HAS a second profile directory.
 function withManagementProfile(url: string): string {
-  if (!_managementProfile) return url;
+  const scope = getManagementProfile();
+  if (!scope) return url;
   if (url.includes("profile=")) return url; // explicit param wins
   const path = url.split("?")[0];
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+  return `${url}${sep}profile=${encodeURIComponent(scope)}`;
 }
 
 export async function fetchJSON<T>(
@@ -100,15 +175,26 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (cause) {
+    // fetch() only rejects when the request never got a response: the
+    // backend is down, the port is closed, or the network dropped. Tell the
+    // user that in words instead of `TypeError: Failed to fetch`.
+    const err = apiErrorFromNetworkFailure(cause, url);
+    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
+    console.warn("[api]", err.details);
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -153,20 +239,7 @@ export async function fetchJSON<T>(
     // handled above, so reaching here in gated mode means a real
     // middleware failure that should not reload-loop.
     if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
-      let alreadyReloaded = false;
-      try {
-        alreadyReloaded =
-          sessionStorage.getItem("hermes.tokenReloadAttempted") === "1";
-      } catch {
-        /* SSR / privacy mode — fall through to throw */
-      }
-      if (!alreadyReloaded) {
-        try {
-          sessionStorage.setItem("hermes.tokenReloadAttempted", "1");
-        } catch {
-          /* SSR / privacy mode — best effort */
-        }
-        window.location.reload();
+      if (attemptDashboardTokenReloadOnce()) {
         return new Promise<T>(() => {});
       }
     }
@@ -175,15 +248,13 @@ export async function fetchJSON<T>(
     // Clear the stale-token reload guard: a successful 2xx proves the
     // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
     // 401 — if any — should be allowed to trigger its own reload cycle.
-    try {
-      sessionStorage.removeItem("hermes.tokenReloadAttempted");
-    } catch {
-      /* SSR / privacy mode — ignore */
-    }
+    clearDashboardTokenReloadAttempt();
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    const err = apiErrorFromResponse(res.status, text, url);
+    console.warn("[api]", err.details);
+    throw err;
   }
   return res.json();
 }
@@ -191,16 +262,6 @@ export async function fetchJSON<T>(
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
 function pluginPath(name: string): string {
   return name.split("/").map(encodeURIComponent).join("/");
-}
-
-async function getSessionToken(): Promise<string> {
-  if (_sessionToken) return _sessionToken;
-  const injected = window.__HERMES_SESSION_TOKEN__;
-  if (injected) {
-    _sessionToken = injected;
-    return _sessionToken;
-  }
-  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
 /**
@@ -221,7 +282,7 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+    throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), "/api/auth/ws-ticket");
   }
   return res.json();
 }
@@ -261,6 +322,11 @@ export async function authedFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  // Same management scope as fetchJSON: a binary endpoint under a profile-scoped
+  // family (``/api/ops/backup/download``) must read the SELECTED profile's archive,
+  // not the launch profile's, and an unprofiled back door beside a family that now
+  // 400s is exactly how the next hole gets in.
+  url = withManagementProfile(url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
@@ -290,11 +356,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  const [authName, authValue] = await buildWsAuthParam();
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams(params ?? {});
-  qs.set(authName, authValue);
-  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -310,24 +374,59 @@ function appendProfileParam(url: string, profile?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
+function appendQueryParam(url: string, key: string, value?: string): string {
+  if (!value) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
+}
+
+export interface SessionQueryOptions {
+  profile?: string;
+  order?: "created" | "recent";
+  source?: string | null;
+  sources?: string[];
+  excludeSources?: string[];
+}
+
+function normalizeSessionQueryOptions(
+  profileOrOptions?: string | SessionQueryOptions,
+  order: "created" | "recent" = "created",
+): SessionQueryOptions {
+  if (typeof profileOrOptions === "string") {
+    return { profile: profileOrOptions, order };
+  }
+  return {
+    profile: getManagementProfile(),
+    order,
+    ...(profileOrOptions ?? {}),
+  };
+}
+
+function appendSessionFilters(url: string, options: SessionQueryOptions): string {
+  let next = url;
+  next = appendQueryParam(next, "source", options.source ?? undefined);
+  if (options.sources && options.sources.length > 0) {
+    next = appendQueryParam(next, "sources", options.sources.join(","));
+  }
+  if (options.excludeSources && options.excludeSources.length > 0) {
+    next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
+  }
+  return appendProfileParam(next, options.profile);
+}
+
 export const api = {
+  buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
-   * Returns the verified Session as JSON when gated mode is active and a
-   * valid cookie is attached. Loopback mode is unaffected — the endpoint
-   * still exists but is never useful there (no Session, no cookie). The
-   * AuthWidget component swallows 401s from this call: if the gate isn't
-   * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   * Returns the verified Session when gated mode is active. In loopback mode,
+   * a valid injected session token returns a synthetic ``provider=loopback``
+   * identity; AuthWidget recognizes that provider and renders nothing, so it
+   * never exposes a logout action that would redirect to an unavailable login.
    *
-   * ``allowUnauthorized`` is load-bearing: in loopback mode this endpoint
-   * 401s by design, and fetchJSON's default loopback behaviour treats a
-   * 401 as a rotated session token and full-page-reloads to pick up a
-   * fresh one. Because every *other* dashboard request succeeds (and so
-   * clears the one-shot reload guard), that turns this expected 401 into
-   * an infinite reload loop. Opting out keeps the 401 a plain throw the
-   * widget can catch.
+   * ``allowUnauthorized`` remains load-bearing for a missing or stale loopback
+   * token: keep that 401 local to the widget instead of triggering the global
+   * rotated-token reload path.
    */
   getAuthMe: () =>
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
@@ -341,36 +440,57 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
       return r;
     }),
   getSessions: (
     limit = 20,
     offset = 0,
-    profile = getManagementProfile(),
+    profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
     order: "created" | "recent" = "created",
-  ) =>
-    fetchJSON<PaginatedSessions>(
+  ) => {
+    const options = normalizeSessionQueryOptions(profileOrOptions, order);
+    return fetchJSON<PaginatedSessions>(
+      appendSessionFilters(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`,
+        options,
+      ),
+    );
+  },
+  getSessionMessages: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionMessagesResponse>(
       appendProfileParam(
-        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
         profile,
       ),
     ),
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+  getSessionDetail: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionInfo>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
-  getSessionLatestDescendant: (id: string) =>
+  /**
+   * Directories a FRESH dashboard chat may start in: the profile's explicit
+   * projects plus discovered git repos (session-derived + scanned). ``scan``
+   * asks the host to rescan its discovery roots first (headless installs have
+   * no Desktop to populate the cache).
+   */
+  getChatWorkspaces: (profile = getManagementProfile(), scan = false) =>
+    fetchJSON<ChatWorkspacesResponse>(
+      appendQueryParam(
+        appendProfileParam("/api/chat/workspaces", profile),
+        "scan",
+        scan ? "1" : undefined,
+      ),
+    ),
+  getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean }>(id, "DELETE", {}, profile),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
     fetchJSON<{ count: number }>(
       appendProfileParam("/api/sessions/empty/count", profile),
@@ -383,34 +503,42 @@ export const api = {
       },
     ),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+    fetchJSON<{ ok: boolean; deleted: number; skipped_active?: string[] }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean; title: string }>(id, "PATCH", { title }, profile),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
     appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
+  importSessions: (
+    sessions: Array<Record<string, unknown>>,
+    profile = getManagementProfile(),
+  ) => {
+    const id = sessions[0]?.id;
+    if (typeof id !== "string" || !id) return Promise.reject(new Error("session id is required"));
+    return mutateSessionHttp<SessionImportResponse>(id, "POST", { sessions }, profile);
+  },
   pruneSessions: (
     older_than_days: number,
     source?: string,
     profile = getManagementProfile(),
   ) =>
-    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
-    }),
+    fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
+      "/api/sessions/prune",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          older_than_days,
+          source,
+          profile: profile || undefined,
+        }),
+      },
+    ),
   listFiles: (path?: string) => {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
@@ -462,27 +590,75 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
+  getConfig: (profile = getManagementProfile()) =>
+    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
-  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
-  getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
-  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
-  setModelAssignment: (body: ModelAssignmentRequest) =>
-    fetchJSON<ModelAssignmentResponse>("/api/model/set", {
-      method: "POST",
+  getModelInfo: (profile = getManagementProfile()) =>
+    fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
+  getModelOptions: (
+    profileOrOptions?: string | { profile?: string; refresh?: boolean },
+  ) => {
+    const profile =
+      typeof profileOrOptions === "string"
+        ? profileOrOptions
+        : profileOrOptions?.profile;
+    const refresh =
+      typeof profileOrOptions === "object" && !!profileOrOptions.refresh;
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    if (refresh) qs.set("refresh", "1");
+    // Dashboard surfaces (Models page, profile builder, cron) are
+    // management/setup UIs: keep the full provider universe with setup
+    // affordances. The endpoint now defaults to the configured subset for
+    // desktop chat pickers (#56974), so opt in explicitly here.
+    qs.set("include_unconfigured", "1");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
+  },
+  getAuxiliaryModels: (profile = getManagementProfile()) =>
+    fetchJSON<AuxiliaryModelsResponse>(
+      appendProfileParam("/api/model/auxiliary", profile),
+    ),
+  getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
+  saveMoaModels: (body: MoaConfigResponse) =>
+    fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  saveConfig: (config: Record<string, unknown>) =>
-    fetchJSON<{ ok: boolean }>("/api/config", {
+  setModelAssignment: (
+    body: ModelAssignmentRequest,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ModelAssignmentResponse>(
+      appendProfileParam("/api/model/set", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getSharedMetricsConsent: (profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
+  saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(answer),
+    }),
+  saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string; path?: string }>("/api/config/raw"),
-  saveConfigRaw: (yaml_text: string) =>
-    fetchJSON<{ ok: boolean }>("/api/config/raw", {
+  getConfigRaw: (profile = getManagementProfile()) =>
+    fetchJSON<{ yaml: string; path?: string }>(
+      appendProfileParam("/api/config/raw", profile),
+    ),
+  saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
@@ -500,24 +676,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
     }),
-  revealEnvVar: async (key: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
+  revealEnvVar: (key: string) =>
+    fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [SESSION_HEADER]: token,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
-    });
-  },
+    }),
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
+  getCronDeliveryTargets: (profile = "default") =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(
+      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
+    ),
+  createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -527,7 +700,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
+    updates: CronJobMutation,
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -546,8 +719,10 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  getAutomationBlueprints: (profile = "default") =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
+      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
+    ),
   instantiateAutomationBlueprint: (
     body: { blueprint: string; values: Record<string, string> },
     profile = "default",
@@ -686,7 +861,7 @@ export const api = {
   getToolsets: (profile?: string) =>
     fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+    fetchJSON<{ ok: boolean; name: string; platform: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
@@ -727,72 +902,66 @@ export const api = {
     ),
 
   // Session search (FTS5)
-  searchSessions: (q: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionSearchResponse>(
-      appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
-    ),
+  searchSessions: (
+    q: string,
+    profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
+  ) => {
+    const options = normalizeSessionQueryOptions(profileOrOptions);
+    return fetchJSON<SessionSearchResponse>(
+      appendSessionFilters(
+        `/api/sessions/search?q=${encodeURIComponent(q)}`,
+        options,
+      ),
+    );
+  },
 
   // OAuth provider management
   getOAuthProviders: () =>
     fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
-  disconnectOAuthProvider: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean; provider: string }>(
+  disconnectOAuthProvider: (providerId: string) =>
+    fetchJSON<{ ok: boolean; provider: string }>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}`,
       {
         method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
       },
-    );
-  },
-  startOAuthLogin: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthStartResponse>(
+    ),
+  startOAuthLogin: (providerId: string) =>
+    fetchJSON<OAuthStartResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
+        headers: { "Content-Type": "application/json" },
         body: "{}",
       },
-    );
-  },
-  submitOAuthCode: async (providerId: string, sessionId: string, code: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthSubmitResponse>(
+    ),
+  submitOAuthCode: (providerId: string, sessionId: string, code: string) =>
+    fetchJSON<OAuthSubmitResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, code }),
       },
-    );
-  },
+    ),
   pollOAuthSession: (providerId: string, sessionId: string) =>
     fetchJSON<OAuthPollResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
     ),
-  cancelOAuthSession: async (sessionId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean }>(
+  cancelOAuthSession: (sessionId: string) =>
+    fetchJSON<{ ok: boolean }>(
       `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
       {
         method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
       },
-    );
-  },
+    ),
 
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
+  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -835,10 +1004,47 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
+  startWhatsAppOnboarding: (body: {
+    mode?: "bot" | "self-chat";
+    allowed_users?: string;
+  }) =>
+    fetchJSON<WhatsAppOnboardingStartResponse>(
+      "/api/messaging/whatsapp/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getWhatsAppOnboardingStatus: (pairingId: string) =>
+    fetchJSON<WhatsAppOnboardingStatusResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyWhatsAppOnboarding: (
+    pairingId: string,
+    body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
+  ) =>
+    fetchJSON<WhatsAppOnboardingApplyResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelWhatsAppOnboarding: (pairingId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
 
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  getGatewayMigratePlan: () =>
+    fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
+  migrateGatewayToMultiplex: () =>
+    fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -851,12 +1057,15 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
   getPluginsHub: () => fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
+
+  getPluginsCatalog: () =>
+    fetchJSON<CatalogResponse>("/api/dashboard/plugins/catalog"),
 
   installAgentPlugin: (body: AgentPluginInstallRequest) =>
     fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
@@ -866,21 +1075,36 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/enable`, {
+      method: "POST",
+    }),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/disable`, {
+      method: "POST",
+    }),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -932,6 +1156,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  authMcpServer: (name: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+      { method: "POST" },
+    ),
+  getMcpOAuthFlow: (flowId: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
+    ),
   removeMcpServer: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
@@ -969,18 +1202,29 @@ export const api = {
     ),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
+  // The mutating endpoints read the profile off the BODY, so the query-param
+  // rewrite in withManagementProfile doesn't reach them — send it explicitly
+  // or an approval lands in the wrong profile's whitelist.
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
-  approvePairing: (platform: string, code: string) =>
+  approvePairing: (platform: string, request_id: string) =>
     fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, code }),
+      body: JSON.stringify({
+        platform,
+        request_id,
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   revokePairing: (platform: string, user_id: string) =>
     fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, user_id }),
+      body: JSON.stringify({
+        platform,
+        user_id,
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   clearPendingPairing: () =>
     fetchJSON<{ ok: boolean; cleared: number }>("/api/pairing/clear-pending", {
@@ -1035,6 +1279,28 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryProviderConfig: (provider: string) =>
+    fetchJSON<MemoryProviderConfig>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    ),
+  updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; active: string }>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
+  setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
+    fetchJSON<MemoryProviderSetupResponse>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -1065,12 +1331,25 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
+  downloadBackup: (archive: string) =>
+    authedFetch(
+      `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
+    ),
   runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archive, force }),
     }),
+  runImportUpload: (file: File, force = false) => {
+    const form = new FormData();
+    form.append("force", String(force));
+    form.append("file", file, file.name);
+    return fetchJSON<ActionResponse>("/api/ops/import-upload", {
+      method: "POST",
+      body: form,
+    });
+  },
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
     fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
@@ -1166,7 +1445,8 @@ export const api = {
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
- * is attached. ``email`` and ``display_name`` are empty strings under the
+ * is attached, or as a synthetic ``provider=loopback`` identity after token
+ * validation in local mode. ``email`` and ``display_name`` are empty strings under the
  * Nous Portal contract V1 (the access token has no email/name claims —
  * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
  * truncated ``user_id`` instead.
@@ -1180,12 +1460,24 @@ export interface AuthMeResponse {
   expires_at: number;
 }
 
+/** Preflight for `hermes gateway migrate --multiplex` (mirrors the CLI plan JSON). */
+export interface GatewayMigratePlan {
+  already_multiplexed: boolean;
+  blockers: string[];
+  command: string;
+  eligible: boolean;
+  notices: string[];
+  profiles: { profile: string; pid: number | null; service: { kind: string; system: boolean } | null }[];
+}
+
 export interface ActionResponse {
+  archive?: string;
   name: string;
   ok: boolean;
   pid: number | null;
   error?: string;
   message?: string;
+  uploaded_bytes?: number;
   update_command?: string;
 }
 
@@ -1205,6 +1497,16 @@ export interface SessionStoreStats {
   archived: number;
   messages: number;
   by_source: Record<string, number>;
+}
+
+export interface SessionImportResponse {
+  ok: boolean;
+  imported: number;
+  skipped: number;
+  detached: number;
+  imported_ids: string[];
+  skipped_ids: string[];
+  errors: Array<Record<string, unknown>>;
 }
 
 export interface SkillHubResult {
@@ -1297,7 +1599,7 @@ export interface McpServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
-  auth: string | null;
+  auth: "header" | "oauth" | null;
   enabled: boolean;
   tools: string[] | null;
 }
@@ -1332,19 +1634,31 @@ export interface McpCatalogDiagnostic {
 }
 
 
+export type McpHttpAuth = "none" | "header" | "oauth";
+
 export interface McpServerCreate {
   name: string;
   url?: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  auth?: string;
+  auth?: McpHttpAuth;
+  bearer_token?: string;
 }
 
 export interface McpTestResult {
   ok: boolean;
   error?: string;
   tools: Array<{ name: string; description: string }>;
+}
+
+export interface McpOAuthFlow {
+  flow_id: string;
+  server_name: string;
+  status: "starting" | "authorization_required" | "approved" | "error";
+  authorization_url: string | null;
+  error: string | null;
+  tools?: Array<{ name: string; description: string }>;
 }
 
 export interface MessagingPlatformEnvVar {
@@ -1357,6 +1671,10 @@ export interface MessagingPlatformEnvVar {
   help: string;
   url: string | null;
   is_password: boolean;
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean;
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: string | null;
   advanced: boolean;
 }
 
@@ -1377,6 +1695,13 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
+  ingress_url?: string | null;
+  whatsapp_setup?: {
+    mode?: string;
+    allowed_users_set?: boolean;
+    home_channel_set?: boolean;
+  } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
 
@@ -1402,7 +1727,7 @@ export interface PairingUser {
   platform: string;
   user_id: string;
   user_name?: string;
-  code?: string;
+  request_id?: string;
   age_minutes?: number;
 }
 
@@ -1474,13 +1799,77 @@ export interface CredentialPoolProvider {
 export interface MemoryProviderInfo {
   name: string;
   description: string;
+  available: boolean;
   configured: boolean;
+  status: "ready" | "needs_config" | "unavailable" | "missing";
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+export interface MemoryProviderExternalDependency {
+  name: string;
+  install: string;
+  check: string;
+}
+
+export interface MemoryProviderSetupInfo {
+  pip_dependencies: string[];
+  python_dependencies_declared?: boolean;
+  external_dependencies: MemoryProviderExternalDependency[];
+  required_env: string[];
+  dependencies_installed: boolean;
+}
+
+export interface MemoryProviderSetupResult {
+  kind: string;
+  name: string;
+  status: string;
+  command: string;
+  returncode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface MemoryProviderSetupResponse {
+  ok: boolean;
+  provider: string;
+  results: MemoryProviderSetupResult[];
+  status?: MemoryProviderInfo | null;
+}
+
+export interface MemoryProviderFieldOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface MemoryProviderField {
+  key: string;
+  label: string;
+  kind: "text" | "secret" | "select" | "boolean" | "integer" | "number";
+  description: string;
+  placeholder: string;
+  required: boolean;
+  value: string | boolean | number;
+  is_set: boolean;
+  options: MemoryProviderFieldOption[];
+  url: string;
+  minimum?: number | null;
+  maximum?: number | null;
+  step?: number | null;
+  when?: Record<string, string | boolean | number> | null;
+}
+
+export interface MemoryProviderConfig {
+  name: string;
+  label: string;
+  fields: MemoryProviderField[];
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface HookEntry {
@@ -1509,10 +1898,10 @@ export interface HookCreate {
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
-  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
-  // count (nix/pypi), or null when the check could not run.
+  // commits behind: >=1 known, 0 up to date, -1 unknown count (nix/pypi), null = check could not run.
   behind: number | null;
   update_available: boolean;
+  rollback_to?: string | null; // a stable release this build already contains: applying it moves back
   can_apply: boolean;
   update_command: string;
   message: string | null;
@@ -1597,6 +1986,15 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+/** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
+export interface SharedMetricsConsent {
+  enabled: boolean;
+  send: boolean;
+  decided: boolean;
+  managed: boolean;
+  reask?: boolean;
+}
+
 export interface StatusResponse {
   active_sessions: number;
   /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
@@ -1607,6 +2005,15 @@ export interface StatusResponse {
    * Empty in loopback mode; empty + ``auth_required=true`` is a
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
+  /** Supported dashboard auth flows for the client to choose from. In gated
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when any
+   * interactive session provider is registered (OAuth providers broker the
+   * IDP redirect; password providers complete at /login in the system
+   * browser), signalling that the desktop can use the RFC 8252
+   * system-browser + loopback + PKCE flow (no embedded webview, no session
+   * cookies). Absent / missing ``"native_pkce"`` ⇒ an older gateway ⇒ the
+   * desktop falls back to the embedded-webview flow. */
+  auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
   can_update_hermes?: boolean;
@@ -1614,16 +2021,90 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  /** Why a multi-profile host's gateway came up STANDALONE on a boot guard (unset
+   * ``gateway.multiplex_profiles`` refused): the other profiles' bots are silent until
+   * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
+   * profile exists. */
+  multiplex_standalone_reason?: string | null;
+  /** Every profile installed on this host (multiplex or not). */
+  profiles?: string[];
   gateway_health_url: string | null;
+  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
+   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
+   * null when healthy; absent on older backends. */
+  gateway_heartbeat_stale_s?: number | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
+  /** Every profile the gateway process serves when the managed profile is carried by the
+   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
+   * gateway or an older backend. */
+  gateway_shared_with?: string[] | null;
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** NS-656: memory-pressure rollup from the gateway heartbeat +
+   * lifecycle ledger. Absent on older gateways. */
+  memory?: MemoryPressureStatus;
+  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
+   * older gateways. */
+  disk?: DiskPressureStatus;
   release_date: string;
   version: string;
+}
+
+/** NS-656: coarse memory telemetry served by /api/status. */
+export interface MemoryPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  gateway_rss_mb?: number | null;
+  system_total_mb?: number | null;
+  system_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  sampled_at?: string | null;
+  /** Previous gateway life died without running any exit path. */
+  last_boot_unclean?: boolean;
+  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
+   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
+  last_boot_suspected_oom?: boolean;
+  /** Identity of the current gateway life (sentinel started_at). Changes on
+   * every restart; keys per-incident banner dismissal. */
+  boot_id?: string | null;
+}
+
+/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
+ * sample of the HERMES_HOME volume — no staleness dimension, so no
+ * sampled_at. */
+export interface DiskPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  total_mb?: number | null;
+  free_mb?: number | null;
+  used_percent?: number | null;
+}
+
+export interface ChatWorkspaceProject {
+  id: string;
+  slug: string;
+  name: string;
+  primary_path: string | null;
+  archived: boolean;
+  folders: Array<{ path: string; label: string | null; is_primary: boolean }>;
+}
+
+export interface ChatWorkspaceRepo {
+  root: string;
+  label: string;
+  sessions: number;
+  last_active: number;
+}
+
+export interface ChatWorkspacesResponse {
+  projects: ChatWorkspaceProject[];
+  repos: ChatWorkspaceRepo[];
+  /** Where a fresh chat lands when no workspace is picked. */
+  default_cwd: string;
+  home: string;
+  scan_enabled: boolean;
 }
 
 export interface SessionInfo {
@@ -1641,6 +2122,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile stamped by the list/detail endpoints (the store the row
+   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  profile?: string;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -1668,6 +2152,8 @@ export interface EnvVarInfo {
   advanced: boolean;
   /** True when this var is a messaging-platform credential owned by the Channels page. */
   channel_managed?: boolean;
+  /** True when this key is set in .env but not in any catalog (user-added custom key). */
+  custom?: boolean;
 }
 
 export interface TelegramOnboardingStartResponse {
@@ -1698,6 +2184,38 @@ export interface TelegramOnboardingApplyResponse {
   restart_error?: string;
 }
 
+export interface WhatsAppOnboardingStartResponse {
+  pairing_id: string;
+  status:
+    | "starting"
+    | "installing"
+    | "waiting"
+    | "connected"
+    | "error"
+    | "expired"
+    | "cancelled";
+  qr_payload?: string | null;
+  expires_at: string;
+  mode: "bot" | "self-chat";
+  allowed_users: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  account_phone?: string | null;
+  error?: string | null;
+}
+
+export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
+
+export interface WhatsAppOnboardingApplyResponse {
+  ok: boolean;
+  platform: "whatsapp";
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
@@ -1713,6 +2231,12 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  pagination?: {
+    limit: number;
+    offset: number;
+    order: "latest" | "oldest";
+    returned: number;
+  };
 }
 
 export interface LogsResponse {
@@ -1720,43 +2244,12 @@ export interface LogsResponse {
   lines: string[];
 }
 
-export interface ManagedFileEntry {
-  name: string;
-  path: string;
-  is_directory: boolean;
-  size: number | null;
-  mtime: number;
-  mime_type: string | null;
-}
-
-export interface ManagedFilesResponse {
-  root: string | null;
-  path: string;
-  parent: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-  entries: ManagedFileEntry[];
-}
-
-export interface ManagedFileReadResponse {
-  name: string;
-  path: string;
-  size: number;
-  mime_type: string;
-  data_url: string;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
-
-export interface ManagedFileWriteResponse {
-  ok: boolean;
-  path: string;
-  entry: ManagedFileEntry;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
+export type {
+  ManagedFileEntry,
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 
 export interface AnalyticsDailyEntry {
   day: string;
@@ -1837,6 +2330,7 @@ export interface ProfileInfo {
   gateway_running: boolean;
   description: string;
   description_auto: boolean;
+  display_name?: string;
   distribution_name: string | null;
   distribution_version: string | null;
   distribution_source: string | null;
@@ -1883,6 +2377,27 @@ export interface ModelsAnalyticsResponse {
   period_days: number;
 }
 
+export interface CronJobRepeat {
+  times: number | null;
+  completed?: number;
+}
+
+export interface CronJobMutation {
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  deliver?: string;
+  skills?: string[];
+  provider?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  script?: string | null;
+  no_agent?: boolean;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
+}
+
 export interface CronJob {
   id: string;
   profile?: string | null;
@@ -1893,14 +2408,27 @@ export interface CronJob {
   prompt?: string | null;
   script?: string | null;
   skills?: string[] | null;
-  schedule?: { kind?: string; expr?: string; display?: string };
+  schedule?: { kind?: string; expr?: string; run_at?: string; display?: string };
   schedule_display?: string | null;
+  repeat?: CronJobRepeat | null;
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  no_agent?: boolean | null;
+  context_from?: string[] | string | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
+  last_status?: string | null;
   last_error?: string | null;
+  last_delivery_error?: string | null;
+  last_fire_error?: { at?: string | null; detail?: string | null } | null;
 }
 
 export interface CronDeliveryTarget {
@@ -1908,29 +2436,6 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
-}
-
-export interface AutomationBlueprintField {
-  name: string;
-  type: "time" | "enum" | "text" | "weekdays";
-  label: string;
-  default: string | null;
-  options: string[];
-  optional: boolean;
-  /** When false, options are suggestions — any value is accepted. */
-  strict?: boolean;
-  help: string;
-}
-
-export interface AutomationBlueprint {
-  key: string;
-  title: string;
-  description: string;
-  category: string;
-  tags: string[];
-  fields: AutomationBlueprintField[];
-  command: string;
-  appUrl: string;
 }
 
 export interface SkillInfo {
@@ -1957,6 +2462,8 @@ export interface ToolsetInfo {
   name: string;
   label: string;
   description: string;
+  platform: string;
+  platform_label: string;
   enabled: boolean;
   configured: boolean;
   tools: string[];
@@ -1995,13 +2502,12 @@ export interface ToolsetEnvResult {
   is_set: Record<string, boolean>;
 }
 
-export interface SessionSearchResult {
+export interface SessionSearchResult extends SessionInfo {
   session_id: string;
   snippet: string;
   role: string | null;
-  source: string | null;
-  model: string | null;
   session_started: number | null;
+  lineage_root?: string;
 }
 
 export interface SessionSearchResponse {
@@ -2028,33 +2534,42 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  is_user_defined?: boolean;
-  source?: string;
-  warning?: string;
-}
+export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
 
-export interface AuxiliaryTaskAssignment {
-  task: string;
+export interface MoaModelSlot {
   provider: string;
   model: string;
-  base_url: string;
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string;
+  enabled?: boolean;
 }
 
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
+export interface MoaConfigResponse {
+  default_preset: string;
+  active_preset: string;
+  presets: Record<string, {
+    reference_models: MoaModelSlot[];
+    aggregator: MoaModelSlot;
+    reference_temperature: number;
+    aggregator_temperature: number;
+    reference_timeout: number | null;
+    degraded_reference_policy: "loud" | "silent";
+
+    /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
+    fanout?: string;
+    enabled: boolean;
+  }>;
+  reference_models: MoaModelSlot[];
+  aggregator: MoaModelSlot;
+  reference_temperature: number;
+  aggregator_temperature: number;
+  reference_timeout: number | null;
+  degraded_reference_policy: "loud" | "silent";
+
+  enabled: boolean;
 }
 
 export interface ModelAssignmentRequest {
@@ -2205,11 +2720,13 @@ export interface HubAgentPluginRow {
   auth_required: boolean;
   auth_command: string;
   user_hidden: boolean;
+  /** Reason string when this plugin is on the catalog removed blocklist. */
+  removed_reason?: string | null;
 }
 
 export interface PluginsHubProviders {
   memory_provider: string;
-  memory_options: Array<{ name: string; description: string }>;
+  memory_options: MemoryProviderInfo[];
   context_engine: string;
   context_options: Array<{ name: string; description: string }>;
 }
@@ -2224,6 +2741,8 @@ export interface AgentPluginInstallRequest {
   identifier: string;
   force?: boolean;
   enable?: boolean;
+  /** Install by curated-catalog name (resolves repo + pinned SHA server-side). */
+  catalog_name?: string;
 }
 
 export interface AgentPluginInstallResponse {
@@ -2236,12 +2755,46 @@ export interface AgentPluginInstallResponse {
   error?: string;
 }
 
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
+// ── Plugin catalog types ───────────────────────────────────────────────
+
+export interface CatalogCapabilities {
+  provides_tools: string[];
+  provides_hooks: string[];
+  provides_middleware: string[];
+  requires_env: string[];
+}
+
+export interface CatalogEntry {
+  name: string;
+  description: string;
+  repo: string;
+  sha: string;
+  sha_short: string;
+  tier: "official" | "verified" | "community";
+  maintainer: string;
+  requires_hermes: string;
+  platforms: string[];
+  capabilities: CatalogCapabilities;
+  docs_url: string;
+  capability_summary: string;
+  /** Installed-state merge (computed server-side). */
+  installed: boolean;
+  installed_sha: string | null;
+  update_available: boolean;
+  runtime_status: "disabled" | "enabled" | "inactive" | null;
+}
+
+export interface CatalogRemovedEntry {
+  name: string;
+  repo: string;
+  reason: string;
+  date: string;
+}
+
+export interface CatalogResponse {
+  entries: CatalogEntry[];
+  removed: CatalogRemovedEntry[];
+  generated_at: string;
 }
 
 export interface PluginProvidersPutRequest {

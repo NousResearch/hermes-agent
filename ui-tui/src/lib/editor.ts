@@ -1,5 +1,9 @@
-import { accessSync, constants } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { accessSync, constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+
+import { withInkSuspended } from '@hermes/ink'
 
 /**
  * Editor fallback chain when neither $VISUAL nor $EDITOR is set. Mirrors
@@ -44,4 +48,23 @@ export const resolveEditor = (
   const found = FALLBACKS.flatMap(name => dirs.map(d => join(d, name))).find(isExecutable)
 
   return [found ?? 'vi']
+}
+
+/** Suspend Ink, open ``initial`` in $EDITOR, return the edited text (null if aborted). */
+export async function openInEditor(initial: string, suffix = '.txt'): Promise<null | string> {
+  const dir = mkdtempSync(join(tmpdir(), 'hermes-edit-'))
+  const file = join(dir, `edit${suffix}`)
+  writeFileSync(file, initial)
+  const [cmd, ...args] = resolveEditor()
+  let status: null | number = null
+
+  await withInkSuspended(async () => {
+    status = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
+  })
+
+  try {
+    return status === 0 ? readFileSync(file, 'utf8') : null
+  } finally {
+    rmSync(dir, { force: true, recursive: true })
+  }
 }

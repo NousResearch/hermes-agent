@@ -1,0 +1,145 @@
+/**
+ * backend-child.ts
+ *
+ * Windows-aware teardown for the desktop's managed backend child process.
+ *
+ * Node's `child.kill()` only signals the direct child. On Windows a backend
+ * that spawned its own grandchildren (a `hermes` REPL, a pty terminal
+ * session, the gateway) survives a plain SIGTERM and keeps files (e.g. the
+ * venv shim) locked. So on Windows we tree-kill via `forceKillProcessTree`.
+ *
+ * On POSIX the backend IS spawned into its own session/process-group
+ * (start_new_session=True), so `child.kill('SIGTERM')` would only reach the
+ * backend and orphan its MCP grandchildren (the leak in #serve-orphans). We
+ * signal the whole group via `process.kill(-pid, ...)` instead, falling back
+ * to the direct child if the group send fails.
+ *
+ * Extracted into its own dependency-free module (no electron import) so the
+ * tree-kill / group-kill branching can be asserted directly with a fake child
+ * object and spy kill functions, instead of grepping main.ts source text for
+ * the function body.
+ */
+
+export interface StopBackendChildDeps {
+  /** Defaults to the real platform check; injectable for tests. */
+  isWindows?: boolean
+  /** Windows tree-kill implementation (real: taskkill /T /F via execFileSync). */
+  forceKillProcessTree: (pid: number) => void
+  /**
+   * POSIX group-signal implementation. Real: process.kill(-pgid, signal).
+   * Injectable so the negative-pid group send is asserted in tests without a
+   * live process group. Defaults to process.kill.
+   */
+  killGroup?: (pgid: number, signal: string) => void
+}
+
+export interface BackendProcessRoot {
+  pid?: number | null
+}
+
+export interface KillableChild extends BackendProcessRoot {
+  killed?: boolean
+  kill: (signal: NodeJS.Signals) => void
+}
+
+export interface WaitableChild extends KillableChild {
+  exitCode: number | null
+  signalCode: string | null
+  once: (event: 'exit' | 'error', listener: () => void) => unknown
+  removeListener: (event: 'exit' | 'error', listener: () => void) => unknown
+}
+
+/** Graceful exit, SIGKILL escalation, then a bounded wait for the escalation. */
+export async function waitForBackendExit(
+  child: WaitableChild | null | undefined,
+  deps: StopBackendChildDeps,
+  timeoutMs: number = 5000
+): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return
+  }
+
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
+
+  const wait = (delay: number): Promise<void> =>
+    new Promise<void>((resolve: () => void): void => {
+      if (exited()) {
+        resolve()
+
+        return
+      }
+
+      const finish = (): void => {
+        clearTimeout(timer)
+        child.removeListener('exit', finish)
+        resolve()
+      }
+
+      const timer = setTimeout(finish, delay)
+      child.once('exit', finish)
+    })
+
+  await wait(timeoutMs)
+
+  if (exited()) {
+    return
+  }
+
+  try {
+    if ((deps.isWindows ?? process.platform === 'win32') && Number.isInteger(child.pid)) {
+      deps.forceKillProcessTree(child.pid as number)
+    } else if (Number.isInteger(child.pid)) {
+      try {
+        const killGroup = deps.killGroup ?? ((pid: number, signal: string): boolean => process.kill(pid, signal))
+        killGroup(-(child.pid as number), 'SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+    } else {
+      child.kill('SIGKILL')
+    }
+  } catch {
+    // A failed signal may mean the child is gone, but only exit proves it.
+  }
+
+  await wait(1000)
+
+  if (!exited()) {
+    throw new Error(
+      `Backend child${child.pid ? ` (PID ${child.pid})` : ''} did not exit after SIGKILL; retaining ownership.`
+    )
+  }
+}
+
+/**
+ * Stop a managed child process, choosing the right strategy for the platform.
+ * No-ops silently if `child` is falsy, already killed, or the kill attempt
+ * throws (the process may already be gone) -- mirrors the original inline
+ * best-effort semantics in main.ts.
+ */
+export function stopBackendChild(child: KillableChild | null | undefined, deps: StopBackendChildDeps): void {
+  if (!child || child.killed) {
+    return
+  }
+
+  const isWindows = deps.isWindows ?? process.platform === 'win32'
+  const killGroup = deps.killGroup ?? ((pgid: number, signal: string): boolean => process.kill(pgid, signal))
+
+  try {
+    if (isWindows && Number.isInteger(child.pid)) {
+      deps.forceKillProcessTree(child.pid as number)
+    } else if (Number.isInteger(child.pid)) {
+      // POSIX: pgid == pid (start_new_session). Signal the whole group so MCP
+      // grandchildren die too; fall back to the direct child on failure.
+      try {
+        killGroup(-(child.pid as number), 'SIGTERM')
+      } catch {
+        child.kill('SIGTERM')
+      }
+    } else {
+      child.kill('SIGTERM')
+    }
+  } catch {
+    // Already gone.
+  }
+}

@@ -1,14 +1,14 @@
 ---
-title: "1Password — Set up and use 1Password CLI (op)"
+title: "1Password — Set up op CLI, sign in, and read or inject secrets"
 sidebar_label: "1Password"
-description: "Set up and use 1Password CLI (op)"
+description: "Set up op CLI, sign in, and read or inject secrets"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # 1Password
 
-Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop app integration, signing in, and reading/injecting secrets for commands.
+Set up op CLI, sign in, and read or inject secrets.
 
 ## Skill metadata
 
@@ -51,7 +51,7 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 ### Service Account (recommended for Hermes)
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` in `~/.hermes/.env` (the skill will prompt for this on first load).
+Set `OP_SERVICE_ACCOUNT_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load).
 No desktop app needed. Supports `op read`, `op inject`, `op run`.
 
 ```bash
@@ -103,7 +103,7 @@ For reliable `op` use with desktop app integration, run sign-in and secret opera
 Note: This is NOT needed when using `OP_SERVICE_ACCOUNT_TOKEN` — the token persists across terminal calls automatically.
 
 ```bash
-SOCKET_DIR="${TMPDIR:-/tmp}/hermes-tmux-sockets"
+SOCKET_DIR="${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}/cache/scratch}/hermes-tmux-sockets"
 mkdir -p "$SOCKET_DIR"
 SOCKET="$SOCKET_DIR/hermes-op.sock"
 SESSION="op-auth-$(date +%Y%m%d-%H%M%S)"
@@ -149,7 +149,7 @@ echo "db_password: {{ op://app-prod/db/password }}" | op inject
 ### Run a command with secret env var
 
 ```bash
-export DB_PASSWORD="op://app-prod/db/password"
+export DB_PASSWORD="op://app-prod/db/password"  # example op:// reference, resolved by `op run`
 op run -- sh -c '[ -n "$DB_PASSWORD" ] && echo "DB_PASSWORD is set" || echo "DB_PASSWORD missing"'
 ```
 

@@ -152,10 +152,9 @@ def test_default_mode_does_not_inject_or_collect_audit(monkeypatch):
         _emit_status=lambda message: None,
     )
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         prompt = build_system_prompt(agent)
 
@@ -191,10 +190,9 @@ def test_status_mode_collects_without_prompt_injection():
         _emit_status=lambda message: None,
     )
     with (
-        patch("run_agent.load_soul_md", return_value=""),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         prompt = build_system_prompt(agent)
 
@@ -231,10 +229,9 @@ def test_summary_mode_injects_redacted_summary_and_accounts_for_it():
         _emit_status=lambda message: None,
     )
     with (
-        patch("run_agent.load_soul_md", return_value="RAW SOUL SHOULD NOT LEAK"),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value="RAW SOUL SHOULD NOT LEAK"),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         prompt = build_system_prompt(agent)
 
@@ -271,10 +268,9 @@ def test_summary_mode_rebuild_after_compression_does_not_inflate_totals():
         _emit_status=lambda message: None,
     )
     with (
-        patch("run_agent.load_soul_md", return_value="soul"),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value="soul"),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         first_prompt = build_system_prompt(agent)
         first = agent._context_audit_report.to_redacted_dict()
@@ -316,10 +312,9 @@ def test_debug_file_mode_writes_redacted_report(tmp_path):
     )
     with (
         patch("agent.system_prompt.get_hermes_home", return_value=tmp_path),
-        patch("run_agent.load_soul_md", return_value="RAW SOUL SHOULD NOT LEAK"),
-        patch("run_agent.build_nous_subscription_prompt", return_value=""),
-        patch("run_agent.build_environment_hints", return_value=""),
-        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("agent.prompt_builder.load_soul_md", return_value="RAW SOUL SHOULD NOT LEAK"),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         build_system_prompt(agent)
 

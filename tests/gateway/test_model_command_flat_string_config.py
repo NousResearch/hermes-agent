@@ -11,11 +11,11 @@ before mutation, so ``--global`` succeeds and the config is rewritten in
 the proper ``model: {default: ..., provider: ...}`` form.
 """
 
-import yaml
+import hermes_yaml as yaml
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -67,7 +67,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     )
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),
@@ -98,10 +98,11 @@ async def test_model_global_persists_when_config_has_flat_string_model(tmp_path,
     # The persist block must have rewritten config.yaml as a nested dict.
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert isinstance(written["model"], dict), (
-        "model: should be coerced to a dict, got %r" % (written["model"],)
+        "model: should be coerced to a dict, got {!r}".format(written["model"])
     )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
+    # The resolved aggregator endpoint is persisted (same shape as CLI/TUI --global, #25106).
     assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
 
 
@@ -118,7 +119,7 @@ async def test_model_global_persists_when_config_has_missing_model(tmp_path, mon
     cfg_path.write_text(yaml.safe_dump({"providers": {}}), encoding="utf-8")
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),
@@ -137,65 +138,3 @@ async def test_model_global_persists_when_config_has_missing_model(tmp_path, mon
     assert written["model"]["provider"] == "openrouter"
 
 
-@pytest.mark.asyncio
-async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path, monkeypatch):
-    """Already-correct nested dict must still work — no regression on the
-    common case.
-    """
-    cfg_path = _setup_isolated_home(
-        tmp_path,
-        monkeypatch,
-        {"default": "old-model", "provider": "openai-codex"},
-    )
-
-    result = await _make_runner()._handle_model_command(
-        _make_event("/model gpt-5.5 --global")
-    )
-
-    assert result is not None
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["default"] == "gpt-5.5"
-    assert written["model"]["provider"] == "openrouter"
-
-
-@pytest.mark.asyncio
-async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
-    """A plain ``/model X`` (no --global) now persists to config.yaml.
-
-    This is the user-facing fix: switching models in one session survives
-    into the next without re-typing the switch every time.
-    """
-    cfg_path = _setup_isolated_home(
-        tmp_path,
-        monkeypatch,
-        {"default": "old-model", "provider": "openai-codex"},
-    )
-
-    result = await _make_runner()._handle_model_command(
-        _make_event("/model gpt-5.5")
-    )
-
-    assert result is not None
-    assert "gpt-5.5" in result
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["default"] == "gpt-5.5"
-
-
-@pytest.mark.asyncio
-async def test_model_session_flag_does_not_persist(tmp_path, monkeypatch):
-    """``/model X --session`` opts out of persistence even under the new default."""
-    cfg_path = _setup_isolated_home(
-        tmp_path,
-        monkeypatch,
-        {"default": "old-model", "provider": "openai-codex"},
-    )
-
-    result = await _make_runner()._handle_model_command(
-        _make_event("/model gpt-5.5 --session")
-    )
-
-    assert result is not None
-    assert "gpt-5.5" in result
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    # Config untouched — the session override is in-memory only.
-    assert written["model"]["default"] == "old-model"

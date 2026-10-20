@@ -118,3 +118,17 @@ def test_unset_parent_behind_a_reset_edge_takes_the_fast_path(tmp_path):
         assert _created(db, "legacy") is None
     finally:
         db.close()
+
+
+def test_unset_ancestor_probe_reads_only_the_walked_rows(tmp_path):
+    """The fast path runs on every usage write of a stamped compression child: its final lookup
+    must join the walked ids to sessions by key, never scan the table (ms per write at 30k rows)."""
+    from hermes_state_compression import _CHAIN_CAP, _UNSET_ANCESTOR_SQL
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        plan = [row[3] for row in db._conn.execute(
+            "EXPLAIN QUERY PLAN " + _UNSET_ANCESTOR_SQL, ("tip", "cli", _CHAIN_CAP))]
+        assert not [step for step in plan if step.startswith("SCAN") and "up" not in step.split()], plan
+    finally:
+        db.close()

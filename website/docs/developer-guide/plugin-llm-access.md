@@ -329,6 +329,33 @@ invocation. `allow_task_override: true` is an explicit operator grant for
 using Hermes built-in auxiliary tasks; it does not permit another plugin's
 tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
+#### From the plugin's frontend: `llm.oneshot`
+
+A plugin's frontend (a Desktop page, a chat frontend attached to the
+gateway) runs the same task over the gateway's `llm.oneshot` JSON-RPC
+method, without a Python subprocess:
+
+```json
+{"method": "llm.oneshot", "params": {
+  "task": "classifier",
+  "instructions": "Classify the ticket.",
+  "input": "<ticket text>",
+  "schema": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"]},
+  "redact": true
+}}
+```
+
+- `task` is a built-in auxiliary task or one a loaded plugin registered; it
+  resolves through `auxiliary.<task>` like `ctx.llm`. An unknown key is
+  refused (`invalid_params`, `field: task`) instead of running on the main
+  model. Omitted, it is `title_generation`.
+- `schema` (a JSON Schema object) asks for JSON through the prompt and the
+  provider's JSON mode. The reply is `{"text": ..., "parsed": <value>}`. An
+  answer that is not JSON, or does not match the schema, is an error.
+- `redact: true` masks secrets in `input` with the agent's redactor before
+  the model sees it.
+- A `session_id` lends that session's model instead of the task's.
+
 #### Inheriting a built-in slot
 
 `inherit_from` names a built-in auxiliary task (`compression`, `mcp`,

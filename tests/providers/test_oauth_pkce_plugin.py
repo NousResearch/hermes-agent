@@ -6,10 +6,11 @@ from __future__ import annotations
 import json
 import re
 import socket
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import urlopen
 
 import pytest
@@ -49,6 +50,7 @@ class PastingUser:
         return parse_qs(urlparse(self.authorize_url()).query)["redirect_uri"][0]
 
     def input(self, prompt: str = "") -> str:
+        assert threading.current_thread() is threading.main_thread()  # no reader is left on stdin after sign-in
         self.prompts.append(prompt)
         self.printed += self.capsys.readouterr().out
         answer = self.answers.pop(0)
@@ -75,6 +77,12 @@ def _port_is_closed(redirect_uri: str) -> bool:
     return False
 
 
+def _listener_stopped(redirect_uri: str) -> bool:
+    """The callback port is closed and the thread that served it has ended."""
+    alive = any(t.name == "oauth-pkce-callback" and t.is_alive() for t in threading.enumerate())
+    return _port_is_closed(redirect_uri) and not alive
+
+
 def _config(idp: FakeIdP, **overrides) -> pkce.OAuthPKCEConfig:
     base = pkce.OAuthPKCEConfig(client_id="hermes-example", authorize_url=f"{idp.base}/authorize",
                                 token_url=f"{idp.base}/token", scopes=("inference",), timeout_seconds=5)
@@ -82,8 +90,9 @@ def _config(idp: FakeIdP, **overrides) -> pkce.OAuthPKCEConfig:
 
 
 def _browser_hits(url: str) -> bool:
-    with urlopen(url, timeout=5) as response:  # the fake IdP 302s straight to the loopback callback
-        assert response.status == 200
+    # A browser loads the page on its own, after open() returns; the fake IdP 302s straight to the loopback
+    # callback, which answers once login() serves it.
+    threading.Thread(target=lambda: urlopen(url, timeout=10).close(), daemon=True).start()
     return True
 
 
@@ -225,8 +234,8 @@ def test_browser_on_another_machine_signs_in_with_the_pasted_address(pasting, id
     assert tokens["access_token"] and tokens["refresh_token"] in idp.refresh_tokens
     assert pasting.prompts == ["Redirect address: "]
     printed = pasting.printed + pasting.capsys.readouterr().out
-    assert "paste" in printed and exchange["code"] not in printed  # the pasted address is never echoed
-    assert _port_is_closed(pasting.redirect_uri())
+    assert "paste" in printed and exchange["code"] not in printed  # Hermes does not print the address back
+    assert _listener_stopped(pasting.redirect_uri())
 
 
 def test_paste_prompt_asks_again_until_the_address_carries_a_code(pasting, idp):
@@ -260,4 +269,35 @@ def test_closed_input_at_the_paste_prompt_fails_and_frees_the_port(pasting, idp)
     with pytest.raises(AuthError) as excinfo:
         pkce.login(PROVIDER, _config(idp))
     assert excinfo.value.code == "oauth_no_code" and idp.token_requests == []
-    assert _port_is_closed(pasting.redirect_uri())
+    assert _listener_stopped(pasting.redirect_uri())
+
+
+def test_ctrl_c_at_the_paste_prompt_cancels_and_frees_the_port(pasting, idp):
+    pasting.answers.append(KeyboardInterrupt())
+    with pytest.raises(SystemExit) as excinfo:
+        pkce.login(PROVIDER, _config(idp))
+    assert excinfo.value.code == 130 and idp.token_requests == []
+    assert "Login cancelled." in pasting.capsys.readouterr().out and _listener_stopped(pasting.redirect_uri())
+
+
+def test_a_pasted_refusal_ends_the_sign_in_as_denied(pasting, idp):
+    def refused(authorize_url: str) -> str:
+        state = parse_qs(urlparse(authorize_url).query)["state"][0]
+        return "?" + urlencode({"error": "access_denied", "state": state})
+
+    pasting.answers.append(refused)
+    with pytest.raises(AuthError) as excinfo:
+        pkce.login(PROVIDER, _config(idp))
+    assert excinfo.value.code == "oauth_authorization_denied" and idp.token_requests == []
+
+
+@pytest.mark.parametrize("launch", [Mock(return_value=False), Mock(side_effect=OSError("no browser"))],
+                         ids=["open-returned-false", "open-raised"])
+def test_a_browser_that_does_not_start_falls_back_to_pasting(pasting, idp, monkeypatch, launch):
+    """Hermes thought it could open a browser here, but none started: the user opens the URL elsewhere."""
+    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: False)
+    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr(pkce.webbrowser, "open", launch)
+    pasting.answers.append(idp.landing_address)
+    assert pkce.login(PROVIDER, _config(idp))["access_token"]
+    assert launch.call_count == 1 and pasting.prompts == ["Redirect address: "]

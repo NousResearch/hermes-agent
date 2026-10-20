@@ -199,8 +199,8 @@ def _pasted_callback(server: Any, result: dict[str, Any], redirect_uri: str,
 
 def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> dict[str, Any]:
     """Run the browser Authorization-Code + PKCE flow; returns the pool fields for the new grant. Where the
-    browser runs on another machine (SSH, a cloud shell, a headless server) the user pastes back the address
-    it ended on; elsewhere the loopback callback completes the flow on its own."""
+    browser runs on another machine (SSH, a cloud shell, a headless server) or none starts here, the user
+    pastes back the address it ended on; elsewhere the loopback callback completes the flow on its own."""
     from hermes_cli.auth_device_flow import (
         _bind_loopback_callback_server, _can_open_graphical_browser, _is_remote_session,
         _make_loopback_callback_handler, _pkce_code_challenge, _pkce_code_verifier, _serve_loopback_callback)
@@ -226,14 +226,16 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
 
     print(f"\nOpen this URL to authorize Hermes with {cfg.label or provider}:\n  {authorize_url}\n")
     graphical = _can_open_graphical_browser()
-    paste = _is_remote_session() or not graphical  # the browser is on another machine
-    if not paste:
-        print(f"Waiting for callback on {redirect_uri} (timeout {int(cfg.timeout_seconds)}s, Ctrl+C to cancel)...")
+    opened = False
     if open_browser and graphical:
         try:
-            webbrowser.open(authorize_url)
+            opened = bool(webbrowser.open(authorize_url))
         except Exception:
             print("Could not open the browser automatically; use the URL above.")
+    # The browser is on another machine, or none started here: the redirect has to come back by hand.
+    paste = _is_remote_session() or not graphical or (open_browser and not opened)
+    if not paste:
+        print(f"Waiting for callback on {redirect_uri} (timeout {int(cfg.timeout_seconds)}s, Ctrl+C to cancel)...")
     try:
         callback = _pasted_callback(server, result, redirect_uri, err) if paste else _serve_loopback_callback(
             server, result, timeout_seconds=cfg.timeout_seconds, err=err, timeout_code="oauth_callback_timeout")

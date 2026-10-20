@@ -249,7 +249,9 @@ def activity_text(cli) -> str:
     """What the agent is doing: the classic spinner's text (kaomoji face or tool emoji included)."""
     if getattr(cli, "_command_running", False):
         return str(getattr(cli, "_command_status", "") or "")
-    text = str(getattr(cli, "_spinner_text", "") or "").strip()
+    # While tools run: the one running tool's label, or how many run at once.
+    running = cli._running_tool_status() if hasattr(cli, "_running_tool_status") else None
+    text = str(running[0] if running else getattr(cli, "_spinner_text", "") or "").strip()
     return text or (t("cli.modern.working") if getattr(cli, "_agent_running", False) else "")
 
 

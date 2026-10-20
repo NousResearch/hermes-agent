@@ -619,8 +619,10 @@ class CLIChatTurnMixin:
         self._last_turn_interrupted = _interrupted_this_turn
         if _interrupted_this_turn:
             pending_message = turn.result.get("interrupt_message") or interrupt_msg
-            # Every interrupted turn leaves a receipt in scrollback, with or without a follow-up.
-            _show_interrupt_marker = True
+            # Classic: every interrupted turn leaves a receipt in scrollback, with or without a
+            # follow-up. The glyph layout marks only an answer cut short by a new message.
+            _show_interrupt_marker = (bool(response and pending_message) if getattr(self, "_modern_layout", False)
+                                      else True)
         elif interrupt_msg:
             # agent.interrupt() fired but the result doesn't acknowledge it (racy): either
             # the thread had passed its last interrupt check so finalize_turn() never saw

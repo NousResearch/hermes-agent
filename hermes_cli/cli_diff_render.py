@@ -222,6 +222,27 @@ def render_inline_diff(text: str, width: int) -> list[str]:
     return out
 
 
+def emphasize_word_changes(lines: list[str]) -> list[str]:
+    """The rendered inline-diff rows unchanged, except that each ``-`` row paired with a ``+`` row
+    has its changed words on the brighter emphasis background. Rows keep their own width (no
+    padding), for the glyph layout's width-independent scrollback."""
+    from agent.display import _diff_ansi
+    colors = _diff_ansi()
+    rows = []
+    for line in lines:
+        plain = clean_text(line)
+        kind = plain[:1] if plain[:1] in ("+", "-") and plain[:3] not in ("+++", "---") else ""
+        rows.append((kind, None, plain[1:] if kind else plain))
+    out = list(lines)
+    for index, spans in _pair_rows(rows).items():
+        kind, _, body = rows[index]
+        key = "plus" if kind == "+" else "minus"
+        emphasis = colors.get(f"{key}_em")
+        if spans and emphasis:
+            out[index] = f"{colors[key]}{kind}{_highlight(body, spans, colors[key], emphasis)}{RST}"
+    return out
+
+
 def plain_diff(text: str) -> str:
     """The diff without escape sequences or the review header, for the transcript viewer."""
     lines = clean_text(text or "").strip("\n").splitlines()

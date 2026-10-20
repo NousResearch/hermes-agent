@@ -655,7 +655,7 @@ class CLIStatusBarMixin:
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             elapsed = max(0.0, time.monotonic() - started) if started else 0.0
             if getattr(self, "_modern_layout", False):
-                line = collector.render(elapsed)
+                line = format_turn_summary(elapsed, collector.tally, worked_for=False)
                 if line:
                     from hermes_cli.cli_modern_layout import turn_footer
                     _cprint(turn_footer(line))

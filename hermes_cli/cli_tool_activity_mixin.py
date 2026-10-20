@@ -1,6 +1,10 @@
 """Tool-call rows, result previews, grouped read-only calls, collapsed reasoning and inline
 diffs in the classic CLI's scrollback, plus the bounded log the Ctrl+O viewer reads.
 
+The rows, previews, grouping and collapsed reasoning are the ``display.cli_layout: classic``
+look. The glyph layout (``modern``, the default) keeps ``cli_modern_layout``'s rows; only the
+Ctrl+O log and the word-level diff highlight apply to it too.
+
 Mixin bound onto ``HermesCLI``; cli.py names are imported lazily (``from cli import ...``) so the
 facade's monkeypatch seams hold. Display-only: nothing here changes what the model is sent.
 Scrollback is append-only, so a run of read-only calls is HELD and printed as one row when the
@@ -12,6 +16,7 @@ import shutil
 import time
 
 from hermes_cli import cli_tool_render as render
+from hermes_cli.cli_modern_layout import is_modern
 from hermes_cli.cli_transcript_viewer import TranscriptLog
 
 _GROUP_MODES = frozenset({"new", "all"})  # "verbose" prints every call with its own preview
@@ -44,7 +49,8 @@ class CLIToolActivityMixin:
         return lines * _VERBOSE_PREVIEW_FACTOR if getattr(self, "tool_progress_mode", "all") == "verbose" else lines
 
     def _reasoning_collapsed(self) -> bool:
-        return getattr(self, "cli_reasoning_style", "full") == "collapsed"
+        """``display.cli_reasoning_style: collapsed``; the glyph layout keeps its own ``∴`` rows."""
+        return not is_modern(self) and getattr(self, "cli_reasoning_style", "full") == "collapsed"
 
     # ── tool completion ─────────────────────────────────────────────────────────────────────
     def _tool_activity_started(self, name: str | None) -> None:
@@ -55,11 +61,20 @@ class CLIToolActivityMixin:
             self._flush_explore_group()
 
     def _tool_activity_completed(self, name: str, args: dict, duration: float, result, is_error: bool) -> None:
-        """``tool.completed`` in a scrollback mode (new/all/verbose): log it, then print or hold it."""
+        """``tool.completed``: log it for Ctrl+O, then in a scrollback mode (new/all/verbose) print
+        the glyph layout's row, or the classic row and preview (a read may be held for grouping)."""
         rows, failed = render.render_tool_row(name, args, duration, result, is_error=is_error)
         self._transcript().add_tool(name, args, result, duration=duration, failed=failed)
         mode = getattr(self, "tool_progress_mode", "all")
         if mode not in _SCROLLBACK_MODES:
+            return
+        if is_modern(self):
+            from cli import _cprint
+            from hermes_cli.cli_modern_layout import completed_tool_line
+            if mode == "new" and name == getattr(self, "_last_scrollback_tool", None):
+                return  # "new" skips consecutive repeats of one tool
+            self._last_scrollback_tool = name
+            _cprint(completed_tool_line(self, name, args, duration, result, is_error))
             return
         if mode in _GROUP_MODES and not failed and render.explore_kind(name):
             pending = self.__dict__.get("_explore_pending") or render.ExploreGroup()
@@ -115,6 +130,13 @@ class CLIToolActivityMixin:
             return
         self._transcript().attach_diff("", tool_name, plain_diff(diff_text))
         if not getattr(self, "_inline_diffs_enabled", True):
+            return
+        if is_modern(self):  # the glyph layout's gutter rows (never width-padded), changed words lit
+            from hermes_cli.cli_diff_render import emphasize_word_changes
+            from hermes_cli.cli_modern_layout import gutter_print
+            emit = gutter_print(_cprint)
+            for line in emphasize_word_changes(diff_text.rstrip("\n").splitlines()):
+                emit(line)
             return
         self._flush_explore_group()
         for line in render_inline_diff(diff_text, _columns()):

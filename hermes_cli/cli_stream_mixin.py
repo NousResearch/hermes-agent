@@ -602,8 +602,11 @@ class CLIStreamMixin:
     def _close_reply_frame(self) -> None:
         """Print the reply frame's bottom rule if its top rule was drawn. Called at turn end and
         before a modal prompt (approval, clarify, sudo, secret, vault), so a frame never dangles;
-        text after a prompt opens a fresh frame."""
+        text after a prompt opens a fresh frame. Classic layout only: the glyph layout closes each
+        answer segment with its own bar."""
         from cli import _ACCENT, _RST, _cprint
+        if getattr(self, "_modern_layout", False):
+            return
         if self.__dict__.get("_stream_box_live"):
             self._flush_stream_segment(release_held=False)
         self._flush_explore_group()

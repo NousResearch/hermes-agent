@@ -8,10 +8,17 @@ import re
 from unittest.mock import patch
 
 from agent.i18n import t
-from tests.hermes_cli.test_tool_progress_scrollback import _make_cli
+from tests.hermes_cli.test_tool_progress_scrollback import _make_cli as _make_any_layout_cli
 import tests.hermes_cli.test_tool_progress_scrollback as scrollback
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _make_cli(**kwargs):
+    """A CLI on ``display.cli_layout: classic``: this chrome is that layout's (modern is the default)."""
+    cli = _make_any_layout_cli(**kwargs)
+    cli._modern_layout = False
+    return cli
 
 
 def _run(cli, steps):

@@ -167,9 +167,10 @@ def _pluralize(count: int, plural_noun: str) -> str:
 
 
 def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_segments: int = _MAX_SEGMENTS,
-                        extras: list[str] | None = None) -> str:
+                        extras: list[str] | None = None, worked_for: bool = True) -> str:
     """Render the per-turn accounting line, or ``""`` when there's nothing to say.
-    ``extras`` (token / cost readouts the caller already has) trail the tool segments.
+    ``extras`` (token / cost readouts the caller already has) trail the tool segments;
+    ``worked_for=False`` leads with the bare duration (the CLI glyph layout's footer).
     Pure; gating (``display.turn_summary``, quiet mode, CLI-only) is the caller's job."""
     if tally is None:
         tally = TurnTally()
@@ -196,7 +197,9 @@ def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_
         segments = segments[:max_segments] + [f"+{hidden} more"]
 
     from agent.i18n import t
-    lead = t("cli.stream.turn_worked_for", duration=format_elapsed(elapsed_seconds))
+    lead = format_elapsed(elapsed_seconds)
+    if worked_for:
+        lead = t("cli.stream.turn_worked_for", duration=lead)
     return f"{SUMMARY_PREFIX} " + " · ".join([lead] + segments + [e for e in extras or () if e])
 
 

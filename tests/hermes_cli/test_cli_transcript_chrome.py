@@ -27,6 +27,7 @@ def _captured_echo(monkeypatch, text, **attrs):
     printed = []
     monkeypatch.setattr(cli_mod, "_cprint", printed.append)
     stub = object.__new__(HermesCLI)
+    stub._modern_layout = False  # the band is the classic layout's echo
     stub.user_message_preview_first_lines, stub.user_message_preview_last_lines = 2, 2
     for key, value in attrs.items():
         setattr(stub, key, value)
@@ -113,7 +114,7 @@ def test_receipt_emit_appends_extras_to_the_tool_tally(monkeypatch):
     agent = SimpleNamespace(quiet_mode=False, session_output_tokens=0, session_estimated_cost_usd=0.0,
                             session_cost_status="estimated")
     stub = SimpleNamespace(_turn_summary_enabled=True, tool_progress_mode="all", _interactive_turn=True,
-                           agent=agent, _turn_summary_collector=None)
+                           agent=agent, _turn_summary_collector=None, _modern_layout=False)
     for name in ("_turn_summary_is_active", "_turn_summary_begin", "_turn_summary_record", "_turn_summary_emit"):
         setattr(stub, name, getattr(HermesCLI, name).__get__(stub))
     stub._turn_summary_begin()

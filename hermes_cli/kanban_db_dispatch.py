@@ -703,8 +703,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
             # Again under the write lock, after the kill wait: an interpreter that bound
-            # meanwhile is invisible to the pid/claim CAS below.
-            if owner_reclaim_blocked_after_kill(conn, tid):
+            # meanwhile is invisible to the pid/claim CAS below. Host-local by the filter above.
+            if owner_reclaim_blocked_after_kill(conn, tid, signalled=True):
                 continue
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -812,7 +812,7 @@ def detect_stale_running(
 
         with _kb.write_txn(conn):
             # Again under the write lock, after the termination wait (see enforce_max_runtime).
-            if owner_reclaim_blocked_after_kill(conn, tid):
+            if owner_reclaim_blocked_after_kill(conn, tid, signalled=bool(termination.get("termination_attempted"))):
                 continue
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(

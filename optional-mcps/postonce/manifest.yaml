@@ -1,0 +1,48 @@
+manifest_version: 1
+name: postonce
+description: Discover connected social accounts and save social content as PostOnce drafts for review.
+source: https://postonce.to/integrations/hermes
+transport:
+  type: http
+  url: https://postonce.to/mcp
+auth:
+  type: api_key
+  env:
+    - name: MCP_POSTONCE_API_KEY
+      prompt: PostOnce API key (Creator or Pro; create in Preferences > API Keys)
+      required: true
+      secret: true
+tools:
+  default_enabled:
+    - list_accounts
+    - create_draft
+    - get_draft
+post_install: |
+  Requires a PostOnce Creator or Pro account. Create a dedicated API key at
+  https://postonce.to/dashboard/preferences with accounts:read, posts:read,
+  and posts:write for the default account-discovery and draft workflow.
+  Hermes stores the key privately in this profile's .env as
+  MCP_POSTONCE_API_KEY and adds the Bearer header automatically.
+
+  Before starting a new session or reloading: installing over an existing
+  postonce entry can replace trust fields while preserving its previous
+  tool selection. Review and restore your previous trust restrictions and
+  tool selection first. The three draft-workflow defaults apply only to a
+  fresh entry; an existing selection may include publishing tools.
+
+  Then restart Hermes or use /reload followed by /reload-mcp. Ask Hermes to list
+  your connected PostOnce accounts, then save your supplied content as a
+  draft without destinations. Use a stable idempotency_key on create_draft,
+  and get_draft with the returned id to confirm inbox status and content.
+  Reuse the same key and payload after an uncertain creation response.
+  The fresh-entry starter selection does not publish or schedule social posts.
+
+  Review the tool checklist and retain only the operations you need.
+  Additional operations need their corresponding API-key scopes and your
+  explicit direction. Keep any existing trust restrictions in place.
+  Setup and optional shared skill: https://postonce.to/integrations/hermes
+
+  To disconnect, remove the postonce MCP entry from this profile and revoke
+  this dedicated API key in PostOnce Preferences. Removing a skill or MCP
+  configuration alone does not revoke the key. Remove the unused
+  MCP_POSTONCE_API_KEY value from the profile's .env afterward.

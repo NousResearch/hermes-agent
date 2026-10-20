@@ -9,8 +9,9 @@ Two rules, one per failure that took a production gateway down:
   definition (``gateway_service_owner``); the same module now refuses to OPERATE one:
   ``refuse_foreign_systemd_unit`` (salvaged from #141908, checked before any home sync) and
   ``refuse_foreign_launchd_plist``.
-* **Live sessions.** ``gateway stop``/``restart`` refuse while the gateway is running turns, cron jobs or
-  background delegations, naming each, unless the caller passes ``--interrupt``. The in-band restart
+* **Live sessions.** ``gateway stop``/``restart`` name the turns, cron jobs or background delegations the
+  gateway is running and ask y/N before interrupting them; ``-y``/``--yes`` (alias ``--interrupt``)
+  skips the question, and with no terminal to ask on they refuse. The in-band restart
   drains turns, but its stop still interrupts every async delegation (``interrupt_all``), and a stop
   ends the sessions outright.
 """
@@ -21,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-INTERRUPT_FLAG = "--interrupt"
+INTERRUPT_FLAG = "--yes"
 
 
 def _live_work_from_state(home: Path) -> Optional[dict[str, Any]]:
@@ -114,10 +115,20 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
     from hermes_cli.gateway import print_error, print_warning
 
     if getattr(args, "interrupt", False):
-        print_warning(lines[0].replace(f"Refusing to {verb} the gateway", f"--interrupt: {verb} proceeds"))
+        print_warning(lines[0].replace(f"Refusing to {verb} the gateway", f"--yes: {verb} proceeds"))
         for line in lines[1:-2]:
             print(line)
         return
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from hermes_cli.cli_output import prompt_yes_no
+
+        print_warning(lines[0].replace(f"Refusing to {verb} the gateway", f"{verb.capitalize()} the gateway"))
+        for line in lines[1:-2]:
+            print(line)
+        if prompt_yes_no(f"Interrupt them and {verb} the gateway?", default=False):
+            return
+        print(f"  Cancelled: the gateway was not {'stopped' if verb == 'stop' else 'restarted'}.")
+        sys.exit(1)
     print_error(lines[0])
     for line in lines[1:]:
         print(line)

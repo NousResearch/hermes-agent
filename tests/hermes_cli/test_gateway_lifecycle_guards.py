@@ -129,11 +129,11 @@ def test_stop_refuses_while_sessions_are_live_and_names_them(monkeypatch, record
     assert "2 live session(s)" in out
     assert "chat turn agent:main:telegram:dm:7" in out
     assert "background delegation deleg_ab12cd34" in out
-    assert "hermes gateway stop --interrupt" in out
+    assert "hermes gateway stop --yes" in out
 
     gw._cmd_stop(SimpleNamespace(all=False, system=False, interrupt=True))
     assert stopped == [False]
-    assert "--interrupt: stop proceeds: 2 live session(s) would be interrupted" in capsys.readouterr().out
+    assert "--yes: stop proceeds: 2 live session(s) would be interrupted" in capsys.readouterr().out
 
 
 def test_restart_refuses_on_the_published_active_agents_of_an_older_gateway(monkeypatch, recorded, capsys):
@@ -256,7 +256,7 @@ def test_host_served_profile_refuses_before_unserving_its_live_turns(tmp_path, m
     assert exc.value.code == 1 and requests == []
     assert asked == [(host_home, {"profile": "coder"})]
     assert "1 live session(s)" in out and "agent:coder:telegram:dm:7" in out
-    assert f"hermes -p coder gateway {verb} --interrupt" in out
+    assert f"hermes -p coder gateway {verb} --yes" in out
     assert not (profile_home / "gateway.parked").exists()
 
     command(SimpleNamespace(all=False, system=False, force=False, interrupt=True))
@@ -314,3 +314,24 @@ def test_profile_stop_fails_closed_when_the_host_does_not_report(monkeypatch, ca
         guards.refuse_while_sessions_live("stop", SimpleNamespace(interrupt=False), host_home="/h", profile="coder")
     assert "did not report its live work" in capsys.readouterr().out
     guards.refuse_while_sessions_live("stop", SimpleNamespace(interrupt=True), host_home="/h", profile="coder")
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_live_sessions_ask_yes_no_on_a_terminal(monkeypatch, capsys, answer):
+    """On a terminal the verb names the live work and asks; yes proceeds, no (the default) cancels."""
+    from hermes_cli import cli_output, gateway_lifecycle_guards as guards
+    monkeypatch.setattr(guards, "live_work", lambda home, profile=None: {
+        "active_agents": 1, "active_work": [{"kind": "cron", "job_id": "nightly", "pid": 1}]})
+    monkeypatch.setattr(guards.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(guards.sys.stdout, "isatty", lambda: True, raising=False)
+    asked = []
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda q, default=True: asked.append(default) or answer)
+    verb = "s" + "top"
+    args = SimpleNamespace(interrupt=False)
+    if answer:
+        guards.refuse_while_sessions_live(verb, args, host_home="/h", profile="coder")
+    else:
+        with pytest.raises(SystemExit):
+            guards.refuse_while_sessions_live(verb, args, host_home="/h", profile="coder")
+        assert "Cancelled" in capsys.readouterr().out
+    assert asked == [False]

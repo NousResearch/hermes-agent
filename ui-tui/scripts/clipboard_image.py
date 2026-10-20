@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-# The Python root (gatewayClient.ts/imageAttachments.ts pass it): the TUI product ships this
+# The Python root (localGatewayBootstrap.ts/imageAttachments.ts pass it): the TUI product ships this
 # helper in dist/scripts/, where parents[2] is not the root.
 def python_root() -> Path:
     return Path(os.environ.get("HERMES_PYTHON_SRC_ROOT") or Path(__file__).resolve().parents[2])

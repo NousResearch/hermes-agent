@@ -31,6 +31,7 @@ import type {
   SessionActiveListResponse,
   SessionCloseResponse,
   SharedControlRespondResponse,
+  SubagentListResponse,
   TerminalResizeResponse
 } from '@hermes/shared/gateway-types'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'

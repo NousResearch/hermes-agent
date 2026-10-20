@@ -5,11 +5,11 @@ import type {
   BillingMutationResponse,
   BillingStateResponse,
   SessionCloseResponse,
+  SessionInfo,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '@hermes/shared/gateway-types'
-import type { SessionInfo } from '@hermes/shared/gateway-types'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'

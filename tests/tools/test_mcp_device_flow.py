@@ -11,7 +11,7 @@ pytest.importorskip(
 from evals.mcp_device_flow import DEVICE_GRANT, run_cli
 
 
-@pytest.mark.parametrize("mode", ["success", "preregistered", "multi_issuer"])
+@pytest.mark.parametrize("mode", ["success", "preregistered", "multi_issuer", "rejects_empty_response_types"])
 def test_device_login_registers_authorizes_and_persists(mode):
     result = run_cli(Path(__file__).resolve().parents[2], mode)
     assert result["token_persisted"], result
@@ -25,11 +25,14 @@ def test_device_login_registers_authorizes_and_persists(mode):
     assert all(row["data"]["resource"].endswith("/mcp") for row in polls)
     if mode == "success":
         assert polls[2]["at"] - polls[1]["at"] >= 5
+        # A server that accepts the first registration sees exactly one.
+        assert sum(row["path"] == "/register" for row in result["wire"]) == 1
     elif mode == "preregistered":
         assert not any(row["path"] == "/register" for row in result["wire"])
 
 
-@pytest.mark.parametrize("mode", ["denied", "expiry", "unsupported", "issuer", "resource", "malformed", "persistence"])
+@pytest.mark.parametrize("mode", ["denied", "expiry", "unsupported", "issuer", "resource", "malformed", "persistence",
+                                  "rejects_registration"])
 def test_device_login_failure_does_not_persist_or_disclose_credentials(mode):
     result = run_cli(Path(__file__).resolve().parents[2], mode)
     assert "unrecognized arguments" not in result["output"], result
@@ -38,3 +41,7 @@ def test_device_login_failure_does_not_persist_or_disclose_credentials(mode):
     assert "Authentication failed" in result["output"], result
     assert "fixture-device-secret" not in result["output"], result
     assert "Authenticated" not in result["output"], result
+    # A rejected registration is retried at most once, and the failure names the remediation.
+    assert sum(row["path"] == "/register" for row in result["wire"]) <= 2, result
+    if mode == "rejects_registration":
+        assert "oauth.client_id" in result["output"], result

@@ -378,6 +378,7 @@ def execute(frame, channel):
                 tool_start_callback=lambda call_id, name, args: channel.send('tool.start', **tool_frame(call_id, name, args)),
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
+            agent._frontend_client = policy.frontend_client
             controls.agent = agent
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt

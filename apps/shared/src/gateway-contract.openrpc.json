@@ -8878,6 +8878,17 @@
             ],
             "default": null,
             "title": "Client Env"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionClient"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "CanonicalCreateParams",
@@ -35330,6 +35341,31 @@
           "info"
         ],
         "title": "SessionBranchWholeResult",
+        "type": "object"
+      },
+      "SessionClient": {
+        "additionalProperties": false,
+        "description": "The frontend that opens the session and what it renders, frozen with the launch request. Plugin\nsystem-prompt sections read it as ``client_id`` and ``client_capabilities`` (comma-joined).",
+        "properties": {
+          "id": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Capabilities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "SessionClient",
         "type": "object"
       },
       "SessionCloseParams": {

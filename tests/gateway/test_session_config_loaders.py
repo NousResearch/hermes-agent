@@ -90,7 +90,7 @@ def _in_process_prefill(authority, policy, monkeypatch, chat_id):
     source = SimpleNamespace(chat_id=chat_id, user_id='u', user_id_alt=None, user_name=None, chat_name=None,
                              chat_type='dm', thread_id=None)
     turn._ctx = SimpleNamespace(source=source, user_config={}, enabled_toolsets=[], disabled_toolsets=None,
-                                session_id=chat_id, session_key='k', AIAgent=lambda **kw: built.update(kw))
+                                session_id=chat_id, session_key='k', AIAgent=lambda **kw: built.update(kw) or SimpleNamespace())
     turn._build_fresh_agent({'model': 'm', 'runtime': {}}, 'local', None, 1, None, {}, False)
     return built['prefill_messages']
 

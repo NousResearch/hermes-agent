@@ -90,7 +90,9 @@ def _plugin_session_info(agent: Any) -> dict[str, str]:
     except Exception:
         cwd = ""
     info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
-    info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd)
+    client = getattr(agent, "_frontend_client", None) or {}
+    info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd,
+                client_id=str(client.get("id") or ""), client_capabilities=",".join(client.get("capabilities") or ()))
     return info
 
 

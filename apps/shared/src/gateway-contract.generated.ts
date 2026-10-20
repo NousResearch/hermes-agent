@@ -4944,6 +4944,12 @@ export interface CanonicalCreateParams {
   run_budget?: number | null
   verbose?: boolean
   client_env?: Record<string, string> | null
+  client?: SessionClient | null
+}
+/** The frontend that opens the session and what it renders, frozen with the launch request. Plugin system-prompt sections read it as ``client_id`` and ``client_capabilities`` (comma-joined). */
+export interface SessionClient {
+  id: string
+  capabilities?: string[]
 }
 export interface CanonicalSnapshot {
   session_id: string

@@ -90,8 +90,11 @@ OpenAI API-to-local session affinity; those remain separate integration paths.
   `reasoning`, `max_turns`, `skills` (rendered once into the frozen prompt; refused with a
   bypass launch), the booleans `yolo`, `checkpoints`, `accept_hooks`, `pass_session_id`,
   `ignore_rules`, `safe_mode`, `ignore_user_config` (safe mode implies ignore-user-config
-  and runs turns in an isolated worker), `editor` (ACP only), plus `title` (resolve-or-create)
-  and `hidden`. A malformed value returns `invalid_params`. Any other field, cwd worktree
+  and runs turns in an isolated worker), `editor` (ACP only), `client` (the frontend that opens
+  the session, e.g. `{"id": "hermes-tern", "capabilities": ["math", "mermaid"]}`: lowercase
+  tokens of 1–64 letters, digits, `.`, `_` or `-`, at most 32 capabilities; plugin system-prompt
+  sections read it as `client_id` and `client_capabilities`, and it changes neither the
+  platform, its prompt hint nor the toolsets), plus `title` (resolve-or-create) and `hidden`. A malformed value returns `invalid_params`. Any other field, cwd worktree
   creation, seeded history, profile switching and service-tier selection still return
   `invalid_params`. No supported launch field mutates daemon-wide configuration or process
   environment.

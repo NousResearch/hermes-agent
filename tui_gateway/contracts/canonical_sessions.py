@@ -2,9 +2,9 @@
 
 Reuse upstream authority-only value shapes; these overrides do not widen METHODS.
 """
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import RootModel
+from pydantic import Field, RootModel
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
@@ -15,6 +15,17 @@ from .registry import canonical_method
 
 class CanonicalSessionParams(ProfileParams):
     session_id: str
+
+
+ClientToken = Annotated[str, Field(pattern=r'^[a-z0-9][a-z0-9._-]{0,63}$')]
+
+
+class SessionClient(Params):
+    """The frontend that opens the session and what it renders, frozen with the launch request. Plugin
+    system-prompt sections read it as ``client_id`` and ``client_capabilities`` (comma-joined)."""
+
+    id: ClientToken
+    capabilities: list[ClientToken] = Field(default_factory=list, max_length=32)
 
 
 class CanonicalCreateParams(ProfileParams):
@@ -52,6 +63,7 @@ class CanonicalCreateParams(ProfileParams):
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None
+    client: SessionClient | None = None
 
 
 class CanonicalResumeParams(ProfileParams):

@@ -425,7 +425,12 @@ The contract is deliberately narrow:
   rendered after memory/profile context and before session metadata; plugins
   cannot reorder or replace core prompt content.
 - A callable receives a read-only mapping with `session_id`, `model`,
-  `provider`, `platform`, `profile_name`, and `cwd`. It runs **once for a new
+  `provider`, `platform`, `profile_name`, `cwd`, `client_id`, and
+  `client_capabilities`. The two `client_*` keys name the frontend that
+  opened the session and what it renders (for example `hermes-tern` and
+  `math,mermaid,svg`), as that frontend sent them in the `client` field of the
+  gateway's [`session.create`](../../developer-guide/gateway-local-sessions.md);
+  they are empty strings for every other session. It runs **once for a new
   session**. Its rendered bytes are frozen on compression and recovered from
   the already-persisted full system prompt after a process restart/resume;
   plugin state is not re-read for an existing session.

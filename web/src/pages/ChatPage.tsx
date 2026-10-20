@@ -201,6 +201,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const ptyInputLineRef = useRef("");
   const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] = useState<PtyConnectionState>("connecting");
+  const [rpcReadyChannel, setRpcReadyChannel] = useState<string | null>(null);
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
   // True until the first real PTY payload arrives for a resumed session.
   // Covers the blank terminal + blinking-cursor window so users don't think
@@ -1171,6 +1172,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectGaveUpRef.current = true;
         setReconnectGaveUp(true);
         setPtyState("closed");
+        setRpcReadyChannel(channel);
         return;
       }
       const attempt = reconnectAttemptRef.current + 1;
@@ -1249,6 +1251,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }, PTY_CONNECTING_TIMEOUT_MS);
 
     ws.onopen = () => {
+      if (unmounting) return;
       clearReconnectTimer();
       clearConnectingTimer();
       connectInFlightRef.current = false;
@@ -1257,12 +1260,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setBannerAction(null);
       setReconnectGaveUp(false);
       setPtyState("open");
+      setRpcReadyChannel(channel);
       blockedInputNoticeRef.current = false;
-      // Connected — cancel any pending reconnect from a prior transient drop.
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -1778,6 +1777,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ptyState,
     hydrating: resumeHydrating,
   });
+  const chatSidebar = (
+    <ChatSidebar
+      channel={channel}
+      rpcReady={rpcReadyChannel === channel}
+      profile={scopedProfile}
+      onDashboardNewSessionRequest={startFreshDashboardChat}
+      onSessionTitleChange={handleSessionTitleChange}
+    />
+  );
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -1845,12 +1853,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             )}
           >
             <div className="border-b border-current/10 px-1 py-2">
-              <ChatSidebar
-                channel={channel}
-                profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                onSessionTitleChange={handleSessionTitleChange}
-              />
+              {chatSidebar}
             </div>
             <ChatSessionList
               activeSessionId={resumeParam}
@@ -2038,12 +2041,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
             {/* Model picker — keeps the rail thin. */}
             <div className="shrink-0">
-              <ChatSidebar
-                channel={channel}
-                profile={scopedProfile}
-                onDashboardNewSessionRequest={startFreshDashboardChat}
-                onSessionTitleChange={handleSessionTitleChange}
-              />
+              {chatSidebar}
             </div>
 
             {/* Session switcher fills the remaining height below the model box. */}

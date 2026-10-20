@@ -172,7 +172,7 @@ describe('ChatSidebar event socket', () => {
   it('routes loopback 4401 closes through stale-token recovery', async () => {
     const { ChatSidebar } = await import('./ChatSidebar')
 
-    await render(<ChatSidebar channel="chat-1" />)
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />)
 
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
     expect(apiMocks.buildWsUrl).toHaveBeenCalledWith('/api/events', {
@@ -211,7 +211,7 @@ describe('ChatSidebar event socket', () => {
     })
 
     const { ChatSidebar } = await import('./ChatSidebar')
-    await render(<ChatSidebar channel="chat-1" />)
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />)
 
     // The badge seeds from config (/api/model/info): the configured primary.
     await vi.waitFor(() =>
@@ -241,7 +241,7 @@ describe('ChatSidebar event socket', () => {
     })
 
     const { ChatSidebar } = await import('./ChatSidebar')
-    await render(<ChatSidebar channel="chat-1" />)
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />)
     await openedFeedSocket()
 
     // A session.info without a usable model (e.g. a title-only update)
@@ -258,7 +258,7 @@ describe('ChatSidebar event socket', () => {
   it("ignores the synchronous sidecar state replay", async () => {
     const { ChatSidebar } = await import("./ChatSidebar");
 
-    await render(<ChatSidebar channel="chat-1" />);
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />);
     await vi.waitFor(() => expect(gatewayMocks.onState).toHaveBeenCalled());
 
     const redialHandler = gatewayMocks.onState.mock.calls[1][0] as (s: string) => void;
@@ -274,7 +274,7 @@ describe('ChatSidebar event socket', () => {
   it("auto-redials the JSON-RPC sidecar after a transient close (#95951)", async () => {
     const { ChatSidebar } = await import("./ChatSidebar");
 
-    await render(<ChatSidebar channel="chat-1" />);
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />);
 
     // The sidecar subscribes state handlers via onState; the first
     // subscription's mock call receives the handler we can drive.
@@ -310,7 +310,7 @@ describe('ChatSidebar event socket reconnect', () => {
 
   async function renderSidebar() {
     const { ChatSidebar } = await import('./ChatSidebar')
-    await render(<ChatSidebar channel="chat-1" />)
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />)
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
   }
 
@@ -366,7 +366,7 @@ describe('ChatSidebar event socket reconnect', () => {
 
     try {
       const { ChatSidebar } = await import("./ChatSidebar");
-      await render(<ChatSidebar channel="chat-1" />);
+      await render(<ChatSidebar channel="chat-1" rpcReady={true} />);
       expect(stateHandlers.length).toBeGreaterThanOrEqual(2);
 
       // Exhaust the budget: each failed attempt re-runs the socket effect
@@ -772,7 +772,7 @@ describe('ChatSidebar sidecar redial grace (#129393)', () => {
 
   async function renderSidebar() {
     const { ChatSidebar } = await import('./ChatSidebar')
-    await render(<ChatSidebar channel="chat-1" />)
+    await render(<ChatSidebar channel="chat-1" rpcReady={true} />)
   }
 
   /** Advance timers and flush the version-bump rebuild that fires on the tick. */

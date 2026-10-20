@@ -96,7 +96,6 @@ const PairingPage = lazy(() => import("@/pages/PairingPage"));
 const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
-const ChatPage = lazy(() => import("@/pages/ChatPage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -123,6 +122,35 @@ function RouteFallback({ label = "Loading…" }: { label?: string }) {
       </div>
     </div>
   );
+}
+
+// Resolve the component before mounting so PTY startup does not wait for a
+// Suspense retry. App mounts this host only after plugin ownership is known.
+function ChatPageHost({ isActive }: { isActive: boolean }) {
+  const [page, setPage] = useState<
+    | { Component: typeof import("@/pages/ChatPage").default }
+    | { error: unknown }
+    | null
+  >(null);
+  useEffect(() => {
+    let cancelled = false;
+    void import("@/pages/ChatPage").then(
+      ({ default: Component }) => {
+        if (!cancelled) setPage({ Component });
+      },
+      (error: unknown) => {
+        if (!cancelled) setPage({ error });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!page) return isActive ? <RouteFallback label="Loading chat…" /> : null;
+  if ("error" in page) throw page.error;
+  const { Component } = page;
+  return <Component isActive={isActive} />;
 }
 
 function RootRedirect() {
@@ -438,14 +466,9 @@ export default function App() {
   // extension point, so preserve the pre-persistence contract: when a
   // plugin owns /chat, the built-in chat UI is entirely absent.
   //
-  // Waiting on `pluginsLoading` is load-bearing: manifests arrive
-  // asynchronously from /api/dashboard/plugins, so on initial render
-  // `chatOverriddenByPlugin` is always false.  Without the loading
-  // gate, the persistent host would mount, spawn a PTY, and THEN get
-  // yanked out from under the user when the plugin's manifest resolves
-  // — killing the session mid-paint.  Delaying host mount by the
-  // plugin-load window (typically <50ms, worst case 2s safety timeout)
-  // is the cheaper trade-off.
+  // Wait for manifests before mounting a PTY: a /chat override owns the
+  // route and must never be displaced by the built-in host. Once manifests
+  // rule out an override, unrelated plugin bundles can load alongside chat.
   const chatOverriddenByPlugin = useMemo(
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],
@@ -809,15 +832,7 @@ export default function App() {
                       )}
                       aria-hidden={!isChatRoute}
                     >
-                      <Suspense
-                        fallback={
-                          isChatRoute ? (
-                            <RouteFallback label="Loading chat…" />
-                          ) : null
-                        }
-                      >
-                        <ChatPage isActive={isChatRoute} />
-                      </Suspense>
+                      <ChatPageHost isActive={isChatRoute} />
                     </div>
                   ) : isChatRoute ? (
                     <RouteFallback label="Loading chat…" />

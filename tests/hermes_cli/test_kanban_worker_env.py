@@ -1,0 +1,16 @@
+"""The worker client's environment is an allowlist of host plumbing (``kanban_worker_env``)."""
+
+from hermes_cli.kanban_worker_env import worker_client_env
+
+
+def test_keeps_host_plumbing_and_hermes_location():
+    env = {"PATH": "/bin", "HOME": "/home/u", "LC_ALL": "C.UTF-8", "HTTPS_PROXY": "http://p",
+           "https_proxy": "http://p", "HERMES_HOME": "/h", "XDG_RUNTIME_DIR": "/run/user/1"}
+    assert worker_client_env(env) == env
+
+
+def test_drops_everything_else():
+    env = {"PATH": "/bin", "SERVICE_TOKEN": "t", "GITHUB_TOKEN": "g", "HERMES_MODEL": "m",
+           "TERMINAL_ENV": "docker", "HERMES_TUI": "1", "HERMES_SESSION_PLATFORM": "telegram",
+           "MY_PASSTHROUGH_VAR": "v"}
+    assert worker_client_env(env) == {"PATH": "/bin"}

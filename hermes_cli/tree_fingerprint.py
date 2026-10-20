@@ -78,6 +78,18 @@ def default_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _raise_walk_error(error: OSError) -> None:
+    """Surface a directory-level walk error instead of letting ``os.walk`` drop the subtree.
+
+    ``os.walk``'s default ``onerror=None`` SKIPS a directory it cannot list and says nothing, which
+    would hand back a partial file list -- a digest over fewer files that reads as a content change
+    on a tree nobody edited (a false skew that refuses a healthy tick). Re-raising reaches the
+    fail-open guards in :func:`_stat_signature_root`, so an unreadable subtree is uncertain
+    (``None``), never skew.
+    """
+    raise error
+
+
 def _source_files(root: Path) -> list[tuple[str, Path]]:
     """``(relative posix path, absolute path)`` for every source file under :data:`SOURCE_PACKAGE_TREES`.
 
@@ -89,7 +101,7 @@ def _source_files(root: Path) -> list[tuple[str, Path]]:
         base = root / package
         if not base.is_dir():
             continue
-        for dirpath, dirnames, filenames in os.walk(base):
+        for dirpath, dirnames, filenames in os.walk(base, onerror=_raise_walk_error):
             dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
             for filename in sorted(filenames):
                 if not filename.endswith(".py"):

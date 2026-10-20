@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -179,6 +180,45 @@ def test_an_unreadable_tree_fails_open(board, tree, monkeypatch):
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
     result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
     assert result.tick_yielded == ""
+
+
+def test_a_subtree_the_walk_cannot_list_reads_uncertain_not_skewed(board, tree, monkeypatch):
+    """A directory the walk cannot LIST must read as uncertain, never as a content change.
+
+    ``os.walk``'s default ``onerror=None`` silently DROPS a directory it cannot scan, so a bare
+    walk hands back a PARTIAL file list; the digest over that shorter list then differs from the
+    boot digest and ``detect_skew`` reports drift on a tree nobody edited -- a false positive that
+    refuses a healthy tick. The module's contract is that an unreadable read is ``None`` ("every
+    uncertain read returns ``None`` ... ``None`` NEVER means skew"), so the walk must surface the
+    directory-level ``OSError`` to the fail-open guards around it.
+
+    The fault is injected into the REAL ``os.walk`` (its own ``except OSError`` -> ``onerror``
+    branch, the same one a ``chmod 000`` subtree takes), not into our walker.
+    """
+    conn = board
+    nested = tree / "hermes_cli" / "locked"
+    nested.mkdir()
+    (nested / "c.py").write_text("VALUE = 3\n", encoding="utf-8")
+    tf.record_boot()
+    recorded = tf.boot_record()
+    assert recorded is not None, "the boot record must exist for this test to mean anything"
+    boot = recorded["fingerprint"]
+
+    real_scandir = os.scandir
+
+    def _scandir(path="."):
+        if Path(path).resolve() == nested.resolve():
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_scandir(path)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "scandir", _scandir)
+        assert tf.content_fingerprint() is None, "an unlistable subtree is uncertain, not a digest"
+        assert tf.detect_skew() is None, "an unlistable subtree must never read as drift"
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
+        assert result.tick_yielded == "", "a tick must not refuse on an unreadable read"
+
+    assert tf.content_fingerprint() == boot, "the tree never moved: the boot digest must return"
 
 
 def test_a_byte_identical_rewrite_reads_clean(board, tree):

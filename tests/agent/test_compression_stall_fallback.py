@@ -16,6 +16,8 @@ These tests pin the contract:
   does not re-issue the same failed route;
 * the historical "continue without compression" degrade survives when no chain
   is configured or the fallback attempt also stalls.
+* primary teardown consumes the shared pass budget, including the reserved
+  fallback window; an exhausted pass never mints a fallback fence.
 """
 
 from __future__ import annotations
@@ -309,6 +311,57 @@ def test_deterministic_summary_runs_inside_the_pass_ceiling():
     # An over-window pass is one idle window (1.0s) end to end: primary, fallback and deterministic summary.
     assert max(deadlines) - started <= 1.0 + 0.05
     assert time.monotonic() - started <= 1.0 + 0.15
+
+
+def test_total_ceiling_exhaustion_does_not_start_fallback():
+    original = [{"role": "user", "content": "keep-me"}]
+    worker = _StalledSummaryWorker([{"role": "user", "content": "unused"}])
+    timeouts, minted = [], []
+    ceiling = 5.0
+    elapsed = 0.0
+    from agent import conversation_compression
+
+    release_cancelled_worker = conversation_compression._release_cancelled_worker
+    clock = SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed, sleep=time.sleep)
+
+    def _release_after_teardown(future, fence, **kwargs):
+        nonlocal elapsed
+        worker.release.set()
+        future.result(timeout=ceiling)
+        release_cancelled_worker(future, fence, **kwargs)
+        # Charge teardown to the pass without sleeping through its reserved window.
+        elapsed += ceiling
+
+    def _new_fence():
+        fence = CompressionCommitFence()
+        minted.append(fence)
+        return fence
+
+    try:
+        with (
+            _patch_chain([CHAIN_ENTRY]),
+            patch.object(conversation_compression, "time", clock),
+            patch.object(conversation_compression, "_release_cancelled_worker", _release_after_teardown),
+        ):
+            msgs, prompt = run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=original,
+                system_prompt_fallback="degraded-prompt",
+                idle_timeout_seconds=2.0,
+                total_ceiling_seconds=ceiling,
+                on_timeout=lambda *args: timeouts.append(args),
+                new_fence=_new_fence,
+            )
+    finally:
+        worker.release.set()
+
+    assert elapsed == ceiling, "the primary teardown must consume the reserved window"
+    assert worker.attempts == 1
+    assert worker.routes == [None]
+    assert not minted, "an exhausted pass must not mint a fallback fence"
+    assert msgs is original
+    assert prompt == "degraded-prompt"
+    assert len(timeouts) == 1
 
 
 def test_fallback_with_no_time_left_in_the_pass_is_skipped(caplog):

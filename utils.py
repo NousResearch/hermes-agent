@@ -518,20 +518,27 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
 # unquoted ``approvals.mode: off`` would silently round-trip back as ``False``.
 _YAML11_AMBIGUOUS_WORDS = frozenset({"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"})
 
+# Leave stack headroom for the ruamel representer, which recurses over the converted node tree
+# once more after this converter returns. A caller building a pathologically deep settings value
+# must fail diagnostically instead of exhausting the interpreter stack (#137060).
+_MAX_RT_VALUE_DEPTH = 256
 
-def _rt_value(value: Any) -> Any:
+
+def _rt_value(value: Any, *, _depth: int = 0) -> Any:
     """Plain Python value → ruamel node: YAML 1.1-ambiguous strings force-quoted at every depth
     (a bare ``off`` inside a list reads back as ``False`` just like one at the top level)."""
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
+    if _depth > _MAX_RT_VALUE_DEPTH:
+        raise ValueError("config value nesting exceeds the maximum supported depth.")
     if isinstance(value, dict):
         node = CommentedMap()
         for k, v in value.items():
-            node[k] = _rt_value(v)
+            node[k] = _rt_value(v, _depth=_depth + 1)
         return node
     if isinstance(value, (list, tuple)):
-        return CommentedSeq(_rt_value(v) for v in value)
+        return CommentedSeq(_rt_value(v, _depth=_depth + 1) for v in value)
     if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
         return DoubleQuotedScalarString(value)
     return value

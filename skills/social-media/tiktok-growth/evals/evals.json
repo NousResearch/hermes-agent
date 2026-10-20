@@ -1,0 +1,81 @@
+{
+  "skill": "tiktok-growth",
+  "version": "1.0.0",
+  "description": "Scenario tests for tiktok-growth. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-growth-system",
+      "input": "My TikTok isn't growing. I post a few times a week about my SaaS. Help me grow.",
+      "expect": [
+        "reads brand-profile, social-strategy, and audience first",
+        "diagnoses which stage/phase of the test-and-expand loop is stuck",
+        "centers completion rate (70%+) and rewatches as the dominant signals, with a 1-second hook",
+        "routes fixes to the right skills (tiktok-script, hook-writer, profile-optimization, content-calendar, etc.)",
+        "ties cadence to sustainable consistency and judges progress via native TikTok analytics, not WoopSocial analytics"
+      ]
+    },
+    {
+      "name": "diagnose-phase-1-death",
+      "input": "My videos get like 200 views and then stop. What's happening?",
+      "expect": [
+        "explains the video is dying in the Phase-1 test audience (low watch time/completion in the first window)",
+        "identifies the fix as a stronger 1-second hook and higher completion (faster pacing, a loop)",
+        "routes to tiktok-script / hook-writer rather than telling them to post more or get more followers"
+      ]
+    },
+    {
+      "name": "completion-and-rewatch-lever",
+      "input": "How do I actually get a video to take off on TikTok?",
+      "expect": [
+        "emphasizes completion rate (aim ~70%+) and rewatches/loops as the top signals",
+        "advises a 1-second hook, fast pacing, and a loop/rewatch trigger",
+        "notes likes are the weakest signal and not the goal"
+      ]
+    },
+    {
+      "name": "search-pillar",
+      "input": "How do I get found on TikTok beyond just hoping for the FYP?",
+      "expect": [
+        "treats TikTok search/SEO as a major evergreen growth pillar (TikTok is a search engine)",
+        "advises keywords in spoken audio, on-screen text, and caption (the triple mention)",
+        "routes to hashtag-strategy / social-seo and tiktok-script for the keyword layer"
+      ]
+    },
+    {
+      "name": "followers-are-business-not-reach-pushback",
+      "input": "I just need more followers so my videos get more reach. Can I buy some?",
+      "expect": [
+        "refuses buying followers / fake engagement (hurts performance, risks the account)",
+        "explains follower count is not a TikTok ranking factor — reach comes from content performance, not followers",
+        "reframes followers as a business asset (LIVE/Shop/owned audience/community) and points to completion + search as the reach levers"
+      ]
+    },
+    {
+      "name": "volume-and-patterns",
+      "input": "I posted one video that flopped, so the algorithm must hate me.",
+      "expect": [
+        "reframes growth as consistent at-bats where each post is a cheap test (and videos can resurface later)",
+        "advises judging by patterns across many videos, not a single one (e.g., which hooks repeatedly land)",
+        "recommends a sustainable consistent cadence rather than quitting after one flop"
+      ]
+    },
+    {
+      "name": "native-features-and-series",
+      "input": "What TikTok features should I use to grow faster?",
+      "expect": [
+        "recommends relevant native features: Stitch/Duet for piggybacking reach, Series/Parts to drive binge + follows, pinned comment to seed conversation",
+        "notes LIVE requires ~1,000 followers and is a community/monetization tool, not an early-growth reach lever",
+        "ties feature choice to the user's stage rather than listing everything"
+      ]
+    },
+    {
+      "name": "niche-and-no-analytics",
+      "input": "I post about marketing, gaming, and cooking. How do I know what's working?",
+      "expect": [
+        "advises tightening to a clear niche so TikTok's interest graph can categorize and recommend the account",
+        "does not claim WoopSocial provides analytics",
+        "points to native TikTok analytics (completion, rewatch, shares, traffic source FYP vs Search vs Profile, follower conversion) and notes a business/creator account is needed"
+      ]
+    }
+  ]
+}

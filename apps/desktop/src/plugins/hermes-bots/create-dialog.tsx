@@ -235,6 +235,51 @@ function CapabilitiesTab({ connection, draft, hint }: { connection?: string; dra
   )
 }
 
+/** Is `slug` already a bot on the create target (`target`: a remote connection
+ *  id, or '' for local)? The dialog's own materialized draft never counts. */
+function slugTaken(roster: RosterRow[], slug: string, target: string, draft: null | string): boolean {
+  return roster.some(
+    b =>
+      b.name === slug &&
+      b.name !== draft &&
+      (target ? Boolean(b.remoteSource) && b.connectionId === target : !b.remoteSource)
+  )
+}
+
+/** Draft-profile ledger for the New Agent dialog. Opening Capabilities (or MCP
+ *  setup) materializes a DRAFT profile so the live config surfaces have a
+ *  backend; discarding deletes it on the machine it was CREATED on
+ *  (`draftTargetRef`, recorded with it): the "Create on" picker may point
+ *  elsewhere by then, and a same-named bot there is not the draft. Each discard,
+ *  and the dialog unmounting, bumps `draftGenRef` so an in-flight create
+ *  deletes its own draft and configures nothing. */
+function useDraftProfile(
+  createdRef: { current: null | string },
+  flightRef: { current: Promise<null | string> | null }
+) {
+  const draftGenRef = useRef(0)
+  const draftTargetRef = useRef('')
+
+  const discardDraft = () => {
+    const draft = createdRef.current
+    draftGenRef.current += 1
+    createdRef.current = flightRef.current = null
+
+    if (draft) {
+      discardDraftProfile(draft, draftTargetRef.current)
+    }
+  }
+
+  useEffect(
+    () => () => {
+      draftGenRef.current += 1
+    },
+    []
+  )
+
+  return { discardDraft, draftGenRef, draftTargetRef }
+}
+
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
   const { t } = useI18n()
   const b = useBots()
@@ -248,7 +293,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
-  const draftGenRef = useRef(0) // bumped per discard: an in-flight create then deletes its own draft
+  const { discardDraft, draftGenRef, draftTargetRef } = useDraftProfile(createdRef, flightRef)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -333,32 +378,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // A remote-target create is gated by the TARGET machine's roster: a local
   // name clash is fine there, and the remote's own duplicate check rejects
   // real collisions at profiles.create time.
-  const taken = remoteTarget
-    ? roster.some(
-        b => b.remoteSource && b.connectionId === targetConnection && b.name === slug && b.name !== createdRef.current
-      )
-    : roster.some(b => !b.remoteSource && b.name === slug && b.name !== createdRef.current)
-
-  // Opening Capabilities (or MCP setup) materializes a DRAFT profile so the live
-  // config surfaces have a backend; cancelling deletes it (discardDraftProfile)
-  // on the machine it was CREATED on, recorded with it: the "Create on" picker
-  // may point elsewhere by then, and a same-named bot there is not the draft.
-  const draftTargetRef = useRef('')
-
-  const discardDraft = () => {
-    const draft = createdRef.current
-    draftGenRef.current += 1
-    createdRef.current = flightRef.current = null
-    draft && discardDraftProfile(draft, draftTargetRef.current)
-  }
-
-  // A flight still running when the dialog goes away belongs to nobody.
-  useEffect(
-    () => () => {
-      draftGenRef.current += 1
-    },
-    []
-  )
+  const taken = slugTaken(roster, slug, createTarget, createdRef.current)
 
   const reset = () => {
     setName('')

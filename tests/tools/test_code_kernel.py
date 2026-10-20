@@ -164,11 +164,28 @@ class TestKernelLifecycle(unittest.TestCase):
     def test_sys_exit_ends_the_kernel(self):
         with _kernel_config():
             done = _run("import sys\nsys.exit(0)")
+            self.assertEqual(done["status"], "success", done)
             self.assertEqual(done["kernel"].get("ended"), True, done)
             self.assertEqual(len(_KERNELS), 0)
             fresh = _run("print('respawned')")
         self.assertEqual(fresh["kernel"]["reused"], False)
         self.assertIn("respawned", fresh["output"])
+
+    def test_sys_exit_nonzero_code_reports_error(self):
+        with _kernel_config():
+            done = _run("import sys\nsys.exit(1)")
+        self.assertEqual(done["status"], "error", done)
+        self.assertEqual(done["exit_code"], 1)
+        self.assertIn("exited with code 1", done["error"])
+        self.assertEqual(done["kernel"].get("ended"), True, done)
+        self.assertEqual(len(_KERNELS), 0)
+
+    def test_sys_exit_message_reports_error_with_the_message(self):
+        with _kernel_config():
+            done = _run("import sys\nsys.exit('fatal: config missing')")
+        self.assertEqual(done["status"], "error", done)
+        self.assertEqual(done["exit_code"], 1)
+        self.assertIn("fatal: config missing", done["output"])
 
     def test_subprocess_fd_output_reaches_the_result(self):
         code = (

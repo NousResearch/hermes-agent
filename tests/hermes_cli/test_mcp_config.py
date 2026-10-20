@@ -349,6 +349,50 @@ class TestMcpTest:
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
 
+    @pytest.mark.parametrize("failure", ["raise", "timeout"])
+    def test_failed_probe_reaps_claimed_server_task(self, monkeypatch, failure):
+        """A probe is nobody's owner: a connect failure must shut down the claimed
+        ``MCPServerTask`` instead of leaving it parked and self-reconnecting every 300s.
+        (157 such orphans accumulated on one long-lived dashboard and kept a rate-limited
+        remote tripped by waking up together.)"""
+        import asyncio
+        from hermes_cli import mcp_config
+        from tools import mcp_tool as _core
+        from tools import mcp_tool_discovery as _mcp_discovery
+        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from tools import mcp_tool_loop as _mcp_loop
+
+        captured = {"shutdown": 0}
+
+        class ClaimedServer:
+            initialize_result = None
+
+            async def shutdown(self):
+                captured["shutdown"] += 1
+
+        async def failing_connect(name, config):
+            claim = _core._connect_server_claim.get()
+            assert claim is not None, "probe must install a claim so the task is observable"
+            claim(ClaimedServer())  # the real _connect_server claims BEFORE start() can fail
+            if failure == "timeout":
+                raise TimeoutError()
+            raise ConnectionError("both transports failed")
+
+        def fake_run_on_mcp_loop(coro, timeout):
+            return asyncio.run(coro)
+
+        monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(_mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(_mcp_discovery, "_connect_server", failing_connect)
+        monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+
+        details = {}
+        with pytest.raises((ConnectionError, TimeoutError)) as excinfo:
+            mcp_config._probe_single_server("srv", {"url": "http://x/mcp", "connect_timeout": 5}, details=details)
+        assert captured["shutdown"] == 1, "claimed task was not reaped on probe failure"
+        assert details["initialized"] is False
+        if failure == "timeout":
+            assert "timed out after 5s" in str(excinfo.value)
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

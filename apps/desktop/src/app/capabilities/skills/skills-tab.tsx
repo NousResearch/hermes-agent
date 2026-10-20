@@ -13,7 +13,8 @@ import {
   getOfficialSkills,
   type ProfileScope,
   profileScopeKey,
-  setSkillEnabled
+  setSkillEnabled,
+  setSkillPinned
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
@@ -101,6 +102,9 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
   const [skillDraft, setSkillDraft] = useState('')
   const [skillSaving, setSkillSaving] = useState(false)
   const [archiveTarget, setArchiveTarget] = useState<null | string>(null)
+  // The skill whose pin write is in flight: the button disables per-row instead
+  // of repainting the whole list as busy.
+  const [pinBusy, setPinBusy] = useState<null | string>(null)
 
   // Optimistic write-through against the scoped Skills key: toggles/bulk/
   // archive repaint instantly; the next background refetch reconciles.
@@ -164,6 +168,37 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
         current => current?.map(row => (row.name === skill.name ? { ...row, enabled: !enabled } : row)) ?? current
       )
       notifyError(err, t.skills.failedToUpdate(skill.name))
+    }
+  }
+
+  // Pin is CURATOR protection, not a load switch: it never changes what the
+  // agent can see, so unlike a toggle it must not invalidate slash completions.
+  // Optimistic like the toggle, but the write can be REFUSED (bundled/hub, or a
+  // name the curator would never auto-archive) — a refusal rolls the paint back
+  // and surfaces the server's own explanation instead of a generic failure.
+  async function handleTogglePin(skill: SkillInfo, pinned: boolean) {
+    setPinBusy(skill.name)
+    setSkills(current => current?.map(row => (row.name === skill.name ? { ...row, pinned } : row)) ?? current)
+
+    try {
+      const result = await setSkillPinned(skill.name, pinned, profile)
+
+      if (!result.ok) {
+        throw new Error(result.message || t.skills.failedToUpdate(skill.name))
+      }
+
+      notify({
+        kind: 'success',
+        title: pinned ? t.skills.pinSuccessTitle : t.skills.unpinSuccessTitle,
+        message: result.message ?? ''
+      })
+    } catch (err) {
+      setSkills(
+        current => current?.map(row => (row.name === skill.name ? { ...row, pinned: !pinned } : row)) ?? current
+      )
+      notifyError(err, t.skills.failedToUpdate(skill.name))
+    } finally {
+      setPinBusy(null)
     }
   }
 
@@ -357,6 +392,8 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                 <SkillDetail
                   onArchive={() => setArchiveTarget(activeSkill.name)}
                   onEdit={() => void openSkillEditor(activeSkill.name)}
+                  onTogglePin={() => void handleTogglePin(activeSkill, activeSkill.pinned !== true)}
+                  pinning={pinBusy === activeSkill.name}
                   profile={profile}
                   skill={activeSkill}
                 />

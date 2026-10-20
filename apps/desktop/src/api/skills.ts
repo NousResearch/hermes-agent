@@ -43,6 +43,33 @@ export function setSkillEnabled(
   })
 }
 
+export interface SkillPinResult {
+  /** false = refused; `message` says why and the caller rolls its optimistic
+   *  toggle back. The route answers 200 with ok:false rather than an HTTP error
+   *  (same shape as the learning-node mutations). */
+  ok: boolean
+  name: string
+  pinned: boolean
+  /** Whether the curator actually manages this skill. false = the pin is
+   *  recorded but inert (never auto-transitioned), matching `hermes curator pin`. */
+  managed?: boolean
+  /** Human-readable outcome (English, like the other mutation responses). */
+  message?: string
+  /** Machine-readable refusal: 'not_agent_created' | 'not_eligible'. */
+  reason?: string
+}
+
+/** Pin/unpin a learned skill so the curator's inactivity rule never archives it.
+ *  Same `.usage.json` flag `hermes curator pin` writes, through the same guard. */
+export function setSkillPinned(name: string, pinned: boolean, profile?: ProfileScope): Promise<SkillPinResult> {
+  return window.hermesDesktop.api<SkillPinResult>({
+    ...capabilityScoped(profile),
+    path: '/api/skills/pin',
+    method: 'PUT',
+    body: { name, pinned }
+  })
+}
+
 export function getStarmapGraph(): Promise<StarmapGraph> {
   return hermesApi<StarmapGraph>({
     ...profileScoped(),

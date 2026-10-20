@@ -156,13 +156,30 @@ def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Opti
 
     ``profile_home`` stamps the home the mapping was built for so
     ``serves_routed_profile`` detects a foreign-home scope even when the binder
-    deliberately skips the HERMES_HOME override."""
+    deliberately skips the HERMES_HOME override.
+
+    Legacy setter: new code binds a scope (``agent.runtime_scope.bind_profile_scope``). With a
+    runtime scope bound, installing a mapping for another profile (``profile_home``; unstamped
+    means the process home) moves the whole scope to that profile with *secrets* as its secret
+    scope, so a profile's secrets never sit under another profile's home or terminal policy; in a
+    hosted scope it raises ``ScopeSwitchRefused``. Clearing (``None``) never switches."""
     if secrets is None:
         return _SECRET_SCOPE.set(None)
+    from hermes_scope import current_scope
+    if current_scope() is not None:
+        from agent.runtime_scope import legacy_switch
+        from hermes_constants import get_process_hermes_home
+        switched = legacy_switch(profile_home or get_process_hermes_home(), secrets=secrets)
+        if switched is not None:
+            return switched  # type: ignore[return-value]  # reset_secret_scope accepts it
     return _SECRET_SCOPE.set(_BoundScope(secrets, str(profile_home) if profile_home else None))
 
 
 def reset_secret_scope(token: Token) -> None:
+    from hermes_scope import ScopeTokens
+    if isinstance(token, ScopeTokens):
+        token.reset()
+        return
     _SECRET_SCOPE.reset(token)
 
 

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agent.prompt_cache_scope import conversation_id
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -17,12 +18,21 @@ def record(kind, kw):
 def handle(args, **kw):
     record("handler", kw)
     return json.dumps({"ok": True})
+# No **kwargs: a new payload field must not knock a narrow middleware out of the chain.
+def narrow_request(tool_name, args, session_id):
+    record("tool_request", {"session_id": session_id})
+def narrow_execution(args, next_call, session_id):
+    record("tool_execution", {"session_id": session_id})
+    return next_call(args)
 def register(ctx):
     ctx.register_tool(name="conv_probe", toolset="conv_probe", handler=handle, schema={
         "name": "conv_probe", "description": "probe", "parameters": {"type": "object", "properties": {}}})
     ctx.register_hook("pre_tool_call", lambda **kw: record("pre_tool_call", kw))
     ctx.register_hook("post_tool_call", lambda **kw: record("post_tool_call", kw))
+    ctx.register_middleware("tool_request", narrow_request)
+    ctx.register_middleware("tool_execution", narrow_execution)
 '''
+_GETS_CONVERSATION_ID = {"handler", "pre_tool_call", "post_tool_call"}  # the narrow middleware doesn't ask
 
 
 @pytest.fixture
@@ -55,13 +65,14 @@ def _call(agent, path):
     getattr(agent, f"_execute_tool_calls_{path}")(SimpleNamespace(content="", tool_calls=[call]), [], "task")
 
 
-@pytest.mark.parametrize("path", ["sequential", "concurrent"])
-def test_conversation_id_survives_compression_rotation(path, tmp_path, probe):
+# ``tool``: rotation copies a ``--source tool`` run's source, which the lineage walk reads as a fork.
+@pytest.mark.parametrize("path,source", [("sequential", "cli"), ("concurrent", "tool")])
+def test_conversation_id_survives_compression_rotation(path, source, tmp_path, probe):
     db = SessionDB(db_path=tmp_path / "state.db")
     agent = _agent(db)
     try:
         root = agent.session_id
-        db.create_session(session_id=root, source="cli")
+        db.create_session(session_id=root, source=source)
         _call(agent, path)
         # Only the summary model is stubbed; the rotation and the child row are the real runtime's.
         compressor = MagicMock(compression_count=1, last_prompt_tokens=0, last_completion_tokens=0,
@@ -73,8 +84,14 @@ def test_conversation_id_survives_compression_rotation(path, tmp_path, probe):
         assert agent.session_id != root
         _call(agent, path)
         assert {sid for _, sid, _ in probe} == {root, agent.session_id}
-        assert sorted({kind for kind, _, _ in probe}) == ["handler", "post_tool_call", "pre_tool_call"]
-        assert {cid for _, _, cid in probe} == {root}
+        assert sorted({kind for kind, _, _ in probe}) == [
+            "handler", "post_tool_call", "pre_tool_call", "tool_execution", "tool_request"]
+        assert {cid for kind, _, cid in probe if kind in _GETS_CONVERSATION_ID} == {root}
+        # A tool-source fork of another source's compacted session is its own conversation.
+        db.create_session("cli-parent", source="cli")
+        db.end_session("cli-parent", "compression")
+        db.create_session("tool-fork", source="tool", parent_session_id="cli-parent")
+        assert conversation_id(SimpleNamespace(session_id="tool-fork", _session_db=db)) == "tool-fork"
     finally:
         agent.close()
         db.close()
@@ -92,7 +109,8 @@ def test_delegated_child_reports_its_delegators_conversation(tmp_path, probe, mo
     try:
         _call(child, "sequential")
         assert child.session_id != "parent-root"
-        assert [(sid, cid) for _, sid, cid in probe] == [(child.session_id, "parent-root")] * 3
+        assert [(sid, cid) for kind, sid, cid in probe if kind in _GETS_CONVERSATION_ID] == [
+            (child.session_id, "parent-root")] * 3
     finally:
         child.close()
         parent.close()

@@ -1365,7 +1365,8 @@ def _inherit_notify_subs(
     created_at: Optional[int] = None,
 ) -> None:
     """Copy parents' notify subscriptions to a child, cursor caught up to the
-    child's current event so a late ``link_tasks`` never replays history.
+    child's current event — see ``kanban_db_notify._seed_notify_cursor`` — so a
+    late ``link_tasks`` never replays history.
 
     Single owner of inheritance (create_task, link_tasks, decompose). It must
     copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
@@ -1377,10 +1378,9 @@ def _inherit_notify_subs(
     parent_ids = tuple(dict.fromkeys(p for p in parents if p))
     if not parent_ids:
         return
-    row = conn.execute(
-        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?", (child_id,),
-    ).fetchone()
-    cursor = int(row["cursor"] if row is not None else 0)
+    from hermes_cli.kanban_db_notify import _seed_notify_cursor
+
+    cursor = _seed_notify_cursor(conn, child_id)
     placeholders = ",".join("?" * len(parent_ids))
     conn.execute(
         f"""

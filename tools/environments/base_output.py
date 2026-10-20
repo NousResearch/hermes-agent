@@ -48,6 +48,8 @@ class _BoundedOutputCollector:
         self._spill_fh: IO[str] | None = None
         self._spill_chars = 0
         self._spill_capped = False
+        self._spill_error = False
+        self._stream_complete = False
 
     def _maybe_spill(self, text: str) -> None:
         """Tee ``text`` to the spill file (opened lazily on first overflow)."""
@@ -75,6 +77,7 @@ class _BoundedOutputCollector:
         except OSError:
             # Disk trouble must never break command execution.
             self._spill_capped = True
+            self._spill_error = True
 
     def close_spill(self) -> str | None:
         """Close the spill file and return its path if it was used."""
@@ -84,7 +87,7 @@ class _BoundedOutputCollector:
             try:
                 self._spill_fh.close()
             except OSError:
-                pass
+                self._spill_error = True
             self._spill_fh = None
             return str(self._spill_path)
 
@@ -203,6 +206,21 @@ def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, ret
     if spill:
         result["output_total_chars"] = collector.total_chars
         result["full_output_path"] = spill
+    from tools.terminal_model_result import REQUIRED
+    if REQUIRED:
+        overflow = collector.total_chars > collector.max_chars
+        if collector._spill_error:
+            state, reason = "error", "spill_io_error"
+        elif collector._spill_capped:
+            state, reason = "incomplete", "spill_cap_reached"
+        elif not collector._stream_complete:
+            state, reason = "incomplete", "stream_eof_not_observed"
+        elif overflow and not spill:
+            state, reason = "not_captured", "overflow_without_spill"
+        else:
+            state, reason = "complete", "stream_eof_observed"
+        result["terminal_capture_state"] = state
+        result["terminal_capture_reason"] = reason
     return result
 
 
@@ -378,12 +396,13 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
             for piece in stream:
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
+            output._stream_complete = True
         elif os.name == "nt":
-            _drain_fd_windows(proc, fd, output, decoder, stop)
+            output._stream_complete = bool(_drain_fd_windows(proc, fd, output, decoder, stop))
         else:
-            _drain_fd_select(proc, fd, output, decoder, stop)
+            output._stream_complete = bool(_drain_fd_select(proc, fd, output, decoder, stop))
     except Exception:
-        pass  # closed fd / broken stream: keep what was captured
+        output._stream_complete = False  # retain data but never attest completeness
     finally:
         # With errors="replace" this emits U+FFFD for a final incomplete sequence.
         try:
@@ -394,7 +413,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
             pass
 
 
-def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> bool | None:
     """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle, or
     when *stop* is set (the pipe is being handed to another reader — yield-to-background)."""
     idle_after_exit = 0
@@ -411,7 +430,7 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
             except (ValueError, OSError):
                 return
             if not chunk:
-                return  # true EOF — all writers closed
+                return True  # true EOF — all writers closed
             output.append(decoder.decode(chunk))
             idle_after_exit = 0
         elif proc.poll() is not None:

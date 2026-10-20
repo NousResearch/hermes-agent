@@ -177,7 +177,9 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+        from tools.terminal_model_result import REQUIRED, _read_regular
+        raw_spill = (_read_regular(Path(path)).decode("utf-8-sig", errors="replace") if REQUIRED
+                     else Path(path).read_text(encoding="utf-8-sig", errors="replace"))
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
         write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
@@ -226,7 +228,9 @@ def finalize_foreground_result(
     output = result.get("output", "")
     returncode = result.get("returncode", 0)
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
+    before_transform = output
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
+    capture_output = output
     output = _truncate_head_tail(output)
     # Strip ANSI so the model never copies escapes into file writes, then
     # redact secrets; redact_terminal_output is command-aware (env-dump
@@ -274,4 +278,9 @@ def finalize_foreground_result(
     for key, value in optional_fields:
         if value is not None:
             result_dict[key] = value
+    from tools.terminal_model_result import REQUIRED, capture_terminal_result
+    if REQUIRED:
+        result_dict["terminal_capture"] = capture_terminal_result(
+            command, capture_output, result, result_dict, capture_output != before_transform,
+        )
     return json.dumps(result_dict, ensure_ascii=False)

@@ -174,7 +174,11 @@ class GatewayNotificationOwnershipMixin:
             return "its owner could not be re-read"
         if row is not None:
             if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
-                return f"session {hop} was closed at a user boundary ({row['end_reason']})"
+                # Distinguish between user boundaries and system resets
+                if row.get("end_reason") == "session_reset":
+                    return f"session {hop} was automatically reset"
+                else:
+                    return f"session {hop} was closed at a user boundary ({row['end_reason']})"
             return f"session {hop} is a subagent transcript with no owning conversation"
         try:
             missing = await cast(Any, self)._session_db.get_session(hop) is None

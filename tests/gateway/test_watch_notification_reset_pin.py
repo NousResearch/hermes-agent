@@ -88,7 +88,7 @@ async def test_notice_pinned_to_a_reset_session_is_dropped_once(monkeypatch, cap
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert len(warnings) == 1, warnings
         assert 'permanently gone' in warnings[0]
-        assert f'session {retired} was closed at a user boundary' in warnings[0]
+        assert f'session {retired} was automatically reset' in warnings[0]
         assert retired in warnings[0] and live in warnings[0] and 'admission_conflict' in warnings[0]
         assert not _queued_admissions(authority, live)
     finally:

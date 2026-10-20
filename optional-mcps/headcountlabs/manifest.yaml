@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: headcountlabs
+description: Search 8.4M current job postings and job-market data from 200k+ job boards.
+source: https://headcountlabs.com/mcp/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize, tools/list, and tool calls all succeed anonymously against
+# the public endpoint). All 9 tools are read-only: search_jobs, get_job,
+# count_jobs, market_lookup, market_breakdown, salary_range,
+# market_dimensions, list_fields, search_docs.
+#
+# Users who want higher limits can sign up for a free Headcount Labs
+# account (first 100,000 records/month free) and use the OAuth endpoint
+# at https://api.headcountlabs.com/mcp instead — this catalog entry
+# deliberately uses the keyless public endpoint so install is one click.
+
+transport:
+  type: http
+  url: https://api.headcountlabs.com/mcp/public
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - headcount labs
+    - job postings
+    - jobs api
+    - hiring data
+  hosts:
+    - headcountlabs.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Works anonymously with fair-use limits (50 jobs per page, 250 per
+  search). For higher limits, create a free account at
+  https://headcountlabs.com and point mcp_servers.headcountlabs.url in
+  config.yaml at https://api.headcountlabs.com/mcp with auth: oauth.

@@ -180,8 +180,20 @@ def _tick_admitted(
         _results: list = []
         _all_futures: list = []
         pool = _sched._get_parallel_pool(_max_workers)
+        # One pool per lane: a job whose MODE needs no model is never queued behind an agent job
+        # that may hold its worker for hours. Created lazily so a tick with no script jobs starts
+        # no second executor. `job.get("no_agent")` is the same predicate run_job() short-circuits
+        # on, so the lane is exactly "will not touch the model".
+        _no_agent_pool = None
         for job in due_jobs:
-            fut = _sched._submit_with_guard(job, pool, _process_job)
+            if job.get("no_agent"):
+                if _no_agent_pool is None:
+                    _no_agent_pool = _sched._get_parallel_pool(
+                        _max_workers, lane=_sched.PARALLEL_LANE_NO_AGENT)
+                _job_pool = _no_agent_pool
+            else:
+                _job_pool = pool
+            fut = _sched._submit_with_guard(job, _job_pool, _process_job)
             if fut is None:
                 continue
             _all_futures.append(fut)

@@ -30,6 +30,7 @@ owner_progress: dict[str, float] = {}
 def _inactivity_watchdog_loop(
     *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
     future_done: Callable[[], bool], meter: Optional[AwakeIdleMeter] = None,
+    trip_sample: Optional[dict] = None,
 ) -> bool:
     """Poll idle time until limit (-> True), stop, or the future completes (-> False). Uses
     ``threading.Event.wait``, not asyncio, so a blocked event loop cannot disable the watchdog.
@@ -38,6 +39,13 @@ def _inactivity_watchdog_loop(
     ``run_job`` thread cannot disable this watchdog the way ``asyncio.sleep`` / ``wait_for`` would (family A
     of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns True when *limit_s* of inactivity was
     observed.
+
+    When *trip_sample* is a dict, the sample that crossed the limit is written into it
+    (``idle_s`` = the meter-adjusted value compared against *limit_s*, ``raw_idle_s`` = the value
+    ``get_idle_seconds`` returned). The raise path reports ``idle_s``: without it the caller can
+    only re-read the agent at raise time, and a run that re-stamped in between is then reported
+    with a figure that cannot explain its own kill (``idle for 1s (limit 600s)``, 2026-09-28
+    01:32:54).
     """
     # A sleeping host freezes the job with it, so time asleep never counts as inactivity.
     if meter is None:
@@ -49,7 +57,11 @@ def _inactivity_watchdog_loop(
             idle = float(get_idle_seconds() or 0.0)
         except Exception:
             idle = 0.0
-        if meter.measure(idle) >= limit_s:
+        measured = meter.measure(idle)
+        if measured >= limit_s:
+            if trip_sample is not None:
+                trip_sample["idle_s"] = measured
+                trip_sample["raw_idle_s"] = idle
             return True
     return False
 

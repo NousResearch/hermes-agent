@@ -130,6 +130,13 @@ export interface TerminalEntry {
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
   procId?: string
+  /** A command typed into the fresh shell once its PTY is live (plugin
+   *  `host.openTerminal`). Runtime-only: such tabs are never persisted, so a
+   *  relaunch never re-runs a command on its own. */
+  command?: string
+  /** Caller-chosen identity of a command tab: opening the same key again
+   *  focuses the live tab instead of starting a second shell. */
+  commandKey?: string
 }
 
 interface PersistedTerminalEntry {
@@ -216,7 +223,7 @@ function loadPersistedTerminals(): PersistedTerminalState {
 // well before the renderer tears down, so app quit needs no unload hook.
 function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null | string) {
   const terminals = list
-    .filter(term => term.kind === 'user')
+    .filter(term => term.kind === 'user' && !term.command)
     .map(term => ({
       auto: term.auto,
       cwd: term.cwd,
@@ -260,6 +267,51 @@ export function createTerminal(cwd: string = $currentCwd.get()): string {
   const id = newId()
   $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
   $activeTerminalId.set(id)
+
+  return id
+}
+
+export interface CommandTerminalOptions {
+  /** Shell input typed (followed by Enter) once the PTY is live. */
+  command: string
+  /** Tab label. Defaults to the command. */
+  title?: string
+  /** Reuse key: an open tab with the same key is focused, not duplicated. */
+  key?: string
+  /** Start directory. Defaults to the current session cwd. */
+  cwd?: string
+}
+
+/** Open (or focus) a user terminal tab that runs `command` in a fresh shell,
+ *  and show the terminal pane. Returns the tab id, or null for an empty
+ *  command. The tab is an ordinary interactive shell afterwards. */
+export function openCommandTerminal(options: CommandTerminalOptions): null | string {
+  const command = String(options?.command ?? '').trim()
+
+  if (!command) {
+    return null
+  }
+
+  const key = String(options.key ?? '').trim()
+  const existing = key ? $terminals.get().find(term => term.commandKey === key) : undefined
+
+  if (existing) {
+    $activeTerminalId.set(existing.id)
+    setTerminalTakeover(true)
+
+    return existing.id
+  }
+
+  const id = newId()
+  const title = String(options.title ?? '').trim() || command
+  const cwd = typeof options.cwd === 'string' && options.cwd.trim() ? options.cwd : $currentCwd.get()
+
+  $terminals.set([
+    ...$terminals.get(),
+    { id, title, auto: false, cwd, kind: 'user', command, ...(key ? { commandKey: key } : {}) }
+  ])
+  $activeTerminalId.set(id)
+  setTerminalTakeover(true)
 
   return id
 }

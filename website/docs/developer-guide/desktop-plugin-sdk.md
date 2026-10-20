@@ -1115,6 +1115,10 @@ host.newChat(profile?)                     // fresh chat draft, optionally in an
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
+host.openTerminal({ command, key?, title?, cwd? })
+                                           // open the terminal pane on a NEW shell tab that
+                                           //   runs `command` (local, or the SSH host); same
+                                           //   `key` focuses the open tab. Returns the tab id
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
@@ -1423,6 +1427,27 @@ signing out, approvals, model/provider changes, updates, quitting) are not app
 actions a plugin can run.
 
 Feature-detect on older hosts: `ctx.runAction?.('view.showBrowser')`.
+
+### Run a command in a terminal tab — `host.openTerminal` {#open-terminal}
+
+Terminal actions are not app actions, because a terminal runs code. A plugin
+that needs one, for example to attach to a tmux session it lists, calls
+`host.openTerminal` from an explicit user action:
+
+```ts
+host.openTerminal({
+  command: "tmux -L work attach-session -t '=build'", // typed into the new shell, then Enter
+  key: 'work:build',   // optional: while that tab is open, a second call focuses it
+  title: 'build',      // optional tab label (default: the command)
+  cwd: '/srv/app'      // optional start directory (default: the current session cwd)
+})                     // → the tab id, or null for an empty command
+```
+
+The tab is the app's own interactive shell: on a remote (SSH) connection it
+opens on the remote host, and it stays a normal shell after the command ends.
+Command tabs are not restored after a relaunch, so the command never runs again
+without a click. Quote every value you put into `command` for a POSIX shell.
+Feature-detect on older hosts: `host.openTerminal?.({ … })`.
 
 ### Desktop appearance settings — `host.settings`
 

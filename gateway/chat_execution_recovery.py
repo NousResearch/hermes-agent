@@ -25,6 +25,8 @@ class ChatExecutionStore:
         self.home.mkdir(parents=True, exist_ok=True)
         self.path = self.home / "chat-execution.sqlite3"
         with self._db() as db:
+            # Serialize schema inspection and migration across concurrent openers.
+            db.execute("BEGIN IMMEDIATE")
             db.execute("""CREATE TABLE IF NOT EXISTS executions (
                 session_key TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation > 0),
                 session_id TEXT NOT NULL, worker TEXT NOT NULL, worker_started INTEGER NOT NULL,

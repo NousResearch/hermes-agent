@@ -39,36 +39,79 @@ _DEFERRAL_RE = re.compile(
 )
 # The follow-up waits on the USER, who will be writing anyway: "tell me when it's sent and I'll re-check".
 _USER_GATED_RE = re.compile(
-    r"\b(?:tell me|let me know|ping me|say (?:the word|when|done|go)|once you(?:['\u2019]ve| have)?|when you"
-    r"(?:['\u2019]ve| have)?|after you|reply with|send me|paste"
-    r"|if you (?:can|could|send|paste|share|run|try|restart|confirm|approve|want|like|prefer))\b",
+    r"\b(?:tell me|let me know when|ping me|say (?:the word|when|done|go)|once you(?:['\u2019]ve| have)?|when you"
+    r"(?:['\u2019]ve| have)?|after you|reply with|send me|paste (?:it|the|that|your|me)"
+    r"|if you (?:can|could|send|paste|share|run|try|restart|confirm|approve))\b",
     re.IGNORECASE,
 )
-# Quoted or fenced text is not the model speaking: a log line or example reply containing "I'll report back".
-_QUOTED_RE = re.compile(r"```.*?(?:```|$)|`[^`\n]*`|\"[^\"\n]*\"|\u201c[^\u201d\n]*\u201d", re.DOTALL)
-_TAIL_CHARS = 500
+# "you do not need to paste anything" asks nothing of the user.
+_NEGATED_ASK_RE = re.compile(r"\b(?:do not|don['\u2019]t|no) need to(?: \w+){1,3}", re.IGNORECASE)
+# Later text that reports the outcome resolves the promise ("It finished: exit 0"); a sign-off does not.
+_RESOLVED_RE = re.compile(
+    r"\b(?:finished|completed|passed|failed|succeeded|landed|merged|returned|exited|results?|exit (?:code )?\d"
+    r"|is done|was done|all green|went green)\b",
+    re.IGNORECASE,
+)
+# A promise introduced as an example or a quotation: "The example reply is: I will report back ...".
+_EXAMPLE_INTRO_RE = re.compile(
+    r"\b(?:example|e\.g\.|reply|response|message|text|output|log|line|says|said|wrote|reads|like|template|quote)"
+    r"(?:\s+(?:is|was|would be|reads))?\s*:\s*$",
+    re.IGNORECASE,
+)
+_FENCED_RE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
+_QUOTED_RE = re.compile(r"`([^`\n]*)`|\"([^\"\n]*)\"|\u201c([^\u201d\n]*)\u201d")
+# A clause break after the promise: what follows it (", if ...", ": it finished") is judged separately.
+_ASIDE_RE = re.compile(r"\s*(?:[:;]|\s[\u2014-]\s)\s*")
+_TAIL_CHARS = 600
+_WINDOW_SENTENCES = 3
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
+def _unquote(match: re.Match) -> str:
+    """A quoted span that is itself a promise is someone else's words: drop it. Any other quoted span keeps its
+    words, since a quoted command or a quoted "when it finishes" is still part of the model's own promise."""
+    inner = next(g for g in match.groups() if g is not None)
+    return " " if _PROMISE_RE.search(inner) else inner
+
+
 def unbacked_promise_phrase(text: str) -> str:
-    """The promise phrase if ``text`` ENDS on an unconditional deferred follow-up, else ``""``. Only the final
-    sentence counts (a promise followed by its result is resolved), quoted/code text is ignored, and so is a
-    promise introduced by a colon ("the example reply is: I will report back")."""
-    tail = _QUOTED_RE.sub(" ", text or "").strip()[-_TAIL_CHARS:]
-    sentences = [s for s in _SENTENCE_SPLIT_RE.split(tail) if s.strip()]
-    if not sentences:
-        return ""
-    sentence = sentences[-1]
-    match = _PROMISE_RE.search(sentence)
-    if (not match or ":" in sentence[:match.start()] or not _DEFERRAL_RE.search(sentence[match.start():])
-            or _USER_GATED_RE.search(sentence)):
-        return ""
-    return match.group(0).strip()
+    """The promise phrase if ``text`` ENDS on an unconditional deferred follow-up, else ``""``. A promise in the last
+    few sentences counts unless later text reports the outcome; a sign-off after it ("Thanks!") does not resolve it.
+    Fenced code, quoted promises and promises introduced as an example are not the model speaking."""
+    cleaned = _QUOTED_RE.sub(_unquote, _FENCED_RE.sub(" ", text or ""))
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split(cleaned.strip()[-_TAIL_CHARS:]) if s.strip()]
+    for index in range(max(0, len(sentences) - _WINDOW_SENTENCES), len(sentences)):
+        sentence = sentences[index]
+        match = _PROMISE_RE.search(sentence)
+        if not match or _EXAMPLE_INTRO_RE.search(sentence[:match.start()]):
+            continue
+        promise, *rest = _ASIDE_RE.split(sentence[match.start():], maxsplit=1)
+        if not _DEFERRAL_RE.search(promise) or _USER_GATED_RE.search(_NEGATED_ASK_RE.sub(" ", sentence)):
+            continue
+        if _RESOLVED_RE.search(" ".join([*rest, *sentences[index + 1:]])):
+            continue
+        return promise.strip()
+    return ""
 
 
-# cronjob actions that leave something scheduled to run (``run`` fires in the background and its outcome
-# re-enters the conversation); list/remove/pause/update do not arm anything new.
+# cronjob actions that can leave something scheduled to run; the tool result decides whether they did.
 _CRON_ARMING_ACTIONS = frozenset({"create", "resume", "run"})
+
+
+def _cron_result_arms(result: Any) -> bool:
+    """Whether a successful cronjob result leaves a future run that will reach this conversation: an enabled job
+    with a next run, a background run (its outcome re-enters the conversation), or a run handed to the gateway.
+    A paused create or an inline run that already finished arms nothing."""
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return False
+    if result.get("forwarded_to_gateway"):
+        return True
+    job = result.get("job") if isinstance(result.get("job"), dict) else {}
+    if job.get("execution_mode") == "background":
+        return True
+    if job.get("executed"):
+        return False  # an inline run: its outcome is already in this turn
+    return bool(job.get("enabled", True) and job.get("state") != "paused" and job.get("next_run_at"))
 
 
 def _call_parts(call: Any) -> tuple[str, Any, str]:
@@ -99,7 +142,7 @@ def _cron_arming_call(name: str, raw_args: Any) -> bool:
 
 
 def _turn_armed_cron(messages: list) -> bool:
-    """A cron job was armed since the last user row: an arming ``cronjob`` call whose tool result succeeded."""
+    """A cron job was armed since the last user row: an arming ``cronjob`` call whose result leaves a future run."""
     results: dict[str, Any] = {}
     for msg in reversed(messages or ()):
         if not isinstance(msg, dict):
@@ -113,8 +156,7 @@ def _turn_armed_cron(messages: list) -> bool:
         for call in msg.get("tool_calls") or ():
             name, raw_args, call_id = _call_parts(call)
             result = results.get(call_id)
-            if (_cron_arming_call(name, raw_args) and isinstance(result, dict)
-                    and result.get("success") is True):
+            if _cron_arming_call(name, raw_args) and _cron_result_arms(result):
                 return True
     return False
 

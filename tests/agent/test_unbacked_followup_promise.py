@@ -39,6 +39,19 @@ class TestPromiseDetector:
         "I will report back in ten minutes.",
         # "if you" that does not make the follow-up wait on the user.
         "I will report back when it finishes, if you are busy.",
+        "I'll report back when it finishes, if you want to continue working.",
+        "I'll report back when it finishes; you do not need to paste anything.",
+        # A sign-off after the promise does not resolve it.
+        "I'll report back when it finishes. Thanks!",
+        "I'll report back when it finishes. Let me know if you need anything else.",
+        "I'll report back when it finishes.\nThanks!",
+        "I'll report back when it finishes. I am watching it.",
+        # A colon or quotes around part of the model's own promise.
+        "Status: I'll report back when it finishes.",
+        "The build is running: I'll report back when it finishes.",
+        "I'll report back `when it finishes`.",
+        "I'll report back when `make test` finishes.",
+        "I'll check again in `ten minutes`.",
     ])
     def test_flags_deferred_followups(self, text):
         assert unbacked_promise_phrase(text)
@@ -65,6 +78,7 @@ class TestPromiseDetector:
         'The log contains the text: "I will report back when it finishes."',
         "```text\nI will report back when it finishes.\n```",
         "The example reply is: I will report back when it finishes.",
+        "I'll report back when it finishes: it finished successfully.",
         "",
     ])
     def test_ignores_non_promises(self, text):
@@ -125,31 +139,56 @@ class TestWakeSources:
             d._records.update(saved)
 
     @staticmethod
-    def _cron_turn(action, result, *, bridged=False):
-        args = {"action": action, **({"schedule": "every 10m", "prompt": "check"} if action == "create" else {})}
+    def _cron_turn(args, result, *, bridged=False):
         if bridged:
-            fn = {"name": "tool_call", "arguments": json.dumps({"calls": [{"name": "cronjob_manage", "arguments": args}]})}
+            fn = {"name": "tool_call", "arguments": json.dumps({"calls": [{"name": "cronjob", "arguments": args}]})}
         else:
             fn = {"name": "cronjob", "arguments": json.dumps(args)}
         return [{"role": "user", "content": "x"}, {"role": "assistant", "tool_calls": [{"id": "c1", "function": fn}]},
-                {"role": "tool", "tool_call_id": "c1", "content": json.dumps(result)}]
+                {"role": "tool", "tool_call_id": "c1", "content": result}]
+
+    @pytest.fixture()
+    def cron(self, tmp_path, monkeypatch):
+        """The real cronjob handler against a temp job store, so results have their real shapes."""
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        from tools.cronjob_tools import cronjob
+
+        def call(**args):
+            return args, cronjob(**args)
+        return call
 
     @pytest.mark.parametrize("bridged", [False, True])
-    def test_successful_cron_create_this_turn_counts(self, registry, bridged):
-        assert has_armed_wake_source(_agent(), self._cron_turn("create", {"success": True, "job_id": "j1"},
-                                                               bridged=bridged))
+    def test_scheduled_cron_create_this_turn_counts(self, registry, cron, bridged):
+        args, result = cron(action="create", prompt="Check the build", schedule="every 10m")
+        assert has_armed_wake_source(_agent(), self._cron_turn(args, result, bridged=bridged))
 
-    @pytest.mark.parametrize("action,result", [
-        ("list", {"success": True, "count": 0, "jobs": []}),
-        ("remove", {"success": True, "removed_job": {"id": "j1"}}),
-        ("create", {"error": "schedule is required for create", "success": False}),
+    @pytest.mark.parametrize("bridged", [False, True])
+    def test_cron_call_that_arms_nothing_does_not_count(self, registry, cron, bridged):
+        _args, created = cron(action="create", prompt="Check", schedule="every 10m")
+        job_id = json.loads(created)["job_id"]
+        for args, result in (cron(action="list"), cron(action="pause", job_id=job_id),
+                             cron(action="remove", job_id=job_id), cron(action="create", prompt="Check"),
+                             cron(action="create", prompt="Check", schedule="every 10m", paused=True)):
+            assert not has_armed_wake_source(_agent(), self._cron_turn(args, result, bridged=bridged)), (args, result)
+
+    def test_cron_resume_counts(self, registry, cron):
+        _args, created = cron(action="create", prompt="Check", schedule="every 10m", paused=True)
+        args, result = cron(action="resume", job_id=json.loads(created)["job_id"])
+        assert has_armed_wake_source(_agent(), self._cron_turn(args, result))
+
+    @pytest.mark.parametrize("job,armed", [
+        ({"executed": True, "execution_mode": "background"}, True),    # outcome re-enters the conversation
+        ({"executed": True, "execution_success": False, "state": "completed", "next_run_at": None}, False),
     ])
-    @pytest.mark.parametrize("bridged", [False, True])
-    def test_cron_call_that_arms_nothing_does_not_count(self, registry, action, result, bridged):
-        assert not has_armed_wake_source(_agent(), self._cron_turn(action, result, bridged=bridged))
+    def test_cron_run_counts_only_when_its_outcome_is_still_coming(self, registry, job, armed):
+        result = json.dumps({"success": True, "job": job})
+        assert has_armed_wake_source(_agent(), self._cron_turn({"action": "run", "job_id": "j1"}, result)) is armed
 
-    def test_cron_from_an_earlier_turn_does_not_count(self, registry):
-        messages = [*self._cron_turn("create", {"success": True})[1:], {"role": "user", "content": "now what"}]
+    def test_cron_from_an_earlier_turn_does_not_count(self, registry, cron):
+        args, result = cron(action="create", prompt="Check", schedule="every 10m")
+        messages = [*self._cron_turn(args, result)[1:], {"role": "user", "content": "now what"}]
         assert not has_armed_wake_source(_agent(), messages)
 
     def test_unreadable_source_fails_open(self, registry):

@@ -465,7 +465,8 @@ register_provider(ProviderProfile(
 ```
 
 Hermes then owns the whole lifecycle: `hermes auth add example-pkce [--no-browser]` opens the browser (or
-prints the URL, with the SSH-tunnel hint on a remote box), listens on `http://127.0.0.1:<port>/callback`,
+prints the URL; in a remote session, or where no browser opens, it also asks for the address the browser ends
+on, see [OAuth over SSH](../guides/oauth-over-ssh.md)), listens on `http://127.0.0.1:<port>/callback`,
 checks the CSRF `state`, exchanges the code with S256 PKCE and stores the grant as a pooled `oauth`
 credential (`source: manual:loopback_pkce`, `expires_at_ms`, `refresh_token`); `auth status` reports
 logged in / expired; `auth logout` removes the rows; `auth refresh` and the 401 recovery paths rotate via
@@ -477,7 +478,7 @@ Security boundary (enforced before any request, on login and refresh alike): bot
 the `token_url` host must be the `authorize_url` host or a subdomain of it (or listed in `allowed_hosts`);
 the listener binds the literal `127.0.0.1`; tokens, `state` and the PKCE verifier are never logged.
 Optional fields: `audience`, `extra_authorize_params`, `extra_token_params`, `redirect_path`,
-`timeout_seconds`, `label`.
+`timeout_seconds` (the loopback wait; the paste prompt has none), `label`.
 
 A confidential client whose secret lives behind your own broker sets `token_request` instead of
 `token_url`: Hermes calls it with the grant fields (`grant_type`, `code` / `refresh_token`,

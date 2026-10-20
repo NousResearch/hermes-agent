@@ -35,7 +35,7 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 |----------|---------------|----------------|
 | Spotify | `43827` (default) | Yes, when Hermes is remote |
 | MCP servers (`auth: oauth`) | auto-picked per server | Yes, when Hermes is remote (or paste redirect URL) |
-| Plugin OAuth clients (`hermes auth add <plugin>:<id>`) and model-provider plugins on the PKCE helper | OS-assigned | No — Hermes asks you to paste the redirect URL back; a tunnel still works |
+| Plugin OAuth clients (`hermes auth add <plugin>:<id>`) and model-provider plugins on the PKCE helper | OS-assigned (a model-provider plugin may pin `redirect_port`) | No — Hermes asks you to paste the redirect URL back; a tunnel still works |
 | `xai-oauth` (Grok SuperGrok) | n/a | No — device code flow |
 | `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
 | `openai-codex` (ChatGPT Plus/Pro) | n/a (default device code); `1455` with `--browser` / `auth.codex_login_flow: browser` | Only for the opt-in browser PKCE flow, when Hermes is remote |
@@ -85,7 +85,7 @@ Then open the authorize URL in your browser as normal; the redirect tunnels thro
 
 ## Plugin Sign-ins
 
-A plugin that declares its own OAuth client signs in with `hermes auth add <plugin>:<id>` (model-provider plugins built on the same PKCE helper use `hermes auth add <provider>`). Where Hermes cannot open a browser (an SSH session, a cloud shell, a headless server), it prints the authorize URL and asks for the address your browser ends on:
+A plugin that declares its own OAuth client signs in with `hermes auth add <plugin>:<id>` (model-provider plugins built on the same PKCE helper use `hermes auth add <provider>`). In a remote session (SSH, a cloud shell), on a machine without a graphical browser, or when the browser does not start, it prints the authorize URL and asks for the address your browser ends on:
 
 ```
 After you authorize, the browser goes to http://127.0.0.1:41377/callback. If it runs on another machine, that page will not load: copy the full address from the address bar and paste it here.

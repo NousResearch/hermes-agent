@@ -31,7 +31,7 @@ from agent.error_classifier import (
     _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
-from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_local import _streams_llamacpp, local_stream_kwargs, stale_giveup
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -51,7 +51,7 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
-from agent.local_prompt_progress import prompt_progress, with_prompt_progress
+from agent.local_prompt_progress import prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -3062,7 +3062,7 @@ class _StreamingCall(StreamingWaitMonitor):
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
             if llamacpp:
-                next_api_kwargs = with_prompt_progress(next_api_kwargs)
+                next_api_kwargs = local_stream_kwargs(self.agent, next_api_kwargs)
             return self._open_chat_stream({**next_api_kwargs, "stream": True, "timeout": timeout})
 
         def _flush_pending_stream_text():

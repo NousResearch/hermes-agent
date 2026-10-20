@@ -33,6 +33,8 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "format_error": ("The model provider rejected the request format", "Try /retry; if it persists, switch with /model."),
     "ssl_cert_verification": ("The connection to the model provider could not be verified (TLS)",
                               "Check the endpoint's certificate, then /retry."),
+    "local_memory_insufficient": ("There is not enough free memory to load the local model",
+                                  "Close programs holding RAM or GPU memory, then /retry; or pick a smaller model with /model."),
 }
 
 _TURN_ERROR_LAYER_COPY: dict[str, tuple[str, str]] = {

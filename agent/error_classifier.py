@@ -63,6 +63,7 @@ class FailoverReason(enum.Enum):
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth rejects 1M beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp grammar rejects regex `pattern`/`format` — strip from tools and retry
+    local_memory_insufficient = "local_memory_insufficient"  # Managed local model would not fit in free RAM/VRAM — refused before loading
     unknown = "unknown"                  # Unclassifiable — retry with backoff
 
 
@@ -923,6 +924,13 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
 
 
+def _local_admission(c: _Ctx) -> Optional[Verdict]:
+    # Hermes refused the load before sending it: retrying in the same turn reads the same free
+    # memory; another provider can still answer.
+    from agent.errors import LocalModelAdmissionError
+    return _v(_R.local_memory_insufficient, **_ABORT_FALLBACK) if isinstance(c.error, LocalModelAdmissionError) else None
+
+
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:
     """Structured error codes from the response body."""
     # Request-validation failure as plain-text ``event: error`` SSE data behind
@@ -989,11 +997,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
 
 
-# Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
+# Stage order: plugin hooks → Hermes' own local load refusal → the provider's own profile hook → provider-specific special cases →
 # HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _local_admission, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

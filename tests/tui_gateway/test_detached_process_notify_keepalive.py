@@ -127,7 +127,7 @@ def test_exited_process_keeps_session_until_its_notice_can_be_delivered(server, 
 
 
 def test_session_released_once_delivery_grace_passes(server, registry, detached):
-    from tools.process_registry import NOTIFY_DELIVERY_GRACE_SECONDS
+    from tools.process_registry_awaiting import NOTIFY_DELIVERY_GRACE_SECONDS
 
     sid, session, popped = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)

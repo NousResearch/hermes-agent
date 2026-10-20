@@ -332,7 +332,8 @@ def _session_owns_pending_process_notification(session: dict) -> bool:
     agent = session.get("agent")
     owners = {*getattr(agent, "_process_owner_task_ids", ()), str(session.get("session_key") or "")}
     from tools.process_registry import process_registry
-    return process_registry.awaits_notification(owners)
+    from tools.process_registry_awaiting import awaits_notification
+    return awaits_notification(process_registry, owners)
 
 
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:

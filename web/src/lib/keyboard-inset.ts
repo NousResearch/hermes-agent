@@ -73,3 +73,20 @@ export function keyboardRevealScrollDelta(
   }
   return Math.round(composerBottomPx - (visual.offsetTop + visual.height));
 }
+
+/** Pixels to `window.scrollBy` so the composer (xterm host bottom) sits on
+ * the visible bottom of the visual viewport — just above the keyboard.
+ * Pinning the page to (0, 0) fights iOS and can leave the input line off-screen. */
+export function keyboardRevealScrollDelta(
+  composerBottomPx: number,
+  visual: ViewportGeometry,
+): number {
+  if (
+    !Number.isFinite(composerBottomPx) ||
+    !Number.isFinite(visual.height) ||
+    !Number.isFinite(visual.offsetTop)
+  ) {
+    return 0;
+  }
+  return Math.round(composerBottomPx - (visual.offsetTop + visual.height));
+}

@@ -5,8 +5,16 @@ Resolution order:
    ``scripts/write_install_stamp.py`` for every packager (Docker, Nix, and
    the desktop app). The stamp is authoritative
    for packaged builds.
-2. Live git — for unstamped source/dev installs with a ``.git`` directory.
-3. Unknown — no stamp and no git. The provenance is unknown.
+2. An explicit ``VERSION`` file at the install root — a deploy refreshes it for
+   a source checkout whose release tags are unreachable.
+3. Live git — for unstamped source/dev installs with a ``.git`` directory.
+4. Installed distribution metadata (``importlib.metadata``) — the version the
+   package was installed as; resolves with no ``.git`` at all.
+5. Unknown — none of the above. The provenance is unknown.
+
+Sources 2-4 only supply a *release base version*; a stamp's or checkout's
+commit provenance is kept alongside it. A source that carries the committed
+placeholder (``0.0.0``) is treated as absent, never displayed.
 """
 
 from __future__ import annotations
@@ -263,6 +271,76 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     )
 
 
+# --- Non-git release version sources ----------------------------------------
+
+def _release_version(raw: str | None) -> str | None:
+    """Normalize a declared version to a bare ``X.Y.Z`` release, or None.
+
+    Rejects the committed placeholder (``0.0.0``): upstream main carries it as
+    an instruction to the build lane, not an identity to display. Also rejects
+    anything that is not a final stable release (canary tags, pre-releases).
+    """
+    value = (raw or "").strip().removeprefix("v")
+    if not value:
+        return None
+    if all(part.isdigit() and int(part) == 0 for part in value.split(".")):
+        return None
+    return value if STABLE_TAG_RE.fullmatch(f"v{value}") else None
+
+
+def _version_file_base_version() -> str | None:
+    """The release version in an explicit ``VERSION`` file at the install root.
+
+    A deploy refreshes this file for a source checkout that cannot reach release
+    tags; an absent, empty, or placeholder file is treated as absent.
+    """
+    try:
+        from pm.paths import install_root
+
+        root = install_root()
+    except Exception:
+        root = Path(__file__).resolve().parent.parent
+    try:
+        raw = (root / "VERSION").read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    return _release_version(raw)
+
+
+def _packaging_base_version() -> str | None:
+    """The version the installed distribution declares, or None.
+
+    Standard packaging metadata, so it resolves for any installed tree —
+    including one with no ``.git`` and no install stamp (the deployed-checkout
+    case). Upstream main carries ``0.0.0`` as a committed placeholder, so a
+    placeholder is treated as absent rather than displayed.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover - stdlib on every supported Python
+        return None
+    try:
+        declared = version("hermes-agent")
+    except (PackageNotFoundError, ValueError, OSError):
+        return None
+    return _release_version(declared)
+
+
+def _identity_version_info(base_version: str, identity: VersionInfo | None) -> VersionInfo:
+    """A declared release base with an install's commit provenance attached.
+
+    The base did not come from a reachable release tag, so there is no commit
+    distance to count and the derived label is the bare release.
+    """
+    if identity is None:
+        return VersionInfo(base_version, base_version, None, None, None, "local")
+    return VersionInfo(
+        base_version, base_version, None,
+        identity.commit, identity.branch, identity.source, identity.dirty, identity.commit_date,
+        identity.distribution,
+    )
+
+
 # --- Cache + public API -----------------------------------------------------
 
 _cached_version_info: VersionInfo | None = None
@@ -275,31 +353,57 @@ def _reset_version_info_cache() -> None:
 
 
 def get_version_info() -> VersionInfo:
-    """Return cached provenance from install stamp, git, or unknown."""
+    """Return cached provenance from install stamp, VERSION file, git, packaging
+    metadata, or unknown."""
     global _cached_version_info
     if _cached_version_info is not None:
         return _cached_version_info
 
-    # 1. Install stamp (packaged builds: Docker, Nix)
+    # 1. Install stamp (packaged builds: Docker, Nix, desktop).
     # A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
     # payload) raises RuntimeError — the build lane that wrote it must be
     # fixed, but a crashing CLI is the wrong failure mode for every uncached
     # caller. Degrade to "unknown" and let the authoring lane's own tests
     # surface the malformed stamp.
     try:
-        info = _stamp_version_info()
+        stamp_info = _stamp_version_info()
     except RuntimeError:
-        info = None
+        stamp_info = None
 
-    # 2. Live git (source/dev installs)
-    if info is None:
+    if stamp_info is not None:
+        # A valid stamp is authoritative for provenance — never re-read git
+        # under it. When it carries no release base (a checkout with no
+        # reachable tag, or a commit-only packager identity), upgrade the base
+        # from an explicit VERSION file or the installed distribution rather
+        # than display ``git.<sha>`` / ``unknown``.
+        if stamp_info.base_version != "unknown":
+            info = stamp_info
+        else:
+            declared = _version_file_base_version() or _packaging_base_version()
+            info = _identity_version_info(declared, stamp_info) if declared else stamp_info
+        _cached_version_info = info
+        return info
+
+    # 2. No stamp: an explicit VERSION file (refreshed by a deploy when release
+    #    tags are unreachable) outranks a tagless checkout.
+    declared = _version_file_base_version()
+    if declared is not None:
+        info = _identity_version_info(declared, None)
+    else:
+        # 3. Live git (source/dev installs) — the accurate dev enhancement.
         repo_dir = _resolve_repo_dir()
-        if repo_dir is not None:
-            info = _git_version_info(repo_dir)
-
-    # 3. Unknown — no stamp, no git
-    if info is None:
-        info = VersionInfo("unknown", "unknown", None, None, None, "unknown")
+        git_info = _git_version_info(repo_dir) if repo_dir is not None else None
+        if git_info is not None and git_info.base_version != "unknown":
+            info = git_info
+        else:
+            # 4. Installed distribution metadata — deterministic with no usable git.
+            declared = _packaging_base_version()
+            if declared is not None:
+                info = _identity_version_info(declared, git_info)
+            elif git_info is not None:
+                info = git_info
+            else:
+                info = VersionInfo("unknown", "unknown", None, None, None, "unknown")
 
     _cached_version_info = info
     return info

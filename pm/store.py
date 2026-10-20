@@ -216,10 +216,17 @@ def _tar_filter(member, dest: str):
         raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
     if member.isdev():
         raise tarfile.TarError(f"refusing device node: {member.name!r}")
+    placed = os.path.realpath(os.path.join(dest, member.name))
+    if os.path.commonpath([placed, dest]) != dest:
+        raise tarfile.TarError(f"refusing destination escape: {member.name!r}")
     if member.islnk() and (
         member.linkname.startswith("/") or ".." in member.linkname.split("/")
     ):
         raise tarfile.TarError(f"refusing unsafe hardlink target: {member.name!r}")
+    if member.islnk():
+        target = os.path.realpath(os.path.join(dest, member.linkname))
+        if os.path.commonpath([target, dest]) != dest:
+            raise tarfile.TarError(f"refusing hardlink escape: {member.name!r}")
     _sanitize_member_ownership(member)
     return member
 
@@ -234,8 +241,13 @@ def _sanitize_member_ownership(member) -> None:
         member.gid = os.getgid()
     member.uname = ""
     member.gname = ""
-    if member.mode is not None:
-        member.mode = member.mode & 0o0777
+    if member.isdir() or member.issym():
+        member.mode = None
+    elif member.mode is not None:
+        member.mode &= 0o755
+        if not member.mode & 0o100:
+            member.mode &= ~0o111
+        member.mode |= 0o600
 
 def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
@@ -243,20 +255,21 @@ def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     members raise tarfile.TarError (the FilterError family only exists
     from 3.11.4, so it cannot be the refusal contract).
     """
+    import inspect
     import tarfile
 
     dest.mkdir(parents=True, exist_ok=True)
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        try:
+        if "filter" in inspect.signature(tf.extractall).parameters:
             tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
-        except TypeError:
-            # Python < 3.11.4 has no filter kwarg (and no data_filter):
-            # validate with the same policy, then extract unfiltered.
-            for member in tf.getmembers():
-                _tar_filter(member, real_dest)
-            tf.extractall(dest)
+        else:
+            # Earlier entries can change path resolution. Validate immediately
+            # before each write, against the filesystem produced so far.
+            for member in tf:
+                checked = _tar_filter(member, real_dest)
+                tf.extract(checked, dest, set_attrs=not (checked.isdir() or checked.issym()))
 
 
 def extract(archive: Path, dest: Path) -> None:

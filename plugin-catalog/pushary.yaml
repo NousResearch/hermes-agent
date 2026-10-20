@@ -1,13 +1,13 @@
 name: pushary
 repo: https://github.com/Pushary/hermes-plugin-pushary
-sha: e4be33ab8d7421dcfaba6233752a9a60b72ea3da
+sha: af29cb4ac34354c12ad5054eba82dc1ff3d0f7e2
 subdir: pushary_plugin
-description: "Phone notifications, questions and approvals through Pushary's native Hermes approval transport, with optional per-tool gates. Disclosure: approval transport and per-tool gates hand dangerous-command approvals to whoever holds the devices or Slack channel paired to your Pushary account (fails closed); messages queued in the Pushary app or Mac notch are injected into the next turn as operator instructions and wait in ~/.pushary/run/hermes-commands; sends session events with a machine id (~/.pushary/machine-id when present, else a hashed hostname) on every turn, the redacted command and description of each approval it carries, redacted tool-error text (max 3 per session) and redacted gated-tool arguments to pushary.com; reads PUSHARY_API_KEY only through Hermes."
+description: "Phone notifications, questions and approvals through Pushary's native Hermes approval transport, with optional per-tool gates. Disclosure: approval transport and per-tool gates hand dangerous-command approvals to whoever holds the devices or Slack channel paired to your Pushary account (fails closed); messages queued in the Pushary app or Mac notch are injected into the next turn as operator instructions and wait in ~/.pushary/run/hermes-commands; sends session events with a machine id (~/.pushary/machine-id when present, else a hashed hostname) on every turn, the redacted command and description of each approval it carries, the redacted reason when Hermes marks a turn failed (max 200 characters) and redacted gated-tool arguments to pushary.com; reads PUSHARY_API_KEY only through Hermes."
 maintainer: Pushary
 tier: community
 category: automation
 docs_url: https://github.com/Pushary/hermes-plugin-pushary#readme
-version: "0.8.0"
+version: "0.8.1"
 readme: false
 known_issues:
   - "Updating from 0.5.9: this release reads PUSHARY_API_KEY only through Hermes. If Pushary setup or the Pushary app gave the old copy its key, save it once with: hermes config set PUSHARY_API_KEY <your key>"

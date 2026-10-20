@@ -1633,3 +1633,70 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestSnapshotLineRedaction:
+    """Accessibility-snapshot valued lines mask by the quoted *label*, not the whole
+    ``role "label" [ref]`` rich shape — the assignment passes see identifier keys only,
+    so a page-prefilled or agent-typed password passed through unmasked (#134715)."""
+
+    def test_english_password_label_masked(self):
+        out = redact_sensitive_text(
+            '- textbox "Password" [ref=e4]: hunter2', force=True
+        )
+        assert "hunter2" not in out
+        assert out == '- textbox "Password" [ref=e4]: ***'
+
+    def test_label_only_keyword_still_counts(self):
+        # ``API token`` / ``secret`` labels: value masked even when short and human-readable.
+        for line in (
+            '- textbox "API token" [ref=e9]: abc',
+            '- textbox "User secret" [ref=e3]: xyz',
+            '  - textbox "password" [e10]: s3cr3t!',
+        ):
+            out = redact_sensitive_text(line, force=True)
+            assert out.rpartition(": ")[2] == "***", line
+
+    def test_russian_password_label_masked(self):
+        out = redact_sensitive_text('- textbox "Пароль" [ref=e4]: hunter2', force=True)
+        assert "hunter2" not in out
+        assert out.endswith(": ***")
+
+    def test_russian_keyword_word_boundary(self):
+        # ``ключ`` embedded in ``включить`` is not a credential label.
+        assert (
+            redact_sensitive_text('- textbox "включить" [ref=e2]: yes', force=True)
+            == '- textbox "включить" [ref=e2]: yes'
+        )
+        out = redact_sensitive_text(
+            '- textbox "Ключ активации" [ref=e2]: AAAA', force=True
+        )
+        assert "AAAA" not in out
+
+    def test_non_credential_label_value_preserved(self):
+        # The snapshot must stay navigable: a field whose label attests nothing is left alone.
+        text = '- textbox "Search query" [ref=e7]: kittens'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_labelless_and_valueless_lines_untouched(self):
+        # ``button [ref=e3]: Copy`` has no quoted label to attest sensitivity (regression
+        # guard for the historical mask-swallow, see test_complete_token_does_not_swallow_next_line).
+        text = 'button [ref=e3]: Copy\n- heading "Example" [ref=e1]'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_mixed_tree_only_sensitive_line_masked(self):
+        text = (
+            '- heading "Sign in" [ref=e1]\n'
+            '  - textbox "Email" [ref=e2]: user@example.com\n'
+            '  - textbox "Password" [ref=e3]: hunter2\n'
+            '  - button "Sign in" [ref=e4]\n'
+        )
+        out = redact_sensitive_text(text, force=True)
+        assert "hunter2" not in out
+        assert 'Password" [ref=e3]: ***' in out
+        assert "user@example.com" in out
+        assert 'button "Sign in" [ref=e4]' in out
+
+    def test_already_masked_value_not_reprocessed(self):
+        out = redact_sensitive_text('- textbox "Password" [ref=e4]: ***', force=True)
+        assert out == '- textbox "Password" [ref=e4]: ***'

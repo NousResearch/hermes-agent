@@ -652,6 +652,15 @@ export function PreviewPane({
         continue
       }
 
+      // The event crossed a process boundary (executeJavaScript), so its
+      // TypeScript shape is a claim the host never checks: a guest page can
+      // hand back a pick without a rect (#137992). That draft would crash
+      // placeAnnotateCard and take the whole pane down with it — skip the
+      // pick instead.
+      if (!event.rect) {
+        continue
+      }
+
       const page = guestPage(webviewRef.current, liveUrlRef.current)
       const nextNumber = annotateRef.current.stack.nextNumber
       await showAnnotateDraft(guest, event.rect, nextNumber).catch(() => undefined)
@@ -1574,7 +1583,7 @@ export function PreviewPane({
             />
           )}
 
-          {isWebPreview && annotate.draft ? (
+          {isWebPreview && annotate.draft?.rect ? (
             <PreviewAnnotateCard
               {...placeAnnotateCard({
                 paneHeight: previewContentRef.current?.clientHeight || 360,

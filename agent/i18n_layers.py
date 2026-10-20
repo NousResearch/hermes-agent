@@ -48,24 +48,47 @@ def is_language_id(value: Any) -> bool:
 # ── parsing ───────────────────────────────────────────────────────────────────────────────────
 
 
-def flatten(node: Any, prefix: str = "", out: dict[str, str] | None = None) -> dict[str, str]:
+def flatten(
+    node: Any,
+    prefix: str = "",
+    out: dict[str, str] | None = None,
+    _ancestors: frozenset[int] = frozenset(),
+) -> dict[str, str]:
     """Nested mapping -> ``{dotted.key: text}``. Non-string, non-mapping leaves are dropped (catalogs are
-    text-only); :func:`non_text_leaves` reports them for the validator."""
+    text-only); :func:`non_text_leaves` reports them for the validator.
+
+    A mapping that (transitively) contains itself — e.g. a YAML anchor/alias cycle — raises
+    :class:`ValueError`; *ancestors* tracks the current path only, so a shared anchor reused by
+    sibling keys is still flattened once per key."""
     flat: dict[str, str] = {} if out is None else out
     if isinstance(node, Mapping):
+        if id(node) in _ancestors:
+            raise ValueError(f"cyclic anchor/alias reference at {prefix or '<root>'!r}")
+        children = _ancestors | {id(node)}
         for key, value in node.items():
-            flatten(value, f"{prefix}.{key}" if prefix else str(key), flat)
+            flatten(value, f"{prefix}.{key}" if prefix else str(key), flat, children)
     elif isinstance(node, str):
         flat[prefix] = node
     return flat
 
 
-def non_text_leaves(node: Any, prefix: str = "") -> list[str]:
-    """Dotted paths of leaves that are neither text nor a mapping (numbers, lists, booleans, nulls)."""
+def non_text_leaves(
+    node: Any, prefix: str = "", _ancestors: frozenset[int] = frozenset()
+) -> list[str]:
+    """Dotted paths of leaves that are neither text nor a mapping (numbers, lists, booleans, nulls).
+
+    Cyclic input raises :class:`ValueError`, mirroring :func:`flatten`."""
     if isinstance(node, Mapping):
+        if id(node) in _ancestors:
+            raise ValueError(f"cyclic anchor/alias reference at {prefix or '<root>'!r}")
+        children = _ancestors | {id(node)}
         found: list[str] = []
         for key, value in node.items():
-            found.extend(non_text_leaves(value, f"{prefix}.{key}" if prefix else str(key)))
+            found.extend(
+                non_text_leaves(
+                    value, f"{prefix}.{key}" if prefix else str(key), children
+                )
+            )
         return found
     return [] if isinstance(node, str) else [prefix or "<root>"]
 

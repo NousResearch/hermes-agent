@@ -115,6 +115,16 @@ class TestOpenCodeZenV1Strip:
 class TestAgentSwitchModelDefenseInDepth:
     """run_agent.AIAgent.switch_model() also strips /v1 as defense-in-depth."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_live_home_guard(self, monkeypatch):
+        """switch_model probes the install manifest under the real home.
+
+        Mock the live-home guard; the assertion is the /v1 strip, not that path.
+        """
+        from tests.home_io_guard import HomeIOGuard
+
+        monkeypatch.setattr(HomeIOGuard, "check", lambda self, *args, **kwargs: None)
+
     def test_agent_switch_model_strips_v1_for_anthropic_messages(self):
         """Even if a caller hands in a /v1 URL, the agent strips it."""
         from run_agent import AIAgent

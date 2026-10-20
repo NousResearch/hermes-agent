@@ -412,16 +412,20 @@ def _device_toolsets(session_id: str | None) -> list[str]:
     return [DEVICE_SURFACE_TOOLSET] if capabilities_of is not None and capabilities_of(session_id) else []
 
 
-def _load_enabled_toolsets(platform: str | None = None, session_id: str | None = None) -> list[str] | None:
-    """*_configured_toolsets* plus the toolset this session's CLIENT can serve (``mobile_device``)."""
-    enabled = _configured_toolsets(platform)
+def _with_device_toolset(enabled: list[str] | None, session_id: str | None) -> list[str] | None:
+    """*enabled* plus ``mobile_device`` when a client on *session_id* advertised a capability.
+
+    Applied at the one call site that builds a session's agent, so the configured-toolset resolver
+    keeps its signature (and its stubs) and a caller that lists tools never gains the device surface.
+    ``None`` means "every toolset", which already includes it.
+    """
     device = _device_toolsets(session_id)
-    if not device or enabled is None:  # None = every toolset, which already includes it
+    if not device or enabled is None:
         return enabled
     return sorted(set(enabled) | set(device))
 
 
-def _configured_toolsets(platform: str | None = None) -> list[str] | None:
+def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     """The agent's toolsets for this session (None = all): an explicit HERMES_TUI_TOOLSETS pin; else the
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
     else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them.
@@ -695,7 +699,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform, session_id=sid),
+        enabled_toolsets=_onboarding_toolsets(_with_device_toolset(_load_enabled_toolsets(platform), sid),
                                               session_db, session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).

@@ -2433,7 +2433,7 @@ def test_device_request_tool_is_offered_only_to_a_session_with_a_phone(server, m
     that session's toolsets (and ``device_request`` appear in its tool definitions); a desktop window
     never does (#11911 F3)."""
     from model_tools import get_tool_definitions
-    from tui_gateway.server import _load_enabled_toolsets
+    from tui_gateway.server import _with_device_toolset
 
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "hermes-cli")
     phone = _silent_ws()
@@ -2443,12 +2443,12 @@ def test_device_request_tool_is_offered_only_to_a_session_with_a_phone(server, m
     _advertise(server, phone, server_requests=True, device_capabilities=["camera"])
     _advertise(server, desktop, server_requests=True)
 
-    with_phone = _load_enabled_toolsets("tui", session_id="s-phone-tools")
-    without = _load_enabled_toolsets("tui", session_id="s-desktop-tools")
+    with_phone = _with_device_toolset(["hermes-cli"], "s-phone-tools")
+    without = _with_device_toolset(["hermes-cli"], "s-desktop-tools")
     assert "mobile_device" in with_phone
     assert "mobile_device" not in without
     # session-less callers (a tools listing for a profile) never gain it either.
-    assert "mobile_device" not in _load_enabled_toolsets("tui")
+    assert _with_device_toolset(["hermes-cli"], None) == ["hermes-cli"]
 
     def _names(toolsets):
         return {tool["function"]["name"] for tool in get_tool_definitions(enabled_toolsets=toolsets)}

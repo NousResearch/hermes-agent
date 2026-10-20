@@ -80,3 +80,11 @@ def test_legacy_permissions_preserve_readable_files_and_writable_directories(tmp
     finally:
         # Keep a failing legacy implementation from making pytest's temp tree unreadable.
         (dest / "dir").chmod(0o700)
+
+
+@pytest.mark.platforms("windows")
+def test_legacy_other_drive_paths_raise_the_tar_refusal_contract(tmp_path, legacy_api):
+    drive = "Z" if tmp_path.drive.upper() != "Z:" else "Y"
+    for name in [f"{drive}:/outside", f"{drive}:outside"]:
+        with pytest.raises(tarfile.TarError):
+            extract_tar(archive([(name, tarfile.REGTYPE, "", 0o600)]), tmp_path / "out")

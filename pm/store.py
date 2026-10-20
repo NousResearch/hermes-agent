@@ -191,6 +191,13 @@ def hash_url(url: str) -> str:
     return retry_network(request)
 
 
+def _tar_path_inside(path: str, dest: str) -> bool:
+    try:
+        return os.path.commonpath([path, dest]) == dest
+    except ValueError:  # Different Windows drives cannot share an extraction root.
+        return False
+
+
 def _tar_filter(member, dest: str):
     """The stdlib 'data' filter, with symlink targets resolved from the link's own
     directory. Bootstrap interpreters (Ubuntu 22.04 ships 3.10) resolve them from
@@ -205,27 +212,27 @@ def _tar_filter(member, dest: str):
         link_dir = os.path.dirname(name)
         target = os.path.realpath(os.path.join(dest, link_dir, member.linkname))
         for path in (placed, target):
-            if os.path.commonpath([path, dest]) != dest:
+            if not _tar_path_inside(path, dest):
                 raise tarfile.TarError(f"refusing symlink escape: {member.name!r}")
         _sanitize_member_ownership(member)
         return member
     if hasattr(tarfile, "data_filter"):
         return tarfile.data_filter(member, dest)
     # Python < 3.11.4: no data_filter — apply the same containment policy manually.
-    if member.name.startswith("/") or ".." in member.name.split("/"):
+    if os.path.isabs(member.name) or ".." in member.name.split("/"):
         raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
     if member.isdev():
         raise tarfile.TarError(f"refusing device node: {member.name!r}")
     placed = os.path.realpath(os.path.join(dest, member.name))
-    if os.path.commonpath([placed, dest]) != dest:
+    if not _tar_path_inside(placed, dest):
         raise tarfile.TarError(f"refusing destination escape: {member.name!r}")
     if member.islnk() and (
-        member.linkname.startswith("/") or ".." in member.linkname.split("/")
+        os.path.isabs(member.linkname) or ".." in member.linkname.split("/")
     ):
         raise tarfile.TarError(f"refusing unsafe hardlink target: {member.name!r}")
     if member.islnk():
         target = os.path.realpath(os.path.join(dest, member.linkname))
-        if os.path.commonpath([target, dest]) != dest:
+        if not _tar_path_inside(target, dest):
             raise tarfile.TarError(f"refusing hardlink escape: {member.name!r}")
     _sanitize_member_ownership(member)
     return member

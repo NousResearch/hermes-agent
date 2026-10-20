@@ -384,7 +384,7 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     )
     worker.chmod(0o700)
     # Observe the real spawn grant without launching an owner or inference.
-    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._worker_argv",
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch_spawn._worker_argv",
                         lambda *_args: [sys.executable, str(worker)])
     # Building a new worker under an existing task must replace, not inherit, its scope.
     monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")

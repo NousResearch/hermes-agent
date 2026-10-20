@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_dispatch_spawn as kbd_spawn
 
 
 @pytest.fixture
@@ -228,7 +229,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
     )
     # Replace only the worker payload; keep real scope creation and env handoff.
     monkeypatch.setattr(
-        kbd, "_worker_argv",
+        kbd_spawn, "_worker_argv",
         lambda task, profile_arg, hermes_home: [sys.executable, "-c", script, str(receipt)],
     )
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")

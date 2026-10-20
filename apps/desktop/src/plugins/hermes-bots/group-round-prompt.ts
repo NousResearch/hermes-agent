@@ -253,6 +253,6 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
  *  invariant (a second "(pass)" is recorded as noncompliance). */
 export const GROUP_ADDRESSED_NUDGE_SUFFIX = [
   '',
-  'You just replied "(pass)", but the user explicitly addressed YOU in this turn (@you or @everyone).',
+  'You just replied "(pass)", but the user message that started this exchange explicitly addressed YOU (@you or @everyone).',
   'A direct address cannot be passed on. Reply now with ONE message: your answer, your result, or an explicit statement that you cannot answer and why.'
 ].join('\n')

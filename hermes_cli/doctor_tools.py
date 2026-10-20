@@ -515,6 +515,15 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         if web_rows:
             available = [tid for tid in available if tid != "web"]
             unavailable = [item for item in unavailable if item.get("name") != "web"]
+    # A toolset the operator turned off (``known_builtin_toolsets.cli`` or
+    # ``platform_toolsets.cli`` excludes it) must not show up in the Tool Availability
+    # rows: the hint text is actionable only when the toolset is on, and a phantom
+    # `image_gen` ⚠ on a deliberately-disabled install sends the operator to fix
+    # something that is not broken (#137529). ``None`` means config resolution
+    # failed — fall back to the previous behaviour rather than dropping every row.
+    enabled_for_cli = _enabled_cli_toolsets_for_doctor()
+    if enabled_for_cli is not None:
+        unavailable = [item for item in unavailable if str(item.get("name") or "") in enabled_for_cli]
     for tid in available:
         check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:

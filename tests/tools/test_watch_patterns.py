@@ -296,15 +296,15 @@ class TestCodeExecutionBlocked:
 # Suppress-after-exit (anti-spam fix)
 # =========================================================================
 
-class TestSuppressAfterExit:
-    def test_match_dropped_once_session_exited(self, registry):
-        """watch_patterns notifications stop the moment session.exited is set."""
+class TestLateReaderOutput:
+    def test_match_delivered_from_buffered_output_after_exit(self, registry):
+        """A final reader chunk can arrive after reconciliation marks the session exited."""
         session = _make_session(watch_patterns=["ERROR"])
-        # Mark the process as exited BEFORE the late chunk arrives.
         session.exited = True
-        registry._check_watch_patterns(session, "ERROR: late buffer\n")
-        assert registry.completion_queue.empty()
-        assert session._watch_hits == 0
+        registry._check_watch_patterns(session, "ERROR: final buffer\n")
+        evt = registry.completion_queue.get_nowait()
+        assert evt["type"] == "watch_match"
+        assert evt["output"] == "ERROR: final buffer"
 
     def test_match_still_delivered_while_session_running(self, registry):
         """Sanity: while the process is still running, matches still deliver."""

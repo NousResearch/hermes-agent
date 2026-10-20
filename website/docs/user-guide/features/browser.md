@@ -49,7 +49,7 @@ To use Browser Use as your cloud browser provider, add:
 BROWSER_USE_API_KEY=***
 ```
 
-Get your API key at [browser-use.com](https://browser-use.com).
+Get your API key at [browser-use.com](https://cloud.browser-use.com/signup?utm_source=hermes&utm_medium=integration&after_auth_return_to=%2Fsettings%3Ftab%3Dapi-keys%26new%3D1).
 
 Browser Use Cloud runs managed Chromium with [stealth](https://docs.browser-use.com/cloud/browser/stealth) and [residential proxies](https://docs.browser-use.com/cloud/browser/proxies) enabled by default, includes CAPTCHA solving, and supports [persistent profiles](https://docs.browser-use.com/cloud/guides/authentication) for cookies, localStorage, and saved passwords.
 

@@ -9,7 +9,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 # Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
 LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',
-                                'cli_turn_v1'})
+                                'cli_turn_v1', 'kanban_card_v1'})
 
 
 def is_viewer_input(row):

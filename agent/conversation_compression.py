@@ -44,6 +44,7 @@ from agent.usage_anchor import set_usage_anchor
 from agent.session_identity import _rebind_session_context, identity_transaction
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
+from agent.conversation_compression_watermark import held_archive_watermark
 
 logger = logging.getLogger(__name__)
 
@@ -3545,63 +3546,6 @@ class _CommitOutcome:
 def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
     """The in-place commit's cap; see :func:`held_archive_watermark`."""
     return held_archive_watermark(agent._session_db, agent.session_id, watermark, messages, verbatim_tail)
-
-
-def held_archive_watermark(
-    session_db: Any, session_id: str, watermark: Optional[int], messages: list, verbatim_tail: Optional[list] = None,
-    *, stale_raises: bool = False,
-) -> Optional[int]:
-    """The in-place archive watermark, capped at the newest durable row the compressor was handed.
-
-    The lease watermark is the newest row in state.db, but a surface compacts the history it holds, and that
-    can be older: a Desktop/TUI or CLI ``/compress`` does not hold turns another surface appended to the same
-    session since it loaded. Archived under the watermark, those rows would leave every surface's
-    history and search, and the summary never saw them. Above the cap they take the concurrent-append path
-    instead (cloned after the compacted set).
-
-    Only while the held history is a live prefix of the session: its LAST row names an exact ``_row_id``, and
-    that row is still active (after another surface compacted, the held rows are archived and every live row
-    would be cloned beside the new summary). An id is exact while its dict is unchanged since it was loaded: a
-    dict loaded from the DB is born carrying both the id and the persist marker, and a pass that rewrote its
-    content drops the marker and keeps the id (the user/assistant merges in ``repair_message_sequence``, or a
-    context engine that rewrites in place). Such a row absorbed later durable rows whose ids are gone from the
-    held set, so its id no longer names what the summary covered: capped there, those rows would be cloned
-    live beside a summary that already contains them. A trailing row of unknown provenance may be durable
-    under the lease watermark without any stamp (the TUI model-switch marker, written with a bare
-    ``append_message``); capped below it, the clone would land beside its own carried copy. A ``here N`` tail
-    is marker-swept copies, so ``compress_now`` keeps a copy's id only when its source still carried the
-    marker; their ids are trusted as given.
-
-    *stale_raises*: the newest exact held row being inactive means another compaction already committed.
-    Under the in-place lease that cannot overlap a live compaction, so the lease watermark is returned; a
-    lease-less caller (prune, micro-compaction) passes ``True`` and gets :class:`StaleHeldHistory` instead,
-    because for it the fallback would publish a stale generation beside the winner.
-    """
-    if watermark is None:
-        return None
-    from agent.context_compressor import _DB_PERSISTED_MARKER, StaleHeldHistory
-
-    def _exact_id(m: dict, copied: bool) -> Optional[int]:
-        rid = m.get("_row_id")
-        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
-            return None
-        return rid if copied or m.get(_DB_PERSISTED_MARKER) else None
-
-    ids = [_exact_id(m, False) for m in messages if isinstance(m, dict)]
-    ids += [_exact_id(m, True) for m in (verbatim_tail or ()) if isinstance(m, dict)]
-    held = [rid for rid in ids if rid is not None]
-    if not ids or ids[-1] is None:
-        return watermark
-    newest_held = max(held)
-    # A lease-less caller checks liveness even when nothing was appended: a commit-time re-check against a
-    # watermark read before the slow step never sees newest_held < watermark, yet the winner may have landed.
-    if newest_held >= watermark and not stale_raises:
-        return watermark
-    if session_db.get_message_role(session_id, newest_held) is None:
-        if stale_raises:
-            raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
-        return watermark
-    return min(newest_held, watermark)
 
 
 _ATTEMPT_TELEMETRY_FIELDS = (

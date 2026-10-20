@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
@@ -55,6 +57,24 @@ def _caller_summary(limit=8):
             frames.append(f'{module}:{frame.f_code.co_name}:{frame.f_lineno}')
         frame = frame.f_back
     return ' <- '.join(frames)
+
+
+def call_off_event_loop(fn, *args, **kwargs):
+    """Call ``fn`` here, or on a worker thread when this thread is running an event loop.
+
+    For synchronous best-effort writers that can run inside a callback Relay drives on its private
+    loop (provider/tool callbacks): there ``WorkerRPC`` refuses the call (``synchronous_rpc_on_event_loop``,
+    sticky for the rest of the turn; #139029). The callback already blocks that loop, so waiting for the
+    thread costs it nothing; the context is copied so session-scoped state survives the hop, and errors
+    re-raise here. Async code awaits ``asyncio.to_thread`` instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return fn(*args, **kwargs)
+    context = contextvars.copy_context()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='worker-persist-off-loop') as pool:
+        return pool.submit(context.run, fn, *args, **kwargs).result()
 
 
 class _OwnerLink:
@@ -200,6 +220,9 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     adoption. Local queue acceptance is never returned as canonical commit.
     Pending journals live outside age-pruned cache trees.
     """
+    # The process's async-delegation ledger belongs to the adopted execution, never a reserved child.
+    binds_delegation_ledger = True
+
     def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024):
         self.rpc = rpc
         self.scope = dict(scope)
@@ -238,7 +261,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 # Replay must land the journal exactly on the adopted assignment (a pending
                 # publication moves it to the child); anything else is not this successor's outbox.
                 raise WorkerPersistenceError('outbox_scope_mismatch')
-            if is_worker_process():
+            if is_worker_process() and self.binds_delegation_ledger:
                 from tools.async_delegation_worker import bind_worker_delegation_store
                 bind_worker_delegation_store(self)
         except Exception:

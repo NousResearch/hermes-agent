@@ -255,6 +255,18 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    def test_tab_probes_match_fill_visibility_filter(self):
+        from tools import browser_vault_tool
+
+        for probe in browser_vault_tool._TAB_PROBES.values():
+            assert "style.display !== 'none'" in probe
+            assert "style.visibility !== 'hidden'" in probe
+            assert "el.getClientRects().length !== 0" in probe
+            assert "visibility !== 'collapse'" not in probe
+            assert "getBoundingClientRect" not in probe
+            assert "rect.width" not in probe
+            assert "rect.height" not in probe
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""

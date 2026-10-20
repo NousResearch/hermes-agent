@@ -326,3 +326,10 @@ def test_sandbox_path_completion_lists_the_backend_cwd(launch_dir, monkeypatch):
 
     assert seen["dir"] == "."
     assert [i["text"] for i in resp["result"]["items"]] == ["notes.md"]
+
+    # The TUI echoes session.info's cwd (the host launch dir nobody picked) back as params.cwd.
+    session = _fresh_session("complete-echo")
+    monkeypatch.setitem(server._sessions, "s-echo", session)
+    server.handle_request({"id": "2", "method": "complete.path",
+                           "params": {"word": "no", "session_id": "s-echo", "cwd": session["cwd"]}})
+    assert seen["dir"] == "."

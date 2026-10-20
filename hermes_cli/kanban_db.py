@@ -324,26 +324,6 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
-def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
-    """``just now`` / ``18h ago`` / ``3d ago``; "" for a missing/invalid ts. An LLM
-    reads a bare absolute timestamp as current fact — the relative age is what
-    prompts a worker to re-verify stale sibling work."""
-    try:
-        ts = int(ts)
-    except (TypeError, ValueError):
-        return ""
-    if now is None:
-        now = int(time.time())
-    delta = now - ts
-    if delta < 60:  # includes negative = clock skew across machines; never claim "in the future"
-        return "just now"
-    if delta < 3600:
-        return f"{delta // 60}m ago"
-    if delta < 86400:
-        return f"{delta // 3600}h ago"
-    return f"{delta // 86400}d ago"
-
-
 # --- Paths ---
 
 DEFAULT_BOARD = "default"

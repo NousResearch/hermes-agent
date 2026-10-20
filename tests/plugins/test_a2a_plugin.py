@@ -126,58 +126,30 @@ class TestBindSafety:
         assert security.A2ASecurityContext.capture().resolve_bind_host() == "localhost"
 
 
-    def test_connect_dual_stack_bind_when_host_is_v6_wildcard(self, monkeypatch):
-        """A2A_HOST=:: must answer on BOTH stacks, not just loopback IPv4.
-
-        Regression: the upstream ``ThreadingHTTPServer`` is AF_INET-pinned,
-        so a ``::`` bind fails at ``getaddrinfo("::", port, AF_INET)`` with
-        gaierror 11001 (Windows) and the A2A platform stays down. ``::`` must
-        select the
-        AF_INET6 + ``IPV6_V6ONLY=0`` dual-stack server; other hosts keep the
-        standard AF_INET family.
-        """
-        # Loopback-only: no external services. Skip on hosts with no IPv6
-        # (cannot bind '::' at all) rather than falsely fail them.
-        v6 = socket.socket(socket.AF_INET6)
+    def test_v6_wildcard_serves_both_stacks_and_keeps_ipv4_identity(self, monkeypatch):
+        """``A2A_HOST=::`` is one dual-stack socket: IPv6 and IPv4 peers both reach it, and an IPv4
+        peer keeps its plain ``ip:a.b.c.d`` identity (not ``ip:::ffff:a.b.c.d``), so an allow-list
+        written in IPv4 still admits it."""
         try:
-            v6.bind(("::", 0))
+            with socket.socket(socket.AF_INET6) as probe:
+                probe.bind(("::", 0))
         except OSError:
             pytest.skip("host cannot bind IPv6 '::'")
-        finally:
-            v6.close()
-        import contextlib
-
-        from plugins.platforms.a2a.adapter import (
-            _DualStackThreadingHTTPServer,
-            ThreadingHTTPServer,
-        )
-
-        # Family selection: :: -> dual-stack subclass; IPv4 host -> standard family.
-        assert _DualStackThreadingHTTPServer.address_family == socket.AF_INET6
-        assert ThreadingHTTPServer.address_family == socket.AF_INET
-
         monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "ip:127.0.0.1")
         monkeypatch.setenv("A2A_HOST", "::")
         adapter, _base = _make_live_adapter(monkeypatch)
+        auth = {"Authorization": "Bearer topsecret"}
+        tasks_list = {"jsonrpc": "2.0", "id": "1", "method": "tasks/list", "params": {}}
 
         async def run():
             assert await adapter.connect() is True
             try:
-                # The live server socket is the dual-stack one...
-                assert isinstance(adapter._httpd, _DualStackThreadingHTTPServer)
-                assert adapter._httpd.address_family == socket.AF_INET6
-                with contextlib.suppress(
-                    OSError,
-                    AttributeError,  # platform without IPV6_V6ONLY
-                ):
-                    assert adapter._httpd.socket.getsockopt(
-                        socket.IPPROTO_IPV6, socket.IPV6_V6ONLY
-                    ) == 0
-                # ...so IPv6 loopback reaches the same socket via the bound port.
-                _, port = adapter._httpd.server_address[:2]
-                base = f"http://[::1]:{port}"
-                card = await asyncio.to_thread(_get_json, base + "/.well-known/agent-card.json")
-                assert "capabilities" in card
+                for host in ("[::1]", "127.0.0.1"):
+                    card = await asyncio.to_thread(_get_json, f"http://{host}:{adapter.port}/.well-known/agent-card.json")
+                    assert "capabilities" in card
+                resp = await asyncio.to_thread(_post_json, f"http://127.0.0.1:{adapter.port}/", tasks_list, auth)
+                assert "error" not in resp, resp
             finally:
                 await adapter.disconnect()
 

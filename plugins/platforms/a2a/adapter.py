@@ -122,7 +122,15 @@ def _profile_home(profile: str) -> Optional[str]:
 
 
 class _ThreadingHTTPServerV6(ThreadingHTTPServer):
+    """IPv6 listener. ``V6ONLY=0`` makes the ``::`` wildcard dual-stack (IPv4 peers arrive as
+    ``::ffff:a.b.c.d``), so one socket serves IPv6-only private networks and IPv4 alike."""
+
     address_family = socket.AF_INET6
+
+    def server_bind(self):
+        with contextlib.suppress(OSError, AttributeError):  # no IPV6_V6ONLY: the bind stays v6-only
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
 
 
 def _http_server_class(host: str) -> type:
@@ -140,32 +148,6 @@ def _safe_context_slug(value: str, max_len: int = 96) -> str:
     """Sanitize attacker-provided context ids before using in session titles."""
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-._")
     return (slug or "ctx")[:max_len]
-
-
-class _DualStackThreadingHTTPServer(ThreadingHTTPServer):
-    """Dual-stack (IPv4 + IPv6) ThreadingHTTPServer for Windows.
-
-    The stdlib ``ThreadingHTTPServer`` is AF_INET-pinned (``address_family =
-    AF_INET``), so it cannot bind an IPv6 host like ``::`` at all:
-    ``getaddrinfo("::", port, AF_INET)`` fails with gaierror 11001. When
-    ``A2A_HOST=::`` we want one socket that answers on both stacks
-    (``AF_INET6`` + ``IPV6_V6ONLY=0``), matching the DM (aiohttp) dual-stack
-    bind on 8642. On non-Windows platforms the same V6ONLY=0 socket gives the
-    same dual-stack behavior.
-    """
-
-    address_family = socket.AF_INET6
-
-    def server_bind(self):
-        if self.address_family == socket.AF_INET6:
-            with contextlib.suppress(
-                OSError,
-                AttributeError,  # platform without IPV6_V6ONLY
-            ):
-                self.socket.setsockopt(
-                    socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0
-                )
-        super().server_bind()
 
 
 class A2ARequestHandler(BaseHTTPRequestHandler):
@@ -190,7 +172,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         self._json(http_code, _err(req_id, code, message))
 
     def _client_ip(self) -> str:
-        return self.client_address[0] if self.client_address else ""
+        """The peer's address; an IPv4 peer of a dual-stack ``::`` bind keeps its plain IPv4 identity."""
+        ip = self.client_address[0] if self.client_address else ""
+        return ip.removeprefix("::ffff:") if ip.startswith("::ffff:") and "." in ip else ip
 
     def _request_public_url(self) -> str:
         """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto) > "" (bind host).

@@ -255,7 +255,8 @@ def finalize_foreground_result(
     if approval_note and returncode == 130 and "[Command interrupted]" in output:
         approval_note = approval_note.rstrip(".") + ", then interrupted."
 
-    result_dict = {"output": output, "exit_code": returncode, "error": None}
+    # Lead with status so the provider's head-truncated preview retains it.
+    result_dict = {"exit_code": returncode, "error": None, "output": output}
     # Optional fields in observable JSON key order; None means "omit". Spill
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [

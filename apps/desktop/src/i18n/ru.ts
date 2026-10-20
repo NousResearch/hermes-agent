@@ -2763,7 +2763,7 @@ export const ruOverrides = {
     githubSuggestions: {
       label: 'Настроить GitHub',
       tip: 'GitHub работает через навыки gh CLI здесь — нажмите, чтобы подключить аккаунт',
-      done: 'Добавлено /github-auth',
+      done: 'Добавлено /github',
       doneTip: 'Отправьте сообщение, и агент проведёт вас через вход в GitHub'
     },
     repairSuggestions: {

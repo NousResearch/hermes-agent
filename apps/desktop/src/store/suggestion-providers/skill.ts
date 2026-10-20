@@ -65,7 +65,7 @@ export function skillHit(pattern: RegExp, haystack: string): boolean {
 }
 
 /** Strip whitespace-bounded /<token> slash commands the user authored, so a
- *  skill name inside a command ("run /github-auth") does not self-trigger the
+ *  skill name inside a command ("run /github") does not self-trigger the
  *  prose suggestion pill (#91626). Whitespace-bounded on purpose: a URL like
  *  /api/v1 mid-prose has no leading whitespace and is left intact. Exported so
  *  the provider and its tests exercise the same sanitizer instead of a copy. */

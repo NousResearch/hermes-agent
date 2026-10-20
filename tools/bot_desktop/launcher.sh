@@ -251,13 +251,27 @@ fi
 [[ -n "${HERMES_BD_SEED_ONLY:-}" ]] && exit 0
 
 # ---- X server + RFB (TigerVNC Xvnc), Unix socket only ----
+# The "Xvnc" NAME is not a reliable way to reach TigerVNC: tigervnc-standalone-server registers it via
+# update-alternatives, but any other package shipping its own /usr/bin/Xvnc (RealVNC Server does) takes
+# the name over, and that X server rejects the RFB options below with
+# "Fatal server error: Unrecognized option: -rfbport". Prefer TigerVNC's own binary name — the same
+# binary the alternatives link points at — and keep "Xvnc" only as the fallback (the sole name TigerVNC
+# uses on dnf/pacman hosts, where no alternative exists to be clobbered).
+if command -v Xtigervnc >/dev/null 2>&1; then XVNC_BIN=Xtigervnc; else XVNC_BIN=Xvnc; fi
+# A server that is not TigerVNC turns every later failure into a help dump of the OTHER product; say
+# what is wrong while the choice is still on screen. `-help` is the only probe that cannot start a
+# server or touch a display.
+if [[ "$("$XVNC_BIN" -help 2>&1 || true)" != *rfbunixpath* ]]; then
+  echo "$XVNC_BIN is not TigerVNC's X server (no rfbunixpath) — bot-desktop needs TigerVNC; install tigervnc-standalone-server (apt) / tigervnc-x11-server (dnf) / tigervnc (pacman)" >&2
+  exit 1
+fi
 # SecurityTypes None is safe ONLY because -rfbport -1 disables TCP and the 0600 socket is reachable
 # only by processes running as this user (the gateway's WebSocket bridge does the real authentication;
 # same-UID processes, the bot's own terminal tool included, are inside that boundary by design).
 # -SendCutText=0: watchers must never receive the holder's clipboard; -AcceptCutText stays on so
 # paste INTO the screen keeps working. -MaxCutText caps a client cut-text at 256 KiB — the same bound
 # the bridge enforces (tools/bot_desktop/rfb_filter.py _MAX_CUT_TEXT); keep the two in sync.
-Xvnc "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
+"$XVNC_BIN" "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
   -rfbport -1 -rfbunixpath "$HERMES_BD_SOCKET" -rfbunixmode 0600 \
   -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize -FrameRate 30 -SendCutText=0 -MaxCutText 262144 \
   -desktop "hermes:$HERMES_BD_PROFILE" -auth "$XAUTHORITY" -nolisten tcp \

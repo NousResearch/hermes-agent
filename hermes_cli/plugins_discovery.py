@@ -36,6 +36,11 @@ _FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
     ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
 })
 
+# The matching Hermes-side convention: a multi-harness repo keeps its real
+# Hermes manifest at ``<plugin>/.hermes-plugin/plugin.yaml``, so unlike every
+# other dot dir it MUST stay discoverable (#101962, #137974).
+_HERMES_HARNESS_MANIFEST_DIR = ".hermes-plugin"
+
 # Set while a caller reads a profile's config WITHOUT wanting that profile's plugins in this process:
 # the multiplex preflight loads a PARKED profile's gateway config for the duplicate-credential guard,
 # and ``load_gateway_config`` discovers plugins in the scope it runs under. Importing them runs their
@@ -152,6 +157,15 @@ def scan_directory(
         # down every subsequent tool call (#86996).
         if child.name.startswith("__") and child.name.endswith("__"):
             logger.debug("Skipping dunder plugin path %s", child)
+            continue
+        # Dot dirs are transaction staging (`.update-<rand>/` left by a killed
+        # `plugins update`) and tool caches (`.git`, `.venv`), never installable
+        # plugins; recursing into staging registers its `plugin/` payload as a
+        # duplicate package (#137974). `.hermes-plugin` is the one dot dir that
+        # IS a manifest location — the multi-harness repo convention that pairs
+        # with the foreign-harness dirs below.
+        if child.name.startswith(".") and child.name != _HERMES_HARNESS_MANIFEST_DIR:
+            logger.debug("Skipping dot-prefixed plugin path %s", child)
             continue
         if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
             logger.debug("Skipping %s (foreign-harness manifest convention)", child)

@@ -790,7 +790,7 @@ hermes model
 
 The wizard stores the endpoint and model in your active Hermes configuration. Enter the key at the prompt rather than putting it in a shell command or a shared configuration example.
 
-Start a new session after setup. If Hermes cannot infer the context length of the routing alias, set `model.context_length` explicitly using the current limit in the [provider's model information](https://models.dev/?search=standardcompute). Check the [current plans](https://standardcompute.com/pricing) for usage allowances; the monthly subscription does not make every request unlimited.
+Start a new session after setup. If Hermes cannot infer the context length of the routing alias, set `model.context_length` explicitly using the current limit in the [provider's model information](https://models.dev/?search=standardcompute). Each [plan](https://standardcompute.com/pricing) has a fixed monthly compute budget; requests stop with HTTP 402 when it is used.
 
 ### Ollama — Local Models, Zero Config
 

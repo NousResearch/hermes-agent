@@ -7,10 +7,12 @@ import { describe, expect, it } from 'vitest'
 import { mediaTagValues, renderMediaTags } from './parts'
 
 const card = (path: string) => `[File: ${path.split(/[/\\]/).pop()}](#media:${encodeURIComponent(path)})`
+// A document named mid-sentence renders as an inline file link, not a card.
+const inline = (path: string) => `[${path.split(/[/\\]/).pop()}](#file/${encodeURIComponent(path)})`
 
 describe('MEDIA tag capture validity', () => {
   it('does not absorb trailing sentence punctuation from a bare capture', () => {
-    expect(renderMediaTags('open MEDIA:/tmp/a.pdf.')).toBe(`open ${card('/tmp/a.pdf')}.`)
+    expect(renderMediaTags('open MEDIA:/tmp/a.pdf.')).toBe(`open ${inline('/tmp/a.pdf')}.`)
     expect(renderMediaTags('MEDIA:/tmp/report.pdf!')).toBe(`${card('/tmp/report.pdf')}!`)
     expect(mediaTagValues('open MEDIA:/tmp/a.pdf.')).toEqual(['/tmp/a.pdf'])
   })
@@ -19,7 +21,7 @@ describe('MEDIA tag capture validity', () => {
     // mediaTagValues returns raw values quotes-intact; renderMediaTags strips.
     expect(mediaTagValues("MEDIA:'/tmp/stop!.md'")).toEqual(["'/tmp/stop!.md'"])
     expect(renderMediaTags("MEDIA:'/tmp/stop!.md'")).toBe(card('/tmp/stop!.md'))
-    expect(renderMediaTags('MEDIA:"/tmp/a b.md." x')).toBe(`${card('/tmp/a b.md.')} x`)
+    expect(renderMediaTags('MEDIA:"/tmp/a b.md." x')).toBe(`${inline('/tmp/a b.md.')} x`)
   })
 
   it('leaves degenerate captures as plain text instead of a dead link', () => {
@@ -34,6 +36,6 @@ describe('MEDIA tag capture validity', () => {
 
   it('still links relative paths with a file extension', () => {
     expect(mediaTagValues('MEDIA:report.md prose')).toEqual(['report.md'])
-    expect(renderMediaTags('MEDIA:report.md prose')).toBe(`${card('report.md')} prose`)
+    expect(renderMediaTags('MEDIA:report.md prose')).toBe(`${inline('report.md')} prose`)
   })
 })

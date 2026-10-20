@@ -3,7 +3,7 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
-import { previewMarkdownHref } from '@/lib/preview-targets'
+import { fileLinkMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
@@ -523,7 +523,10 @@ function routeFileLinksToPreview(text: string): string {
     const groups = args.at(-1) as { label: string; target: string }
     const target = groups.target.replace(/^<|>$/g, '')
 
-    const href = mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
+    // A document link is prose: it stays inline link text (`#file/`), opening
+    // the preview pane on click. Only a `MEDIA:` line on its own gets the
+    // delivery card — a card mid-sentence splits the sentence in two.
+    const href = mediaKind(target) === 'file' ? fileLinkMarkdownHref(target) : mediaMarkdownHref(target)
 
     return `[${groups.label}](${href})`
   })

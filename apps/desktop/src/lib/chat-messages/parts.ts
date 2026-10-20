@@ -1,4 +1,5 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { mediaDisplayLabel, mediaKind, mediaMarkdownHref, mediaName } from '@/lib/media'
+import { fileLinkMarkdownHref } from '@/lib/preview-targets'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -212,7 +213,7 @@ function isPlausibleMediaPath(value: string): boolean {
 }
 
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(?=\\n|$)`,
   'g'
 )
 
@@ -259,28 +260,54 @@ function splitTrailingPunctuation(value: string): { path: string; punctuation: s
   return { path: value.slice(0, end), punctuation: value.slice(end) }
 }
 
-function mediaLink(value: string): string | null {
+/** Path + trailing prose punctuation for a captured value (see splitTrailingPunctuation). */
+function splitMediaValue(value: string): { path: string; punctuation: string } {
   const raw = value.trim()
   const quote = raw[0]
   const quoted = quote && quote === raw.at(-1) && ['"', "'", '`'].includes(quote)
 
   // Quoted captures are the escape hatch for odd names — punctuation inside
   // the quotes is part of the path, so only a BARE capture is split.
-  const { path, punctuation } = quoted
-    ? { path: unquoteMediaPath(raw), punctuation: '' }
-    : splitTrailingPunctuation(unquoteMediaPath(raw))
+  return quoted ? { path: unquoteMediaPath(raw), punctuation: '' } : splitTrailingPunctuation(unquoteMediaPath(raw))
+}
+
+function mediaLink(value: string): string | null {
+  const { path, punctuation } = splitMediaValue(value)
 
   return isPlausibleMediaPath(path) ? `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})${punctuation}` : null
 }
 
+// A `MEDIA:` tag written mid-sentence for a document: the model is naming the
+// file in prose, so it stays inline link text (click → preview pane) rather
+// than a block card that splits the sentence. Media (image/audio/video) keeps
+// its inline player; a `MEDIA:` line on its own always gets the full card.
+function inlineMediaLink(value: string): string | null {
+  const { path, punctuation } = splitMediaValue(value)
+
+  if (!isPlausibleMediaPath(path)) {
+    return null
+  }
+
+  if (mediaKind(path) !== 'file') {
+    return mediaLink(value)
+  }
+
+  return `[${mediaName(path).replace(/[[\]\\]/g, '\\$&')}](${fileLinkMarkdownHref(path)})${punctuation}`
+}
+
 export function renderMediaTags(text: string): string {
   return text
-    .replace(MEDIA_LINE_RE, (match, lead: string, value: string, trailer: string) => {
-      const link = mediaLink(value)
+    .replace(
+      // The trailer is a lookahead so back-to-back `MEDIA:` lines each match
+      // as a line (and each get a card), not just the first.
+      MEDIA_LINE_RE,
+      (match, lead: string, value: string) => {
+        const link = mediaLink(value)
 
-      return link ? `${lead}${link}${trailer}` : match
-    })
-    .replace(MEDIA_TAG_RE, (match, value: string) => mediaLink(value) ?? match)
+        return link ? `${lead}${link}` : match
+      }
+    )
+    .replace(MEDIA_TAG_RE, (match, value: string) => inlineMediaLink(value) ?? match)
 }
 
 /** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share.

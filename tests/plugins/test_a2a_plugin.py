@@ -2202,6 +2202,139 @@ class TestV1SpecRegressionFixes:
         assert protocol.metrics.tasks_completed == completed_before + 1
         assert persisted == [("agent", "done once")], persisted
 
+    def test_a_restored_forwarded_task_is_ended_by_the_owner_ledger_not_our_clock(self, monkeypatch, tmp_path):
+        """A restart must not turn a running job into `[task orphaned — no reply produced]`.
+
+        A restored task is owner-backed, so its deadline lives in the owner's admission ledger rather
+        than in this process. Before this, `_restore_task` rebuilt the record without marking it
+        active: the 300s orphan grace then failed a task the owner had finished, and no later poll
+        read the ledger again, so the caller kept that failure forever.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        async def status(home, **params):
+            return {"status": "started", "outcome": None, "result": None, "admission_id": "a"}
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        protocol.persist_task_identity({"task_id": "t-restored", "context_id": "c1", "peer": "peer",
+                                        "agent_slug": "dev", "tenant": "", "input_id": "in-9"})
+        protocol.persist_task_identity({"task_id": "t-sweep-guard", "context_id": "c2", "peer": "peer",
+                                        "agent_slug": "root", "tenant": "", "input_id": "in-10"})
+
+        rec = adapter._restore_task("t-restored", {"slug": "dev"})
+        guard = adapter._restore_task("t-sweep-guard", {"slug": "root"})
+
+        assert rec is not None and guard is not None
+        assert "t-restored" in adapter._active_tasks
+        # The activation is what keeps it out of the age sweep: the guard proves the sweep is still
+        # able to take an unprotected record, so the exclusion above is a real change.
+        adapter.tasks._tasks["t-sweep-guard"]["created_at"] = 0.0
+        assert adapter.tasks.fail_orphans(300, exclude=set()) == ["t-sweep-guard"]
+        assert adapter.tasks.fail_orphans(300, exclude=adapter._active_tasks) == []
+
+        swept = adapter._fail_orphans_once()
+
+        assert "t-restored" not in swept
+        restored = adapter.tasks.get("t-restored")
+        assert restored is not None
+        assert restored["state"] == protocol.STATE_WORKING
+
+    def test_live_forwarded_identities_are_exempt_from_the_dir_size_cap(self, monkeypatch, tmp_path):
+        """The size cap must not prune the identity of a task that is still running.
+
+        The cap is an mtime-ordered sweep over the identity dir, so a long-idle live task was the
+        first thing it took. Pruning it strands the forward: after a restart there is nothing to
+        restore it from, so tasks/get answers "not found" for work that is still running.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        directory = tmp_path / "a2a_tasks"
+        directory.mkdir(parents=True, exist_ok=True)
+        for i in range(protocol._MAX_TASK_IDENTITIES + 5):
+            (directory / f"old-{i}.json").write_text("{}", encoding="utf-8")
+        protocol.persist_task_identity({"task_id": "t-live", "context_id": "c1", "peer": "peer",
+                                        "agent_slug": "dev", "tenant": "", "input_id": "in-1"})
+        # Make the live file the oldest, so an mtime-ordered prune would take it first.
+        os.utime(directory / "t-live.json", (0, 0))
+        # persist_task_identity pruned the dir back down to the cap, so top it up again: the sweep
+        # has to have something over the cap to take, or this test cannot fail either way.
+        for i in range(protocol._MAX_TASK_IDENTITIES + 5, protocol._MAX_TASK_IDENTITIES + 8):
+            (directory / f"old-{i}.json").write_text("{}", encoding="utf-8")
+
+        protocol._prune_task_identities()
+
+        assert (directory / "t-live.json").exists(), "a live task's identity was pruned by the size cap"
+        assert not (directory / "old-0.json").exists(), "the cap stopped pruning dead identities"
+
+    def test_a_forwarded_poll_asks_the_identitys_owner_not_the_caller(self, monkeypatch, tmp_path):
+        """A poll must address the task's own owner, even through the root endpoint.
+
+        The root route is a passthrough, so the caller's agent dict names the root profile. Deriving
+        the destination from it asked the root's owner for another profile's admission — which finds
+        nothing, and parks the caller forever.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        seen = {}
+
+        async def status(home, **params):
+            return {"status": "started", "outcome": None, "result": None, "admission_id": "a"}
+
+        def fake_home(profile):
+            seen["requested"] = profile
+            return str(tmp_path)
+
+        monkeypatch.setattr(session_a2a, "status_from_owner", status)
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", fake_home)
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        adapter.tasks.create("t-dest", "c1", "peer", "dev", "", input_id="in-1")
+
+        adapter._refresh_forwarded_state(adapter.tasks.get("t-dest"), {"profile": "root", "slug": "root"})
+
+        assert seen["requested"] == "dev", seen
+
+    def test_the_identity_is_written_only_once_the_owner_accepted(self, monkeypatch, tmp_path):
+        """The identity tuple belongs to accepted work, not to an attempt.
+
+        Writing it before the forward meant a refusal failed the task in memory and left the file
+        behind: after a restart the task came back SUBMITTED, with no owner left to answer it.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from gateway import session_a2a
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(tmp_path))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"agents": {"dev": {"profile": "dev"}}}))
+        agent = adapter._agents["dev"]
+
+        async def accepted(home, **params):
+            return {"status": "started", "admission_id": "a-1"}
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", accepted)
+        rec = adapter.tasks.create("t-ok", "c1", "peer", "dev", "", input_id="in-1")
+
+        task = adapter._forward_accept(rec, "t-ok", "c1", "peer", agent, "framed", "in-1")
+
+        assert task["status"]["state"] == protocol.STATE_WORKING
+        assert protocol.load_task_identity("t-ok") is not None
+
+        async def refused(home, **params):
+            raise RuntimeError("owner refused the turn")
+
+        monkeypatch.setattr(session_a2a, "forward_to_owner", refused)
+        rec2 = adapter.tasks.create("t-no", "c1", "peer", "dev", "", input_id="in-2")
+
+        refused_task = adapter._forward_accept(rec2, "t-no", "c1", "peer", agent, "framed", "in-2")
+
+        assert refused_task["status"]["state"] == protocol.STATE_FAILED
+        assert protocol.load_task_identity("t-no") is None
+
     def test_two_concurrent_polls_of_a_terminal_ledger_record_once(self, monkeypatch, tmp_path):
         """The concurrent shape of the same race: both polls past the terminal check before either records."""
         import threading

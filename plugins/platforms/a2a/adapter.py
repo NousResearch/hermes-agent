@@ -438,8 +438,33 @@ class A2AAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
 
+    def _refresh_owner_backed_once(self) -> None:
+        """Drive forwarded tasks from the owner's ledger rather than from this process's clock.
+
+        ``tasks/get`` refreshes on every poll, but a registered ``taskPushNotificationConfig`` never
+        fires and ``tasks/subscribe`` keeps its stream on WORKING, so nothing else ends these tasks —
+        the owner can be finished for hours while our copy says WORKING. Refreshing here wakes both.
+        The refresh is idempotent: ``TaskStore.complete`` answers None once the task is terminal, so
+        a task every tick sees as finished is recorded exactly once.
+        """
+        for rec in self.tasks.forwarded():
+            try:
+                self._refresh_forwarded_state(
+                    rec, self._agents.get(rec.get("agent_slug") or "") or {}
+                )
+            except Exception:
+                logger.debug(
+                    "A2A: owner-ledger refresh for %s failed",
+                    rec.get("task_id"),
+                    exc_info=True,
+                )
+
     def _fail_orphans_once(self) -> list[str]:
         """Fail stale tasks that no request still owns, plus parked tasks that outlived the job budget."""
+        # A forwarded task's deadline lives in the owner's admission ledger, not in this process: only
+        # an owner-ledger read ends it. Refresh those first, so a task the owner already finished
+        # records its real outcome instead of being failed on our clock.
+        self._refresh_owner_backed_once()
         with self._pending_lock:
             active_tasks = set(self._active_tasks)
             parked = set(self._parked)
@@ -707,6 +732,8 @@ class A2AAdapter(BasePlatformAdapter):
     def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
         """Complete a task immediately (rejected / not ready) and build its terminal Task."""
         self.tasks.complete(rec["task_id"], state, stored_reply)
+        # Same terminal invariant as `_record_outcome`: a terminal task's tuple addresses nothing live.
+        protocol.drop_task_identity(rec["task_id"])
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
@@ -752,10 +779,6 @@ class A2AAdapter(BasePlatformAdapter):
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
             self._activate_task(task_id)
-            # The identity tuple that addresses the owner's admission must outlive this process: a
-            # restart otherwise answers tasks/get with "not found" for work that is still running.
-            # Written here, at the moment we forward, so a refused or rejected task leaves no identity.
-            protocol.persist_task_identity(rec)
             if self._return_immediately(params):
                 # Accept-then-poll on a forwarded route — the path in the #91687 field report. Take
                 # the first durable receipt and keep the task identity, so a job longer than the reply
@@ -842,6 +865,9 @@ class A2AAdapter(BasePlatformAdapter):
             return protocol.build_task(task_id, context_id, outcome, reply, created_at=rec["created_iso"])
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
         self.tasks.note(task_id, _ASYNC_ACCEPTED_NOTE)
+        # The owner accepted, so the tuple must outlive this process: a restart otherwise answers
+        # tasks/get with "not found" for work that is still running.
+        protocol.persist_task_identity(rec)
         return protocol.build_task(task_id, context_id, protocol.STATE_WORKING, _ASYNC_ACCEPTED_NOTE,
                                    created_at=rec["created_iso"])
 
@@ -856,14 +882,16 @@ class A2AAdapter(BasePlatformAdapter):
         if rec is None or not rec.get("input_id") or rec.get("state") in protocol.TERMINAL_STATES:
             return rec
         from gateway.session_a2a import status_from_owner
-        agent = agent or self._agents.get(rec.get("agent_slug") or "") or {}
-        profile = str(agent.get("profile") or rec.get("agent_slug") or "").strip()
-        home = _profile_home(profile)
+        # The destination is the identity's own slug/tenant, not the caller's agent dict: the root
+        # endpoint is a passthrough, and asking the root profile's owner for another profile's
+        # admission finds nothing — so a poll through it parks the caller forever.
+        agent = self._agents.get(rec.get("agent_slug") or "") or {}
+        home = _profile_home(str(rec.get("agent_slug") or "").strip())
         if not home:
             return rec
         try:
             state = asyncio.run(status_from_owner(
-                home, agent=rec.get("agent_slug") or profile or "agent",
+                home, agent=rec.get("agent_slug") or "agent",
                 tenant=rec.get("tenant") or "", peer=rec["peer"], context_id=rec["context_id"],
                 input_id=rec["input_id"], timeout=int(agent.get("timeout") or _reply_timeout())))
         except Exception:
@@ -906,6 +934,9 @@ class A2AAdapter(BasePlatformAdapter):
         """
         if self.tasks.complete(task_id, state, reply) is None:
             return
+        # Terminal: the tuple no longer addresses anything live, so a restart must not rebuild a
+        # SUBMITTED task from it. Local tasks never had one, so this is a no-op for them.
+        protocol.drop_task_identity(task_id)
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
         m = protocol.metrics
@@ -1071,9 +1102,14 @@ class A2AAdapter(BasePlatformAdapter):
             return None
         if not protocol.TaskStore._in_scope(identity, *self._scope_for_agent(agent)):
             return None
-        return self.tasks.create(task_id, identity.get("context_id") or "", identity.get("peer") or "",
-                                 identity.get("agent_slug") or "", identity.get("tenant") or "",
-                                 input_id=identity["input_id"])
+        rec = self.tasks.create(task_id, identity.get("context_id") or "", identity.get("peer") or "",
+                                identity.get("agent_slug") or "", identity.get("tenant") or "",
+                                input_id=identity["input_id"])
+        # A restored task is owner-backed: its deadline lives in the owner's ledger, not here, so the
+        # age sweep must not fail it. The watchdog's ledger refresh is what ends it.
+        self._activate_task(task_id)
+        protocol.keep_task_identity(task_id)
+        return rec
 
     def _rpc_tasks_get(self, req_id: Any, params: dict, agent: Optional[dict] = None) -> dict:
         _task_id, rec, error = self._find_task(req_id, params, agent)

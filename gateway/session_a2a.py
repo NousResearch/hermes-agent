@@ -174,6 +174,16 @@ async def status(connection, params):
     row = find_session_admission(authority.db, principal_id=actor.subject, session_id=sid,
                                  request_id=params['input_id'])
     if row is None:
+        # The session was deleted after the turn finished. retire_terminal_receipts keeps the
+        # admission as a tombstone in state_meta, keyed by the same identity the forward used, so
+        # the result is still readable. Without this the read answers `missing` forever and the A2A
+        # task stays WORKING with no viewer left to end it.
+        from hermes_state_terminal import identity_key, terminal_admission
+        with authority.db._read_ctx() as conn:
+            tombstone = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                     (identity_key(actor.subject, sid, params['input_id']),)).fetchone()
+            row = terminal_admission(conn, json.loads(tombstone[0])) if tombstone is not None else None
+    if row is None:
         return {'status': 'missing', 'outcome': None, 'session_id': sid, 'admission_id': '', 'result': None}
     result = None
     if row['status'] == 'terminal':

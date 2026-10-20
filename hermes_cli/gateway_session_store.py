@@ -23,7 +23,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ _GATEWAY_OWNED = frozenset({
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
 # Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
-_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress"})
+_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress", "workspace"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
 _LAUNCH_POLICY = ("model", "provider", "toolsets", "reasoning", "api_key", "base_url", "max_turns",
@@ -73,6 +73,12 @@ class GatewaySessionStore:
 
     def __bool__(self):
         return not self.connection.final
+
+    def close_reader(self):
+        """Release this viewer's SQLite handles before offline maintenance; keep its RPC store."""
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -142,7 +148,7 @@ class GatewaySessionStore:
             try:
                 snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
             except GatewayClientError as exc:
-                if str(exc) in {"not_found", "permission_denied"}:
+                if str(exc) in RESUME_REFUSALS:
                     return None
                 raise
             # The CLI sends a coding-posture toolset pick and an env-folded ignore_rules too; only a typed
@@ -507,6 +513,23 @@ def _check_resume_launch(launch, snapshot):
     differs = [key for key, value in _classic_only_policy(launch).items() if frozen.get(key) != value]
     if differs:
         raise resume_policy_error(differs)
+
+
+def move_cli_workspace(cli, wt_info):
+    """``/worktree new``: the session's tools run in the gateway under the cwd frozen in its policy, so
+    move that first (``session.mutate workspace``, Desktop's Move to project; a refusal raises before
+    anything moved). The moved session resumes in the tree, so it is recorded as a ``--tui -w`` tree is:
+    quit removes it when clean and a resume recreates it (N8). Then this process's cwd and TERMINAL_CWD
+    follow, so a later /new creates its session from the tree; a chdir OSError leaves both where they
+    were (the gateway session has moved by then)."""
+    from hermes_cli.gateway_automation import gateway_connection
+    cwd = wt_info["path"]
+    if gateway_connection(cli) is not None:
+        cli._session_db._mutate(cli.session_id, "workspace", {"cwd": cwd})
+        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        record_tui_worktree(wt_info)
+    os.chdir(cwd)
+    os.environ["TERMINAL_CWD"] = cwd
 
 
 def session_store():

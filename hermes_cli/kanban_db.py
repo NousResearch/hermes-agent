@@ -324,26 +324,6 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
-def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
-    """``just now`` / ``18h ago`` / ``3d ago``; "" for a missing/invalid ts. An LLM
-    reads a bare absolute timestamp as current fact — the relative age is what
-    prompts a worker to re-verify stale sibling work."""
-    try:
-        ts = int(ts)
-    except (TypeError, ValueError):
-        return ""
-    if now is None:
-        now = int(time.time())
-    delta = now - ts
-    if delta < 60:  # includes negative = clock skew across machines; never claim "in the future"
-        return "just now"
-    if delta < 3600:
-        return f"{delta // 60}m ago"
-    if delta < 86400:
-        return f"{delta // 3600}h ago"
-    return f"{delta // 86400}d ago"
-
-
 # --- Paths ---
 
 DEFAULT_BOARD = "default"
@@ -2372,9 +2352,9 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked
     for row in stale:
-        if owner_reclaim_paused(conn, row["id"]):
+        if owner_reclaim_blocked(conn, row["id"]):
             continue
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
         hb = _to_epoch(row["last_heartbeat_at"])
@@ -2398,6 +2378,10 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            # Again under the write lock: an interpreter that bound since the check above
+            # changes neither claim_lock nor worker_pid, so the CAS below cannot see it.
+            if owner_reclaim_blocked(conn, row["id"]):
+                continue
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "

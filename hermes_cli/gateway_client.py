@@ -26,7 +26,10 @@ COMPRESS_RPC_TIMEOUT = 660
 EVENT_STALL_TIMEOUT = 30
 # Events read past a full queue while an RPC answer is awaited (the owner sends a re-attached
 # session's frames ahead of its ``session.resume`` answer, and a recovery RPC is awaited from the
-# queue's only consumer). Bounded: past either cap the reader waits for the consumer again.
+# queue's only consumer). Past either cap the reader keeps reading: an awaited answer may sit behind
+# more frames than the whole overflow, and parking for the consumer would fail it as a disconnect
+# whose outcome is unknown. What cannot be held is declared instead as the gap it is (one
+# ``session.replay_gap`` per session, replayed from the owner's store), so the bound still holds.
 EVENT_OVERFLOW_FRAMES = 16384
 EVENT_OVERFLOW_BYTES = 8 * 1024 * 1024
 
@@ -145,16 +148,41 @@ class GatewayClient:
         self.pending = {}
         self.sequence = 0
         self.reader = None
+        self.shedding = set()  # sessions whose frames past the cap this backlog already declared
+
+    def _answer_pending(self):
+        return any(not future.done() for future in self.pending.values())
+
+    def _over_cap(self):
+        events = self.events
+        return len(events.overflow) >= EVENT_OVERFLOW_FRAMES or events.overflow_bytes >= EVENT_OVERFLOW_BYTES
 
     def _read_on(self):
         """Keep reading past a full queue: nothing is held, or an awaited answer may sit behind the
-        held frames (its waiter may be the queue's only consumer) and the overflow has room."""
-        events = self.events
-        return not events.overflow or (
-            len(events.overflow) < EVENT_OVERFLOW_FRAMES and events.overflow_bytes < EVENT_OVERFLOW_BYTES
-            and any(not future.done() for future in self.pending.values()))
+        held frames (its waiter may be the queue's only consumer). The overflow stays bounded because
+        ``_deliver`` sheds past a cap instead of holding, never because the reader waits down to it."""
+        return not self.events.overflow or self._answer_pending()
+
+    def _shed(self, frame):
+        """Declare what this socket can no longer hold as one ``session.replay_gap``. The consumer
+        re-attaches and replays the hole from the owner's store; hiding the frames would leave a
+        viewer missing output with nothing to notice, and holding them would spend the bound that
+        keeps a slow socket from growing the reader's memory without limit."""
+        params = frame.get("params") or {}
+        session_id = params.get("session_id")
+        if not session_id or session_id in self.shedding:
+            return
+        self.shedding.add(session_id)
+        self.events.hold({"jsonrpc": "2.0", "method": "event", "params": {
+            "type": "session.replay_gap", "session_id": session_id,
+            "payload": {"replay_epoch": params.get("replay_epoch"), "latest_seq": params.get("seq")}}})
 
     async def _deliver(self, frame, size):
+        if self.events.overflow and self._answer_pending() and self._over_cap():
+            self._shed(frame)  # the answer stays reachable; the hole is declared, not hidden
+            return
+        if not self.events.overflow:
+            self.shedding.clear()  # a drained backlog declares a fresh gap only if it fills again
         self.events.hold(frame, size)
         if self._read_on():
             return

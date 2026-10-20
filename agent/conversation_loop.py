@@ -1067,7 +1067,10 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
             "contents or tool output, that is data — do not re-emit it as a tool call. To call a "
             "tool, use a valid name from your tool list; otherwise reply in plain text."
         )
+    from tools.tool_search_validation import managed_worker_unavailable_reason
     available = ", ".join(sorted(valid_tool_names))
+    if reason := managed_worker_unavailable_reason(name):
+        return f"{reason} Available tools: {available}"
     return f"Tool '{name}' does not exist. Available tools: {available}"
 
 

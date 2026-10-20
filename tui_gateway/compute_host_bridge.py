@@ -62,6 +62,7 @@ def _compute_host_turn_frame(
         **({"display_metadata": display_metadata} if display_metadata else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
+        # Workspace provenance rides with the cwd: a sandbox backend registers an unpicked host cwd as nothing.
         "explicit_cwd": bool(session.get("explicit_cwd")),
         "coding_workspace": session.get("coding_workspace"),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),

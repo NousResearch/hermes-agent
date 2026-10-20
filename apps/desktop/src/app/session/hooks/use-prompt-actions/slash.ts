@@ -72,6 +72,7 @@ import type {
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
+import { desktopReadCommandHandlers } from './slash-desktop-commands'
 import { sessionCommandHandlers } from './slash-session-commands'
 import { captureSubmissionDestination } from './submission-destination'
 import {
@@ -642,6 +643,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           updateSessionState,
           withSlashOutput
         }),
+        ...desktopReadCommandHandlers<SlashActionCtx>({ requestGateway, updateSessionState, withSlashOutput }),
         new: async () => {
           prepareDefaultNewSession()
           startFreshSessionDraft()

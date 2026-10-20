@@ -119,7 +119,7 @@ class CLICommandsSessionToolsMixin:
             return _stop_background_work()
         if getattr(self, "agent", None):
             from agent.interrupt_compat import request_hard_interrupt
-            print(f"  {t('cli.tui.interrupting')}")
+            _cp(f"  {t('cli.tui.interrupting')}")
             request_hard_interrupt(self.agent)
         from agent.memory_provider import spawn_context_thread
         spawn_context_thread(_stop_background_work, name="cli-stop").start()
@@ -296,7 +296,8 @@ class CLICommandsSessionToolsMixin:
 
 def _stop_background_work() -> None:
     """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)
-    delegations. Mid-turn it runs on a worker thread and prints its result from there."""
+    delegations. Mid-turn it runs on a worker thread, so it prints through ``_cprint``: a plain
+    print() from off the input loop is buried by the prompt_toolkit redraw."""
     from hermes_cli.gateway_tools import process_registry as _registry, process_view
     process_registry, view = _registry(), process_view()
     if view is not None:
@@ -305,17 +306,17 @@ def _stop_background_work() -> None:
     # Background subagents live in their own registry, not the process registry.
     n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
     if not running and not n_async:
-        return print(f"  {_t('stop.none_running')}")
+        return _cp(f"  {_t('stop.none_running')}")
     if running:
-        print(f"  {_t('stop.stopping', count=len(running))}")
-        print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
+        _cp(f"  {_t('stop.stopping', count=len(running))}")
+        _cp(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
     if n_async:
         if view is not None:
             interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
         else:
             from tools.async_delegation import interrupt_all
             interrupted = interrupt_all(reason='/stop')
-        print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
+        _cp(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
 
 
 def print_session_diff(cli, result: dict, stat_only: bool) -> None:
@@ -328,7 +329,7 @@ def print_session_diff(cli, result: dict, stat_only: bool) -> None:
         return print(f"  {_t('diff.no_session_changes')}")
     if stat:
         cli._print_diff_text(f"\n{stat}")
-    if diff and not stat_only:
+    if (diff or result.get("diff_lines")) and not stat_only:  # a body cut to nothing still names its lines
         cli._print_diff_body(diff, _t("diff.stat_hint_session"), total=int(result.get("diff_lines") or 0))
 
 

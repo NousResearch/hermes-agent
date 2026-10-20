@@ -202,6 +202,34 @@ def _drop_gated_carried_tools(merged: list, carried: set) -> list:
             or _DYNAMIC_SCHEMA_REWRITERS[_def_name(t)](t, available) is not None]
 
 
+def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
+    """(pinned, same_code, definitions) for a tools[] pin, either shape: a pin from the SAME code keeps
+    its bytes; otherwise (``hermes update``, a legacy name list) each tool takes this process's
+    definition (``fresh``, else its registry schema)."""
+    pinned, version = (saved.get("tools") or [], saved.get("version")) if isinstance(saved, dict) else (saved, None)
+    if not isinstance(pinned, list):
+        return [], False, []
+    from tools.registry import registry
+    same_code = version is not None and version == tool_pin_version()
+
+    def _pinned_def(item):
+        name = item if isinstance(item, str) else _def_name(item) if isinstance(item, dict) else None
+        if isinstance(item, dict) and (same_code or keep_bytes):
+            return item
+        if name in fresh:
+            return fresh[name]
+        entry = registry.get_entry(name) if name else None
+        return {"type": "function", "function": {**entry.schema, "name": entry.name}} if entry else None
+
+    return pinned, same_code, [d for d in map(_pinned_def, pinned) if d]
+
+
+def pinned_tool_defs(saved) -> list:
+    """``saved``'s tool definitions as a fresh agent restores them, for an estimate with no agent built:
+    pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
+    return _pinned_tool_defs(saved, {}, keep_bytes=True)[2]
+
+
 def restore_agent_tool_prefix(agent, saved) -> bool:
     """Fold a freshly built agent's ``tools`` onto the session's pin; True if changed.
     A fresh AIAgent (gateway cache eviction, ``--resume`` in a new process, a surface hop) has no
@@ -211,25 +239,13 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     Pinned by other code (``hermes update``, a legacy name list) a tool's contract may have moved,
     so each takes its current definition. A pinned tool this process did not build is carried
     only while its toolset config allows it here; deregistered tools drop, new tools append."""
-    pinned, version = (saved.get("tools") or [], saved.get("version")) if isinstance(saved, dict) else (saved, None)
+    pinned, same_code, pinned_defs = _pinned_tool_defs(saved, {_def_name(t): t for t in _agent_tool_defs(agent)})
     if not pinned:
         return False
     from tools.registry import registry
     fresh_defs = _agent_tool_defs(agent)
     fresh = {_def_name(t): t for t in fresh_defs}
     registered_names = {entry.name for entry in registry.get_all_entries()}
-    same_code = version is not None and version == tool_pin_version()
-
-    def _pinned_def(item):
-        name = item if isinstance(item, str) else _def_name(item)
-        if isinstance(item, dict) and same_code:
-            return item
-        if name in fresh:
-            return fresh[name]
-        entry = registry.get_entry(name)
-        return None if entry is None else {"type": "function", "function": {**entry.schema, "name": entry.name}}
-
-    pinned_defs = [d for d in map(_pinned_def, pinned) if d]
     carried = {_def_name(d) for d in pinned_defs if _def_name(d) not in fresh and _def_name(d) in registered_names}
     carried &= _config_permitted_names(agent) if carried else set()
     merged = [d for d in pinned_defs if _def_name(d) in fresh or _def_name(d) in carried]
@@ -313,7 +329,7 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     try:
         get_mem_schemas = _schema_getter("_memory_manager", "get_all_tool_schemas")
         if get_mem_schemas is not None:
-            from agent.memory_manager import memory_provider_tools_enabled  # same gate inject_memory_provider_tools uses
+            from agent.memory_manager_tools import memory_provider_tools_enabled  # same gate inject_memory_provider_tools uses
             if memory_provider_tools_enabled(
                     enabled, getattr(agent, "disabled_toolsets", None), memory_tool_present="memory" in name_set):
                 for schema in get_mem_schemas():

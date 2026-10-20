@@ -8,7 +8,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
@@ -19,6 +19,7 @@ import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { describeShellExecError } from './userMessages.js'
 
 const DOUBLE_ENTER_MS = 450
 
@@ -188,7 +189,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           item?.settle?.(false)
 
           if (focused()) {
-            sys(`error: ${e.message}`)
+            sys(`error: ${describeShellExecError(e)}`)
           }
         })
         .finally(() => {
@@ -228,7 +229,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           item?.settle?.(false)
 
           if (isCurrentDestination(destination)) {
-            sys(t('session.common.interpolationFailed', rpcErrorMessage(error)))
+            sys(t('session.common.interpolationFailed', describeShellExecError(error)))
             patchUiState({ busy: false, status: 'ready' })
           }
         }

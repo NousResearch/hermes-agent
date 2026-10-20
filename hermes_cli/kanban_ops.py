@@ -112,6 +112,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
+            "lock_holder": res.lock_holder,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
         return 0
@@ -151,7 +152,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if res.rate_limited:
         print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
     if res.skipped_locked:
-        print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
+        print(kbc.format_dispatch_lock_skip(res.lock_holder))
     if res.memory_pressure:
         print(f"Memory pressure {res.memory_pressure}: new workers restricted this tick")
     return 0

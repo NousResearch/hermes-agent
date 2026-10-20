@@ -121,6 +121,44 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     adapter.handle_message.assert_awaited_once()
 
 
+def test_async_completion_drain_separates_distinct_approved_origins(monkeypatch, isolated_registry):
+    from tools import async_delegation as delegation
+    from tools.approval_context import (approval_task_context, reserve_background_approval_task,
+                                        release_background_approval_task)
+
+    events = [_async_event(f'deleg_origin_{index}') for index in range(2)]
+    reservations = []
+    groups = []
+    delegation._reset_for_tests()
+    try:
+        for index, event in enumerate(events):
+            with approval_task_context(f'Inspect build {index}', identity='alice', profile='default',
+                                       session=event['session_key'], task_id=f'admission-{index}',
+                                       is_current=lambda: True):
+                reservation = reserve_background_approval_task()
+            reservations.append(reservation)
+            with delegation._records_lock:
+                delegation._records[event['delegation_id']] = {
+                    'session_key': event['session_key'], '_approval_reservation': reservation,
+                    'status': 'completed', 'completed_at': 1.0}
+            isolated_registry.completion_queue.put(event)
+
+        runner = _runner(SimpleNamespace(handle_message=AdmittingHandler()))
+        _stop_after_sleeps(monkeypatch, runner, count=2)
+
+        async def deliver(group):
+            groups.append([event['delegation_id'] for event in group])
+            return True
+
+        monkeypatch.setattr(runner, '_deliver_async_delegation_group', deliver)
+        asyncio.run(runner._async_delegation_watcher(interval=0))
+        assert groups == [[event['delegation_id']] for event in events]
+    finally:
+        for reservation in reservations:
+            release_background_approval_task(reservation)
+        delegation._reset_for_tests()
+
+
 def test_unroutable_async_event_remains_retryable(
     monkeypatch, isolated_registry,
 ):
@@ -426,6 +464,48 @@ def test_completion_batches_do_not_cross_conversation_routes():
 
     assert asyncio.run(_exercise()) == [True, True]
     assert adapter.handle_message.await_count == 2
+
+
+@pytest.mark.parametrize('same_origin', [True, False], ids=['shared-origin', 'distinct-origins'])
+def test_completion_batches_preserve_producer_origin(isolated_registry, same_origin):
+    from tools.approval_context import (approval_task_context, reserve_background_approval_task,
+                                        release_background_approval_task)
+
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    events = [_completion_event(started_at=float(index + 1), session_id=f'proc_origin_{index}')
+              for index in range(2)]
+    reservations = []
+    try:
+        if same_origin:
+            with approval_task_context('Inspect both builds', identity='alice', profile='default',
+                                       session=events[0]['session_key'], task_id='admission',
+                                       is_current=lambda: True):
+                reservations = [reserve_background_approval_task() for _event in events]
+        else:
+            for index, event in enumerate(events):
+                with approval_task_context(f'Inspect build {index}', identity='alice', profile='default',
+                                           session=event['session_key'], task_id=f'admission-{index}',
+                                           is_current=lambda: True):
+                    reservations.append(reserve_background_approval_task())
+        for event, reservation in zip(events, reservations):
+            proc = ProcessSession(id=event['session_id'], command='echo done',
+                                  session_key=event['session_key'], started_at=event['started_at'],
+                                  exited=True, notify_on_complete=True)
+            proc.approval_task_reservation = reservation
+            with isolated_registry._lock:
+                isolated_registry._finished[proc.id] = proc
+
+        async def deliver():
+            return await asyncio.gather(*(
+                runner._enqueue_process_completion_notification(f'build {index}', event)
+                for index, event in enumerate(events)))
+
+        assert asyncio.run(deliver()) == [True, True]
+        assert adapter.handle_message.await_count == (1 if same_origin else 2)
+    finally:
+        for reservation in reservations:
+            release_background_approval_task(reservation)
 
 
 def test_failed_coalesced_delivery_retries_all_entries():

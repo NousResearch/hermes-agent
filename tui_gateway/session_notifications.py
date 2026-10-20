@@ -606,6 +606,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             deferred.append(evt)
         else:
             logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
+        if evt_type == "completion":
+            from gateway.session_approval_completion import release_completion_event_reservation
+            release_completion_event_reservation(evt)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
         from gateway.session_approval_completion import release_completion_event_reservation
@@ -613,6 +616,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     text = fmt(evt)
     if not text:
+        if evt_type == "completion":
+            from gateway.session_approval_completion import release_completion_event_reservation
+            release_completion_event_reservation(evt)
         return True
     # Emit once per dedup key: a re-queued completion would otherwise re-emit every 0.5s while the session is busy,
     # while distinct watch_match events from one process must stay visible.
@@ -646,11 +652,28 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     return True
 
 
+def _notif_group_completions(notifications, route):
+    """Keep separate admitted requests out of the same synthetic turn."""
+    from gateway.session_approval_completion import completion_batch_origin_for_event
+    groups = []
+    for event, event_text in notifications:
+        origin = completion_batch_origin_for_event(event, route)
+        if not groups or groups[-1][0] != origin:
+            groups.append((origin, []))
+        groups[-1][1].append((event, event_text))
+    return groups
+
+
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
     from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
 
     if not notifications:
+        return
+    groups = _notif_group_completions(notifications, str(session.get('session_key') or ''))
+    if len(groups) > 1:
+        for _origin, group in groups:
+            _notif_dispatch_completions(sid, session, group, registry, deferred)
         return
     if not _notif_claim_turn(session):
         for event, _text in notifications:
@@ -673,6 +696,9 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         return
     if text is None:
         _notif_release_turn(session)
+        from gateway.session_approval_completion import release_completion_event_reservation
+        for event, _event_text, _claim in claimed:
+            release_completion_event_reservation(event)
     try:
         if text is not None:
             from gateway.session_approval_completion import completion_reservation_for_event

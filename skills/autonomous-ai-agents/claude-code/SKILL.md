@@ -749,6 +749,6 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 5. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
 6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
 7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
-8. **Report results to user** — after completion, summarize what Claude did and what changed
+8. **Report results to user** — after completion, summarize what Claude did and what changed; present a verifiable handle for the claimed outcome (commit/PR/branch, file path, test output); name what was not verified; never claim success from Claude's own summary output alone
 9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
 10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs

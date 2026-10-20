@@ -37,6 +37,8 @@ const { requestOneShot } = await import('./oneshot')
 const { setSessionYolo } = await import('./yolo-session')
 const { renameSessionPreferringRpc } = await import('@/app/chat/sidebar/session-actions-menu')
 const { ModelVisibilityDialog } = await import('@/components/model-visibility-dialog')
+const { reloadMcp } = await import('./mcp-reload')
+const { skipOnboarding } = await import('@/store/onboarding-run')
 
 stubResizeObserver()
 
@@ -100,6 +102,31 @@ describe('session_id RPCs go to the session owner, not the ambient socket', () =
     expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'session.title', {
       session_id: RUNTIME,
       title: 'Renamed'
+    })
+  })
+
+  it('reload.mcp reloads the chat on its owner', async () => {
+    mocks.requestGatewayForAgent.mockResolvedValue({ session: 'applied', session_servers: ['linear'] })
+
+    await expect(reloadMcp(mocks.ambient as never, RUNTIME)).resolves.toMatchObject({ sessionServers: ['linear'] })
+
+    expect(mocks.ambient.request).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'reload.mcp', {
+      confirm: true,
+      session_id: RUNTIME
+    })
+  })
+
+  it('Skip setup ends the onboarding run on its owner', async () => {
+    const ambientRequest = vi.fn(async () => {
+      throw new Error('not_found')
+    })
+
+    await skipOnboarding(ambientRequest as never, RUNTIME)
+
+    expect(ambientRequest).not.toHaveBeenCalled()
+    expect(mocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'research', 'onboarding.skip', {
+      session_id: RUNTIME
     })
   })
 

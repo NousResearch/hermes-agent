@@ -48,15 +48,19 @@ def remote_path_is_denied(path: str, remote_home: Optional[str]) -> bool:
         return True
     home = PurePosixPath(posixpath.normpath(remote_home)) if remote_home else None
 
-    def _under(root: PurePosixPath) -> bool:
-        return target == root or root in target.parents
+    def _is_under(candidate: PurePosixPath, root: PurePosixPath) -> bool:
+        return candidate == root or root in candidate.parents
 
     # The sandbox's own home may be a denied system prefix (/root); its credential subpaths are
     # separate, more specific entries — same exception as _path_under_denied_prefix.
-    if any(_under(p) for p in _DENIED_PREFIXES if p != home):
+    for denied in _DENIED_PREFIXES:
+        if not _is_under(target, denied):
+            continue
+        if home is not None and _is_under(home, denied) and _is_under(target, home):
+            continue
         return True
     if home is not None:
-        return any(_under(home / rel) for rel in _DENIED_HOME_RELATIVE)
+        return any(_is_under(target, home / rel) for rel in _DENIED_HOME_RELATIVE)
     parts = target.parts
     return any(parts[i:i + len(rel.parts)] == rel.parts
                for rel in _DENIED_HOME_RELATIVE for i in range(len(parts) - len(rel.parts) + 1))

@@ -469,6 +469,50 @@ def test_run_checks_never_mutates(tmp_path):
     assert (plugins / ".install-metadata.json").read_text(encoding="utf-8") == before
 
 
+def test_run_checks_resolves_the_live_catalog_once(tmp_path, monkeypatch):
+    """Catalog plugins share one catalog resolution across the whole run.
+
+    Every catalog-class plugin in check_provenanced's loop paid a full
+    load_catalog_live() (fetch-or-cache read + parse of every in-tree catalog
+    yaml, no memoization) for BOTH the kill-list lookup and the entry lookup —
+    the exact per-candidate cost resolved_removed_entries() exists to eliminate
+    (see the plugins.list fix of #119975). A dead catalog host cost one
+    failure-window probe per plugin per kind of lookup."""
+    from hermes_cli import plugin_catalog
+
+    calls = {"live": 0, "removed": 0}
+    entry = plugin_catalog.PluginCatalogEntry(
+        name="plug", repo="https://example/o/r", sha="b" * 40,
+        description="", maintainer="t")
+
+    def _counting_live():
+        calls["live"] += 1
+        return [entry]
+
+    monkeypatch.setattr(plugin_catalog, "load_catalog_live", _counting_live)
+
+    def _counting_removed():
+        calls["removed"] += 1
+        return []
+
+    monkeypatch.setattr(plugin_catalog, "live_removed_list", _counting_removed)
+
+    plugins = tmp_path / "plugins"
+    rows = {}
+    for n in ("alpha", "beta", "gamma"):
+        (plugins / n).mkdir(parents=True)
+        rows[n] = {"pinned": False, "revision": "a" * 40,
+                   "catalog": {"name": "plug", "repo": "https://example/o/r"}}
+    (plugins / ".install-metadata.json").write_text(json.dumps(rows), encoding="utf-8")
+
+    results = run_checks(plugins, fetch=_no, ls_remote=_no, include_pip=False)
+
+    assert len(results) == 3
+    assert all(r.update_available is True for r in results)
+    assert calls["live"] == 1, "load_catalog_live must resolve once per run, not once per plugin"
+    assert calls["removed"] == 1, "the live kill list must resolve once per run, not once per plugin"
+
+
 @pytest.mark.parametrize("url", ["http://feed.example/f.yml", "file:///etc/passwd", "ftp://x/f.yml", ""])
 def test_default_fetch_refuses_non_https_feeds_before_any_request(monkeypatch, url):
     """Rows saved before the https rule (or hand-edited) still reach the real fetcher from the

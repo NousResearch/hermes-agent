@@ -243,6 +243,32 @@ def retry(fn, max_attempts=3, delay=2):
                 time.sleep(delay * (2 ** attempt))
     raise last_err
 
+
+class ToolCallError(RuntimeError):
+    """A tool call returned an error result. The full parsed result dict is on
+    ``.result``. Errors raise instead of returning a dict so a script cannot
+    silently ignore them; catch this to inspect a failure deliberately:
+        from hermes_tools import ToolCallError
+        try:
+            write_file(path, content)
+        except ToolCallError as e:
+            print("write refused:", e)
+    """
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result
+
+
+def _unwrap_result(result):
+    """Raise ToolCallError for an error-shaped tool result, else return it.
+
+    Mirrors the host-side rule (code_execution_rpc._result_error): only a dict
+    with a non-empty top-level "error" counts as a failed call — per-page
+    errors nested inside web_extract results are data, not a call failure."""
+    if isinstance(result, dict) and result.get("error"):
+        raise ToolCallError(str(result["error"]), result)
+    return result
+
 '''
 
 # ---- UDS transport (local backend) ---------------------------------------
@@ -323,10 +349,11 @@ def _call(tool_name, args):
     result = json.loads(raw)
     if isinstance(result, str):
         try:
-            return json.loads(result)
+            parsed = json.loads(result)
         except (json.JSONDecodeError, TypeError):
             return result
-    return result
+        return _unwrap_result(parsed)
+    return _unwrap_result(result)
 
 '''
 
@@ -392,10 +419,11 @@ def _call(tool_name, args):
     result = json.loads(raw)
     if isinstance(result, str):
         try:
-            return json.loads(result)
+            parsed = json.loads(result)
         except (json.JSONDecodeError, TypeError):
             return result
-    return result
+        return _unwrap_result(parsed)
+    return _unwrap_result(result)
 
 '''
 
@@ -916,7 +944,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "work instead of re-loading it. A timed-out or interrupted call loses that state.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
+        "Limits: 5-minute timeout, max 50 tool calls per call. A tool error "
+        "raises ToolCallError (catch with `from hermes_tools import "
+        "ToolCallError`) instead of returning an error dict, so a failed call "
+        "cannot be silently ignored. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
         "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "

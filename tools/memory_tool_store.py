@@ -561,7 +561,17 @@ class MemoryStore:
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
             if scan_error:
-                return _error(f"Operation {i + 1}: {scan_error}", "scan_blocked")
+                # Spell out the blast radius: "Operation 3: Blocked ..." alone read as a partial
+                # failure, the model assumed the other ops landed, and those facts were lost
+                # silently. Carry ``usage`` like the other batch aborts; no ``current_entries``
+                # (#97316 — the store is unchanged and the caller already holds them).
+                others = len(ops) - 1
+                return _error((
+                    f"Operation {i + 1} of {len(ops)}: {scan_error} No operations were applied "
+                    f"(batch is all-or-nothing) — the other {others} operation(s) in this call were "
+                    f"NOT saved either. Rewrite ONLY the blocked entry (drop the flagged wording) "
+                    f"and re-send the FULL batch."), "scan_blocked",
+                    usage=self._usage(target))
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates

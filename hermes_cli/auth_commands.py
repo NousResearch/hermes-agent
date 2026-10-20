@@ -500,6 +500,78 @@ def auth_priority_command(args) -> None:
     _report_priority(provider, pool, moved, requested, "Set", "to")
 
 
+# Provider -> pool source re-seeded from a login singleton (``providers.<id>``) that also stores the
+# row's label (``persist_nous_credentials``, ``_save_codex_tokens``).
+_SINGLETON_LABEL_SOURCES = {"nous": "device_code", "openai-codex": "device_code"}
+_MAX_LABEL_LENGTH = 128
+
+
+def _validate_new_label(raw: Any) -> str:
+    """The trimmed label, or SystemExit naming why it cannot be a pool label."""
+    label = str(raw or "").strip()
+    if not label:
+        raise SystemExit("New label cannot be empty.")
+    if len(label) > _MAX_LABEL_LENGTH:
+        raise SystemExit(f"New label is longer than {_MAX_LABEL_LENGTH} characters.")
+    # isprintable() also rejects Unicode format characters (bidi overrides, zero-width marks) that
+    # would let `hermes auth list` show one credential under another one's name.
+    if not label.isprintable():
+        raise SystemExit("New label cannot contain control, format or line-break characters.")
+    # resolve_target matches labels before indices: a label "2" would capture `hermes auth remove <p> 2`.
+    if label.isdigit():
+        raise SystemExit("New label cannot be all digits; it would shadow the credential at that index.")
+    return label
+
+
+def _rename_singleton_label(provider: str, entry, old_label: str, new_label: str) -> None:
+    """Carry the rename into the login singleton the entry is re-seeded from, unless it diverged.
+
+    Touches only the active store's ``providers.<id>.label`` key, inside the auth-store lock like
+    every other auth.json writer; a profile borrowing the root's login never writes the root."""
+    if entry.source != _SINGLETON_LABEL_SOURCES.get(provider):
+        return
+    with auth_mod._auth_store_lock():
+        store = auth_mod._load_auth_store()
+        providers = store.get("providers")
+        state = providers.get(provider) if isinstance(providers, dict) else None
+        if isinstance(state, dict) and state.get("label") in (None, "", old_label):
+            state["label"] = new_label
+            auth_mod._save_auth_store(store)
+
+
+def auth_rename_command(args) -> None:
+    """`hermes auth rename <provider> <target> <new_label>`: relabel one pooled credential.
+
+    ``<target>`` is resolved like ``auth priority`` / ``auth remove``. The new label must stay a
+    usable selector: not already another entry's label (case-insensitive) or id."""
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    new_label = _validate_new_label(getattr(args, "new_label", None))
+    pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(getattr(args, "target", None))
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    old_label = matched.label
+    # A label set before this validation existed (hand edit, `auth add --label`) is echoed escaped.
+    shown_old = f'"{old_label}"' if old_label.isprintable() else repr(old_label)
+    if new_label == old_label:
+        print(f'{provider} credential #{index} is already labeled "{new_label}"; nothing to change.')
+        return
+    clash = next((e for e in pool.entries() if e.id != matched.id and (
+        e.id == new_label or e.label.strip().lower() == new_label.lower())), None)
+    if clash is not None:
+        raise SystemExit(f'Label "{new_label}" would be ambiguous: {provider} credential id={clash.id} '
+                         "already answers to it. Choose a different label.")
+    if pool.rename_entry(matched.id, new_label) is None:
+        raise SystemExit(f"{provider} credential #{index} disappeared before the rename was saved.")
+    # The store is the source of truth: a write-through the store refused must not print "Renamed".
+    if not any(isinstance(row, dict) and row.get("id") == matched.id and row.get("label") == new_label
+               for row in auth_mod.read_credential_pool(provider)):
+        raise SystemExit(f"The {provider} credential was not renamed: {auth_mod._auth_file_path()} "
+                         "still holds the old label after the write.")
+    _rename_singleton_label(provider, matched, old_label, new_label)
+    print(f'Renamed {provider} credential #{index}: {shown_old} -> "{new_label}"')
+
+
 def _free_tier_lines() -> tuple[str, str]:
     """The two-line free-tier rendering shared by every auth display surface (R-USR-1)."""
     from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
@@ -901,7 +973,8 @@ def auth_upgrade_command(args) -> None:
 
 _AUTH_ACTIONS = {
     "add": auth_add_command, "list": auth_list_command, "remove": auth_remove_command,
-    "reset": auth_reset_command, "priority": auth_priority_command, "refresh": auth_refresh_command, "status": auth_status_command,
+    "reset": auth_reset_command, "priority": auth_priority_command, "rename": auth_rename_command,
+    "refresh": auth_refresh_command, "status": auth_status_command,
     "logout": auth_logout_command, "upgrade": auth_upgrade_command}
 
 

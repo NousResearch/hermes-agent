@@ -1,9 +1,9 @@
 """Yuanbao sign-token acquisition, caching, signing and retry.
 
-Moved out of ``yuanbao.py`` (the adapter facade) by the fix for #134367's secondary, which tripped
-the file-size ratchet: the repo's remedy for file growth is to offset it by moving an existing
-topic into a topical sibling. ``yuanbao`` re-exports ``SignManager`` so every existing import path
-and test seam (``gateway.platforms.yuanbao.SignManager``) keeps working.
+Moved out of the adapter facade (``plugins/platforms/yuanbao/adapter.py``) by the fix for
+#134367's secondary, which tripped the file-size ratchet: the repo's remedy for file growth is to
+offset it by moving an existing topic into a topical sibling. ``adapter`` re-exports
+``SignManager`` so every existing import path and test seam keeps working.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 
 from hermes_cli.version_info import get_version_info
-from gateway.platforms.yuanbao_proto import HERMES_INSTANCE_ID
+from plugins.platforms.yuanbao.yuanbao_proto import HERMES_INSTANCE_ID
 
 logger = logging.getLogger(__name__)
 

@@ -62,7 +62,7 @@ from plugins.platforms.yuanbao.yuanbao_proto import (
     encode_get_group_member_list, next_seq_no,
 )
 from gateway.session_transcript import TranscriptReadError
-from gateway.platforms.yuanbao_sign import (
+from plugins.platforms.yuanbao.yuanbao_sign import (
     SignManager,  # re-export: the facade owns the public seam
     APP_VERSION as _APP_VERSION, BOT_VERSION as _BOT_VERSION,
     YUANBAO_INSTANCE_ID as _YUANBAO_INSTANCE_ID, OPERATION_SYSTEM as _OPERATION_SYSTEM,

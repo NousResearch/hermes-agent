@@ -18,6 +18,7 @@ import httpx
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import config_connected_extra
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
@@ -684,16 +685,38 @@ def interactive_setup() -> None:
           "   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    # The adapter runs strip_markdown(keep_link_targets=True): markers vanish, the layout stays.
+    "You are texting via iMessage (BlueBubbles). Replies arrive as plain text bubbles, so write like a person "
+    "texting: short and conversational, answer first, no preamble or recap. Markdown does not render and is "
+    "stripped, so skip headers, tables, code fences and backticks; for a few items use short lines or a "
+    "sentence rather than nested bullets. Put a command or code snippet on its own line as plain text so it "
+    "can be copied. Write links as bare URLs (iMessage auto-links them). "
+    "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
+    "Images (.jpg, .png, .heic) appear as photos and other files arrive as attachments."
+)
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         name="bluebubbles", label="BlueBubbles (iMessage)", adapter_factory=BlueBubblesAdapter,
+        dashboard_description="Use Hermes through iMessage via a BlueBubbles server.",
+        docs_url="https://bluebubbles.app/",
+        dashboard_env_vars=("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD", "BLUEBUBBLES_ALLOWED_USERS"),
         check_fn=check_bluebubbles_requirements, is_connected=_is_connected,
+        config_connected_fn=config_connected_extra("server_url", "password"),
         required_env=["BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"], install_hint=_INSTALL_HINT,
         setup_fn=interactive_setup,
-        allowed_users_env="BLUEBUBBLES_ALLOWED_USERS", allow_all_env="BLUEBUBBLES_ALLOW_ALL_USERS",
         cron_deliver_env_var="BLUEBUBBLES_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron / send_message
         # 0 = send_message does not pre-chunk: the adapter's send() splits per paragraph and
         # truncates itself (MAX_MESSAGE_LENGTH), exactly as the former core sender did.
-        max_message_length=0, pii_safe=True, emoji="💬", allow_update_command=True)
+        max_message_length=0, pii_safe=True, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="low",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

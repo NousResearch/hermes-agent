@@ -47,25 +47,98 @@ def wire(turn, agent) -> dict:
     if owner is not None:
         from gateway.session_usage import seed_compression_count
         seed_compression_count(owner[0].sessions.get(owner[1]), agent)
-    if show_reasoning(turn):
-        # Only on request: a reasoning sink makes the agent ask the provider for reasoning.
-        agent.reasoning_callback = lambda text: publish("reasoning.delta", {"text": str(text or "")})
+    if show_reasoning(turn) or _config_default_launch():
+        # A reasoning sink makes the agent ask the provider for reasoning; each delta re-checks the
+        # session's display so /reasoning show|hide applies mid-turn.
+        agent.reasoning_callback = lambda text: (
+            publish("reasoning.delta", {"text": str(text or "")}) if show_reasoning(turn) else None)
     # The desktop window bridges (preview/terminal/window reads, preview actions, desktop_ui events).
     previous[_DESKTOP_UI_TOKEN] = local_desktop_ui.wire(turn, agent)
     return previous
 
 
+# Launch sources whose viewer never sets the session flag; main's TUI gateway defaulted it from config.
+_CONFIG_DEFAULT_SOURCES = frozenset({"tui", "gui"})
+
+
 def show_reasoning(turn) -> bool:
-    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    """The session's ``show_reasoning`` display flag (``config.set``, ``/reasoning show|hide``); unset on an
+    Ink or Desktop launch, its ``display.show_reasoning`` (default on), as main's TUI gateway resolved it."""
     owner = getattr(turn, "_approval_owner", None)
     live = owner[0].sessions.get(owner[1]) if owner is not None else None
-    return getattr(live, "show_reasoning", None) is True
+    flag = getattr(live, "show_reasoning", None)
+    if flag is not None or live is None:
+        return flag is True
+    from gateway.session_policy import active_policy
+    return launch_shows_reasoning(active_policy(), owner[0])
+
+
+def _config_default_launch() -> bool:
+    from gateway.session_policy import active_policy
+    return getattr(active_policy(), "source", None) in _CONFIG_DEFAULT_SOURCES
+
+
+def launch_shows_reasoning(policy, authority) -> bool:
+    """An unset session flag: ``display.show_reasoning`` for an Ink or Desktop launch, else off."""
+    if getattr(policy, "source", None) not in _CONFIG_DEFAULT_SOURCES:
+        return False
+    from gateway.display_config import local_display_config
+    display = local_display_config(policy.config(authority, secrets=False).get("display"))
+    return bool(display.get("show_reasoning", True))
+
+
+def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:
+    subagent_id = payload.get("subagent_id")
+    if not isinstance(subagent_id, str) or not subagent_id:
+        return False
+    import sys
+    registry = sys.modules.get("tools.delegate_tool_registry")
+    holder = getattr(getattr(turn, "_ctx", None), "agent_holder", None)
+    turn_agent = holder[0] if isinstance(holder, list) and holder else None
+    if registry is None or turn_agent is None:
+        return False
+    parent_id = payload.get("parent_id")
+    with registry._active_subagents_lock:
+        record = registry._active_subagents.get(subagent_id)
+        if record is None and event_type == "subagent.spawn_requested" and isinstance(parent_id, str):
+            # A queued grandchild is announced before it registers; its spawning parent must be a registered descendant.
+            record = registry._active_subagents.get(parent_id)
+        return record is not None and registry._is_descendant_of(record.get("agent"), turn_agent)
+
+
+def _publish_subagent(turn, event_type, payload) -> None:
+    owner = getattr(turn, "_approval_owner", None)
+    executing = getattr(owner[0], "executing", None) if owner is not None else None
+    if owner is None or not isinstance(executing, dict):
+        turn._publish_execution(event_type, payload)
+        return
+    authority, session_id, generation = owner
+    stream = getattr(authority.sessions.get(session_id), "event_stream", None)
+    lock = getattr(stream, "lock", None)
+    import contextlib
+    # The claim is stamped and cleared under this lock, so the in-turn/out-of-turn choice cannot race the turn's end.
+    with lock if lock is not None else contextlib.nullcontext():
+        if executing.get(session_id) == generation:
+            turn._publish_execution(event_type, payload)
+            return
+    if stream is not None and _is_active_session_subagent(turn, payload, event_type):
+        # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
+        stream.publish(session_id, payload, event_type=event_type, execution={})
 
 
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:
-    """``reasoning.available`` and the MoA facade events from the agent's progress callback. A
-    classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``);
-    other viewers get them, like the TUI gateway's own emitters, only with reasoning shown."""
+    """``subagent.*``, ``reasoning.available`` and the MoA facade events from the agent's progress callback; a classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``), while other viewers get them only with reasoning shown."""
+    if isinstance(event_type, str) and event_type.startswith("subagent."):
+        if event_type == "subagent.text":
+            return
+        from tui_gateway.tool_progress import _subagent_payload
+        _publish_subagent(turn, event_type, _subagent_payload(
+            event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
+        return
+    if event_type == "tool.progress":
+        from agent.tool_progress_relay import tool_progress_payload
+        turn._publish_execution(event_type, tool_progress_payload(name, preview, kwargs))
+        return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
     from gateway.session_cli_turn import classic_cli_turn
@@ -96,6 +169,19 @@ def restore(agent, previous: dict | None) -> None:
         local_desktop_ui.release(token)
     for name, value in previous.items():
         setattr(agent, name, value)
+
+
+def publish_control_if_changed(turn) -> None:
+    """Agent thread, after each tool: a tool (a plugin adding goal criteria, parking the goal) can move
+    automation state mid-turn, so viewers' cards repaint now instead of at turn end. The snapshot is read,
+    compared and published on the gateway loop, in order with the slash commands' publishes (a snapshot
+    read here could land after a newer one); revision-gated, so other tools publish nothing."""
+    from gateway.session_control_actions import publish
+    authority, canonical_id, _generation = turn._approval_owner
+
+    async def republish():
+        publish(authority, canonical_id, only_if_changed=True)
+    turn._schedule(republish(), "session.control.update after a tool")
 
 
 def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:

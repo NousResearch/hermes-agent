@@ -42,6 +42,12 @@ def current_execution():
     return _execution.get()
 
 
+def bind_execution(authority, session_id, job_id, execution_id):
+    """Bind this context's cron admission ``(authority, session_id, job_id, execution_id)``, the
+    layout ``current_execution()`` readers index; returns the ``ContextVar`` reset token."""
+    return _execution.set((authority, session_id, job_id, execution_id))
+
+
 def _actor(authority, actor):
     if actor is None:
         return Principal(CRON_PRINCIPAL_ID, authority.profile_id,
@@ -101,6 +107,10 @@ def _create(authority, actor, params):
     return {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
             'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}, request_id
 
+
+# What a message typed into a scheduled job's session settles with (see ``execute``); its text is
+# ``gateway.errors.cron_session_read_only``, rendered in the owning profile's language.
+CRON_SESSION_READ_ONLY_SURFACE = {'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': False}
 
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
 # (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
@@ -228,13 +238,21 @@ async def execute(authority, ref, row, policy):
     if (row['payload'] != {'text': data['extra_prompt'] or ''}
             or row['request_id'] != data['request_id']
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
-        raise RuntimeStoreError('admission_conflict')
+        # A cron session only runs its own frozen fire; anything else typed into it fails with a
+        # descriptor the viewer can render (and offer a new chat for), never a generic failure.
+        from agent.i18n import t
+        text = t('gateway.errors.cron_session_read_only')
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+            'error': text, 'error_surface': dict(CRON_SESSION_READ_ONLY_SURFACE)},
+            'usage': {}}
+        return text
     cancellations = _cancellations(authority)
     cancel = cancellations.setdefault(row['admission_id'], threading.Event())
     execution_id = scheduler_execution_id(data['cron_job']['id'], row['request_id'])
     # The frozen snapshot predates the fire's ledger row; the run's progress stamps need its id.
     job = dict(data['cron_job'], execution_id=execution_id)
-    token = _execution.set((authority, ref.session_id, job['id'], execution_id))
+    token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):

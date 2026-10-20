@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -108,7 +109,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     _clear_takeover_marker_quiet()
     # Stopped (Ctrl+Z) processes don't release scoped locks on exit; stale lock files block the new gateway.
     try:
-        from gateway.status import release_all_scoped_locks
+        from gateway.status_scoped_locks import release_all_scoped_locks
         _released = release_all_scoped_locks(owner_pid=existing_pid, owner_start_time=existing_start_time)
         if _released:
             logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
@@ -269,6 +270,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.run_active_work_verb import active_work_verb
         from gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
 
@@ -340,6 +342,8 @@ async def _start_gateway_start_control_socket(runner):
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),
                            "purge-profile-identity": purge_profile_identity_verb(runner),
+                           # `hermes gateway stop/restart` refuse while this names live work.
+                           "active-work": active_work_verb(runner, _main_loop),
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
@@ -544,12 +548,68 @@ def _start_gateway_resolve_terminal_cwd() -> None:
             os.environ["TERMINAL_CWD"] = resolved_cwd
 
 
+# A browse that catches a lagging state.db up holds the profile's gateway.lock only for the drift
+# re-check and the additive DDL, cut off at hermes_state_reconcile.BROWSE_RECONCILE_BUDGET_S by a
+# sqlite progress handler. Its integrity scan (which scales with file size) runs BEFORE the lock, so
+# a large store never extends this window. A gateway booting in it waits it out, with margin for lock
+# publication and the drift probes, instead of exiting as if another gateway owned the profile.
+def _browse_reconcile_reserve_wait_s() -> float:
+    from hermes_state_reconcile import BROWSE_RECONCILE_BUDGET_S
+    return BROWSE_RECONCILE_BUDGET_S + 2.0
+
+
+def _conflicting_homes(homes):
+    """The homes whose gateway.lock another holder has right now: each probed alone with its own open
+    file description and released at once (the all-or-nothing reserve does not say which failed).
+    A home freed meanwhile is simply not listed; the next reserve attempt takes it."""
+    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    conflicting = []
+    for home in homes:
+        probe = ProfileOwnership()
+        try:
+            probe.reserve([home])
+        except OwnershipConflict:
+            conflicting.append(home)
+        finally:
+            probe.close()
+    return conflicting
+
+
+def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | None = None):
+    """Reserve *homes*, waiting (bounded) while a contender is a browse reconcile or has not yet
+    published its lock record (flock taken, record unwritten). Only a positively identified holder
+    that is not browse maintenance refuses at once; the flock exclusion itself is never weakened."""
+    from gateway.runtime_ownership import OwnershipConflict, lock_record_unpublished, maintenance_holder
+    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    if wait_s is None:
+        wait_s = _browse_reconcile_reserve_wait_s()
+    deadline = time.monotonic() + wait_s
+    logged = False
+    while True:
+        try:
+            return ownership.reserve(homes)
+        except OwnershipConflict:
+            # Only the homes that actually conflict decide: a real owner on any of them refuses at
+            # once, even while another home is mid-browse (multiplexer boot, all-or-nothing).
+            conflicting = _conflicting_homes(homes)
+            holders = [h for h in conflicting
+                       if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
+            if not holders or len(holders) < len(conflicting) or time.monotonic() >= deadline:
+                raise
+            if not logged:
+                logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
+                            holders[0], wait_s)
+                logged = True
+            time.sleep(0.1)
+
+
 def _start_gateway_reserve_profiles(profile_homes) -> bool:
     """Reserve the launch home plus every served profile home; False when startup must abort."""
     from gateway.run import get_hermes_home
     from gateway.runtime_ownership import process_ownership, OwnershipConflict
+    homes = [get_hermes_home(), *(home for _, home in profile_homes)]
     try:
-        process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
+        _reserve_waiting_out_browse_reconcile(process_ownership, homes)
     except OwnershipConflict as exc:
         logger.error("Cannot reserve gateway profiles: %s", exc)
         # A named profile that the LIVE default multiplexer already serves is a configuration

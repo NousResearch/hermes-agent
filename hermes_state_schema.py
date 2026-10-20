@@ -762,6 +762,8 @@ class SessionSchemaMixin:
                 rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
             except sqlite3.OperationalError:
                 continue  # Table doesn't exist yet (shouldn't happen after executescript)
+            if not rows:
+                continue  # PRAGMA table_info returns [] for a missing table; the DDL creates it whole
             # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
             live_cols = {row[1] for row in rows}
             for col_name, col_type in declared_cols.items():
@@ -1104,6 +1106,9 @@ class SessionSchemaMixin:
             ).fetchone() is None:
                 self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
 
+        # v32: nothing to run here. The declared tables/columns #106742 added under v31 were already
+        # created by _init_schema's executescript(SCHEMA_SQL) + _reconcile_columns() before this chain;
+        # the version only records that the store has them (#140315).
         # Advance schema_version — deliberately NOT gated on the FTS opt-in (that would block
         # every future migration for a user who never optimizes). FTS5 unavailable is the
         # one skip: claiming current would lie.
@@ -1114,21 +1119,26 @@ class SessionSchemaMixin:
         """Mint ``message_uid`` onto rows written before the column existed, one bounded slice per open.
 
         A single full-table UPDATE held the write lock for 261 s on an 835k-row / 4.8 GB store, so every
-        sibling process timed out with "database is locked". Id-range chunks commit one at a time (the
+        sibling process timed out with "database is locked". Rowid-range chunks commit one at a time (the
         writer connection is autocommit) and an open spends at most ``_MESSAGE_UID_BACKFILL_BUDGET_S``
         after its first chunk, so a large store converges over later opens. Until then a legacy row
-        simply has no uid, which every reader already treats as "no identity yet"."""
+        simply has no uid, which every reader already treats as "no identity yet".
+
+        The walk is keyed on ``rowid``, not ``id``: on the declared table ``id INTEGER PRIMARY KEY`` is the
+        rowid alias (same plan), but a store converted from JSONL still carries ``id TEXT`` with no PRIMARY
+        KEY (``_reconcile_columns`` adds columns, never rebuilds the key), where ``MAX(id)`` is a str and an
+        ``id`` range compares lexicographically (#141467)."""
         if _meta_row(cursor, _MESSAGE_UID_BACKFILL_DONE) is not None:
             return
         row = _meta_row(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
         done_through = int(row[0]) if row else 0
-        high = cursor.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
+        high = cursor.execute("SELECT MAX(rowid) FROM messages").fetchone()[0] or 0
         deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
         while done_through < high:
             upper = done_through + _MESSAGE_UID_BACKFILL_CHUNK
             cursor.execute(
                 "UPDATE messages SET message_uid = lower(hex(randomblob(16))) "
-                "WHERE id > ? AND id <= ? AND message_uid IS NULL", (done_through, upper))
+                "WHERE rowid > ? AND rowid <= ? AND message_uid IS NULL", (done_through, upper))
             done_through = upper
             if done_through < high and time.monotonic() >= deadline:
                 self.set_meta(_MESSAGE_UID_BACKFILL_CURSOR, str(done_through), cursor=cursor)
@@ -1345,8 +1355,21 @@ class SessionSchemaMixin:
             )
 
 
+def apply_declared_schema(cursor: sqlite3.Cursor) -> None:
+    """The one additive catch-up order for raw ``state.db`` connections: columns (SCHEMA_SQL indexes may
+    name columns an old table lacks), then the canonical DDL statement by statement (no
+    ``executescript`` implicit COMMIT, so callers keep their own transaction), then columns again
+    (a no-op for tables the script just created whole). Locking, snapshots and commit stay with the
+    callers. ``_reconcile_columns`` only touches the staticmethod ``_parse_schema_columns``, so a bare
+    instance is enough and the column reconciler keeps one implementation."""
+    shim = object.__new__(SessionSchemaMixin)
+    shim._reconcile_columns(cursor)
+    SessionSchemaMixin._execute_ddl_script_transactional(cursor, SCHEMA_SQL)
+    shim._reconcile_columns(cursor)
+
+
 def reconcile_state_schema(conn: sqlite3.Connection) -> None:
-    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape.
+    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape and commit.
 
     Single durable-shape authority for callers that open ``state.db``
     outside SessionDB. The async-delegation tool used to carry its own
@@ -1354,14 +1377,8 @@ def reconcile_state_schema(conn: sqlite3.Connection) -> None:
     from SCHEMA_SQL (same-name columns with different nullability/defaults
     depending on which authority touched the database first, #94691). This
     helper instead replays the canonical DDL (every statement is
-    IF NOT EXISTS/idempotent) and reuses SessionDB's declarative column
-    reconciliation, so out-of-band openers can never grow a second
-    hand-maintained shape for the same durable tables.
+    IF NOT EXISTS/idempotent) through :func:`apply_declared_schema`.
     """
-    conn.executescript(SCHEMA_SQL)
-    # _reconcile_columns only touches the staticmethod _parse_schema_columns,
-    # so a bare instance works; reusing it keeps one reconciliation
-    # implementation (one authority) instead of a near-copy on raw
-    # connections.
-    shim = object.__new__(SessionSchemaMixin)
-    shim._reconcile_columns(conn.cursor())
+    apply_declared_schema(conn.cursor())
+    if conn.in_transaction:
+        conn.commit()

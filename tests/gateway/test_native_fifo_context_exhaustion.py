@@ -211,8 +211,9 @@ async def test_no_scheduler_starts_the_fresh_fifo_before_reset_cleanup_finishes(
 
 @pytest.mark.asyncio
 async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(native, monkeypatch):
-    """A retry of queued B and a new D that reserved the old route before the reset commit after
-    the re-home: B dedupes onto its moved row (same admission id), D queues behind it there."""
+    """A retry of queued B that reserved the old route before the reset commits after the re-home,
+    deduped onto its moved row (same admission id); D, the chat's next input, waits for it at the
+    route's admission turn and queues behind it there."""
     import threading
     from gateway.session_results import execution_result
     runner, authority, db = native.runner, native.authority, native.authority.db
@@ -230,10 +231,11 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     monkeypatch.setattr(authority, "_reserve_route", held_reserve)
     late = [asyncio.create_task(_admit(native, "B", admitted[1][0])), asyncio.create_task(_admit(native, "D"))]
     for _ in range(250):
-        if len(held) == 2:
+        if held:
             break
         await asyncio.sleep(0.02)
-    assert [sid for sid, _ in held] == [old.session_id] * 2
+    await asyncio.wait({late[1]}, timeout=0.2)
+    assert [sid for sid, _ in held] == [old.session_id]  # D waits behind B's admission
     executed, fresh = [], {}
 
     async def turn(event, source, session_key, run_generation):
@@ -260,3 +262,23 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     await authority._drain(SessionRef(authority.profile_id, new))
     assert executed == [("A", old.session_id), ("B", new), ("C", new), ("D", new)]
     assert [r["request_id"] for r in list_session_admissions(db, session_id=old.session_id, pending_only=False)] == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_exhaustion_reset_keeps_the_adapter_queue_for_the_fresh_session(native):
+    """A /queue chain deferred behind the exhausted turn (head in the adapter slot, rest in the
+    overflow) survives the reset's conversation-scope clear, in order, for the post-handler drain."""
+    runner, adapter, source = native.runner, native.adapter, native.source
+    _, receipt = await _admit(native, "A")
+    session_key = runner.session_store.lookup_by_session_key(
+        native.authority.sessions[receipt.ref.session_id].route).session_key
+    head, second = (MessageEvent(text=t, source=source, message_id=t) for t in ("Q1", "Q2"))
+    runner._enqueue_fifo(session_key, head, adapter)
+    runner._enqueue_fifo(session_key, second, adapter)
+    entry = runner.session_store.lookup_by_session_key(session_key)
+    result = {"failed": True, "compression_exhausted": True, "messages": []}
+    _, new_entry = await runner._hmwa_compression_exhaustion_reset(
+        result, "context exhausted", entry, session_key, source)
+    assert new_entry.session_id != entry.session_id
+    assert adapter._pending_messages[session_key] is head
+    assert runner._overflow_queue(session_key) == [second]

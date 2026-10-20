@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_session_store import GatewaySessionStore
 
@@ -60,7 +60,8 @@ def test_new_session_is_created_on_the_gateway_and_its_id_adopted(store, monkeyp
     db, client = store
     sid = db.open_session(cli(), {"model": "m1", "toolsets": ["file", "web"], "provider": None})
     assert sid == "local-new"
-    method, params = client.calls[0]
+    # The store asks the owner's create contract first (does it take ``client_env``?).
+    method, params = next(call for call in client.calls if call[0] != "runtime.describe")
     assert method == "session.create"
     assert params["model"] == "m1" and params["toolsets"] == ["file", "web"] and params["source"] == "cli"
     assert "provider" not in params and params["cwd"]
@@ -110,6 +111,85 @@ def test_title_rename_delete_and_detach_are_gateway_verbs(store):
     delete = [p for m, p in client.calls if m == "session.mutate"][-1]
     # The owner refuses a delete without the generation it was read at (invalid_params).
     assert delete["operation"] == "delete" and delete["expected_generation"] == 0
+
+
+def _refusing_delete(client, reason="revision_conflict"):
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.mutate" and params.get("operation") == "delete":
+            client.calls.append((method, params))
+            raise GatewayClientError(reason)
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+
+
+def test_a_refused_delete_detaches_the_subscription_its_read_attached(store):
+    """#134889 TUI-19: the delete's CAS read (``session.resume``) attaches a viewer; a refused delete
+    must detach it, or the closed session stays in the live list until the CLI exits. A plain detach:
+    an ``end_reason`` would run the owner's viewer close on the session."""
+    db, client = store
+    db.open_session(cli("local-old", resumed=True))
+    db.end_session("local-old", "new_session")
+    _refusing_delete(client)
+    with pytest.raises(GatewayClientError, match="revision_conflict"):
+        db.delete_session("local-old")
+    assert client.calls[-1] == ("session.detach", {"session_id": "local-old", "subscription_id": "sub-local-old"})
+
+
+def test_a_refused_delete_detaches_by_the_id_the_read_resolved_to(store):
+    """A compressed session's history row names a segment the owner resolves to its logical owner
+    and subscribes under that id; the release must detach by the resolved id, or it is a no-op."""
+    db, client = store
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.resume" and params["session_id"] == "segment-1":
+            client.calls.append((method, params))
+            return snapshot("local-owner")
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    _refusing_delete(client)
+    with pytest.raises(GatewayClientError, match="revision_conflict"):
+        db.delete_session("segment-1")
+    assert client.calls[-1] == ("session.detach", {"session_id": "local-owner", "subscription_id": "sub-local-owner"})
+
+
+def test_a_refused_delete_of_a_segment_keeps_the_resolved_session_this_viewer_watches(store):
+    """The held check uses the resolved id too: the CLI watches the logical owner, the read of its
+    segment reuses that subscription, and a refusal must not end the CLI's own view."""
+    db, client = store
+    client.known.add("local-owner")
+    db.open_session(cli("local-owner", resumed=True))
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.resume" and params["session_id"] == "segment-1":
+            client.calls.append((method, params))
+            return snapshot("local-owner")
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    _refusing_delete(client, "permission_denied")
+    with pytest.raises(GatewayClientError, match="permission_denied"):
+        db.delete_session("segment-1")
+    assert "session.detach" not in [m for m, _ in client.calls]
+    assert db.connection.state("local-owner").subscription_id == "sub-local-owner"
+
+
+def test_a_refused_delete_keeps_a_session_this_cli_is_viewing(store):
+    db, client = store
+    db.open_session(cli("local-old", resumed=True))
+    real_rpc = client.rpc
+
+    async def refusing(method, *, _timeout=None, **params):
+        if method == "session.mutate":
+            raise GatewayRPCError("session_busy")
+        return await real_rpc(method, _timeout=_timeout, **params)
+
+    client.rpc = refusing
+    with pytest.raises(GatewayClientError):
+        db.delete_session("local-old")
+    assert "session.detach" not in [method for method, _ in client.calls]
 
 
 def test_gateway_owned_writes_are_noops_and_unknown_writes_refuse(store):
@@ -692,3 +772,41 @@ def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
     with pytest.raises(GatewayClientError, match="--provider differs .* use /model after resuming"):
         check_resume_policy(argparse.Namespace(provider="anthropic"),
                             {"info": {"launch_request": {"provider": "openrouter"}}})
+
+
+def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store, monkeypatch):
+    """#134889 CLI-22: `/clear` inside the running CLI redraws the banner from the new gateway
+    session's snapshot (its MCP tools, main's 8-character label), as the startup banner does; this
+    process's own tool registry has no MCP servers and is never walked."""
+    import cli as cli_mod
+    from cli import HermesCLI
+    db, client = store
+    canonical = "local-ab12cd34" + "e" * 56
+    info = {**INFO, "tools": {"file": ["read_file"], "mcp-zeta": ["mcp__zeta__ro_probe"]}}
+    created = {**snapshot(canonical), "info": info}
+
+    async def rpc(method, *, _timeout=None, **params):
+        client.calls.append((method, params))
+        return created if method == "session.create" else {}
+    client.rpc = rpc
+    banners = []
+    monkeypatch.setattr("hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
+    monkeypatch.setattr(cli_mod, "get_tool_definitions", lambda **_kw: pytest.fail("walked the CLI's registry"))
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a: None)
+    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: types.SimpleNamespace(columns=200, lines=50))
+    shell = HermesCLI.__new__(HermesCLI)
+    shell.__dict__.update(
+        _session_db=db, session_id="local-old", compact=False, model="fake-model", provider="custom",
+        enabled_toolsets=["hermes-cli"], disabled_toolsets=[], agent=None,
+        _app=types.SimpleNamespace(output=types.SimpleNamespace(
+            erase_screen=lambda: None, cursor_goto=lambda *_a: None, flush=lambda: None)))
+    shell._confirm_destructive_slash = lambda *_a, **_k: "once"
+    shell._print_random_tip = lambda: None
+    shell.new_session = lambda silent=False: setattr(shell, "session_id", db.create({}))
+
+    shell._cmd_clear("/clear")
+
+    (banner,) = banners
+    assert banner["session_id"] == "ab12cd34"
+    assert sorted(t["function"]["name"] for t in banner["tools"]) == ["mcp__zeta__ro_probe", "read_file"]
+    assert banner["get_toolset_for_tool"]("mcp__zeta__ro_probe") == "mcp-zeta"

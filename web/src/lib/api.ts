@@ -8,6 +8,7 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
+import type { AgentPluginUpdateResponse } from "./api-plugins";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
@@ -143,6 +144,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",
 ];
@@ -354,12 +356,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
-    authParam: await buildWsAuthParam(),
-    basePath: BASE,
-    params,
-    path,
-  });
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -1058,8 +1057,8 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
@@ -1095,13 +1094,16 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
 
@@ -2535,6 +2537,7 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2767,7 +2770,7 @@ export interface CatalogEntry {
   repo: string;
   sha: string;
   sha_short: string;
-  tier: "official" | "community";
+  tier: "official" | "verified" | "community";
   maintainer: string;
   requires_hermes: string;
   platforms: string[];
@@ -2792,19 +2795,6 @@ export interface CatalogResponse {
   entries: CatalogEntry[];
   removed: CatalogRemovedEntry[];
   generated_at: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-  /** The new catalog pin widens the plugin; nothing changed until the client
-   *  retries with `accept_capabilities`. */
-  consent_required?: boolean;
-  sha?: string;
-  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

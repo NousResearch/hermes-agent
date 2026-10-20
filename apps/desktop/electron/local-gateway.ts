@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 
+import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 // `hermes gateway ensure` answers with a protocol verdict (ready, or `starting: deadline`) within
@@ -269,11 +270,39 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
   }
 }
 
-function dialNonce(url: string): string | null {
+/** A fresh one-use local dial: mint `purpose` for the routed profile's home and hand it to
+ *  `prepare`, re-ensuring once when the cached owner is gone (`redialLocalGateway`). */
+export function localGatewayDial<T extends { baseUrl: string; gatewayEndpoint?: GatewayEndpoint }>(opts: {
+  ensure: () => Promise<T>
+  forget: () => Promise<void> | void
+  launchHome: string
+  mint?: typeof mintLocalGatewayTicket
+  prepare: (baseUrl: string, ticket: string) => string
+  profile: string
+  purpose?: 'interactive' | 'native-http'
+}): Promise<string> {
+  const { mint = mintLocalGatewayTicket, purpose = 'interactive' } = opts
+
+  return redialLocalGateway({
+    ensure: opts.ensure,
+    forget: opts.forget,
+    // A shared-primary descriptor answers for a sibling profile too: the ticket must name
+    // THAT profile's home or its sessions are another owner's.
+    use: async current => {
+      // Callers check the first descriptor; a re-ensure may still answer without one.
+      if (!current.gatewayEndpoint) {throw new Error('Local gateway connection has no gateway endpoint')}
+
+      return opts.prepare(current.baseUrl, await mint(await routedTicketEndpoint(current.gatewayEndpoint, opts.profile, opts.launchHome), purpose))
+    }
+  })
+}
+
+function dialOf(url: string): { nonce: string; origin: string; pathname: string } | null {
   try {
     const parsed = new URL(url)
+    const nonce = parsed.searchParams.get('native_dial')
 
-    return parsed.pathname === '/api/ws' ? parsed.searchParams.get('native_dial') : null
+    return nonce ? { nonce, origin: parsed.origin, pathname: parsed.pathname } : null
   } catch {
     return null
   }
@@ -281,35 +310,50 @@ function dialNonce(url: string): string | null {
 
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.
+// A plugin socket's native-http grant never enters a URL at all: main attaches
+// it as the header its REST twin sends, to that one dial only.
 export function createLocalGatewayDials() {
-  const pending = new Map<string, { ticket: string; webContentsId: number; expires: number }>()
+  const pending = new Map<string, { ticket: string; webContentsId: number; expires: number; origin: string; pathname: string; header: boolean }>()
+
+  const reserve = (url: URL, ticket: string, webContentsId: number, header: boolean) => {
+    for (const [key, value] of pending) {if (value.expires <= Date.now()) {pending.delete(key)}}
+
+    if (pending.size >= 100) {throw new Error('Too many pending gateway dials')}
+    // Keyed by the one-use nonce, not the full URL: a loopback proxy the app dials
+    // through (tests, tunnels) rewrites host:port but carries the query through.
+    // A header grant is the exception: main attaches it, so it is bound to its origin.
+    const nonce = crypto.randomUUID()
+    url.searchParams.set('native_dial', nonce)
+    pending.set(nonce, { ticket, webContentsId, expires: Date.now() + 25_000, origin: url.origin, pathname: url.pathname, header })
+
+    return url.toString()
+  }
 
   return {
     prepare(origin: string, ticket: string, webContentsId: number) {
-      for (const [key, value] of pending) {if (value.expires <= Date.now()) {pending.delete(key)}}
-
-      if (pending.size >= 100) {throw new Error('Too many pending gateway dials')}
-      // Keyed by the one-use nonce, not the full URL: a loopback proxy the app dials
-      // through (tests, tunnels) rewrites host:port but carries the query through.
-      const nonce = crypto.randomUUID()
-      const url = `${origin.replace(/^http/, 'ws')}/api/ws?native_dial=${nonce}`
-      pending.set(nonce, { ticket, webContentsId, expires: Date.now() + 25_000 })
-
-      return `${url}&ticket=${encodeURIComponent(ticket)}`
+      return `${reserve(new URL(`${origin.replace(/^http/, 'ws')}/api/ws`), ticket, webContentsId, false)}&ticket=${encodeURIComponent(ticket)}`
+    },
+    /** `path`: an `/api/plugins/<id>/...` path (query allowed) the caller already validated. */
+    preparePlugin(origin: string, path: string, ticket: string, webContentsId: number) {
+      return reserve(new URL(path, origin.replace(/^http/, 'ws')), ticket, webContentsId, true)
     },
     headers(details: { url: string; webContentsId?: number; resourceType: string; requestHeaders?: Record<string, string> }) {
-      const nonce = dialNonce(details.url)
-      const grant = nonce ? pending.get(nonce) : undefined
+      const dial = dialOf(details.url)
+      const grant = dial ? pending.get(dial.nonce) : undefined
 
-      if (!nonce || !grant || grant.webContentsId !== details.webContentsId || details.resourceType !== 'webSocket') {return null}
-      pending.delete(nonce)
+      if (!dial || !grant || grant.pathname !== dial.pathname || grant.webContentsId !== details.webContentsId
+          || details.resourceType !== 'webSocket' || (grant.header && grant.origin !== dial.origin)) {return null}
+
+      pending.delete(dial.nonce)
 
       if (grant.expires <= Date.now()) {return null}
       const headers = { ...details.requestHeaders }
 
-      for (const key of Object.keys(headers)) {if (key.toLowerCase() === 'origin') {delete headers[key]}}
+      for (const key of Object.keys(headers)) {
+        if (['origin', 'x-hermes-gateway-ticket'].includes(key.toLowerCase())) {delete headers[key]}
+      }
 
-      return headers
+      return grant.header ? { ...headers, 'X-Hermes-Gateway-Ticket': grant.ticket } : headers
     }
   }
 }
@@ -355,27 +399,19 @@ function shellQuote(file: string): string {
   return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
-// Exact `/api/profiles/<suffix>` collection paths, mirroring the gateway's native-http scope check
-// (hermes_cli/dashboard_auth/native_http.py::_check_profile_scope). Matched on the whole suffix, so a
-// profile NAMED `projects` or `sessions` still gets its own ticket on `/api/profiles/projects/soul`.
-const PROFILE_COLLECTION_ROUTES = new Set([
-  'active', 'import', 'projects/tree', 'sessions', 'sessions/pull-requests', 'sessions/sidebar'
-])
-
 /** The batched sidebar names its owner in `recents_profile`. A named profile route carries its
- *  owner in the first path segment; all other profile-scoped routes use `profile`. */
-function scopedProfileOf(url: URL): null | string {
-  const pathname = url.pathname.replace(/\/+$/, '')
+ *  owner in the first path segment (method-aware: `PATCH /api/profiles/active` renames the profile
+ *  named `active`); all other profile-scoped routes use `profile`. */
+function scopedProfileOf(url: URL, method?: string): null | string {
+  const collection = profileCollectionRoute(url.pathname, method)
 
-  if (pathname === '/api/profiles/sessions/sidebar') {
+  if (collection === 'sessions/sidebar') {
     return url.searchParams.get('recents_profile')
   }
 
-  const prefix = '/api/profiles/'
-  const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : ''
-  const segment = suffix.split('/', 1)[0]
+  const segment = profileRouteSuffix(url.pathname).split('/', 1)[0]
 
-  if (segment && !PROFILE_COLLECTION_ROUTES.has(suffix)) {
+  if (segment && !collection) {
     try {
       return decodeURIComponent(segment)
     } catch {
@@ -389,8 +425,8 @@ function scopedProfileOf(url: URL): null | string {
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
  *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
  *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
-export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, _launchHome: string): GatewayEndpoint {
-  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? scopedProfileOf(new URL(urlOrProfile)) : urlOrProfile)?.trim()
+export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, _launchHome: string, method?: string): GatewayEndpoint {
+  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? scopedProfileOf(new URL(urlOrProfile), method) : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
   const own = path.basename(endpoint.profile_id)
@@ -410,8 +446,8 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
 /** `routedGatewayEndpoint` bound to the home the gateway reserved for the routed profile. It serves
  *  `profiles/<name>` at that directory's resolved home, so a symlinked or junction-linked named
  *  profile mints for its target; the gateway still refuses a home it does not serve. */
-export async function routedTicketEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): Promise<GatewayEndpoint> {
-  const routed = routedGatewayEndpoint(endpoint, urlOrProfile, launchHome)
+export async function routedTicketEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string, method?: string): Promise<GatewayEndpoint> {
+  const routed = routedGatewayEndpoint(endpoint, urlOrProfile, launchHome, method)
 
   // The endpoint's own home and the root it was routed from are advertised: they keep their checks.
   if (routed.profile_id === endpoint.profile_id || routed.profile_id === routed.control_home) {return routed}
@@ -425,11 +461,31 @@ export async function routedTicketEndpoint(endpoint: GatewayEndpoint, urlOrProfi
   return { ...routed, profile_id: home }
 }
 
+/** Every purpose a Desktop mints a gateway ticket for (gateway/runtime_bootstrap.py). */
+export type GatewayTicketPurpose = 'interactive' | 'native-http' | 'native-profile-create' | 'native-profile-registry'
+
+/** The native grant a REST request needs. Creating a profile and renaming/deleting the one a path
+ *  names are registry operations with grants of their own; every other route is `native-http`. */
+export function nativeGrantPurpose(url: string, method = 'GET'): GatewayTicketPurpose {
+  const verb = method.toUpperCase()
+  const pathname = new URL(url).pathname.replace(/\/+$/, '')
+
+  if (verb === 'POST' && pathname === '/api/profiles') {return 'native-profile-create'}
+  const suffix = profileRouteSuffix(pathname)
+
+  // Method-aware: PATCH/DELETE of `/api/profiles/active|import|sessions` is the profile of that name.
+  if ((verb === 'PATCH' || verb === 'DELETE') && suffix && !suffix.includes('/') && !profileCollectionRoute(pathname, verb)) {
+    return 'native-profile-registry'
+  }
+
+  return 'native-http'
+}
+
 /** What a native grant is minted for: the URL's own profile selector or, when it names none, a
  *  JSON body's `profile`. The gateway checks both against the grant, and a session write such as
  *  `PATCH /api/sessions/<id>` names its owner in the body alone. */
-export function nativeGrantRoute(url: string, body?: unknown): string {
-  if (scopedProfileOf(new URL(url))?.trim()) {return url}
+export function nativeGrantRoute(url: string, body?: unknown, method?: string): string {
+  if (scopedProfileOf(new URL(url), method)?.trim()) {return url}
   const profile = body && typeof body === 'object' && !Array.isArray(body) ? (body as { profile?: unknown }).profile : undefined
 
   return typeof profile === 'string' && profile.trim() ? profile : url
@@ -440,21 +496,20 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
     throw new Error('Native gateway HTTP origin mismatch')
   }
 
-  const purpose = method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
-    ? 'native-profile-create' : 'native-http'
+  const purpose = nativeGrantPurpose(url, method)
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(await routedTicketEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
+  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(await routedTicketEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body, method), launchHome, method), purpose) }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
 // home whose group-write only Python can prove private.
-let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create') => Promise<string>) | undefined
+let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: GatewayTicketPurpose) => Promise<string>) | undefined
 
 export function configurePythonGatewayTicketClient(client: NonNullable<typeof pythonTicketClient>) {
   pythonTicketClient = client
 }
 
-async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create', homes: string[]) {
+async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: GatewayTicketPurpose, homes: string[]) {
   if (!pythonTicketClient) {throw new Error(`Unsafe gateway control path: profile home is group-writable and this Desktop cannot verify the group is private: run chmod g-w ${homes.map(shellQuote).join(' ')}`)}
 
   try {
@@ -541,11 +596,11 @@ async function resolveControlSocket(home: string): Promise<string> {
 /** The Desktop's interactive socket is the one shared-primary route: its renderer selects every
  *  served sibling with a `profile` param, so it asks for a host-scoped grant explicitly. Every
  *  other ticket (and every other client's) stays bound to the one profile it names. */
-export function ticketScope(purpose: 'interactive' | 'native-http' | 'native-profile-create'): { scope?: 'host' } {
+export function ticketScope(purpose: GatewayTicketPurpose): { scope?: 'host' } {
   return purpose === 'interactive' ? { scope: 'host' } : {}
 }
 
-export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create' = 'interactive'): Promise<string> {
+export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: GatewayTicketPurpose = 'interactive'): Promise<string> {
   if (process.platform === 'win32') {
     if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
 

@@ -35,6 +35,7 @@ from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wordi
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
+from agent.lsp import deferred as lsp_deferred
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -422,10 +423,7 @@ def _unwrap_tool_search_call(
         if underlying not in _tool_search_scoped_names(agent):
             # Session-gated GUI tools name their missing surface (#120413);
             # anything else keeps the generic block.
-            return function_name, function_args, (
-                _ts.out_of_scope_reason(underlying)
-                or f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
-            )
+            return function_name, function_args, _ts.scope_block_reason(underlying)
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.
         scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
@@ -751,7 +749,9 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    from agent.tool_progress_relay import bound_tool_progress
+    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id):
+        return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
 
 
 def _run_agent_tool_execution_middleware(
@@ -1146,7 +1146,9 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
-    # A plugin that went live during this turn is told on this new row (outside any untrusted-data wrapper).
+    # A plugin that went live during this turn, and late LSP verdicts on this session's earlier edits,
+    # are told on this new row (outside any untrusted-data wrapper).
+    lsp_deferred.forward_to_agent(agent)
     plugin_live_notes.attach_to_tool_message(agent, tool_message)
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
@@ -1692,7 +1694,10 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if agent._memory_manager and agent._memory_manager.has_tool(function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
         return _SequentialDispatch(
-            execute=lambda next_args: agent._memory_manager.handle_tool_call(function_name, next_args),
+            execute=lambda next_args: agent._memory_manager.handle_tool_call(
+                function_name, next_args,
+                caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+            ),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
             error_result=lambda e: json.dumps({"error": f"Memory tool '{function_name}' failed: {e}"}),
             error_log="memory_manager.handle_tool_call raised for %s: %s",

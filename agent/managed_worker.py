@@ -24,9 +24,6 @@ import threading
 logger = logging.getLogger(__name__)
 
 MAX_FRAME = 4 * 1024 * 1024
-# Toolsets a managed worker turn never offers (subtracted last, so the tool_search bridge and a
-# restored tools[] pin drop them too): delegate_task's child has no owner registration here.
-WORKER_DISABLED_TOOLSETS = ('delegation',)
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
                     'turn_author', 'safe_mode', 'ignore_user_config'}
 # The bounded run_conversation fields a turn receipt keeps (outcome, exit reason, tokens, cost,
@@ -35,23 +32,42 @@ RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partia
                  'api_calls', 'model', 'provider', 'prompt_tokens', 'completion_tokens', 'total_tokens',
                  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
                  'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
-                 'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens')
+                 'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens',
+                 'billing_block')
+# ``billing_block`` (``agent/billing_links.BillingBlock`` plus ``unverified``) is the one structured field.
+BILLING_FIELDS = ('provider', 'provider_label', 'model', 'billing_url', 'is_nous', 'message', 'unverified')
+
+
+def _scalar(value):
+    return value is None or type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 4096)
+
+
+def _billing_block(value):
+    return isinstance(value, dict) and not set(value) - set(BILLING_FIELDS) and all(map(_scalar, value.values()))
 
 
 def result_frame(result):
     """Worker side: the receipt fields of ``run_conversation``'s result, scalars only, text bounded."""
-    return {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
-            if k in RESULT_FIELDS and (v is None or type(v) in (bool, int, float, str))}
+    frame = {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
+             if k in RESULT_FIELDS and k != 'billing_block' and (v is None or type(v) in (bool, int, float, str))}
+    block = result.get('billing_block')
+    if isinstance(block, dict):
+        frame['billing_block'] = {k: v[:4096] if isinstance(v, str) else v for k, v in block.items()
+                                  if k in BILLING_FIELDS and (v is None or type(v) in (bool, int, float, str))}
+    return frame
 
 
 def accept_result(result):
     """Owner side of the worker's result frame: ``(result, usage)`` in the in-process turn's shape
     (gateway projection: prompt/completion tokens as input/output), or ValueError."""
     if (not isinstance(result, dict) or set(result) - set(RESULT_FIELDS) or not isinstance(result.get('final_response'), str)
-            or any(not (value is None or type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 4096))
-                   for key, value in result.items() if key != 'final_response')):
+            or result.get('billing_block') is not None and not _billing_block(result['billing_block'])
+            or any(not _scalar(value) for key, value in result.items() if key not in ('final_response', 'billing_block'))):
         raise ValueError('invalid_worker_result')
     accepted = dict(result)
+    if accepted.get('billing_block') is None:
+        # Every failure other than a billing wall carries no block.
+        accepted.pop('billing_block', None)
     turn_in, turn_out = accepted.pop('_turn_input_tokens', None), accepted.pop('_turn_output_tokens', None)
     if any(value is not None and (type(value) is not int or value < 0) for value in (turn_in, turn_out)):
         raise ValueError('invalid_worker_result')
@@ -341,10 +357,9 @@ def execute(frame, channel):
         with policy_scope(policy):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
+                # delegate_task stays offered: each child is reserved by the owner under this
+                # execution (agent/runtime_session_child.py) and retires with it.
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
-                # A delegated child needs its own owner-registered execution, which this single-turn
-                # worker cannot reserve; never offer a tool whose only outcome here is a refusal.
-                disabled_toolsets=list(WORKER_DISABLED_TOOLSETS),
                 reasoning_config=policy.reasoning_config,
                 # ``tool`` / ``oneshot`` are storage labels for a CLI-surface agent (session_policy.SURFACES).
                 platform=policy.platform if policy.source in ('tool', 'oneshot') else policy.source,
@@ -423,8 +438,9 @@ def hello():
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
     handle one or two hops above; the owner, never this process, decides whether they match."""
     import psutil
+    from hermes_cli.process_identity import process_birth
     me = psutil.Process()
-    return {'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]}
+    return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
 def main():

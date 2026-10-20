@@ -294,7 +294,10 @@ class GatewayTurnPrepareMixin:
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
-        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+        # Plain lobby recovery here even with ``dm_topic_auto_transfer`` on: the opt-in topic transfer
+        # already ran at adapter ingress (``apply_root_dm_topic_transfer`` -> runner hook
+        # ``_transfer_telegram_root_dm``), before session keying.
+        recovered = (await asyncio.to_thread(self._recover_telegram_lobby_thread_id, source)
                      if not expected_session_key else None)
         if recovered is not None:
             logger.info(
@@ -331,6 +334,23 @@ class GatewayTurnPrepareMixin:
                 source, touch_activity=not bool(getattr(event, "internal", False)),
             )
         session_key = session_entry.session_key
+        claim = getattr(event, "_claimed_owner", None)
+        if claim is not None:
+            from gateway.session_authorities import active_authority
+            authority, (owner, generation) = active_authority(self), claim
+            # /new and /reset latch a Stop for the claimed generation before they move the route;
+            # /resume, /branch and compression don't, so those turns run where the route points.
+            stopped = generation in (authority.pending_stops.get(owner), authority.delivered_stops.get(owner))
+            if stopped and session_entry.session_id not in await asyncio.to_thread(
+                    authority.db.get_compression_chain, owner):  # preflight's continuation walk
+                # It settles interrupted, as that Stop would have, and never runs on the fresh one.
+                logger.warning("Dropping a stopped claimed turn: its route moved from %s to %s before it ran",
+                               owner, session_entry.session_id)
+                from gateway.session_results import execution_result
+                captured = execution_result.get()
+                if captured is not None:
+                    captured['result'] = {'final_response': '', 'messages': [], 'interrupted': True}
+                return
         if not strict_session and pinned_session_id:
             resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id, event_metadata.get("gateway_proven_session_id") or "", event_metadata.get("gateway_completion_ids") or ())
             if resolved_entry is None:
@@ -636,10 +656,13 @@ class GatewayTurnPrepareMixin:
         # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
         # Rendering it here would make every surface hop of one durable session a system-prompt
         # (and prompt-cache) break.
-        if source.platform != Platform.LOCAL and event.internal and session_key:
+        # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
+        # pins exactly like internal events do (and still pass authorization, unlike internal ones).
+        _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
+        if source.platform != Platform.LOCAL and _reuse_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=event.internal)
+            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).

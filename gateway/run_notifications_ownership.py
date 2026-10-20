@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from typing import Any, Optional, Sequence, cast
 
 from gateway.session import SessionEntry
+from hermes_state_errors import StateDbReplacedError
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -63,6 +65,31 @@ class GatewayNotificationOwnershipMixin:
         )
         return "terminal", None
 
+    async def _closed_local_target(
+        self, session_db: Any, entry: Optional[SessionEntry], pinned_session_id: str, pinned_row: Optional[dict],
+    ) -> str:
+        """The closed (/new, exit) physical session of a local conversation a completion is noted on
+        (#134889 LC-7, ``session_completion_notes``), else ``""``. The pinned session, or the compression
+        tip it rotated to, must be the one the conversation's route still names: a local /new opens a new
+        route, so the replacement never matches, and messaging routes never qualify. Only a close ends a
+        local tip (``session.detach {end_reason}`` stamps the client's own reason: ``cli_close``,
+        ``tui_close``, ``tui_shutdown``...), so any end but compression is one."""
+        from gateway.config import Platform
+        if entry is None or entry.platform != Platform.LOCAL or pinned_row is None:
+            return ""
+        target, row = pinned_session_id, pinned_row
+        if row.get("end_reason") == "compression":
+            try:
+                target = await session_db.get_compression_tip(pinned_session_id)
+                row = await session_db.get_session(target) if target == entry.session_id else None
+            except (sqlite3.Error, StateDbReplacedError):
+                logger.debug("Closed local tip lookup failed for %s", pinned_session_id, exc_info=True)
+                return ""  # the compression path below defers it
+        if (target != entry.session_id or row is None or not row.get("ended_at")
+                or row.get("end_reason") == "compression"):
+            return ""
+        return target
+
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
 
@@ -110,6 +137,33 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, None
             session_id = parent
         return "terminal", session_id, None
+
+    async def _watch_pin_gone(self, evt: dict, refusal: str, *, log: bool = True) -> bool:
+        """True (logged once with ``log``) when a refused notice is pinned to a permanently-gone session.
+
+        The session authority admits a notice only into its pinned session or that session's
+        compression continuation, so after /new it refuses the notice on every retry and the drain
+        would spin on it (#141562). This is the completion pre-flight's verdict, applied after the
+        refusal. A dropped notice is gone for good; a /resume reopens the pinned session, so the
+        process's later notices are admitted again.
+        """
+        pinned = str(evt.get("parent_session_id") or "").strip()
+        if not pinned:
+            return False
+        session_key = str(evt.get("session_key") or "")
+        verdict, _owner, _target = await cast(Any, self)._classify_completion_owner(pinned, session_key)
+        if verdict != "terminal":
+            return False
+        if not log:
+            return True
+        logger.warning(
+            "Dropping %s notification of process %s: pinned session %s is permanently gone (closed "
+            "at a user boundary such as /new, or no longer an owner); the route now runs %s and "
+            "refuses it (%s). Output remains available via process(action='log').",
+            evt.get("type") or "watch", evt.get("session_id") or "<unknown>", pinned,
+            cast(Any, self).session_store.peek_session_id(session_key) or "<none>", refusal,
+        )
+        return True
 
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str, proven_session_id: str = "",

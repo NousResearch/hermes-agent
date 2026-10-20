@@ -392,7 +392,7 @@ def test_standalone_secondary_stops_without_stopping_host(mux):
     """Positive OS ownership still permits stopping a real independent gateway."""
     root, boot = mux['root'], mux['boot']
     config = {**mux['config'], 'gateway': {'standalone': True, 'multiplex_profiles': False}}
-    (boot / 'config.yaml').write_text(json.dumps(config))
+    (boot / 'config.yaml').write_text(json.dumps(config), encoding='utf-8')
     host, desc = start_daemon(mux)
     child = None
     try:

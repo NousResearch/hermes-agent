@@ -224,6 +224,7 @@ def _print_host_hint() -> None:
     try:
         pid, record = get_running_pid(), hr.read_record(hr.ROLE_GATEWAY)
     except Exception:
+        logger.debug("Could not read the host record for the stop hint", exc_info=True)
         return
     if pid is not None and record is not None and record.pid == pid:
         print(f"  PID {pid} is the host gateway serving this profile; stopping it would take every "

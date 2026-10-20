@@ -15,6 +15,7 @@ consent and visibility, not a sandbox.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -78,16 +79,44 @@ def _url_problems(where: str, url: Any) -> list[str]:
     return []
 
 
-def _hermes_owned_env(name: str) -> bool:
+@functools.cache
+def _bundled_platform_env_names() -> frozenset[str]:
+    """Every name a bundled platform manifest declares. They ship with Hermes, so one complete read per process;
+    an unreadable one raises instead, and the next call reads again."""
+    from hermes_cli.config import _platform_manifest_env_entries, _platform_plugin_manifests
+
+    skipped: list = []
+    names = frozenset(name for _dir, manifest in _platform_plugin_manifests(source="bundled", skipped=skipped)
+                      for name, _secret, _meta in _platform_manifest_env_entries(manifest))
+    if skipped:
+        raise OSError(f"unreadable bundled platform manifests: {', '.join(map(str, skipped))}")
+    return names
+
+
+def _hermes_owned_env(name: str, manifest: Mapping[str, Any]) -> bool:
     """A variable Hermes itself reads (a provider key, a platform secret): never a plugin's client variable,
-    or a manifest could have Hermes POST that secret to the token URL it names."""
+    or a manifest could have Hermes POST that secret to the token URL it names. Installed platform plugins
+    register their requires_env/optional_env too, for the config form; such a name is the plugin's own when its
+    manifest declares it, as any other plugin's variable is."""
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import _EXTRA_ENV_KEYS, CORE_DECLARED_ENV_NAMES
     from hermes_cli.config_env_routing import is_registered_env_name
+    from hermes_cli.setup_hidden_env import is_setup_hidden_env
 
-    return is_registered_env_name(name) or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
+    if any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values()):
+        return True
+    if not is_registered_env_name(name):
+        return False
+    if (name in CORE_DECLARED_ENV_NAMES or name in _EXTRA_ENV_KEYS or is_setup_hidden_env(name)
+            or name not in _declared_env_names(manifest)):
+        return True
+    try:
+        return name in _bundled_platform_env_names()
+    except OSError:
+        return True
 
 
-def _entry_problems(entry: dict, where: str) -> list[str]:
+def _entry_problems(entry: dict, where: str, manifest: Mapping[str, Any]) -> list[str]:
     oauth_id = entry.get("id")
     problems = [] if isinstance(oauth_id, str) and _ID_RE.match(oauth_id) else [
         f"{where}.id: {entry.get('id')!r} must be lowercase letters, digits and dashes"]
@@ -100,7 +129,7 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
         name = entry.get(field)
         if (required or name) and not (isinstance(name, str) and _ENV_RE.match(name)):
             problems.append(f"{where}.{field}: {name!r} must be an UPPER_SNAKE environment variable name")
-        elif name and _hermes_owned_env(name):
+        elif name and _hermes_owned_env(name, manifest):
             problems.append(f"{where}.{field}: {name} is a variable Hermes uses itself; declare the plugin's own")
     hosts = entry.get("hosts")
     if not (isinstance(hosts, list) and hosts and all(isinstance(h, str) and _HOST_RE.match(h) for h in hosts)):
@@ -130,7 +159,8 @@ def parse_oauth_clients(manifest: Mapping[str, Any]) -> tuple[list[OAuthClient],
     problems: list[str] = []
     for index, entry in enumerate(raw):
         where = f"oauth[{index}]"
-        entry_problems = _entry_problems(entry, where) if isinstance(entry, dict) else [f"{where}: must be a mapping"]
+        entry_problems = (_entry_problems(entry, where, manifest) if isinstance(entry, dict)
+                          else [f"{where}: must be a mapping"])
         if not entry_problems and any(c.id == entry["id"] for c in clients):
             entry_problems = [f"{where}.id: {entry['id']!r} is declared twice"]
         problems += entry_problems

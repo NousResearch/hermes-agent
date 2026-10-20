@@ -14,6 +14,27 @@ import unicodedata
 
 logger = logging.getLogger("tools.approval")
 
+_MAX_COMMAND_SUBSTITUTION_DEPTH = 64
+
+
+class _CommandParserDepthExceeded(Exception):
+    """Raised when nested shell substitutions exceed the bounded parser depth."""
+
+
+def _fail_closed_on_parser_depth(result):
+    def decorate(detector):
+        @functools.wraps(detector)
+        def wrapped(command):
+            try:
+                return detector(command)
+            except _CommandParserDepthExceeded:
+                return result
+
+        return wrapped
+
+    return decorate
+
+
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
 # import-time path snapshot (stale once HERMES_HOME is set after import) lives in the patterns.
@@ -196,6 +217,7 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+@_fail_closed_on_parser_depth((True, "command parser limit exceeded"))
 def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
     if _command_parser_limit_exceeded(command):
@@ -1028,7 +1050,7 @@ def _skip_shell_whitespace(command: str, pos: int) -> int:
 
 def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str = "",
                 brace: bool = False, stop_unterminated: bool = False, naive_backtick: bool = False,
-                comments: bool = False):
+                comments: bool = False, _depth: int = 0):
     """Yield ``(kind, i, j, quote)`` lexical steps over ``text[start:end]`` without expanding.
 
     The single quote/escape state machine behind every detection scanner. ``kind`` is ``"char"``
@@ -1061,7 +1083,7 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
             if ch == "`":
                 close = text.find("`", i + 1) + 1 or None if naive_backtick else _scan_backtick_end(text, i)
             elif text[i + 1] == "(":
-                close = _scan_dollar_paren_end(text, i)
+                close = _scan_dollar_paren_end(text, i, _depth + 1)
             else:
                 close = text.find("}", i + 2) + 1 or None
             if close is not None:
@@ -1075,10 +1097,12 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
         i = j
 
 
-def _scan_dollar_paren_end(command: str, start: int) -> int | None:
+def _scan_dollar_paren_end(command: str, start: int, substitution_depth: int = 1) -> int | None:
     """Return the offset after a balanced ``$(...)`` command substitution."""
+    if substitution_depth > _MAX_COMMAND_SUBSTITUTION_DEPTH:
+        raise _CommandParserDepthExceeded
     depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
+    for kind, i, _, quote in _scan_shell(command, start + 2, _depth=substitution_depth):
         if kind == "char" and not quote:
             depth += command.startswith("$(", i) - (command[i] == ")")
             if depth == 0:
@@ -1169,7 +1193,9 @@ def _is_shell_comment_start(command: str, index: int) -> bool:
 def _iter_shell_command_starts(command: str):
     starts = [0]
 
-    def scan(start: int, end: int) -> None:
+    def scan(start: int, end: int, depth: int = 0) -> None:
+        if depth > _MAX_COMMAND_SUBSTITUTION_DEPTH:
+            raise _CommandParserDepthExceeded
         skip = -1
         for kind, i, j, quote in _scan_shell(command, start, end, subst="uq", stop_unterminated=True,
                                             comments=True):
@@ -1177,7 +1203,7 @@ def _iter_shell_command_starts(command: str):
                 # Record a nested $(...)/backtick command start and scan its body.
                 inner = i + (1 if command[i] == "`" else 2)
                 starts.append(inner)
-                scan(inner, end if j is None else j - 1)
+                scan(inner, end if j is None else j - 1, depth + 1)
             elif kind == "char" and quote is None and i != skip:
                 # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
                 # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
@@ -1545,6 +1571,7 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+@_fail_closed_on_parser_depth((True, "command parser limit exceeded", "command parser limit exceeded"))
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):

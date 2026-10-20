@@ -141,7 +141,14 @@ async def run_task(connection, params):
     payload: dict = {'text': f'work kanban task {params["task_id"]}'}
     if committed is None or 'finite' in committed['payload']:
         payload['finite'] = True
-    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'))
+    # The dispatcher's trusted producer marker (#134889 KB-8): nobody waits on a card attempt, so one
+    # lost across an owner restart settles interrupted instead of pausing the card session. An
+    # attempt main committed without it resubmits unmarked (same digest, original receipt).
+    card = None
+    if committed is None or 'kanban_card_v1' in committed['payload']:
+        card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
+                                     _kanban_card=card)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 
@@ -238,10 +245,19 @@ def _worker_workspace(frame):
     if not session_id:
         yield None
         return
+    from gateway.session_authorities import served_profile_name
     from gateway.session_context import clear_session_vars, set_session_vars
     from gateway.session_policy import bind_turn_workspace, restore_policy
+    from hermes_state_keys import profile_from_session_key
     policy = restore_policy(frame['policy'])
-    tokens = set_session_vars(session_key=frame.get('route') or session_id, session_id=session_id)
+    route = frame.get('route') or session_id
+    # The profile its in-process turns bind, so persistent Docker keys the container they and the
+    # session's side agents use (#140665): a served secondary's name, which its routes carry
+    # (``agent:<name>:``); none for the launch home, whatever its name (``hermes -p beta gateway``
+    # keys ``agent:main:``, and only the default profile runs the multiplexer).
+    profile = served_profile_name(frame.get('home'))
+    tokens = set_session_vars(session_key=route, session_id=session_id,
+                              profile=profile if profile_from_session_key(route) == profile else '')
     try:
         bind_turn_workspace(policy, session_id)
         yield session_id

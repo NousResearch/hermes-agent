@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
-_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp'})
+_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'})
 # Controls that leave the transcript alone authorize on the lineage owner (see ``_owner_ref``).
 _OWNER_AUTHORIZED = _METADATA | {'delete'}
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
@@ -56,7 +56,13 @@ def _authorize_control(authority, actor, ref, params, owner=None):
                 require_history_claim(authority, conn, actor, ref.session_id)
                 cold_history = authorize_history(conn, actor, ref.session_id)
         if not cold_history:
-            authority.authorize(actor, ref, 'session:control')
+            if params.get('operation') == 'delete':
+                # The read gate mounts a cold row first, so the check below sees what it is.
+                authority.authorize(actor, ref, 'session:read')
+            if not (params.get('operation') == 'delete' and authority.sessions[ref.session_id].superseded):
+                # An old conversation its chat moved past is read-only, but deleting it retires its
+                # own lineage only (retirement never evicts a read-only mount's route).
+                authority.authorize(actor, ref, 'session:control')
     return cold_history
 
 
@@ -71,13 +77,18 @@ def _owner_ref(authority, ref, params):
     A transcript- or policy-changing operation (rewind, reset, compress, a policy pick) keeps the
     listed id: its busy gate, generation fence and eviction are keyed by the session it writes, so
     authorizing it on the owner while writing the segment would bypass the owner's FIFO. A segment
-    of a live owner therefore stays a named refusal for those, as on main."""
+    of a live owner therefore stays a named refusal for those, as on main. A delete of a messaging
+    conversation's later compression segment resolves to its lineage root, where its lane's
+    session lives (``messaging_owner_ref``, as resume does)."""
     if params.get('operation') not in _OWNER_AUTHORIZED:
         return ref
     from gateway.session_contract import SessionRef
     from hermes_state_local import local_lineage_owner
     with authority.db._read_ctx() as conn:
         owner = local_lineage_owner(conn, ref.session_id)
+    if owner == ref.session_id and params.get('operation') == 'delete':
+        from gateway.session_route_recovery import messaging_owner_ref
+        return messaging_owner_ref(authority, ref)
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
 
@@ -289,7 +300,8 @@ def _project_committed(authority, ref, operation, result):
     """Publish a committed receipt's runtime projections (safe to repeat on exact retry)."""
     if operation in _POLICY:
         from gateway.session_local import publish_local_policy
-        publish_local_policy(authority, ref.session_id)
+        # The edit policy is read per edit, never by the built agent: it keeps its agent (and prompt cache).
+        publish_local_policy(authority, ref.session_id, evict=operation != 'edit_policy')
         # A drain that ran while the receipt committed off-loop saw the new stored policy beside
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.
@@ -299,7 +311,7 @@ def _project_committed(authority, ref, operation, result):
         # command still waiting for a turn boundary.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
         authority.sessions[ref.session_id].pending_reasoning = None
-    if operation in {'model', 'reasoning', 'workspace'}:
+    if operation in {'model', 'reasoning', 'workspace', 'edit_policy'}:
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.
         from gateway.session_local import local_session_info

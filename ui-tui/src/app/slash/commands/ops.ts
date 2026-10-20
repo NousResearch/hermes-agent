@@ -102,16 +102,31 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
-      // A canonical session's MCP servers are frozen with its launch policy; the shared owner's
-      // pool is every chat's, so there is no per-session reload verb yet.
+      const a = (arg || '').trim().toLowerCase()
+
+      // The shared owner serves a session-scoped reload.mcp: it reconciles only this profile's
+      // servers and moves this session to a new policy generation when idle (session_ancillary.py).
+      // It has no persistent opt-out (`always`), so `always` confirms this once like `now`.
       if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload-mcp'))
+        const confirm = ['always', 'approve', 'now', 'once', 'yes'].includes(a)
+
+        return void ctx.gateway
+          .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid, ...(confirm ? { confirm: true } : {}) })
+          .then(
+            ctx.guarded<ReloadMcpResponse>(r =>
+              ctx.transcript.sys(
+                r.message ||
+                  (r.status === 'confirm_required'
+                    ? t('slashCmd.ops.reloadMcp.confirmRequired')
+                    : t('slashCmd.ops.reloadMcp.reloaded'))
+              )
+            )
+          )
+          .catch(ctx.guardedErr)
       }
 
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
-      const a = (arg || '').trim().toLowerCase()
-
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }

@@ -4,6 +4,8 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 """
 from typing import Literal
 
+from pydantic import RootModel
+
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
@@ -114,6 +116,7 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     profile_id: str | None = None
     profile_name: str | None = None
     cwd: str | None = None
+    edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
@@ -224,6 +227,19 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     clarify_batch: bool = False
 
 
+class CanonicalVoiceStopped(Result):
+    """A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was
+    admitted (TUI-26)."""
+
+    voice_stopped: Literal[True]
+
+
+class CanonicalSubmitResult(RootModel):
+    """``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``."""
+
+    root: AdmissionStatus | CanonicalVoiceStopped
+
+
 class CanonicalSteerQueuedParams(CanonicalSessionParams):
     admission_id: str
 
@@ -247,11 +263,18 @@ class CanonicalCorrectionParams(CanonicalControlParams):
     text: str
 
 
-class CanonicalCorrectionResult(Result):
+class CanonicalCorrectionAck(Result):
     status: Literal['queued', 'redirected', 'rejected']
     text: str
     execution_generation: int
     authority_epoch: int
+
+
+class CanonicalCorrectionResult(RootModel):
+    """``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``
+    when the busy-time text was a bare stop phrase that ended the LOCAL voice chat."""
+
+    root: CanonicalCorrectionAck | CanonicalVoiceStopped
 
 
 class CanonicalApprovalParams(CanonicalControlParams):
@@ -295,7 +318,7 @@ for _name, _params, _result in (
     ('session.steer', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.redirect', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.events.since', CanonicalEventsParams, CanonicalEventsResult),
-    ('prompt.submit', CanonicalSubmitParams, AdmissionStatus),
+    ('prompt.submit', CanonicalSubmitParams, CanonicalSubmitResult),
     ('approval.respond', CanonicalApprovalParams, PromptResponseResult),
 ):
     canonical_method(_name, params=_params, result=_result)

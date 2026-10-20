@@ -38,13 +38,18 @@ def _restore_error(sid):
     ("invalid-id", lambda sid: False, "manual", "Snapshot not found: ../outside"),
     ("other-pid-paused", None, "manual", "Gateway refused the snapshot maintenance handoff"),
     ("satellite-unserve-error", None, "manual", "nothing was restored. Park the profile with `hermes -p state"),
+    # A remote gateway's chat restores this host's snapshot offline, as on main, and stays connected.
+    ("remote", lambda sid: True, None, "Restart recommended"),
 ])
 def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch, capsys,
                                                           case, restore, supervisor, expected):
     home = (tmp_path / "state").resolve()
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
+    if case == "remote":
+        monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://remote.invalid/api/ws")
+    else:
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     snapshot = create_quick_snapshot(hermes_home=home)
     old = _Connection()
@@ -77,7 +82,8 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
 
     out = capsys.readouterr().out
     assert expected in out
-    if case in {"supervised", "invalid-id"}:
+    if case in {"supervised", "invalid-id", "remote"}:
         assert not paused and not old.final  # refused before tearing down the viewer
+        assert store.connection is old  # a remote chat keeps its connection too
     else:
         assert "Reconnecting to the gateway failed: permission_denied" in out

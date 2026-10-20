@@ -32,14 +32,17 @@ def restore_snapshot_command(cli, parts):
             return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
         snap_id = snaps[idx - 1]["id"]
     store = gateway_store(cli)
-    gateway = store is not None and getattr(cli, "_gateway_session_open", False)
+    chat = store is not None and getattr(cli, "_gateway_session_open", False)
+    # A remote gateway's state is not on this host: its chat restores this host's own snapshot offline,
+    # as before, and keeps the remote connection open.
+    gateway = chat and not os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
     try:
         # An invalid/missing target must not take a working gateway offline.
         if gateway and quick_snapshot_dir(snap_id) is not None:
             restored = _restore_gateway_snapshot(cli, store, snap_id)
         else:
             local_db = getattr(cli, "_session_db", None)
-            if local_db is not None and not gateway:
+            if local_db is not None and not chat:
                 with suppress(Exception):
                     local_db.close()
                     cli._session_db = None
@@ -83,8 +86,6 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     from hermes_cli.profiles_remove import wait_profile_unowned
     from hermes_constants import get_hermes_home
     from hermes_state_registry import close_all_under
-    if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
-        raise GatewayClientError("Snapshot restore needs the local gateway. Disconnect the remote gateway and retry.")
     home = get_hermes_home().resolve()
     observed = discover_gateway_endpoint(home)
     if observed.state != "ready" or observed.endpoint is None:

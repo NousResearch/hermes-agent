@@ -280,3 +280,66 @@ model:
             assert vision_tools.check_video_requirements() is False  # no aux client resolves
             assert vision_tools.check_vision_requirements() is True
             assert bt_install.check_browser_vision_requirements() is True
+
+
+# ---------------------------------------------------------------------------
+# ZAI vision routing: Coding Plan keys only have balance on /api/coding/paas/v4
+# ---------------------------------------------------------------------------
+
+
+class TestZaiVisionCodingPlanRouting:
+    """ZAI bills its general and coding surfaces separately — a key on the wrong surface gets
+    429 code 1113 ("insufficient balance"), which surfaces as a misleading vision failure."""
+
+    def test_runtime_resolved_coding_endpoint_wins_over_static_ladder(self, isolated_home, monkeypatch):
+        """A zai main runtime on the coding endpoint must not have vision rewritten to the
+        general surface the static ladder starts at."""
+        _write_config(isolated_home, """
+auxiliary:
+  vision:
+    provider: zai
+""")
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        _fresh_modules()
+
+        from urllib.parse import urlparse
+        from agent.auxiliary_client import resolve_vision_provider_client
+        provider, client, _model = resolve_vision_provider_client(
+            main_runtime={"provider": "zai", "model": "glm-5.3", "api_key": "glm-key",
+                          "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"})
+        assert provider == "zai"
+        assert client is not None
+        base = str(getattr(client, "base_url", ""))
+        assert "/coding/paas/v4" in base, f"expected the runtime's coding endpoint, got {base!r}"
+        assert urlparse(base).hostname == "open.bigmodel.cn"
+
+    def test_static_ladder_spans_both_billing_surfaces(self, isolated_home, monkeypatch):
+        """With no explicit base_url anywhere, the zai vision ladder must offer both billing
+        surfaces, and a resolved main-runtime endpoint is tried before any static entry
+        (user configuration outranks the built-in ladder)."""
+        _write_config(isolated_home, """
+auxiliary:
+  vision:
+    provider: zai
+""")
+        _fresh_modules()
+
+        import agent.auxiliary_client as aux
+        tried = []
+
+        def _capture(provider, model=None, async_mode=False, base_url=None, **_kw):
+            tried.append(str(base_url or ""))
+            return None, None  # walk the whole ladder
+
+        monkeypatch.setattr(aux, "_get_cached_client", _capture)
+        runtime_url = "https://api.z.ai/api/coding/paas/v4"
+        aux.resolve_vision_provider_client(
+            main_runtime={"provider": "zai", "model": "glm-5.3", "base_url": runtime_url})
+        assert tried, "zai vision resolution should attempt at least one URL"
+        assert tried[0] == runtime_url, (
+            f"the main runtime's own endpoint must be tried first, got {tried!r}")
+        coding = [u for u in tried if "/coding/paas/v4" in u]
+        general = [u for u in tried if u and "/coding/" not in u]
+        assert coding and general, (
+            f"the fallback ladder must span coding and general surfaces, got {tried!r}")

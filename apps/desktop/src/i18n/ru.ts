@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruBoot } from './ru_boot'
+import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
@@ -37,6 +38,8 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+
+  catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
   firstRun: ruFirstRun,
@@ -189,15 +192,6 @@ export const ruOverrides = {
     }
   },
   ...ruNotices,
-
-  billingBlock: {
-    titleNous: 'Кредиты Nous закончились',
-    titleProvider: provider => `Кредиты закончились — ${provider}`,
-    fallbackMessage: 'В вашем аккаунте закончились кредиты. Пополните баланс, чтобы продолжить.',
-    openBilling: 'Открыть биллинг',
-    addCredits: 'Пополнить кредиты',
-    dismiss: 'Скрыть'
-  },
 
   titlebar: {
     hideSidebar: 'Скрыть боковую панель',
@@ -1452,17 +1446,7 @@ export const ruOverrides = {
       }
     }
   },
-  skillDeepLink: {
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    source: 'Источник'
-  },
+  skillDeepLink: ruSkillDeepLink,
   skills: {
     plugins: {
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
@@ -3601,6 +3585,12 @@ export const ruOverrides = {
       branchNewChat: 'Ветка в новый чат',
       react: 'Реакция',
       dismissError: 'Скрыть ошибку',
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'Этот чат относится к запланированной задаче',
+          body: 'Он только выполняет эту задачу, поэтому ваше сообщение не было выполнено. Начните новый чат, чтобы отправить его.'
+        }
+      },
       filesChanged: count => `${count} ${RU_PLURAL(count, 'файл изменён', 'файла изменено', 'файлов изменено')}`,
       reviewChanges: 'Проверить',
       readAloudFailed: 'Не удалось зачитать вслух',

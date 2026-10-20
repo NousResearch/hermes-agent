@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { esDesktopCommands } from './es_desktop_commands'
 import { esSessionCommands } from './es_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into es.ts.
@@ -27,12 +28,24 @@ export const esNotices = {
     compactedTurnUnavailable:
       'Ese mensaje se resumió al comprimir el chat, así que ya no se puede restaurar ni editar.',
     staleTurnUnavailable: 'Ese mensaje ya no está en el historial de este chat.',
-    sessionCommands: esSessionCommands
+    sessionCommands: esSessionCommands,
+    desktopCommands: esDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Tu equipo entró en suspensión mientras Hermes trabajaba',
     message:
       'Hermes puede mantener tu equipo activo mientras se ejecuta una tarea. La pantalla se sigue apagando, y con batería el equipo aún puede entrar en suspensión.',
     action: 'Mantener activo mientras trabaja'
+  },
+  billingBlock: {
+    titleNous: 'Sin créditos de Nous',
+    titleProvider: provider => `Sin créditos — ${provider}`,
+    fallbackMessage: 'Tu cuenta se quedó sin créditos. Añade créditos para continuar.',
+    openBilling: 'Abrir facturación',
+    addCredits: 'Añadir créditos',
+    dismiss: 'Descartar'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
+    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug` om die opsommingsverslag op te laai."
   deny:
     stale: "❌ Opdrag geweier (goedkeuring was verouderd)."
     no_pending: "Geen hangende opdrag om te weier nie."
@@ -690,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Iets het verkeerd geloop en ek kon hierdie antwoord nie voltooi nie.{hint}\nGebruik /retry om weer te probeer, of /new om 'n vars gesprek te begin. Tegniese besonderhede is in die gateway-log (`hermes logs`)."
     history_unavailable: "⚠️ Hierdie sessie se geskiedenis is tydelik onbeskikbaar, so hierdie boodskap is nie verwerk nie. Vra die operateur om state.db na te gaan en stuur dit weer sodra dit gesond is. Gebruik /reset slegs as jy doelbewus 'n nuwe gesprek wil begin."
     no_credentials: "⚠️ Ek kon nie met die KI-modeldiens verbind nie, so hierdie boodskap is nie verwerk nie. Gebruik /login om weer aan te meld, of /model om 'n ander model te kies. As dit aanhou misluk, voer `hermes doctor` op die gasheer uit."
+    cron_session_read_only: "⚠️ Hierdie klets behoort aan 'n geskeduleerde taak en voer net daardie taak uit, so jou boodskap is nie uitgevoer nie. Begin 'n nuwe klets om dit te stuur."
   skills:
     disabled: "Die **{name}**-vaardigheid is geïnstalleer, maar gedeaktiveer.\nAktiveer dit met: `hermes skills config`"
     not_installed: "Die **{name}**-vaardigheid is beskikbaar, maar nie geïnstalleer nie.\nInstalleer dit met: `hermes skills install {install_name}`"
@@ -1688,6 +1690,21 @@ slash:
   quit:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
+  modern:
+    thought_for: "Het {seconds}s gedink"
+    thought: "Het gedink"
+    working: "Besig…"
+    preparing: "Berei {what} voor…"
+    hint_steer: "stuur"
+    hint_queue: "in tou"
+    hint_interrupt: "onderbreek"
+    hint_stop: "stop"
+    hint_commands: "opdragte"
+    hint_files: "lêers"
+    hint_shell: "dop"
+    placeholder_busy_steer: "tik om hierdie beurt te stuur · Tab plaas dit in die tou vir daarna"
+    placeholder_busy_interrupt: "tik om hierdie beurt te herlei · Tab plaas dit in die tou vir daarna"
+    placeholder_busy_queue: "tik om 'n boodskap vir ná hierdie beurt in die tou te plaas"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Kon nie faktureringsinligting laai nie"
@@ -2231,6 +2248,7 @@ cli:
     queue_heading: "Tou · {count} in tou · /queue list{controls}"
     more_queued: "+{count} meer"
     transcript_unavailable: "Lewendige transkripsie is nog nie beskikbaar nie."
+    control_pending: "Stuur tans…"
     steer_prompt: "Stuur: "
     roster_empty: "Geen lewendige subagente of agtergrondprosesse nie. Resultate kom in die gesprek aan."
     entry_gone: "Hierdie inskrywing is nie meer lewendig nie."
@@ -2369,6 +2387,14 @@ cli:
     move_out_of_range: "Tou-verplasing buite bereik. Huidige grootte: {size}"
     moved: "Tou-item {source} na {destination} verplaas."
     usage_add: "Gebruik: /queue add <prompt>"
+    gateway_refused: "Die gateway het dit nie in die tou geplaas nie: {error}. Niks is in die tou geplaas nie; stuur dit weer wanneer die beurt eindig."
+    submit_unknown: "Die gateway het nie geantwoord nie ({error}), so die opdrag is dalk reeds in die tou. Kyk na /queue list voordat jy dit weer stuur."
+    move_gateway_fifo: "Die gateway voer toustaande prompts uit in die volgorde waarin dit gestuur is; wysig of verwyder eerder een."
+    remove_refused: "Kon nie tou-item {index} verwyder nie: {error}"
+    edit_refused: "Kon nie tou-item {index} wysig nie: {error}"
+    already_started: "Tou-item {index} het reeds begin; dit loop soos dit gestuur is."
+    started_stopped: "Tou-item {index} het reeds begin; die gateway het dit gestop."
+    change_unknown: "Die gateway het nie oor tou-item {index} geantwoord nie ({error}); kyk na /queue list voordat jy weer probeer."
   reload:
     env_reloaded: ".env herlaai ({count} veranderlike(s) opgedateer)"
   steer:

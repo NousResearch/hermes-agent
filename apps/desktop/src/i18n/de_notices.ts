@@ -1,3 +1,4 @@
+import { deDesktopCommands } from './de_desktop_commands'
 import { deSessionCommands } from './de_session_commands'
 import type { TranslationOverrides } from './define-locale'
 
@@ -27,12 +28,24 @@ export const deNotices = {
     compactedTurnUnavailable:
       'Diese Nachricht wurde beim Komprimieren des Chats zusammengefasst und kann nicht mehr wiederhergestellt oder bearbeitet werden.',
     staleTurnUnavailable: 'Diese Nachricht ist nicht mehr im Verlauf dieses Chats.',
-    sessionCommands: deSessionCommands
+    sessionCommands: deSessionCommands,
+    desktopCommands: deDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Ihr Computer ist eingeschlafen, während Hermes gearbeitet hat',
     message:
       'Hermes kann den Computer wach halten, solange eine Aufgabe läuft. Der Bildschirm schaltet sich weiterhin aus, und im Akkubetrieb kann der Computer trotzdem einschlafen.',
     action: 'Während der Arbeit wach halten'
+  },
+  billingBlock: {
+    titleNous: 'Keine Nous-Credits mehr',
+    titleProvider: provider => `Keine Credits mehr — ${provider}`,
+    fallbackMessage: 'Auf Ihrem Konto sind keine Credits mehr übrig. Fügen Sie Credits hinzu, um fortzufahren.',
+    openBilling: 'Billing öffnen',
+    addCredits: 'Credits hinzufügen',
+    dismiss: 'Schließen'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

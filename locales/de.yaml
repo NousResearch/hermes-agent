@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint: "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
     report_label: "Bericht"
+    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug`, um den Kurzbericht hochzuladen."
   deny:
     stale: "❌ Befehl abgelehnt (Genehmigung war veraltet)."
     no_pending: "Kein ausstehender Befehl zum Ablehnen."
@@ -690,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Etwas ist schiefgelaufen und ich konnte diese Antwort nicht fertigstellen.{hint}\nVersuchen Sie es mit /retry erneut oder starten Sie mit /new eine neue Konversation. Technische Details stehen im Gateway-Log (`hermes logs`)."
     history_unavailable: "⚠️ Der Verlauf dieser Sitzung ist vorübergehend nicht verfügbar, daher wurde diese Nachricht nicht verarbeitet. Bitten Sie den Betreiber, state.db zu prüfen, und senden Sie erneut, sobald alles in Ordnung ist. Verwenden Sie /reset nur, wenn Sie bewusst eine neue Konversation beginnen möchten."
     no_credentials: "⚠️ Ich konnte keine Verbindung zum KI-Modelldienst herstellen, daher wurde diese Nachricht nicht verarbeitet. Verwenden Sie /login, um sich erneut anzumelden, oder /model, um ein anderes Modell zu wählen. Falls es weiterhin fehlschlägt, führen Sie `hermes doctor` auf dem Host aus."
+    cron_session_read_only: "⚠️ Dieser Chat gehört zu einer geplanten Aufgabe und führt nur diese aus, daher wurde deine Nachricht nicht ausgeführt. Starte einen neuen Chat, um sie zu senden."
   skills:
     disabled: "Der Skill **{name}** ist installiert, aber deaktiviert.\nAktivieren Sie ihn mit: `hermes skills config`"
     not_installed: "Der Skill **{name}** ist verfügbar, aber nicht installiert.\nInstallieren Sie ihn mit: `hermes skills install {install_name}`"
@@ -1688,6 +1690,21 @@ slash:
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
+  modern:
+    thought_for: "Nachgedacht für {seconds}s"
+    thought: "Nachgedacht"
+    working: "Arbeitet…"
+    preparing: "Bereite {what} vor…"
+    hint_steer: "lenken"
+    hint_queue: "einreihen"
+    hint_interrupt: "unterbrechen"
+    hint_stop: "stoppen"
+    hint_commands: "Befehle"
+    hint_files: "Dateien"
+    hint_shell: "Shell"
+    placeholder_busy_steer: "tippen, um diesen Zug zu lenken · Tab reiht für danach ein"
+    placeholder_busy_interrupt: "tippen, um diesen Zug umzulenken · Tab reiht für danach ein"
+    placeholder_busy_queue: "tippen, um eine Nachricht für nach diesem Zug einzureihen"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Abrechnung konnte nicht geladen werden"
@@ -2231,6 +2248,7 @@ cli:
     queue_heading: "Warteschlange · {count} wartend · /queue list{controls}"
     more_queued: "+{count} weitere"
     transcript_unavailable: "Live-Transkript noch nicht verfügbar."
+    control_pending: "Wird gesendet…"
     steer_prompt: "Steuern: "
     roster_empty: "Keine aktiven Subagenten oder Hintergrundprozesse. Ergebnisse erscheinen in der Konversation."
     entry_gone: "Dieser Eintrag ist nicht mehr aktiv."
@@ -2369,6 +2387,14 @@ cli:
     move_out_of_range: "Verschiebung außerhalb der Warteschlange. Aktuelle Größe: {size}"
     moved: "Warteschlangeneintrag {source} nach {destination} verschoben."
     usage_add: "Verwendung: /queue add <prompt>"
+    gateway_refused: "Das Gateway hat es nicht eingereiht: {error}. Nichts wurde eingereiht; sende es erneut, wenn der Zug endet."
+    submit_unknown: "Das Gateway hat nicht geantwortet ({error}), der Prompt ist also vielleicht schon eingereiht. Prüfe /queue list, bevor du ihn erneut sendest."
+    move_gateway_fifo: "Das Gateway führt eingereihte Prompts in Sendereihenfolge aus; bearbeite oder entferne stattdessen einen."
+    remove_refused: "Warteschlangeneintrag {index} konnte nicht entfernt werden: {error}"
+    edit_refused: "Warteschlangeneintrag {index} konnte nicht bearbeitet werden: {error}"
+    already_started: "Warteschlangeneintrag {index} hat bereits begonnen; er läuft wie gesendet."
+    started_stopped: "Warteschlangeneintrag {index} hatte bereits begonnen; das Gateway hat ihn gestoppt."
+    change_unknown: "Das Gateway hat zu Warteschlangeneintrag {index} nicht geantwortet ({error}); prüfe /queue list, bevor du es erneut versuchst."
   reload:
     env_reloaded: ".env neu geladen ({count} Variable(n) aktualisiert)"
   steer:

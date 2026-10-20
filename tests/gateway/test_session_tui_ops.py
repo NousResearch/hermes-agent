@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_state import SessionDB
 from tests.gateway.test_session_busy_controls import owner, settled
 from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
 
@@ -117,6 +118,48 @@ async def _git_rpc(ws, method, **params):
             if reply.get('id') == method:
                 return reply
 
+
+@pytest.mark.platforms("linux")
+def test_session_export_keeps_the_assistant_reply_and_refuses_a_client_path(tmp_path):
+    """T11: the JSON export carries the assistant's reply, and a client cannot steer a gateway-side
+    write with ``path`` (unknown params are refused; the client alone picks where the file goes)."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='export', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first', text='EXPORT_ME')
+                await settled(home)
+                exported = (await rpc(ws, 'session.export', session_id=sid, format='json'))['result']
+                contents = [m.get('content') for m in json.loads(exported['content'])['messages']]
+                assert 'CONTROL_ACK' in contents, contents
+                refused = await rpc(ws, 'session.export', session_id=sid, format='md', path='/etc/x')
+                assert refused['error']['message'] == 'invalid_params', refused
+                assert not (home / 'sessions' / 'saved').exists(), 'session.export must not write on the gateway host'
+        asyncio.run(probe())
+
+
+
+@pytest.mark.platforms("linux")
+def test_session_export_json_restores_with_its_title_through_import_sessions(tmp_path):
+    """CLI-19: the classic CLI's ``/save json`` is this export, so it must be the canonical snapshot:
+    ``import_sessions`` restores the session with its title and messages."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='rt', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first', text='SAVE_ME')
+                await settled(home)
+                revision = (await rpc(ws, 'session.resume', session_id=sid))['result']['revision']
+                renamed = await rpc(ws, 'session.mutate', session_id=sid, request_id='title', expected_revision=revision,
+                                    operation='rename', payload={'title': 'Saved Title'})
+                assert 'result' in renamed, renamed
+                data = json.loads((await rpc(ws, 'session.export', session_id=sid, format='json'))['result']['content'])
+                assert data['title'] == 'Saved Title' and all('active' in m for m in data['messages']), data
+                with SessionDB(db_path=tmp_path / 'restored.db') as restored:
+                    assert restored.import_sessions([data])['ok']
+                    assert restored.get_session(data['id'])['title'] == 'Saved Title'
+                    assert 'SAVE_ME' in [m['content'] for m in restored.get_messages(data['id'])]
+        asyncio.run(probe())
 
 def _checkpoint(home, cwd, reason):
     """A checkpoint in the owner profile's shared store (what the agent takes before a write)."""

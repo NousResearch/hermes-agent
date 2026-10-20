@@ -145,3 +145,31 @@ async def test_a_read_that_clears_a_goal_barrier_repaints_the_other_viewers(owne
     await owner.call(kind, call)
     assert len(updates) == 1 and 'wait_barrier' not in updates[0]['control']['goal']
     assert updates[0]['control']['loop']['deferred_by_goal'] is True
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_moves_the_goal_mid_turn_repaints_the_viewers_once(owner):
+    """A plugin tool writes goal criteria mid-turn: the turn's tool-completion callback republishes the new
+    snapshot once, and a tool that changed nothing publishes nothing."""
+    import asyncio
+    from gateway.config import Platform
+    from hermes_cli.goals import GoalManager
+    from tests.gateway.test_local_viewer_events_turn import _turn
+    await owner.call('goal', 'set', 'ship it')
+    updates = []
+    owner.authority.sessions[owner.ref.session_id].event_stream.observers.add(
+        lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']['payload']))
+    turn = _turn(Platform.LOCAL, [])
+    turn._approval_owner = (owner.authority, owner.ref.session_id, 1)
+    turn._schedule = lambda coro, _message: asyncio.ensure_future(coro)
+
+    async def tool_completes(write=None):
+        if write:
+            GoalManager(session_id=owner.target).add_subgoal(write)  # the plugin tool's own write
+        turn.combined_tool_complete_callback('call', 'probe', {}, 'ok')
+        await asyncio.sleep(0)
+    await tool_completes()
+    assert updates == []
+    await tool_completes('tests pass')
+    await tool_completes()
+    assert [u['control']['goal']['subgoals'] for u in updates] == [['tests pass']]

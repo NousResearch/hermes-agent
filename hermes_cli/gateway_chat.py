@@ -9,7 +9,8 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
+from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
@@ -133,8 +134,7 @@ async def _resume(client, args, **params):
         return await client.rpc("session.resume", **params, **({"api_key": key} if key else {}))
     except GatewayClientError as exc:
         if key and str(exc) == "admission_conflict":
-            raise GatewayClientError("--api-key on resume must be the key this session was launched with "
-                                     "(a session launched without --api-key keeps its profile credentials).") from None
+            raise GatewayClientError(RESUME_KEY_MISMATCH) from None
         raise
 
 
@@ -147,7 +147,7 @@ async def _resume_latest(client, args):
         try:
             return await _resume(client, args, session_id=crumb)
         except GatewayClientError as exc:
-            if str(exc) not in {"not_found", "permission_denied"}:
+            if str(exc) not in RESUME_REFUSALS:
                 raise
     workspace = await asyncio.to_thread(_workspace_key, _caller_cwd(args))
     try:
@@ -267,7 +267,7 @@ def resume_policy_error(keys):
 
 def exit_on_resume_refusal(exc):
     """A refused resume is a usage error on every classic path (interactive startup's copy): ``Error:``, exit 2."""
-    if isinstance(exc, GatewayClientError) and str(exc).startswith(_RESUME_POLICY_MISMATCH):
+    if isinstance(exc, GatewayClientError) and str(exc).startswith((_RESUME_POLICY_MISMATCH, RESUME_KEY_MISMATCH)):
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 

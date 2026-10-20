@@ -164,6 +164,7 @@ gateway:
     full_logs_hint: "Para enviar logs completos, usa `hermes debug share` a partir da CLI."
     share_hint: "Partilha estes links com a equipa do Hermes para obter suporte."
     report_label: "Relatório"
+    local_refused: "`/debug local` mantém o relatório na máquina que executa o Hermes, por isso não está disponível num chat. Envie `/debug` para enviar o relatório resumido."
   deny:
     stale: "❌ Comando negado (a aprovação tinha expirado)."
     no_pending: "Não há nenhum comando pendente para negar."
@@ -690,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Algo deu errado e não consegui concluir esta resposta.{hint}\nUse /retry para tentar novamente ou /new para iniciar uma nova conversa. Os detalhes técnicos estão no log do gateway (`hermes logs`)."
     history_unavailable: "⚠️ O histórico desta sessão está temporariamente indisponível, então esta mensagem não foi processada. Peça ao operador para inspecionar o state.db e reenvie quando estiver íntegro. Use /reset apenas se quiser intencionalmente iniciar uma nova conversa."
     no_credentials: "⚠️ Não consegui me conectar ao serviço do modelo de IA, então esta mensagem não foi processada. Use /login para entrar novamente ou /model para escolher outro modelo. Se continuar falhando, execute `hermes doctor` no host."
+    cron_session_read_only: "⚠️ Este chat pertence a uma tarefa agendada e só executa essa tarefa, por isso a sua mensagem não foi executada. Inicie um novo chat para enviá-la."
   skills:
     disabled: "A skill **{name}** está instalada, mas desativada.\nAtive-a com: `hermes skills config`"
     not_installed: "A skill **{name}** está disponível, mas não instalada.\nInstale-a com: `hermes skills install {install_name}`"
@@ -1688,6 +1690,21 @@ slash:
   quit:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
+  modern:
+    thought_for: "Pensou por {seconds}s"
+    thought: "Pensou"
+    working: "Trabalhando…"
+    preparing: "Preparando {what}…"
+    hint_steer: "guiar"
+    hint_queue: "enfileirar"
+    hint_interrupt: "interromper"
+    hint_stop: "parar"
+    hint_commands: "comandos"
+    hint_files: "arquivos"
+    hint_shell: "shell"
+    placeholder_busy_steer: "digite para guiar este turno · Tab enfileira para depois"
+    placeholder_busy_interrupt: "digite para redirecionar este turno · Tab enfileira para depois"
+    placeholder_busy_queue: "digite para enfileirar uma mensagem para depois deste turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Não foi possível carregar a cobrança"
@@ -2231,6 +2248,7 @@ cli:
     queue_heading: "Fila · {count} na fila · /queue list{controls}"
     more_queued: "+{count} mais"
     transcript_unavailable: "Transcrição ao vivo ainda não disponível."
+    control_pending: "Enviando…"
     steer_prompt: "Redirecionar: "
     roster_empty: "Nenhum subagente ativo nem processo em segundo plano. Os resultados chegam na conversa."
     entry_gone: "Esta entrada não está mais ativa."
@@ -2369,6 +2387,14 @@ cli:
     move_out_of_range: "Movimento na fila fora do intervalo. Tamanho atual: {size}"
     moved: "Item {source} da fila movido para {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "O gateway não o enfileirou: {error}. Nada foi enfileirado; envie novamente quando o turno terminar."
+    submit_unknown: "O gateway não respondeu ({error}), então o prompt pode já estar na fila. Confira /queue list antes de enviá-lo de novo."
+    move_gateway_fifo: "O gateway executa prompts enfileirados na ordem de envio; edite ou remova um em vez disso."
+    remove_refused: "Não foi possível remover o item {index} da fila: {error}"
+    edit_refused: "Não foi possível editar o item {index} da fila: {error}"
+    already_started: "O item {index} da fila já começou; ele roda como foi enviado."
+    started_stopped: "O item {index} da fila já tinha começado; o gateway o parou."
+    change_unknown: "O gateway não respondeu sobre o item {index} da fila ({error}); confira /queue list antes de tentar de novo."
   reload:
     env_reloaded: ".env recarregado ({count} variável(is) atualizada(s))"
   steer:

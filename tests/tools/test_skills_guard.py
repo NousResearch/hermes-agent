@@ -644,6 +644,32 @@ def test_relaxed_rule_attack_still_blocks(tmp_path, case):
 class TestFalsePositiveReductions:
     """Patterns that previously flagged benign, intrinsic skill content."""
 
+    def test_fixed_path_proc_introspection_is_not_traversal(self, tmp_path):
+        # #132155: reading /proc/1/cgroup (or stat/loadavg) under a numeric PID is standard
+        # container detection — the fixed path names one read-only kernel file, so it scored
+        # `high` and blocked a diagnostics plugin's install for nothing.
+        f = tmp_path / "host_pressure_probe.sh"
+        f.write_text(
+            "grep -qaE 'docker|containerd|kubepods|lxc|podman' /proc/1/cgroup 2>/dev/null\n"
+            "cat /proc/1/stat /proc/loadavg\n",
+            encoding="utf-8")
+        assert not any(fi.pattern_id == "proc_access" for fi in scan_file(f, f.name))
+
+    def test_proc_escape_and_variable_pid_paths_still_fire(self, tmp_path):
+        # Control for #132155: only fixed numeric introspection is exempt. Escaping the
+        # sandbox through /proc/<pid>/root|cwd, and any variable-PID path (a $VAR, ${VAR} or
+        # $(cmd) PID targets whatever the runtime resolves — other processes' cmdline can
+        # leak their argv secrets) must keep scoring high.
+        f = tmp_path / "escape.sh"
+        f.write_text(
+            "cat /proc/1/root/etc/shadow\n"
+            "ln -s /proc/1/cwd/../../ /tmp/host\n"
+            "cat /proc/$PID/cmdline /proc/${PID}/status\n"
+            "cat /proc/$(pidof nginx)/cmdline\n"
+            "cat /proc/self/environ\n",
+            encoding="utf-8")
+        assert any(fi.pattern_id == "proc_access" for fi in scan_file(f, f.name))
+
     def test_markdown_link_destination_is_not_path_traversal(self, tmp_path):
         # #110974: a 3-level relative doc link in a README is documentation structure, not
         # filesystem access, yet it scored `high` and hard-blocked community installs.

@@ -151,11 +151,62 @@ async def test_reset_copies_the_parent_surface_and_falls_back_to_policy(tmp_path
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_path, monkeypatch):
+    """The compress mutation copies the parent's surface. A NULL or ``local`` parent is not a
+    surface, so the child falls back to the policy label."""
+    from hermes_state_mutation_compress import compress_in_transaction
+    from hermes_state_mutation_prepared import local_snapshot
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        def compress(sid):
+            def write(conn):
+                snapshot = local_snapshot(authority.db, conn, sid)
+                prepared = {'snapshot': snapshot, 'in_place': False,
+                            'messages': [{'role': 'user', 'content': 'hi'}]}
+                return compress_in_transaction(authority.db, conn, sid, {}, prepared)
+            return authority.db._execute_write(write)[1]['target_session_id']
+
+        for parent_created, expected in (('desktop', 'desktop'), (None, 'cli'), ('local', 'cli')):
+            created = await _call(owner, 'session.create', request_id=f'compress-{parent_created}',
+                                  source='cli', cwd=str(tmp_path), toolsets=[], model='m')
+            sid = created['session_id']
+            _set_created(authority.db, sid, parent_created)
+            row = authority.db.get_session(compress(sid))
+            assert row['created_source'] == expected, (parent_created, row['created_source'])
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
 def _listed(db, source, capsys):
     from argparse import Namespace
     from hermes_cli.sessions_cmd import _cmd_list
     _cmd_list(db, Namespace(limit=20, source=source, workspace=None))
     return capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('surface', 'labels'), [('gui', ('gui', 'desktop')), ('acp', ('acp',))])
+async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
+        tmp_path, monkeypatch, capsys, surface, labels):
+    """session.create stamps the agent surface (gui is desktop). --source accepts
+    either name, before the peer refresh and after the row is stored as local."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id=surface, source=surface,
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'before peer')
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

@@ -40,3 +40,33 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
     _cmd_stats(db, Namespace())
     assert "cli: 3 sessions" in capsys.readouterr().out  # stats counts every segment
     db.close()
+
+
+def test_reader_on_a_read_only_store_from_before_the_column_and_the_runtime_tables(tmp_path):
+    """A read-only open does not migrate. A store without ``created_source`` still counts its
+    source=cli rows, and one without ``session_admissions`` still resolves ``-c`` by messages."""
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+
+    path = tmp_path / "old.db"
+    writer = SessionDB(db_path=path)
+    writer.create_session("legacy-cli", source="cli")
+    writer.append_message("legacy-cli", role="user", content="hi")
+    writer.create_session("legacy-stub", source="cli")
+    with writer._lock:
+        writer._conn.execute("UPDATE sessions SET started_at = started_at + 60 WHERE id = 'legacy-stub'")
+        writer._conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
+        writer._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
+        writer._conn.execute("DROP TABLE session_admissions")
+        writer._conn.commit()
+    writer.close()
+    ro = SessionDB(db_path=path, read_only=True)
+    try:
+        reader = SurfaceLabelReader(ro)
+        assert reader.session_count(source="cli") == 2
+        assert [row["id"] for row in reader.search_sessions(source="cli", limit=1, skip_launch_stubs=True)] == [
+            "legacy-cli"]
+        tables = {row[0] for row in ro._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        columns = {row[1] for row in ro._conn.execute("PRAGMA table_info(sessions)")}
+        assert "created_source" not in columns and "session_admissions" not in tables
+    finally:
+        ro.close()

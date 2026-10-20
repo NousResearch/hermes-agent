@@ -16,7 +16,7 @@ _UNAVAILABLE = "Clarify tool is not available in this execution context."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
-def mark_recommended(choices: List[str]) -> List[str]:
+def mark_recommended(choices: list[str]) -> list[str]:
     """Suffix the first choice (schema says best-first) with RECOMMENDED_LABEL; idempotent,
     and a lone choice is left untouched (nothing to prefer it over)."""
     first = str(choices[0]).strip() if choices else ""
@@ -92,7 +92,7 @@ def _response_status(qid: str, answers: dict, multi: bool) -> tuple:
     return ("skipped" if qid in answers else "unanswered"), None
 
 
-def _result(normalized: List[dict], reply: dict) -> str:
+def _result(normalized: list[dict], reply: dict) -> str:
     """Result JSON from a callback reply ``{"answers": {qid: raw | None}, "outcome", "notice"?}``:
     every response carries ``status`` and ``user_response`` (null unless answered); ``outcome``
     says how the wait ended and ``notice`` (surface-supplied) says why."""
@@ -102,7 +102,7 @@ def _result(normalized: List[dict], reply: dict) -> str:
         status, value = _response_status(entry["qid"], answers, entry["multi_select"])
         responses.append({"question": entry["question"], "choices_offered": entry["choices_offered"],
                           "status": status, "user_response": value})
-    result: Dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
+    result: dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
     if reply.get("notice"):
         result["notice"] = str(reply["notice"])
     return json.dumps(result, ensure_ascii=False)
@@ -116,10 +116,16 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
-    try:
-        return _result(normalized, callback(normalized))
-    except Exception as exc:
-        return tool_error(f"Failed to get user input: {exc}")
+    from tools.human_input_hooks import human_input_request
+    # Observers see the questions only; the answers stay in the tool result.
+    with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized)) as human:
+        try:
+            reply = callback(normalized)
+            human.outcome = str(reply.get("outcome") or "")
+            return _result(normalized, reply)
+        except Exception as exc:
+            human.outcome = "error"
+            return tool_error(f"Failed to get user input: {exc}")
 
 
 def check_clarify_requirements() -> bool:

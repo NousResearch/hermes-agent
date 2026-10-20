@@ -1,0 +1,68 @@
+name: yuanbao-platform
+label: Yuanbao
+kind: platform
+version: 1.0.0
+description: >
+  Tencent Yuanbao gateway adapter for Hermes Agent.
+  Connects to Yuanbao IM Bot over a persistent WebSocket (HMAC-signed sign token)
+  and relays DMs and group messages between Yuanbao and the Hermes agent.
+  Supports native media/stickers, DM/group access policies, and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: YUANBAO_APP_ID
+    description: "The App ID from your Yuanbao IM Bot credentials (legacy alias: YUANBAO_APP_KEY)"
+    prompt: "App ID"
+    password: false
+  - name: YUANBAO_APP_SECRET
+    description: "The App Secret (used for HMAC signing) from your Yuanbao IM Bot"
+    prompt: "App Secret"
+    password: true
+optional_env:
+  - name: YUANBAO_BOT_ID
+    description: "Bot account ID (auto-detected from the sign token when unset)"
+    prompt: "Bot ID"
+    password: false
+  - name: YUANBAO_WS_URL
+    description: "Override the Yuanbao WebSocket gateway URL"
+    prompt: "WebSocket URL"
+    password: false
+  - name: YUANBAO_API_DOMAIN
+    description: "Override the Yuanbao API domain (sign-token endpoint)"
+    prompt: "API domain"
+    password: false
+  - name: YUANBAO_ROUTE_ENV
+    description: "Routing environment header for non-production Yuanbao backends"
+    prompt: "Route env"
+    password: false
+  - name: YUANBAO_DM_POLICY
+    description: "DM access policy: open, allowlist or disabled"
+    prompt: "DM policy (open|allowlist|disabled)"
+    password: false
+  - name: YUANBAO_DM_ALLOW_FROM
+    description: "Comma-separated user IDs allowed to DM the bot (allowlist policy)"
+    prompt: "DM allowlist (comma-separated)"
+    password: false
+  - name: YUANBAO_GROUP_POLICY
+    description: "Group access policy: open, allowlist or disabled"
+    prompt: "Group policy (open|allowlist|disabled)"
+    password: false
+  - name: YUANBAO_GROUP_ALLOW_FROM
+    description: "Comma-separated group IDs allowed (allowlist policy)"
+    prompt: "Group allowlist (comma-separated)"
+    password: false
+  - name: YUANBAO_ALLOWED_USERS
+    description: "Comma-separated Yuanbao user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: YUANBAO_ALLOW_ALL_USERS
+    description: "Allow any Yuanbao user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: YUANBAO_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: YUANBAO_HOME_CHANNEL_NAME
+    description: "Display name for the home channel"
+    prompt: "Home channel name"
+    password: false

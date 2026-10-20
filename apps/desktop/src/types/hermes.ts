@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -181,6 +181,10 @@ export interface FreeTierStatus {
   error_code?: string
   retryable?: boolean
   retry_after?: number
+  /** Present while the backend is waiting on a browser challenge. */
+  challenge?: FreeTierChallengePayload | null
+  /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
+  nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -482,9 +486,12 @@ export interface HermesConfig {
   }
   display?: {
     show_reasoning?: boolean | string
+    /** Per-platform overrides; a local session's `/reasoning show|hide` saves `platforms.cli`. */
+    platforms?: Record<string, { show_reasoning?: boolean | string } | undefined>
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    busy_input_mode?: string
     timestamps?: boolean
     tool_progress?: boolean | string
   }
@@ -834,12 +841,18 @@ export interface SessionResumeResult {
 }
 
 export interface SessionRuntimeInfo {
+  stored_session_id?: string
+  pending_submissions?: unknown
+  /** Canonical snapshot only: the session replay epoch and event sequence its pending set reflects. */
+  replay_epoch?: string
+  last_sequence?: number
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
+  desktop_protocol?: string
   fast?: boolean
   install_warning?: string
   model?: string
@@ -1039,6 +1052,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  repeat?: number
   schedule: string
 }
 
@@ -1096,9 +1110,14 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {
+  soul?: string
   clone_all?: boolean
   clone_from?: null | string
   clone_from_default?: boolean
@@ -1118,8 +1137,6 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
-  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
-  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1253,6 +1270,9 @@ export interface ToolProvider {
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]
+  /** Set on the "Nous Subscription" rows (e.g. 'web'): served through the
+   *  Nous Tool Gateway rather than the user's own key. */
+  managed_nous_feature?: null | string
 }
 
 /** A web toolset capability — the runtime dispatches web_search and
@@ -1270,6 +1290,10 @@ export interface ToolsetConfig {
   active_search_backend?: string | null
   /** Web toolset only: backend the web_extract tool resolves to right now. */
   active_extract_backend?: string | null
+  /** Web toolset only: web_search / web_extract currently go through the Nous
+   *  Tool Gateway (billed to the subscription) instead of the user's own key. */
+  search_via_nous?: boolean
+  extract_via_nous?: boolean
 }
 
 /** Health status of a terminal execution backend row.
@@ -1480,8 +1504,8 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  best-quality-resident | speed-gated-quality | fastest-resident |
-   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+   *  product-default | best-quality-resident | speed-gated-quality.
+   *  Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
   downloaded_model_id?: string | null
@@ -1546,6 +1570,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {
@@ -1577,6 +1606,13 @@ export interface BackendUpdateCheckResponse {
   current_version: string
   behind: number | null
   update_available: boolean
+  /** A stable release this build already contains: applying it moves back. */
+  rollback_to?: null | string
+  /** Update-available only; absent on older backends. */
+  channel?: string
+  branch?: null | string
+  /** Stable: the release version the update installs, e.g. `0.22.0`. */
+  source_version?: null | string
   can_apply: boolean
   update_command: string | null
   message: string | null
@@ -1585,10 +1621,21 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Plugin tasks with `inherit_from` only: the route the task resolves to right now
+   *  (the base slot's while this slot is unpinned). Absent on older backends. */
+  effective?: { base_url: string; model: string; provider: string }
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  hint?: string
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: null | string
+  label?: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
   local_endpoint?: boolean
   model: string
+  plugin?: string
   provider: string
   /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
    *  means the task inherits the main agent's effort. */
@@ -1792,8 +1839,6 @@ export interface McpCatalogEntry {
     examples?: string[]
     requires_app?: boolean
   } | null
-  /** Observed on this entry's backend host, not proof that its MCP is usable. */
-  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1802,7 +1847,6 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
-  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

@@ -16,6 +16,15 @@ class _AbortedStartupRunner:
     """Aborts before running mode so start_gateway() returns right after installing signal handlers."""
 
     def __init__(self, config):
+        # The unified bootstrap builds the session authority against the runner's real store
+        # and stops it on every exit path (same shape as test_startup_restart_race.py).
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
+        self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+        self._session_db = SessionDB(get_hermes_home() / 'state.db')
+        self.session_store._db = self._session_db
+        self._draining = False
         self.config = config
         self.adapters = {}
         self._running = False
@@ -32,6 +41,10 @@ class _AbortedStartupRunner:
 
     async def wait_for_shutdown(self):
         return None
+
+    async def stop(self):
+        self.session_store.close_all_db_handles()
+        self._session_db.close()
 
     def request_restart(self, *, detached=False, via_service=False):
         self.restart_calls.append({"detached": detached, "via_service": via_service})

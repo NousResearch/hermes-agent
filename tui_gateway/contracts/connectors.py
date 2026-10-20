@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .base import Result, WireEnum
 from .common import ConnectorOwner, ProfileParams
@@ -12,6 +12,8 @@ from .connectors_operation import ConnectionOperationStatus
 from .registry import method
 
 ConnectorSlug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")]
+# The name of one hosted account of a connector (the gateway's account alias format).
+ConnectorAlias = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
 
 
 class ConnectorErrorReason(WireEnum):
@@ -38,6 +40,7 @@ class ConnectorErrorReason(WireEnum):
     org_required = "ORG_REQUIRED"
     org_access_denied = "ORG_ACCESS_DENIED"
     invalid_policy = "INVALID_POLICY"
+    alias_taken = "ALIAS_TAKEN"
 
 
 class ConnectorsListParams(ProfileParams):
@@ -70,6 +73,18 @@ class ConnectorsConnectParams(ProfileParams):
     owner: ConnectorOwner
     connectors: list[ConnectorSlug] = Field(min_length=1)
     reconnect: bool = False
+    # Connects (or, with ``reconnect``, repairs) the account of that name; one connector per call.
+    alias: ConnectorAlias | None = None
+    # With ``reconnect``: repairs this existing account, the only way to address an unnamed one.
+    connection_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _one_connector_per_alias(self):
+        if self.alias is not None and len(self.connectors) != 1:
+            raise ValueError("alias names one account, so it takes exactly one connector")
+        if self.connection_id is not None and (not self.reconnect or len(self.connectors) != 1 or self.alias):
+            raise ValueError("connection_id repairs one account: it needs reconnect, one connector and no alias")
+        return self
 
 
 class ConnectorsConnectResult(ConnectionOperationStatus):
@@ -183,6 +198,8 @@ class ConnectorAccountRow(Result):
     label: str
     alias: str | None = None
     active: bool
+    # Retired by a reconnect that replaced it; kept, never selectable.
+    disabled: bool = False
     created_at: str
     updated_at: str
 
@@ -214,6 +231,19 @@ method(
     params=ConnectorAccountsRemoveParams,
     result=ConnectorAccountsRemoveResult,
     doc="Remove one hosted connector account owned by the scoped member.",
+)
+
+
+class ConnectorAccountsRenameParams(ProfileParams):
+    connection_id: str = Field(min_length=1)
+    alias: ConnectorAlias
+
+
+method(
+    "connectors.accounts.rename",
+    params=ConnectorAccountsRenameParams,
+    result=ConnectorAccountRow,
+    doc="Name or rename one hosted connector account owned by the scoped member.",
 )
 
 

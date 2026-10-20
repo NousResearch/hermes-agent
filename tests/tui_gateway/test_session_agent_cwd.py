@@ -51,7 +51,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_CWD", str(other))
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda agent, session: {"cwd": session["cwd"]})
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)

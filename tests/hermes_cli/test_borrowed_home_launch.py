@@ -8,6 +8,7 @@ dependency sync leaves.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 import sys
 
@@ -30,8 +31,12 @@ def _no_tool_downloads(monkeypatch):
 
 @pytest.fixture
 def completion_tail(monkeypatch):
+    """Record the completion child instead of running it (the tail spawns via update_custody.run)."""
+    from hermes_cli import update_custody
+
     spawned: list = []
-    monkeypatch.setattr(venv_sync.subprocess, "call", lambda command, **kw: spawned.append(command) or 0)
+    monkeypatch.setattr(update_custody, "run", lambda command, **kw: spawned.append(command)
+                        or subprocess.CompletedProcess(command, 0))
     return spawned
 
 

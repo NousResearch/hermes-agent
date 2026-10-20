@@ -226,8 +226,8 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
 
     monkeypatch.setattr(httpx, "get", catalog_get)
     # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda: [])
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", list)
     monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
     monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
 

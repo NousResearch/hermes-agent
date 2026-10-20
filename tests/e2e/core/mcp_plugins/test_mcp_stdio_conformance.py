@@ -58,10 +58,6 @@ UNSUPPORTED_IMAGES = ("svg", "avif", "tiff", "heic", "badb64")
 # Open bugs on origin/main: test id -> (the symptom's own message pattern, "#issue reason"). Run-time
 # gated around the symptom() check only (known_gate); drop an entry when its fix lands.
 KNOWN: dict[str, tuple[str, str]] = {
-    "test_untrusted_server_runs_read_only_tool_without_approval": (
-        r"^readOnlyHint=true tool was gated on an untrusted server: server got \[\], "
-        r"model got .*write-capable MCP tool 'ro_probe'",
-        "#121042 readOnlyHint read by camelCase attribute under mcp 2.x; every tool needs approval"),
     **{f"test_uncacheable_image_is_reported_to_the_model[{fmt}]": (
         rf"^{fmt} image block vanished: the model got no sign the tool returned an image",
         "#120227 an MCP image the cache cannot store vanishes from the tool result") for fmt in UNSUPPORTED_IMAGES},

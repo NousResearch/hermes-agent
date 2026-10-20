@@ -242,6 +242,47 @@ function waitForInitialConnection(): Promise<void> {
   })
 }
 
+/** Electron's legacy `profile` preference is global, while the restored primary
+ *  connection can be remote. Validate that inherited name against the selected
+ *  source before treating it as the new session's owner. Callers handle an
+ *  explicit default route first; it must never be second-guessed here. */
+async function reconcileStartupProfile(
+  connectionId: string,
+  kind: string | undefined,
+  freshSessionRequest: number
+): Promise<void> {
+  if (kind === 'local' || $activeSessionId.get() || $selectedStoredSessionId.get()) {
+    return
+  }
+
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
+  const revision = switchRevision
+  // A failed roster read is not evidence the profile is absent. Do not
+  // mask a subsequent switch failure as a roster failure, though.
+  const roster = await getProfiles({ connectionId }).catch(() => null)
+
+  const unchanged =
+    revision === switchRevision &&
+    pendingTarget === null &&
+    $freshSessionRequest.get() === freshSessionRequest &&
+    $activeConnectionId.get() === connectionId &&
+    normalizeProfileKey($activeGatewayProfile.get()) === profile &&
+    !$activeSessionId.get() &&
+    !$selectedStoredSessionId.get()
+
+  if (!roster || !unchanged) {
+    return
+  }
+
+  const target = startupProfileForConnection(profile, startupLastProfileByConnection[connectionId], roster.profiles)
+
+  if (target) {
+    await selectConnection(connectionId, { profile: target, restore: true })
+  } else if (roster.profiles.some(candidate => candidate.name === profile)) {
+    $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [connectionId]: profile })
+  }
+}
+
 /**
  * Load the registry once for Sessions and restore the explicit default route,
  * otherwise the last successfully used source. Later registry refreshes stay
@@ -294,7 +335,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     }
 
     if (registry.connections.some(connection => connection.id === connectionId)) {
-      await selectConnection(connectionId, { profile: defaultRoute.profile, fromBoot: true })
+      await selectConnection(connectionId, { profile: defaultRoute.profile, restore: true })
     }
 
     return $connectionsRegistry.get() ?? registry
@@ -326,44 +367,10 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   }
 
   if ($activeConnectionId.get() === preferredId) {
-    // Electron's legacy `profile` preference is global, while this primary
-    // connection can be remote. Validate that inherited name against the
-    // selected source before treating it as the new session's owner. An
-    // explicit default route was handled above and must never be second-guessed.
-    if (preferred?.kind !== 'local' && !$activeSessionId.get() && !$selectedStoredSessionId.get()) {
-      const profile = normalizeProfileKey($activeGatewayProfile.get())
-      const revision = switchRevision
-      // A failed roster read is not evidence the profile is absent. Do not
-      // mask a subsequent switch failure as a roster failure, though.
-      const roster = await getProfiles({ connectionId: preferredId }).catch(() => null)
-
-      if (
-        roster &&
-        revision === switchRevision &&
-        pendingTarget === null &&
-        $freshSessionRequest.get() === freshSessionRequest &&
-        $activeConnectionId.get() === preferredId &&
-        normalizeProfileKey($activeGatewayProfile.get()) === profile &&
-        !$activeSessionId.get() &&
-        !$selectedStoredSessionId.get()
-      ) {
-        const target = startupProfileForConnection(
-          profile,
-          startupLastProfileByConnection[preferredId],
-          roster.profiles
-        )
-
-        if (target) {
-          await selectConnection(preferredId, { profile: target, fromBoot: true })
-        } else if (roster.profiles.some(candidate => candidate.name === profile)) {
-          $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [preferredId]: profile })
-        }
-      }
-    }
-
+    await reconcileStartupProfile(preferredId, preferred?.kind, freshSessionRequest)
     await rememberConnection(preferredId)
   } else {
-    await selectConnection(preferredId, { fromBoot: true })
+    await selectConnection(preferredId, { restore: true })
   }
 
   return $connectionsRegistry.get() ?? registry
@@ -398,8 +405,32 @@ export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
-  /** Silent startup restoration must not clear the persisted All profiles view. */
-  fromBoot?: boolean
+  /** This call restores the source the window launched on; it is not a switch
+   *  the user asked for, so the persisted "All profiles" browse mode must be
+   *  left alone. The boot path passes it explicitly: the old inference
+   *  (`$activeConnectionId` still null) only held while nothing had published a
+   *  source yet, so a second restore pass — the normal case, because main opens
+   *  the local backend before the registry settles — read as user-initiated. */
+  restore?: boolean
+}
+
+/** The silent boot restore, by its caller's word, or (first pass, before any
+ *  source is published) by the old null-id inference. */
+function isBootRestore(options: SelectConnectionOptions): boolean {
+  return options.restore === true || (pendingTarget === null && $activeConnectionId.get() === null)
+}
+
+/** The requested pair is already live, so nothing was switched: `selectConnection`
+ *  only reaches this with `switching` true because "All profiles" is on. A user
+ *  pick collapses the browse view; a boot restore leaves it alone, since
+ *  collapsing it here dropped the user back to a single profile at every launch. */
+async function settleLivePair(connectionId: string, targetProfile: string, restoreOnBoot: boolean): Promise<void> {
+  if (!restoreOnBoot) {
+    $showAllProfiles.set(false)
+  }
+
+  rehomeNewChatDraft(targetProfile)
+  await rememberConnection(connectionId)
 }
 
 export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
@@ -413,8 +444,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // A user-initiated source switch collapses "All profiles" browse mode: the
   // picker is a concrete-source action. The silent boot-time restore (below,
   // from initializeConnectionsRegistry) is not — it must leave the persisted
-  // browse-mode preference alone so it survives restart (#93197).
-  const restoreOnBoot = options.fromBoot === true || (pendingTarget === null && $activeConnectionId.get() === null)
+  // browse-mode preference alone so it survives restart (#93197). The caller
+  // that knows it is restoring says so; the null-id inference stays as the
+  // fallback for the first pass, when no source has been published yet.
+  const restoreOnBoot = isBootRestore(options)
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
@@ -460,12 +493,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
-    if (!restoreOnBoot) {
-      $showAllProfiles.set(false)
-    }
-
-    rehomeNewChatDraft(targetProfile, restoreOnBoot)
-    await rememberConnection(connectionId)
+    await settleLivePair(connectionId, targetProfile, restoreOnBoot)
 
     return
   }

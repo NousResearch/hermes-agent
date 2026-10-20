@@ -11,7 +11,7 @@ from hermes_cli import venv_sync
 from pm.environments import install_state_dir, selected_venv
 from pm import paths
 from pm.lock import Lockfile
-from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
+from tests.pm.test_plugin_survival_contract import admission_env
 
 
 def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, monkeypatch, capsys):

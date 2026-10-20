@@ -263,7 +263,8 @@ class ElicitationHandler:
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
     def __init__(self, server_name: str, config: dict,
-                 call_context: Callable[[], Optional[Context]] = lambda: None):
+                 call_context: Callable[[], Optional[Context]] = lambda: None,
+                 call_runner: Callable[[], Optional[Callable[[Callable[[], str]], str]]] = lambda: None):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
@@ -271,6 +272,7 @@ class ElicitationHandler:
         # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
         # MCPServerTask cannot be named here.
         self._call_context = call_context
+        self._call_runner = call_runner
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -289,9 +291,17 @@ class ElicitationHandler:
         from tools.approval_prompt import request_elicitation_consent
 
         consent = functools.partial(request_elicitation_consent, message, description,
-                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
+                                    timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}",
+                                    title=f"MCP server '{self.server_name}' requests approval")
         captured = self._call_context()
-        return consent if captured is None else (lambda: captured.copy().run(consent))
+        if captured is not None:
+            base_consent = consent
+            consent = lambda: captured.copy().run(base_consent)
+        runner = self._call_runner()
+        if runner is not None:
+            return functools.partial(runner, consent)
+        from tools.thread_context import propagate_context_to_thread
+        return propagate_context_to_thread(consent)
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""

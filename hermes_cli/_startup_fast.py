@@ -32,6 +32,7 @@ __all__ = [
     "container_mode_may_be_active",
     "ensure_project_root_on_path",
     "is_container_startup_environment",
+    "is_termux_startup_environment",
     "is_desktop_ssh_backend_argv",
     "is_global_fast_version_argv",
     "normalize_hermes_home_env",
@@ -120,6 +121,26 @@ def is_container_startup_environment() -> bool:
         return True
     cgroup = _read_text("/proc/1/cgroup") or ""
     return "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup
+
+
+def is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
+    """Распознаёт Termux и размещённый в нём PRoot без тяжёлых импортов."""
+    check = env or os.environ
+    prefix = str(check.get("PREFIX", ""))
+    if (
+        check.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    ):
+        return True
+
+    try:
+        uts = os.uname()
+        return ("PRoot" in uts.release or "PRoot" in uts.version) and os.path.isdir(
+            "/data/data/com.termux"
+        )
+    except (OSError, AttributeError):
+        return False
 
 
 def active_profile_may_override_home(hermes_root: str) -> bool:

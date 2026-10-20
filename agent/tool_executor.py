@@ -423,10 +423,7 @@ def _unwrap_tool_search_call(
         if underlying not in _tool_search_scoped_names(agent):
             # Session-gated GUI tools name their missing surface (#120413);
             # anything else keeps the generic block.
-            return function_name, function_args, (
-                _ts.out_of_scope_reason(underlying)
-                or f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
-            )
+            return function_name, function_args, _ts.scope_block_reason(underlying)
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.
         scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)

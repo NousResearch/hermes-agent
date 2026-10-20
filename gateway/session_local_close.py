@@ -16,17 +16,23 @@ def _local_target(authority, session_id):
         return None  # not a local session (API binding, malformed receipt): nothing to read as closed
 
 
-def closed_and_unviewed(authority, session_id, handle):
-    """A live-feed row main would list as resumable: closed, idle and with no viewer left.
+def closed_idle_unviewed(live, execution_state, target_ended_at):
+    """The verdict on facts already read: the live listings read ``target_ended_at`` for a whole batch
+    in one off-loop query (``gateway/session_live_listing``)."""
+    if live is None or live.subscribers or execution_state != 'idle':
+        return False
+    if live.superseded:
+        return True  # an old messaging conversation opened read-only: history once no one views it
+    return target_ended_at is not None
 
-    Reads the local target's own columns rather than hydrating the row: the listing asks this per
-    session on the gateway's loop, where a ``get_session`` (prompt/tool JOIN + token flush) per
-    candidate is the cost the sweep must not pay."""
+
+def closed_and_unviewed(authority, session_id, handle):
+    """A live-feed row main would list as resumable: closed, idle and with no viewer left."""
     live = authority.sessions.get(session_id)
     if live is None or live.subscribers or handle.execution_state != 'idle':
         return False
     if live.superseded:
-        return True  # an old messaging conversation opened read-only: history once no one views it
+        return True
     target = _local_target(authority, session_id)
     row = authority.db.get_session_list_row(target) if target else None
-    return bool(row and row.get('ended_at') is not None)
+    return closed_idle_unviewed(live, handle.execution_state, row and row.get('ended_at'))

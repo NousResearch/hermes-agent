@@ -1,25 +1,22 @@
-"""The live listings walk every live session, on the loop the gateway serves I/O from.
+"""The live listings walk every live session; their store reads must not run on the gateway's loop.
 
-A gateway can hold thousands of live session rows; ``session.list`` / ``session.active_list`` walk
-the authority's sessions in one request, and every step of that walk was synchronous DB work with
-no suspension point, so the whole listing ran as one uninterruptible block on the loop thread.
-Anything that needed the loop meanwhile — a platform adapter's stop path, a WS write, delivery —
-waited for it; measured on a 4,049-row store the loop stalled past 10 s, the Telegram adapter's
-``updater.stop()`` missed its deadline and the adapter was declared fatal (#141236).
+A gateway can hold thousands of live session rows (a restart refills the registry from receipts);
+``session.list`` / ``session.active_list`` walked them one at a time on the loop thread, with three
+full hydrations and a receipt JSON parse per session and no suspension point. Measured on a
+4,049-row store the loop stalled past 10 s, the Telegram adapter's ``updater.stop()`` missed its
+deadline and the adapter was declared fatal (#141236).
 
-These tests pin the two properties the sweep needs: it gives the loop a turn every batch, and it
-reads the picker's own columns instead of hydrating a full row (prompt/tool JOIN + token flush)
-per session.
+Pinned here: the loop gets a turn while a listing is in flight, no store read of the walk runs on the
+loop thread, the reads are batched (not one per session), and the closed-and-unviewed rule is kept.
 """
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 
-from gateway.session_contract import SessionRef
-
-SESSION_COUNT = 130  # more than one LISTING_YIELD_EVERY batch
+SESSION_COUNT = 300  # more than one LISTING_BATCH
 
 
 @pytest_asyncio.fixture
@@ -47,95 +44,81 @@ async def owner(tmp_path, monkeypatch):
         assert 'result' in reply, reply
         return reply['result']['sessions']
 
-    yield SimpleNamespace(authority=authority, db=store._db, sids=sids, listing=listing,
-                          connection=connection)
+    yield SimpleNamespace(authority=authority, db=store._db, sids=sids, listing=listing)
+
+
+def _count_reads_by_thread(monkeypatch, db):
+    """Every read connection checkout the walk makes, keyed by whether it ran on the loop thread."""
+    loop_thread = threading.get_ident()
+    reads = {'loop': 0, 'worker': 0}
+    original = type(db)._read_ctx
+
+    def counting(self, *args, **kwargs):
+        reads['loop' if threading.get_ident() == loop_thread else 'worker'] += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(db), '_read_ctx', counting)
+    return reads
 
 
 @pytest.mark.asyncio
-async def test_the_live_listing_gives_the_loop_a_turn_before_it_returns(owner):
-    """A listing must not hold the loop for the whole walk: another task runs while it is in flight."""
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_live_listing_reads_the_store_off_the_loop_in_batches(owner, monkeypatch, method):
+    reads = _count_reads_by_thread(monkeypatch, owner.db)
+    rows = await owner.listing(method)
+    assert len(rows) == (200 if method == 'session.list' else SESSION_COUNT)
+    assert reads['loop'] == 0, reads
+    # One worker read per batch, never one per session.
+    assert 0 < reads['worker'] < SESSION_COUNT // 10, reads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_live_listing_gives_the_loop_a_turn_before_it_returns(owner, method):
     order = []
 
     async def sweep():
-        await owner.listing('session.list', limit=200)
+        await owner.listing(method)
         order.append('listing')
 
     async def competing():
         order.append('competing')
 
-    # Scheduled in this order, so an unyielding sweep appends first and the loop only gets the
-    # competing task after the whole walk.
+    # Scheduled in this order, so an unyielding sweep appends first.
     await asyncio.gather(sweep(), competing())
     assert order == ['competing', 'listing'], order
 
 
 @pytest.mark.asyncio
-async def test_the_active_listing_gives_the_loop_a_turn_before_it_returns(owner):
-    order = []
-
-    async def sweep():
-        await owner.listing('session.active_list')
-        order.append('listing')
-
-    async def competing():
-        order.append('competing')
-
-    await asyncio.gather(sweep(), competing())
-    assert order == ['competing', 'listing'], order
+async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner):
+    """The batched read keeps ``closed_and_unviewed``: a local session whose receipt target is ended
+    and that nobody views is listed as resumable (stored feed), not live; an open one stays live."""
+    import json
+    from hermes_state_local import POLICY_PREFIX
+    closed, open_ = owner.sids[0], owner.sids[1]
+    owner.db.create_session('target-closed', source='tui')
+    owner.db.create_session('target-open', source='tui')
+    owner.db.end_session('target-closed', 'tui_close')
+    for sid, target in ((closed, 'target-closed'), (open_, 'target-open')):
+        owner.db.set_meta(POLICY_PREFIX + sid, json.dumps({'entry': {'session_id': target}}))
+    owner.db.set_meta(POLICY_PREFIX + owner.sids[2], '{not json')
+    with owner.db._lock:  # newest, so session.list's 200-row window holds all three
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?,?)', owner.sids[:3])
+    for method in ('session.list', 'session.active_list'):
+        ids = {row['id'] for row in await owner.listing(method)}
+        assert closed not in ids and open_ in ids and owner.sids[2] in ids, method
 
 
 @pytest.mark.asyncio
-async def test_the_live_listing_does_not_hydrate_a_row_per_session(owner, monkeypatch):
-    """``get_session`` is a full hydration; the walk needs columns, not the row."""
-    hydrated = []
-    original = type(owner.db).get_session
+async def test_a_session_retired_during_the_read_is_not_listed_or_restored(owner, monkeypatch):
+    from gateway import session_live_listing
+    original = session_live_listing._store_facts
+    gone = owner.sids[5]
 
-    def counting_get_session(db, session_id):
-        hydrated.append(session_id)
-        return original(db, session_id)
+    def retire_midway(db, ids):
+        owner.authority.sessions.pop(gone, None)
+        return original(db, ids)
 
-    monkeypatch.setattr(type(owner.db), 'get_session', counting_get_session)
-    rows = await owner.listing('session.list', limit=200)
-    assert len(rows) == SESSION_COUNT
-    # One hydration per session is ``resolve``/``_handle``'s own read (it needs the runtime
-    # revision/generation). The listing's own reads must not add any.
-    assert len(hydrated) <= SESSION_COUNT, (len(hydrated), SESSION_COUNT)
-
-
-def test_closed_and_unviewed_reads_the_row_without_hydrating(monkeypatch):
-    """The per-candidate close test reads ``ended_at``, and must not hydrate the whole row."""
-    from gateway import session_local_close
-
-    monkeypatch.setattr(session_local_close, 'local_receipt',
-                        lambda db, session_id: {'entry': {'session_id': 'target'}})
-
-    class Db:
-        def __init__(self):
-            self.hydrated = []
-
-        def get_session(self, session_id):
-            self.hydrated.append(session_id)
-            return {'id': session_id, 'ended_at': 1.0}
-
-        def get_session_list_row(self, session_id):
-            return {'id': session_id, 'ended_at': 1.0}
-
-    db = Db()
-    authority = SimpleNamespace(sessions={'live-1': SimpleNamespace(subscribers={})}, db=db)
-    handle = SimpleNamespace(execution_state='idle')
-    assert session_local_close.closed_and_unviewed(authority, 'live-1', handle) is True
-    assert db.hydrated == []
-
-
-def test_closed_and_unviewed_keeps_an_open_row_listed(monkeypatch):
-    """The light read keeps the rule: an open target is listed, a closed one is not."""
-    from gateway import session_local_close
-
-    monkeypatch.setattr(session_local_close, 'local_receipt',
-                        lambda db, session_id: {'entry': {'session_id': 'target'}})
-    authority = SimpleNamespace(
-        sessions={'live-1': SimpleNamespace(subscribers={})},
-        db=SimpleNamespace(get_session_list_row=lambda session_id: {'id': session_id, 'ended_at': None},
-                           get_session=lambda session_id: {'id': session_id, 'ended_at': None}))
-    assert session_local_close.closed_and_unviewed(
-        authority, 'live-1', SimpleNamespace(execution_state='idle')) is False
+    monkeypatch.setattr(session_live_listing, '_store_facts', retire_midway)
+    ids = {row['id'] for row in await owner.listing('session.active_list')}
+    assert gone not in ids and gone not in owner.authority.sessions

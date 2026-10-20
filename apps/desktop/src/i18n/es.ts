@@ -2454,6 +2454,10 @@ export const esOverrides = {
     skillArchivedMessage: 'Puedes restaurarlo con hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      kanbanToolsHint: 'El interruptor Desktop muestra el tablero. El interruptor Agent permite las herramientas Kanban en los chats CLI y Desktop de este perfil, sin iniciar el despachador.',
+      kanbanToolsUnavailable: 'Este backend todavía no ofrece Kanban en la configuración de herramientas. Actualiza Hermes en el backend seleccionado para activar aquí las herramientas del agente.',
+      kanbanToolsUpdateBackend: 'Actualizar backend',
+      kanbanToolsSaved: (profile: string) => `Herramientas Kanban guardadas para ${profile}. Abre un chat nuevo para aplicar el cambio; los chats existentes no cambian.`,
       agentTitle: 'Plugins del agente',
       agentBlurb:
         'Amplían el agente del perfil seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',

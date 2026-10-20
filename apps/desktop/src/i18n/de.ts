@@ -2460,6 +2460,10 @@ export const deOverrides = {
     skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',
     tabPlugins: 'Plugins',
     plugins: {
+      kanbanToolsHint: 'Der Desktop-Schalter zeigt das Board. Der Agent-Schalter erlaubt Kanban-Tools für CLI- und Desktop-Chats dieses Profils, ohne den Dispatcher zu starten.',
+      kanbanToolsUnavailable: 'Dieses Backend bietet Kanban noch nicht in den Tool-Einstellungen an. Aktualisieren Sie Hermes auf dem ausgewählten Backend, um die Agent-Tools hier zu aktivieren.',
+      kanbanToolsUpdateBackend: 'Backend aktualisieren',
+      kanbanToolsSaved: (profile: string) => `Kanban-Tools für ${profile} gespeichert. Öffnen Sie einen neuen Chat, um die Änderung anzuwenden; bestehende Chats bleiben unverändert.`,
       agentTitle: 'Agent-Plugins',
       agentBlurb:
         'Erweitert den Agenten für das gewählte Profil — Tools, Hooks, Anbieter. Wirkt nach einem Gateway-Neustart.',

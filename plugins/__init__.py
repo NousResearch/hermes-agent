@@ -1,1 +1,0 @@
-# Hermes plugins package

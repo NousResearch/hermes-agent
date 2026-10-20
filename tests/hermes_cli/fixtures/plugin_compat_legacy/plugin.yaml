@@ -1,8 +1,0 @@
-name: legacy-contract-fixture
-version: "0.1.0"
-description: Frozen plugin fixture for native behavior compatibility
-provides_hooks:
-  - on_session_start
-future_manifest_field:
-  schema: 2
-  additive: true

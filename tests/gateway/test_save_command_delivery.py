@@ -1,6 +1,8 @@
 """Gateway /save: the export document is delivered through the requester's live adapter."""
 
 import asyncio
+import os
+import tempfile
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -51,3 +53,22 @@ def test_save_without_live_adapter_reports_missing_adapter_not_a_crash():
     runner = _runner(_entry(Platform.DISCORD), {})
 
     assert _save(runner, Platform.DISCORD) == "Platform adapter not found to send the document."
+
+
+def test_save_removes_temp_directory_when_file_cleanup_fails(monkeypatch, tmp_path):
+    temp_dir = tmp_path / "hermes_save_test"
+    temp_dir.mkdir()
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda prefix: str(temp_dir))
+
+    def fail_remove(path):
+        raise OSError("file already gone")
+
+    monkeypatch.setattr(os, "remove", fail_remove)
+    monkeypatch.setattr(
+        "hermes_cli.session_export.render_session_for_save",
+        lambda export_data, fmt: (_ for _ in ()).throw(RuntimeError("render failed")),
+    )
+    runner = _runner(_entry(Platform.TELEGRAM), {Platform.TELEGRAM: MagicMock()})
+
+    assert "render failed" in _save(runner, Platform.TELEGRAM)
+    assert not temp_dir.exists()

@@ -38,6 +38,10 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 **Per-job reasoning effort.** A job can pin its own thinking level, independent of the model pin: one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. When set, it overrides both the global `agent.reasoning_effort` and per-model `agent.reasoning_overrides` for that job's runs (`none` disables thinking). Set it via `hermes cron create/edit --reasoning-effort high`; pass an empty string on edit to clear the pin and follow config again. (It is deliberately not exposed on the agent's `cronjob_manage` tool — model configuration stays a user decision.) Levels a model doesn't support are clamped or omitted by the provider at request time — pinning `xhigh` on a model that caps at `high` runs at `high`. The pin has no effect on `no_agent` jobs (there is no LLM call to tune). Use it to run heavy scheduled analyses at `high` while cheap recurring jobs run at `minimal`, without touching your global default.
 :::
 
+:::tip
+**Per-job API retry budget.** A job can pin how many attempts each model API call gets on transient errors (rate limits, connection drops, 5xx) before the [fallback-provider](/user-guide/features/fallback-providers) chain engages, overriding the global `agent.api_max_retries` for that job's runs only. Set it via `hermes cron create/edit --api-max-retries 6`; pass an empty string on edit to clear the pin and follow config again. (Like the reasoning pin, it is deliberately not exposed on the agent's `cronjob` tool — unattended spend stays a user decision.) Integers below `1` clamp to `1` (a single attempt, no retry). The pin has no effect on `no_agent` jobs (there is no API call to retry). Use it when one job is pinned to a flaky endpoint: more attempts keep that job on its requested model through a transient stretch instead of swapping models, without slowing failure handling for every other agent and job.
+:::
+
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::

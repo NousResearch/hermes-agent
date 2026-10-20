@@ -77,6 +77,13 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
             "and agent.reasoning_overrides for this job; unsupported levels are "
             "clamped by the provider at request time. Omit to follow config.")
+    cron_create.add_argument("--api-max-retries", dest="api_max_retries",
+        help="Pin this job's API retry budget: how many attempts each model "
+            "API call gets on transient errors before the fallback chain "
+            "engages. Integer >= 1 (1 = single attempt). Overrides "
+            "agent.api_max_retries for this job only — raise it for a job "
+            "pinned to a flaky endpoint so it stays on its requested model "
+            "instead of swapping. Omit to follow config.")
     cron_create.add_argument("--interpreter",
         help="Absolute or ~ path to a Python in your own venv (e.g. ~/venvs/report/bin/python) "
             "for a .py --script / --monitor-script, so it can import packages Hermes does not "
@@ -148,6 +155,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "
             "the pin and follow config resolution.")
+    cron_edit.add_argument("--api-max-retries", dest="api_max_retries",
+        help="Pin this job's API retry budget (integer >= 1). Overrides "
+            "agent.api_max_retries for this job only. Pass empty string to "
+            "clear the pin and follow config.")
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")

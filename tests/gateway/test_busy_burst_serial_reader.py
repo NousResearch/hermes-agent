@@ -275,3 +275,27 @@ async def test_restart_waits_for_a_direct_busy_input_queued_behind_a_slow_captur
         await adapter.cancel_background_tasks()
         await async_wait_until(lambda: not mutation_tasks(authority), timeout=10)
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_buzz_split_text_merges_through_the_reader(monkeypatch):
+    """Buzz was left out of the #140973 serial-reader sweep: both the WS listener and the poll
+    sweep await ``_handle_events`` before reading the next batch (#141378)."""
+    from collections import OrderedDict
+
+    from plugins.platforms.buzz.adapter import BuzzAdapter
+
+    monkeypatch.setenv('BUZZ_ALLOWED_USERS', 'aa11bb22')
+    adapter = BuzzAdapter(PlatformConfig(enabled=True))
+    async def _name(pubkey):
+        return pubkey[:8]
+    adapter._resolve_user_name = _name  # the CLI-backed resolver has no place in a unit test
+    state = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
+    adapter._channel_state['chan'] = state
+    source = adapter.build_source(chat_id='chan', chat_type='dm', user_id='aa11bb22')
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    event = lambda i, text: {'id': f'e{i}', 'kind': 9, 'pubkey': 'aa11bb22', 'content': text, 'created_at': i}
+    # as both readers do: the next batch only after the previous _handle_events returned
+    await adapter._handle_events('chan', state, [event(1, 'first half')])
+    await adapter._handle_events('chan', state, [event(2, 'second half')])
+    assert await owner.settle(2) == [('first half\nsecond half', 0)]

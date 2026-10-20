@@ -198,6 +198,14 @@ def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | No
     return json.dumps(payload)
 
 
+def _refusal(message: str, **extra: Any) -> str:
+    """A scope refusal (``allowed_targets`` / ``accept_from``): the closed ``agent_blocked`` reason,
+    nothing written or spawned."""
+    from tools.bot_failure_reasons import AGENT_BLOCKED
+
+    return json.dumps({"error": message, "reason": AGENT_BLOCKED, **extra})
+
+
 def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None) -> str:
     """Deliver ``message`` to ``target``'s Bot Chat. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
@@ -224,10 +232,21 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     roster_homes = dict(_roster(root))
     roster = list(roster_homes)
     peers = _peers(root)
-    teammates = [_handle(n) for n in roster if n != me]
+    # bot_mode.allowed_targets in THIS agent's own config.yaml: None (unset) keeps upstream behaviour.
+    from tools.bot_mode_probe import bot_mode_scope, scope_allows, scope_peers
+
+    scope = bot_mode_scope(home, "allowed_targets")
+    teammates = [_handle(n) for n in roster if n != me and scope_allows(scope, n, _handle(n))]
 
     def _roster_err(msg: str) -> str:
-        return _err(msg, roster=teammates, peers=peers)
+        return _err(msg, roster=teammates, peers=scope_peers(scope, peers))
+
+    def _scope_refusal(raw: str) -> str:
+        # Same text for a forbidden and a nonexistent target, and the lists are already filtered:
+        # a refused call tells the model nothing about teammates it may not message.
+        return _refusal(f"{raw!r} is not in this agent's bot_mode.allowed_targets, so nothing was sent. "
+                        "Do not retry; message one of the listed teammates or peers.",
+                        teammates=teammates, peers=scope_peers(scope, peers))
 
     body = str(message or "").strip()
     if not body:
@@ -252,6 +271,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         if peer_name not in peers:
             return _roster_err(f"No registered peer named '{peer_name}'.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
+        if not scope_allows(scope, dm_target):
+            return _scope_refusal(raw_target)
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin
         peer_author = {**author, "id": bot_author_id(me, local_origin())}
@@ -271,26 +292,34 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
-        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(root, raw_target, content, me, scope=scope, **delivery)
         if relayed is not None:
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
     resolved = _resolve_local_name(raw_target, roster, root)
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
+    if resolved is not None and resolved != me and not scope_allows(scope, resolved, _handle(resolved)):
+        return _scope_refusal(raw_target)
     if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
-        relayed = _try_relay_delivery(Path(home), raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(Path(home), raw_target, content, me, scope=scope, **delivery)
         if relayed is not None:
             return relayed
+        if not scope_allows(scope, raw_target):
+            return _scope_refusal(raw_target)
         if resolved == me:
             return _err("You can't message yourself. Pick a teammate from the roster.")
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
+    # Receiver side: the target profile's own bot_mode.accept_from, before the live-owner admission writes anything.
+    if not scope_allows(bot_mode_scope(roster_homes[resolved], "accept_from"), me, _handle(me)):
+        return _refusal(f"@{_handle(resolved)} does not accept messages from you (bot_mode.accept_from), "
+                        "so nothing was sent. Do not retry.")
     # Local teammates are admitted through the profile authority; the argv only names the
     # profile for the runner's lock/home lookups and is never executed.
     return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved)}",
@@ -298,13 +327,13 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
-                        task_id: Optional[str], agent: Any) -> Optional[str]:
+                        scope: Optional[list[str]] = None, task_id: Optional[str], agent: Any) -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
     to drain; a background waiter is spawned immediately so the relayed reply wakes
     the sender through the standard completion-notification path."""
     try:
-        from tools.bot_mode_probe import _handle, local_taken_forms
+        from tools.bot_mode_probe import _handle, local_taken_forms, scope_allows
         from tools.bot_relay import (
             EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster, remote_target_forms,
             resolve_remote_target, waiter_command,
@@ -313,6 +342,10 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         roster = read_remote_roster(root)
         match = resolve_remote_target(raw_target, roster) if roster else None
         if match is None:
+            return None
+        # allowed_targets reaches a remote agent only by the form the sender wrote or its handle@connection.
+        if scope is not None and not scope_allows(
+                scope, raw_target, *([f"{match['handle']}@{match['connection_id']}"] if isinstance(match, dict) else [])):
             return None
         if match == "ambiguous":
             want = raw_target.strip().lstrip("@").partition("@")[0].lower()

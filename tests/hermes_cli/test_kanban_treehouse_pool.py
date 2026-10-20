@@ -480,6 +480,23 @@ def test_resolver_never_adopts_another_cards_lease(kanban_home, tmp_path):
     assert holders == {"kanban:t_card_a", f"kanban:{tid}"}
 
 
+def test_completion_cleanup_never_removes_a_pool_slot(kanban_home, tmp_path):
+    """The pool owns slot lifecycle. Git removal on completion would delete
+    treehouse's recorded slot and break the lease it still holds."""
+    repo = _make_repo(tmp_path)
+    _write_config(repo)
+    config = kbth.read_pool_config(repo)
+    assert config is not None
+    lease = kbth.acquire_lease(config, "t_keep", "wt/t_keep")
+
+    kbw._cleanup_worktree_workspace("t_keep", str(lease.path), "wt/t_keep")
+
+    assert lease.path.is_dir()
+    entry = next(e for e in kbth._slot_status(config) if e["path"] == str(lease.path))
+    assert entry["status"] == "leased"
+    assert entry["lease_holder"] == "kanban:t_keep"
+
+
 @pytest.mark.skipif(
     kbth.treehouse_binary() is None, reason="treehouse CLI is not installed"
 )

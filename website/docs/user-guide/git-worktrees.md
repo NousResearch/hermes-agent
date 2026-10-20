@@ -263,7 +263,8 @@ Lifecycle:
   reaped, killed, or abandoned by a crashed dispatcher. The test is board truth
   (task status + worker liveness), not an in-process callback, so a `SIGKILL`
   cannot leak a lease. A returned slot is cleaned and reset, and `prune --yes`
-  reclaims it.
+  reclaims it. Completion cleanup never removes a pool slot: the pool owns slot
+  lifecycle, so git-side removal would delete treehouse's recorded slot.
 - **Cap reached.** The pool is probed before the card is claimed, so a card
   parked on a full pool writes nothing per tick. It is deferred with
   `skipped_pool_exhausted` and the quotable reason `treehouse pool exhausted

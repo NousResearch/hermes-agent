@@ -518,6 +518,13 @@ def _cleanup_worktree_workspace(
         wp = Path(path).expanduser()
         if not wp.is_dir():
             return
+        if _kbth.pool_repo_root(wp) is not None:
+            # A treehouse pool slot belongs to the pool: the dispatch tick
+            # returns the lease and `treehouse prune` reclaims the slot. Git
+            # removing it here would delete treehouse's recorded slot out from
+            # under the pool (and the next get would rebuild it).
+            _kb._log.debug("Preserving treehouse pool slot %s for task %s", wp, task_id)
+            return
         common = _git_common_dir(wp)
         if common is None or common.name != ".git":
             return  # not a linked worktree of a normal repo — never guess

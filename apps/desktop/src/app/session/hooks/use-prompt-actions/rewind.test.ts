@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import {
   appendMidTurnUserMessage,
   applyReloadOptimistic,
   applyRewindOptimistic,
-  finalizeInterruptedMessages,
+  finalizeStoppedMessages,
+  finalizeUserInterruptedMessages,
+  planConfirmedEdit,
+  planConfirmedReload,
   planEdit,
   planReload,
   planRestore,
   rebindSurvivorRowIds,
   resolveDurableRowId,
+  revalidateEditPlan,
   runRewindSubmit,
   survivorRowIdsFrom,
   truncateSubmitParams
@@ -113,18 +117,6 @@ describe('truncateSubmitParams', () => {
     })
   })
 
-  it('never sends an ordinal without the intent flag the gateway requires', () => {
-    // The gateway drops history only for a submit that declares itself a
-    // rewind. An ordinal built here without confirm_truncate would be refused
-    // (and, on an older gateway, would truncate silently).
-    for (const ordinal of [0, 1, 2, 7]) {
-      const params = truncateSubmitParams(ordinal)
-
-      expect(params.truncate_before_user_ordinal).toBe(ordinal)
-      expect(params.confirm_truncate).toBe(true)
-    }
-  })
-
   it('includes truncate_before_row_id when passed', () => {
     expect(truncateSubmitParams(1, 'msg-123', 456)).toEqual({
       confirm_truncate: true,
@@ -162,6 +154,21 @@ describe('survivorRowIdsFrom', () => {
 
   it('keeps integer ids and nulls anything else', () => {
     expect(survivorRowIdsFrom({ survivor_user_row_ids: [7, null, 9.5, '11', 12] })).toEqual([7, null, null, null, 12])
+  })
+
+  it('prefers the explicit old-to-new row id map', () => {
+    const parsed = survivorRowIdsFrom({
+      survivor_user_row_ids: [100, 200],
+      survivor_row_id_map: { '11': 101, '21': 201, '31': null }
+    })
+
+    expect(parsed).toEqual(
+      new Map([
+        [11, 101],
+        [21, 201],
+        [31, null]
+      ])
+    )
   })
 })
 
@@ -217,6 +224,30 @@ describe('rebindSurvivorRowIds', () => {
 
     expect(rebindSurvivorRowIds(messages, [7])[0]).toBe(messages[0])
   })
+
+  it('rebinds a paged tail by previous row id instead of global position', () => {
+    const messages = [
+      user('archived-u250', 800),
+      user('tail-u298', 901),
+      assistant('tail-a298', 902),
+      user('edited', 903)
+    ]
+
+    const rebound = rebindSurvivorRowIds(
+      messages,
+      new Map([
+        [901, 1001],
+        [902, 1002],
+        [903, null]
+      ])
+    )
+
+    expect(rebound[0]).toBe(messages[0])
+    expect(rebound[0].rowId).toBe(800)
+    expect(rebound[1].rowId).toBe(1001)
+    expect(rebound[2].rowId).toBe(1002)
+    expect(rebound[3].rowId).toBeUndefined()
+  })
 })
 
 describe('finalizeInterruptedMessages', () => {
@@ -267,6 +298,74 @@ describe('finalizeInterruptedMessages', () => {
     expect(message.parts).toHaveLength(1)
     expect(message.parts[0].completedAt).toBe(11.25)
     expect(message.completedAt).toBe(11.25)
+  })
+})
+
+describe('finalizeUserInterruptedMessages', () => {
+  const toolTurn = (): ChatMessage => ({
+    id: 'assistant-tool',
+    role: 'assistant',
+    parts: [
+      {
+        args: {} as never,
+        argsText: '{}',
+        completedAt: 10.5,
+        result: 'listed',
+        timestamp: 10,
+        toolCallId: 'call-done',
+        toolName: 'terminal',
+        type: 'tool-call'
+      },
+      {
+        args: {} as never,
+        argsText: '{}',
+        timestamp: 10.5,
+        toolCallId: 'call-open',
+        toolName: 'terminal',
+        type: 'tool-call'
+      }
+    ],
+    pending: true,
+    timestamp: 10
+  })
+
+  it('marks only the tool calls still waiting on a result as interrupted', () => {
+    const [message] = finalizeUserInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+    const [done, open] = message.parts
+
+    expect(done.interrupted).toBeUndefined()
+    expect(open.interrupted).toBe(true)
+    expect(open.completedAt).toBe(11.25)
+    expect(message.pending).toBe(false)
+  })
+
+  it('leaves settled turns alone', () => {
+    const settled = { ...toolTurn(), pending: false }
+    const [message] = finalizeUserInterruptedMessages([settled], null, 11.25)
+
+    expect(message.parts[1].interrupted).toBeUndefined()
+  })
+
+  it('flags the live reply as interrupted on stop, but not on a redirect finalize', () => {
+    const [stopped] = finalizeStoppedMessages([toolTurn()], 'assistant-tool', 11.25)
+    const [redirected] = finalizeUserInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+
+    expect(stopped.interrupted).toBe(true)
+    expect(stopped.parts[1].interrupted).toBe(true)
+    expect(redirected.interrupted).toBeUndefined()
+  })
+
+  it('does not mark calls sealed by the non-user settle path', () => {
+    const [message] = finalizeInterruptedMessages([toolTurn()], 'assistant-tool', 11.25)
+
+    expect(message.parts[1].interrupted).toBeUndefined()
+  })
+
+  it('marks open tool calls when a mid-turn message seals the live stream', () => {
+    const state: MidTurnState = { interimBoundaryPending: false, messages: [toolTurn()], streamId: 'assistant-tool' }
+    const next = appendMidTurnUserMessage(state, row('user-2', 'user', 'start mode 2'))
+
+    expect(next.messages[0].parts[1].interrupted).toBe(true)
   })
 })
 
@@ -478,7 +577,18 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
   it('leaves a bound durable rowId untouched (no extra history call) and drops the client ordinal', async () => {
     const calls: Call[] = []
 
-    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 1, undefined, false, undefined, 13, 'typo prompt')
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      1,
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt',
+      [11, 12, 13]
+    )
 
     expect(calls.some(call => call.method === 'session.history')).toBe(false)
 
@@ -486,6 +596,8 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
     expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.confirm_empty_truncate).toBe(true)
+    expect(submit?.params?.rebind_survivor_row_ids).toEqual([11, 12, 13])
   })
 
   it('drops the client ordinal whenever a durable row id is present, including a complete live transcript (#88082, #89244)', async () => {
@@ -594,5 +706,130 @@ describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
     expect(next.busy).toBe(true)
     expect(next.turnLive).toBe(false)
     expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
+  })
+})
+
+describe('planConfirmedReload (#133716)', () => {
+  const transcript = [
+    row('u1', 'user', 'old prompt', { rowId: 11 }),
+    row('a1', 'assistant', 'old reply'),
+    row('u2', 'user', 'latest prompt', { rowId: 13 }),
+    row('a2', 'assistant', 'latest reply')
+  ]
+
+  const submitPlan = async (plan: Awaited<ReturnType<typeof planConfirmedReload>>) => {
+    const submits: Record<string, unknown>[] = []
+
+    const gateway = (async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+      }
+
+      return { status: 'streaming' }
+    }) as <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+    if (plan) {
+      await runRewindSubmit(
+        gateway,
+        'sid',
+        plan.text,
+        plan.truncateOrdinal,
+        plan.truncateMessageId,
+        false,
+        undefined,
+        plan.truncateRowId,
+        plan.sourceText,
+        undefined,
+        plan.confirmDeepTruncate
+      )
+    }
+
+    return submits[0]
+  }
+
+  it('confirms a stale/deep regenerate before archiving later user turns; tail regenerate is unchanged', async () => {
+    let asked = 0
+
+    const askAndDecline = async () => {
+      asked += 1
+
+      return false
+    }
+
+    expect(await submitPlan(await planConfirmedReload(transcript, 'a1', askAndDecline))).toBeUndefined()
+    expect(asked).toBe(1)
+
+    expect(await submitPlan(await planConfirmedReload(transcript, 'a1', async () => true))).toMatchObject({
+      truncate_before_row_id: 11,
+      confirm_deep_truncate: true
+    })
+
+    const tail = await submitPlan(await planConfirmedReload(transcript, 'a2', askAndDecline))
+
+    expect(asked).toBe(1)
+    expect(tail).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
+    expect(tail?.confirm_deep_truncate).toBeUndefined()
+
+    // A failed later turn is still a persisted user row the gateway counts.
+    const failedLater = [...transcript.slice(0, 3), { ...transcript[3], error: 'provider down' }]
+
+    expect(await submitPlan(await planConfirmedReload(failedLater, 'a1', askAndDecline))).toBeUndefined()
+    expect(asked).toBe(2)
+  })
+})
+
+describe('edit and server-refusal confirms (#133716 review)', () => {
+  const transcript = [
+    row('u1', 'user', 'old prompt', { rowId: 11 }),
+    row('a1', 'assistant', 'old reply'),
+    row('u2', 'user', 'latest prompt', { rowId: 13 }),
+    row('a2', 'assistant', 'latest reply')
+  ]
+
+  const editOf = (sourceId: string) =>
+    ({ role: 'user', sourceId, parentId: null, content: [{ type: 'text', text: 'edited' }] }) as never
+
+  it('asks before an edit that archives later user turns; a tail edit sends no deep confirm', async () => {
+    let asked = 0
+
+    const decline = async () => {
+      asked += 1
+
+      return false
+    }
+
+    expect(await planConfirmedEdit(transcript, editOf('u1'), decline)).toBeNull()
+    expect(asked).toBe(1)
+    expect(await planConfirmedEdit(transcript, editOf('u1'), async () => true)).toMatchObject({
+      confirmDeepTruncate: true,
+      truncateRowId: 11
+    })
+
+    expect(await planConfirmedEdit(transcript, editOf('u2'), decline)).toMatchObject({ confirmDeepTruncate: false })
+    expect(asked).toBe(1)
+  })
+})
+
+describe('revalidateEditPlan (#133716)', () => {
+  const planned = [
+    row('u1', 'user', 'old prompt', { rowId: 11 }),
+    row('a1', 'assistant', 'old reply'),
+    row('u2', 'user', 'latest prompt', { rowId: 13 }),
+    row('a2', 'assistant', 'latest reply')
+  ]
+
+  const edit = { role: 'user', sourceId: 'u1', parentId: null, content: [{ type: 'text', text: 'edited' }] } as never
+
+  it('follows a transcript a stream grew; refuses one that gained a later user turn', () => {
+    const plan = { ...planEdit(planned, edit)!, confirmDeepTruncate: true }
+    const streamed = [...planned, row('a2b', 'assistant', 'more')]
+
+    expect(revalidateEditPlan(plan, planned, streamed, edit)).toMatchObject({
+      confirmDeepTruncate: true,
+      truncateRowId: 11
+    })
+    expect(
+      revalidateEditPlan(plan, planned, [...streamed, row('u3', 'user', 'unseen', { rowId: 15 })], edit)
+    ).toBeNull()
   })
 })

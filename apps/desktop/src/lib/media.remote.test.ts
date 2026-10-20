@@ -5,35 +5,14 @@ import { $connection } from '@/store/session'
 import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
+  gatewayImageProxyDataUrl,
   gatewayMediaDataUrl,
   isInlineMediaSrc,
-  isRemoteGateway,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
-
-describe('isRemoteGateway', () => {
-  afterEach(() => {
-    $connection.set(null)
-  })
-
-  it('is false with no connection', () => {
-    $connection.set(null)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is false in local mode', () => {
-    $connection.set({ mode: 'local' } as never)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is true in remote mode', () => {
-    $connection.set({ mode: 'remote' } as never)
-    expect(isRemoteGateway()).toBe(true)
-  })
-})
 
 describe('filePathFromMediaPath', () => {
   it('passes through a plain path', () => {
@@ -75,6 +54,27 @@ describe('mediaExternalUrl', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
   })
+
+  // #84361: the raw `file://${path}` concat broke on URL-structural
+  // characters — `#`/`?` truncated the path at the fragment/query boundary
+  // and a stray `%` made the main process's fileURLToPath throw.
+  it('escapes URL-structural characters so the whole path survives the round trip', () => {
+    $connection.set({ mode: 'local' } as never)
+
+    const roundTrip = (fileUrl: string): string => {
+      const parsed = new URL(fileUrl)
+
+      return decodeURIComponent(parsed.pathname)
+    }
+
+    expect(mediaExternalUrl('/tmp/Report #2.pdf')).toBe('file:///tmp/Report %232.pdf')
+    expect(mediaExternalUrl('/tmp/a?b.pdf')).toBe('file:///tmp/a%3Fb.pdf')
+    expect(mediaExternalUrl('/tmp/100%.pdf')).toBe('file:///tmp/100%25.pdf')
+
+    for (const path of ['/tmp/Report #2.pdf', '/tmp/a?b.pdf', '/tmp/100%.pdf', '/tmp/café.png']) {
+      expect(roundTrip(mediaExternalUrl(path))).toBe(path)
+    }
+  })
 })
 
 describe('mediaGatewayStreamUrl', () => {
@@ -90,6 +90,19 @@ describe('mediaGatewayStreamUrl', () => {
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
     $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
     expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
+  })
+
+  it('pins remote streams to their registered connection and profile', () => {
+    $connection.set({
+      connectionId: 'studio-ssh',
+      mode: 'remote',
+      profile: 'voice reviewer',
+      remoteKind: 'ssh'
+    } as never)
+
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
+      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
+    )
   })
 })
 
@@ -219,13 +232,63 @@ describe('gatewayMediaDataUrl', () => {
   })
 })
 
+describe('gatewayImageProxyDataUrl (#74564)', () => {
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/media/proxy?')) {
+      return { dataUrl: 'data:image/png;base64,cGRveGllZA==' }
+    }
+
+    throw new Error(`unexpected path ${path}`)
+  })
+
+  beforeEach(() => {
+    api.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote' } as never)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('fetches a client-unreachable CDN image through the gateway proxy', async () => {
+    const url = 'https://v3.fal.media/media/abc123?x=1'
+
+    await expect(gatewayImageProxyDataUrl(url)).resolves.toBe('data:image/png;base64,cGRveGllZA==')
+    expect(api).toHaveBeenCalledWith({ path: `/api/media/proxy?url=${encodeURIComponent(url)}` })
+  })
+
+  it('pins the request to the owner connection and profile when given', async () => {
+    await gatewayImageProxyDataUrl('https://fal.run/img.png', {
+      connectionId: 'studio-ssh',
+      profile: 'voice reviewer'
+    })
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'studio-ssh',
+      path: '/api/media/proxy?url=https%3A%2F%2Ffal.run%2Fimg.png',
+      profile: 'voice reviewer'
+    })
+  })
+
+  it('returns an empty string for non-http sources and proxy failures', async () => {
+    await expect(gatewayImageProxyDataUrl('data:image/png;base64,aGk=')).resolves.toBe('')
+    await expect(gatewayImageProxyDataUrl('/local/file.png')).resolves.toBe('')
+    expect(api).not.toHaveBeenCalled()
+
+    api.mockRejectedValueOnce(new Error('403 Image host not allowed'))
+    await expect(gatewayImageProxyDataUrl('https://fal.media/x.png')).resolves.toBe('')
+  })
+})
+
 describe('downloadGatewayMediaFile', () => {
   const saveGatewayFile = vi.fn(async () => ({ path: '/Users/me/Downloads/report.md', saved: true }))
 
   beforeEach(() => {
     saveGatewayFile.mockClear()
     vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
-    $connection.set({ mode: 'remote', profile: 'docker-gw' } as never)
+    $connection.set({ connectionId: 'work-ssh', mode: 'remote', profile: 'docker-gw' } as never)
   })
 
   afterEach(() => {
@@ -240,7 +303,8 @@ describe('downloadGatewayMediaFile', () => {
     })
 
     expect(saveGatewayFile).toHaveBeenCalledWith({
-      path: '/Users/me/project/a b.md',
+      connectionId: 'work-ssh',
+      path: 'file:///Users/me/project/a%20b.md',
       profile: 'docker-gw',
       suggestedName: 'a b.md'
     })

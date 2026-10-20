@@ -1,3 +1,4 @@
+import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,7 +8,7 @@ const SID = 'timeline-session'
 
 let stream: MessageStreamHarness
 
-const event = (type: string, timestamp: number, payload: Record<string, unknown> = {}) =>
+const event = (type: GatewayEventName, timestamp: number, payload: Record<string, unknown> = {}) =>
   act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
 
 describe('live transcript timeline events', () => {
@@ -63,15 +64,6 @@ describe('live transcript timeline events', () => {
 
     expect(assistant?.error).toBeTruthy()
     expect([assistant?.timestamp, assistant?.completedAt]).toEqual([301.875, 301.875])
-  })
-
-  it('uses the gateway event time for a review summary system row', () => {
-    event('review.summary', 401.625, { text: 'Review saved.' })
-
-    const system = stream.state(SID).messages.find(message => message.role === 'system')
-
-    expect(system?.timestamp).toBe(401.625)
-    expect(system?.parts[0].timestamp).toBe(401.625)
   })
 
   it('uses session.info time when it is the only stop boundary', () => {

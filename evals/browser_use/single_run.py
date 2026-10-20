@@ -56,7 +56,8 @@ cfg = {
     "browser": browser_cfg,
     "display": {"quiet": True},
 }
-import yaml
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import hermes_yaml as yaml
 
 with open(os.path.join(hh, "config.yaml"), "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f)
@@ -75,24 +76,46 @@ import logging
 
 logging.disable(logging.CRITICAL)
 
-import run_agent  # noqa: E402
+import run_agent
 
-assert run_agent.__file__.startswith(WT), f"wrong tree: {run_agent.__file__}"
+_loaded = os.path.normcase(os.path.normpath(run_agent.__file__))
+_want = os.path.normcase(os.path.normpath(WT))
+assert _loaded.startswith(_want), f"wrong tree: {run_agent.__file__}"
 
 if ARM == "prns":
     # Strip the helpers digest from the schema: header-only description.
-    import tools.browser_use_cli as bu  # noqa: E402
+    import tools.browser_use_cli as bu
 
     bu._skill_text_fetched = True
     bu._skill_text_cache = None
     bu.BROWSER_EXEC_SCHEMA["description"] = bu._description_header()
 
-from run_agent import AIAgent  # noqa: E402
+from run_agent import AIAgent
+
+# Provider resolution: default openrouter (original battery), but allow the
+# Nous-subscription path on boxes without an OpenRouter key. Credentials are
+# resolved through the product's own auth state, never printed.
+_or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+if _or_key:
+    _agent_auth = dict(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=_or_key,
+        provider="openrouter",
+    )
+else:
+    # Resolved by the orchestrator BEFORE HERMES_HOME is redirected to the
+    # throwaway home (auth state lives in the real profile). Never printed.
+    _tok = os.environ.get("BUBENCH_NOUS_TOKEN", "").strip()
+    if not _tok:
+        raise SystemExit("no OPENROUTER_API_KEY and no Nous auth available")
+    _agent_auth = dict(
+        base_url=os.environ.get("BUBENCH_NOUS_BASE_URL", "https://inference-api.nousresearch.com/v1"),
+        api_key=_tok,
+        provider="nous",
+    )
 
 agent = AIAgent(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-    provider="openrouter",
+    **_agent_auth,
     model=MODEL,
     max_iterations=30,
     quiet_mode=True,
@@ -128,7 +151,7 @@ try:
         else str(result)
     )
     messages = result.get("messages", []) if isinstance(result, dict) else []
-except Exception as e:  # noqa: BLE001
+except Exception as e:
     error = f"{type(e).__name__}: {e}"
     messages = getattr(agent, "messages", []) or []
 wall = time.time() - t0

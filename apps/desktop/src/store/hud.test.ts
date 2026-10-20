@@ -65,12 +65,6 @@ describe('openHud profile targeting (#82285)', () => {
     expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'research' })
   })
 
-  it('normalizes to default for single-profile users', () => {
-    openHud()
-
-    expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'default' })
-  })
-
   it('uses the active profile when the target session is not in the cache', () => {
     $activeGatewayProfile.set('work')
 

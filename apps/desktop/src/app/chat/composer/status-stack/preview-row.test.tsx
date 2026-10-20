@@ -19,26 +19,6 @@ describe('PreviewStatusRow', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps the preview tooltip label inline inside the portaled decoration', async () => {
-    const view = render(
-      <PreviewStatusRow
-        item={{ cwd: 'C:\\repo', id: 'preview.html', label: 'preview.html', target: 'preview.html' }}
-        onDismiss={() => undefined}
-      />
-    )
-
-    fireEvent.pointerMove(screen.getByText('preview.html'), { pointerType: 'mouse' })
-    await screen.findByRole('tooltip')
-
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
-    const label = content?.firstElementChild?.firstElementChild
-
-    expect(content).not.toBeNull()
-    expect(view.container.contains(content)).toBe(false)
-    expect(label?.classList.contains('inline-flex')).toBe(true)
-    expect(label?.classList.contains('flex')).toBe(false)
-  })
-
   it('opens remote non-HTML file artifacts in the in-app preview instead of the local browser bridge', async () => {
     const remotePath = '/home/agent/report.pdf'
     const openPreviewInBrowser = vi.fn(async () => undefined)

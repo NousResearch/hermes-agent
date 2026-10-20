@@ -42,7 +42,8 @@ automatically.
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
-- **Node.js 18.17 or newer** on PATH (`node --version`)
+- Node.js: Hermes uses its managed Node when available.
+  `hermes pm install node` provisions the pin; the adapter can fall back to PATH.
 - A phone number that can receive iMessage (used to bind your account)
 
 That's it — there is no public URL or tunnel to set up.
@@ -208,6 +209,11 @@ Common issues:
   media.
 - **Native polls are supported.** Hermes sends poll content through
   spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
+- **Read receipts are supported.** The sidecar marks an inbound iMessage
+  read after forwarding it to Hermes, so the sender sees `Read` without
+  waiting for a model/tool turn. Inbound receipts for Hermes-sent messages
+  are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
 - **Message effects are supported.** Hermes sends text with native iMessage
   bubble/screen effects through spectrum-ts' iMessage `effect()` builder
   via the sidecar's `/send-effect` endpoint.
@@ -236,7 +242,6 @@ Common issues:
 | `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
-| `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |

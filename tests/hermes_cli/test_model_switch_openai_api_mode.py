@@ -49,7 +49,7 @@ def _run_openai_switch(
             },
         ),
         patch(
-            "hermes_cli.models.validate_requested_model",
+            "hermes_cli.models_validate.validate_requested_model",
             return_value=_MOCK_VALIDATION,
         ),
         patch("hermes_cli.model_switch.get_model_info", return_value=None),
@@ -135,3 +135,22 @@ def test_generic_relay_not_clobbered_on_meta_switch():
     # so it stays chat_completions (not forced to codex_responses).
     assert result.success
     assert result.api_mode == "chat_completions"
+
+
+def test_openai_runtime_codex_app_server_survives_host_mandate():
+    """``model.openai_runtime: codex_app_server`` must survive the /model switch (#115169).
+
+    The resolver applies the opt-in after its ladder and hands ``api_mode=codex_app_server``
+    to the switch; api.openai.com's host-mandated ``codex_responses`` is a wire-protocol
+    correction for stale modes and must not overwrite the app-server runtime selection.
+    """
+    result = _run_openai_switch(
+        raw_input="gpt-5.6-sol",
+        current_provider="openrouter",
+        current_model="anthropic/claude-opus-4.8",
+        explicit_provider="openai-api",
+        runtime_api_mode="codex_app_server",
+    )
+    assert result.success, f"switch_model failed: {result.error_message}"
+    assert result.target_provider == "openai-api"
+    assert result.api_mode == "codex_app_server"

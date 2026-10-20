@@ -119,6 +119,34 @@ describe('resolvePinnedSessions', () => {
     expect(resolvePinnedSessions([], index, sessions, new Set(['other'])).map(s => s.id)).toEqual(['foreign'])
   })
 
+  it('does not reshuffle Show-all pins that already live in the local set', () => {
+    // Foreign-profile rows used to miss the per-profile local copy and fall
+    // through the recency-ordered fallback, so a click (last_active bump)
+    // reshuffled the whole Pinned section. A connection-wide local set keeps
+    // the hand-picked order even when recency changes.
+    const sessions = [
+      row('foreign', { last_active: 1, pinned: true, profile: 'k9' }),
+      row('local', { last_active: 50, pinned: true, profile: 'default' })
+    ]
+
+    const index = buildSessionByAnyId(sessions, [], [])
+
+    expect(resolvePinnedSessions(['foreign', 'local'], index, sessions, settled).map(s => s.id)).toEqual([
+      'foreign',
+      'local'
+    ])
+
+    const clicked = [
+      row('foreign', { last_active: 99, pinned: true, profile: 'k9' }),
+      row('local', { last_active: 50, pinned: true, profile: 'default' })
+    ]
+
+    expect(resolvePinnedSessions(['foreign', 'local'], index, clicked, settled).map(s => s.id)).toEqual([
+      'foreign',
+      'local'
+    ])
+  })
+
   it('ignores rows from a backend that predates the pinned flag', () => {
     // `pinned` undefined means "no opinion", never "pinned".
     const sessions = [row('a')]

@@ -13,13 +13,15 @@ import {
 } from '@/store/agent-plugins'
 import { notify, RECOVERY_ACTIONS } from '@/store/notifications'
 
+import { CatalogSwitch } from '../catalog/catalog-switch'
+
 interface AgentPluginToggleProps {
   row: AgentPluginRow
   profile: string | null
   label: string
   busy: boolean
-  /** Switch size; the catalog card uses the compact one. */
-  size?: 'default' | 'xs'
+  /** Render as the catalog card's labelled compact switch (main's CatalogSwitch). */
+  catalog?: boolean
   /** Also called on every flip (the card switch drives the Desktop half with it). */
   onToggle?: (enable: boolean) => void
   /** Enable a unified Desktop half only after agent enablement succeeds. */
@@ -27,7 +29,7 @@ interface AgentPluginToggleProps {
 }
 
 /** Setup consent belongs to this scoped row, never the recovering live socket. */
-export function AgentPluginToggle({ row, profile, label, busy, size, onToggle, onEnabled }: AgentPluginToggleProps) {
+export function AgentPluginToggle({ row, profile, label, busy, catalog, onToggle, onEnabled }: AgentPluginToggleProps) {
   const { t } = useI18n()
   const p = t.settings.plugins.agent
   const { requestGateway, gateway } = useGatewayRequest()
@@ -52,9 +54,11 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle, o
   // a different backend, even if the active socket changes while reviewing.
   const request: GatewayRequest = gateway ? gateway.request.bind(gateway) : requestGateway
 
+  const Control = catalog ? CatalogSwitch : Switch
+
   return (
     <>
-      <Switch
+      <Control
         aria-label={label}
         checked={row.status === 'enabled'}
         disabled={!key || busy || setup !== null}
@@ -74,7 +78,6 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle, o
             }
           })
         }}
-        size={size}
       />
       {setup && key && (
         <ConfirmDialog

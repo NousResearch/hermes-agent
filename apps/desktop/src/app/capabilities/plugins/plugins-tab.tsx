@@ -30,7 +30,7 @@ import {
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
-  removeAgentPlugin,
+  removeAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
@@ -740,11 +740,11 @@ export const PluginsTab = memo(function PluginsTab({
       return (
         <AgentPluginToggle
           busy={agentBusy(agent)}
+          catalog
           label={pkg.name}
           onToggle={setDesktopEnabled}
           profile={scope}
           row={agent}
-          size="xs"
         />
       )
     }

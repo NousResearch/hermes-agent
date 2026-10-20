@@ -797,7 +797,7 @@ export default function PluginCatalogPage() {
               <CatalogFeatured
                 author={featured.maintainer}
                 cta="View plugin"
-                description={featured.description}
+                description={cardSummary(featured.description || "")}
                 href={pluginPagePath(featured.name)}
                 label="Featured plugin"
                 tags={[

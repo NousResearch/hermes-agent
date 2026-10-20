@@ -247,7 +247,8 @@ def _inject_session_context_env(env: dict) -> None:
     context is engaged ContextVars are authoritative — a bound value (incl. "") wins
     and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror.
     Then the plugins' values for the child's own session (``ctx.register_session_env``), minus
-    any name the secret filter drops; ``None`` unsets a name."""
+    every name :func:`_scrub_credentials` strips (Tier 1, incl. backend ``strip_env_keys``, and
+    Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
         from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
     except Exception:
@@ -261,10 +262,7 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
     from hermes_cli.plugins_session_env import resolve_session_env
     if plugin_env := resolve_session_env(env.get("HERMES_SESSION_ID", "")):
-        registered = _registered_adapter_secret_env()
-        for name, value in plugin_env.items():
-            if _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name, registered):
-                continue
+        for name, value in _scrub_credentials(plugin_env, inherit_credentials=False).items():
             if value is None:
                 env.pop(name, None)
             else:

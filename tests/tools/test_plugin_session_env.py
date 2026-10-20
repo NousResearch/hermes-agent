@@ -16,7 +16,7 @@ def resolve(session_id):
     return PANES.get(session_id)
 
 def register(ctx):
-    ctx.register_session_env(['PANE', 'WINDOW', 'OPENAI_API_KEY'], resolve)
+    ctx.register_session_env(['PANE', 'WINDOW', 'OPENAI_API_KEY', 'ACME_SANDBOX_TOKEN'], resolve)
     try:
         ctx.register_session_env('HERMES_SESSION_ID', resolve)
     except ValueError:
@@ -70,11 +70,15 @@ def test_each_command_runs_with_its_sessions_current_values(plugin, tmp_path):
         shell.cleanup()
 
 
-def test_a_plugin_cannot_set_core_or_credential_names(plugin):
+def test_a_plugin_cannot_set_core_or_credential_names(plugin, monkeypatch):
+    from agent import terminal_env_registry
     from tools.environments.local import build_subprocess_env
 
-    plugin.PANES["a"] = {"PANE": "pane-a", "OPENAI_API_KEY": "sk-from-plugin"}
+    # A terminal backend owns this credential: the scrub removes it, so the session env may not add it back.
+    monkeypatch.setattr(terminal_env_registry, "plugin_strip_env_keys", lambda: frozenset({"ACME_SANDBOX_TOKEN"}))
+    plugin.PANES["a"] = {"PANE": "pane-a", "OPENAI_API_KEY": "sk-from-plugin", "ACME_SANDBOX_TOKEN": "tok"}
     child = _as_session("a", build_subprocess_env)
 
     assert plugin.REFUSED == ["HERMES_SESSION_ID"]
-    assert (child["PANE"], child["HERMES_SESSION_ID"], "OPENAI_API_KEY" in child) == ("pane-a", "a", False)
+    assert (child["PANE"], child["HERMES_SESSION_ID"]) == ("pane-a", "a")
+    assert not {"OPENAI_API_KEY", "ACME_SANDBOX_TOKEN"} & child.keys()

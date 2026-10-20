@@ -248,18 +248,36 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
          if job.get("no_agent") else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
+        ("Model", _format_model_pin(job)),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
         ("Execution", f"{latest_execution.get('status', '?')}  {latest_execution.get('id', '?')}"
          if latest_execution else "")]
-    return [
+    core = [
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
         _next_run_row(job),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
-    ] + [(label, value) for label, value in optional if value]
+    ]
+    # failure_deliver is persisted only when set; surface it as an override of Deliver
+    # so an incident reviewer can re-verify the routing config from `cron list` (#NS-788).
+    failure_deliver = job.get("failure_deliver")
+    if failure_deliver:
+        fd = (failure_deliver if isinstance(failure_deliver, str)
+              else ", ".join(str(v) for v in failure_deliver))
+        core.append(("Fail deliver", fd))
+    return core + [(label, value) for label, value in optional if value]
+
+
+def _format_model_pin(job: Dict[str, Any]) -> str:
+    """Render a job's model pin (``provider/model``) for ``cron list``; ``""`` when unpinned."""
+    model = job.get("model")
+    provider = job.get("provider")
+    if not model:
+        return ""
+    return f"{provider}/{model}" if provider else model
 
 
 def _short_reason(text: Any, limit: int = 120) -> str:

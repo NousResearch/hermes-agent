@@ -878,9 +878,14 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         pricing: dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
-                    break
+                # Scalar-only guard: gateways (magpie, vLLM) ship non-pricing keys like
+                # modalities whose values are lists, and `value not in {None, ""}` raises
+                # TypeError (unhashable) on them, killing the whole /models parse.
+                if alias in normalized:
+                    value = normalized[alias]
+                    if isinstance(value, (int, float, str)) and value != "":
+                        pricing[target] = value
+                        break
         if pricing:
             return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}

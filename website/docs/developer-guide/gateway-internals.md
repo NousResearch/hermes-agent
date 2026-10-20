@@ -83,6 +83,15 @@ unknown or foreign child answers `available: false` with no messages; an unknown
 is `not_found`. Runtimes that serve it advertise `subagent-transcript-v1` in
 `runtime.describe.capabilities`.
 
+Live progress needs no file read. The owner publishes `subagent.spawn_requested`, `start`,
+`thinking`, `tool`, `progress` and `complete` to every viewer of the parent session (local
+routes only); a nested child's lifecycle frames reach it too, but its `tool` and `thinking`
+frames do not. The child persists each tool-call turn before the tool runs, so while
+`running` is true a running tool is the trailing assistant `tool_calls` entry with no `tool`
+row for its id yet; the `tool` row (the result, with any `error` in its content) follows when
+the call ends. A finished child's `status`, `exit_reason` and `duration_seconds` are in its
+delegator's `delegate_task` result.
+
 Managed-worker policies return `unsupported_projection` for process/subagent reads:
 the owner's process-local registry cannot truthfully describe another interpreter.
 Control mutations (`session.control`), process mutations and subagent steering are

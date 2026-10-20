@@ -283,6 +283,12 @@ _SPECS = [
         _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user')"),
         _arg("--max-len", type=int, help="Trim the stored comment body to this many characters"),
     ], help="Append a comment"),
+    _cmd("update-body", [
+        _TASK_ID,
+        _arg("--body", required=True, help="New canonical task body (passed as one argument; newlines are preserved)"),
+        _arg("--author", help="Author/source recorded in the body_updated event"),
+        _json_flag(help="Emit JSON output"),
+    ], help="Replace the canonical body of an existing task and audit the change"),
     _cmd("attach", [
         _TASK_ID,
         _arg("path", help="Path to the local file to attach"),

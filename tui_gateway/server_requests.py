@@ -41,7 +41,7 @@ import logging
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from tools.clarify_batch import settle_batch
 
@@ -113,6 +113,9 @@ _answerable: Callable[[str], bool] = lambda sid: True
 # ``clients(sid)``: the attached client transports that answer server→client requests — the set whose
 # unanimous NOT_SHOWN_CODE decline settles a window-owned request (session_transports.py).
 _clients: Callable[[str], list] = lambda sid: []
+# ``device_capable(sid, capability)``: False only when every live client attached to the session
+# declined that device capability in ``client.capabilities`` — a desktop window never advertises one.
+_device_capable: Callable[[str, str], bool] = lambda sid, capability: True
 
 # Error code a client answers when none of its windows shows the request's session, and the refusal the
 # tool reports once every attached client said so. Mirrored in apps/desktop server-requests.ts.
@@ -126,11 +129,14 @@ _answering_clients: set = set()
 
 
 def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any],
-               answerable: Callable[[str], bool], clients: Callable[[str], list] | None = None) -> None:
-    global _write, _emit, _answerable, _clients
+               answerable: Callable[[str], bool], clients: Callable[[str], list] | None = None,
+               device_capable: Callable[[str, str], bool] | None = None) -> None:
+    global _write, _emit, _answerable, _clients, _device_capable
     _write, _emit, _answerable = write_json, emit, answerable
     if clients is not None:
         _clients = clients
+    if device_capable is not None:
+        _device_capable = device_capable
 
 
 def advertise(transport: Any, server_requests: bool) -> None:
@@ -142,10 +148,34 @@ def advertise(transport: Any, server_requests: bool) -> None:
             _answering_clients.discard(transport)
 
 
+# Client transports that advertised each device capability in ``client.capabilities`` — the same
+# lifetime rules as ``_answering_clients`` (ws.py forgets a peer on disconnect; a stdio transport
+# cannot be weak-referenced and never advertises device capabilities at all).
+_device_capabilities: dict = {}
+
+
+def advertise_device(transport: Any, capabilities: Iterable[str] | None) -> None:
+    """Record the device capabilities *transport*'s client offered. ``None``/empty is the honest
+    "no device behind me" answer every desktop and TUI client sends; it is stored, not skipped, so
+    a reconnect that never re-advertises does not inherit a stale phone."""
+    with _lock:
+        if capabilities:
+            _device_capabilities[transport] = frozenset(str(c) for c in capabilities)
+        else:
+            _device_capabilities.pop(transport, None)
+
+
+def device_capabilities(transport: Any) -> frozenset[str]:
+    """The device capabilities *transport* advertised; empty when it advertised none."""
+    with _lock:
+        return _device_capabilities.get(transport, frozenset())
+
+
 def forget(transport: Any) -> None:
-    """Drop a disconnected transport's advertisement."""
+    """Drop a disconnected transport's advertisements (both kinds)."""
     with _lock:
         _answering_clients.discard(transport)
+        _device_capabilities.pop(transport, None)
 
 
 def answers_requests(transport: Any) -> bool:
@@ -158,6 +188,22 @@ def _unanswerable(method: str, sid: str) -> bool:
         return False
     logger.info("server request %s for %s not sent: the attached client predates server→client requests "
                 "(update the Hermes app)", method, sid)
+    return True
+
+
+def _device_declined(method: str, sid: str, params: dict) -> bool:
+    """True when *method* is a device request no attached client advertised: a desktop window or the
+    TUI never offers a camera, so the request is refused here instead of being written to a client
+    that would drop it or answer ``-32601``."""
+    from tui_gateway.contracts import registry as contracts
+
+    if not method.startswith(contracts.DEVICE_REQUEST_PREFIX):
+        return False
+    capability = str((params or {}).get("capability") or "")
+    if not capability or _device_capable(sid, capability):
+        return False
+    logger.info("server request %s(%s) for %s not sent: no attached client advertised that device capability",
+                method, capability, sid)
     return True
 
 
@@ -197,7 +243,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that settled returns
     ``{"answers": <locked so far>, "outcome"}`` (``submitted`` / ``cancelled`` / ``timed_out``).
     """
-    if _unanswerable(method, sid):
+    if _unanswerable(method, sid) or _device_declined(method, sid, params):
         return None
     req = ServerRequest(sid, method, params, qids=qids)
     _register(req)
@@ -231,7 +277,7 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     """Send one request whose wait is owned elsewhere (the approval queue's own timeout). ``on_result``
     runs on the dispatching thread when the response lands. Returns ``settle(reason)``: call it when
     the underlying wait ends; if the request is still open it is withdrawn with ``request.cancel``."""
-    if _unanswerable(method, sid):
+    if _unanswerable(method, sid) or _device_declined(method, sid, params):
         on_result(None)
         return lambda reason: None
     req = ServerRequest(sid, method, params, on_result=on_result)

@@ -295,6 +295,10 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         ("accent", "accent"), ("mode", "mode"), ("layout", "layout"), ("picker", "picker"),
     ),
     "setup_beat": _setup_beat,
+    "device_request": _callback_tool(
+        "tools.device_tool", "device_request_tool", "device_callback",
+        ("capability", "capability", ""), ("options", "options"),
+    ),
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,

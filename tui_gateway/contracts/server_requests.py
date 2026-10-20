@@ -14,6 +14,7 @@ from pydantic import Field
 from tools.tour_presets import TourPreset
 
 from .base import JsonValue, Params, Payload, Result, WireEnum
+from .liveness import DeviceCapability
 from .registry import event, server_request
 
 
@@ -356,6 +357,38 @@ server_request("theme.apply", params=ThemeApplyRequestParams, result=ValueResult
                doc="Apply set_theme values in the window showing the session (JSON text answer).")
 server_request("theme.pick", params=ThemePickRequestParams, result=ThemePickResult,
                doc="Show an accent or layout picker card in the chat and wait for the pick.")
+
+
+# ── handheld device bridges ───────────────────────────────────────────────────────────────────
+
+
+class DeviceRequestOptions(Params):
+    """Capability-specific knobs the client reads (``{quality: "high"}`` for a camera frame, …).
+    Open by design: the capability vocabulary is closed, its options are not."""
+
+    model_config = Params.model_config | {"extra": "allow"}
+
+
+class DeviceRequestParams(ServerRequestParams):
+    """``capability`` must be one the client advertised in ``client.capabilities``; the backend
+    refuses the request at once when it did not, so an agent never stalls on a phone-less client."""
+
+    capability: DeviceCapability
+    options: DeviceRequestOptions | None = None
+
+
+class DeviceRequestResult(Result):
+    """``value`` is the JSON text the capability produced (a capture, a fix, a listing). ``denied``
+    is the user's refusal — a distinct outcome from an absent capability, so a tool can report it
+    instead of surfacing a transport failure."""
+
+    value: str = ""
+    denied: bool = False
+    reason: str | None = None
+
+
+server_request("device.request", params=DeviceRequestParams, result=DeviceRequestResult,
+               doc="Ask the client's device for one advertised capability (camera frame, location fix, …).")
 
 
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────

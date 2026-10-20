@@ -76,6 +76,16 @@ def _session_answering_clients(sid: str) -> list:
             if isinstance(peer, WSTransport) and server_requests.answers_requests(peer)]
 
 
+def _session_device_capable(sid: str, capability: str) -> bool:
+    """Whether a live WebSocket client attached to *sid* advertised *capability*. No attached client
+    is still True — the question waits in ``open_requests`` for the reconnect replay, exactly like a
+    server→client request from a build that predates them."""
+    from tui_gateway import server_requests
+    from tui_gateway.ws import WSTransport
+    clients = [peer for peer in _session_live_transports(_sessions.get(sid)) if isinstance(peer, WSTransport)]
+    return not clients or any(capability in server_requests.device_capabilities(peer) for peer in clients)
+
+
 def _warn_foreign_login(session: dict, transport) -> None:
     """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
     creator's user id."""

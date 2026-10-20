@@ -817,6 +817,24 @@
       }
     },
     {
+      "name": "device.capabilities",
+      "summary": "The device capabilities a session's attached client advertised, so an agent knows what it may ask for over device.request.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DeviceCapabilitiesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeviceCapabilitiesResult"
+        }
+      }
+    },
+    {
       "name": "diagnostics.share_nous",
       "summary": "Upload a force-redacted debug bundle to Nous-internal diagnostics storage.",
       "params": [
@@ -11933,6 +11951,21 @@
             "default": false,
             "title": "Server Requests",
             "type": "boolean"
+          },
+          "device_capabilities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DeviceCapability"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Device Capabilities"
           }
         },
         "title": "ClientCapabilitiesParams",
@@ -11952,10 +11985,18 @@
             "default": false,
             "title": "Declines Not Shown",
             "type": "boolean"
+          },
+          "device_requests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Device Requests",
+            "type": "array"
           }
         },
         "required": [
-          "server_requests"
+          "server_requests",
+          "device_requests"
         ],
         "title": "ClientCapabilitiesResult",
         "type": "object"
@@ -16688,6 +16729,123 @@
           "max_concurrent_children"
         ],
         "title": "DelegationStatusResult",
+        "type": "object"
+      },
+      "DeviceCapabilitiesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "DeviceCapabilitiesParams",
+        "type": "object"
+      },
+      "DeviceCapabilitiesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceCapability"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "capabilities"
+        ],
+        "title": "DeviceCapabilitiesResult",
+        "type": "object"
+      },
+      "DeviceCapability": {
+        "description": "What a handheld client can offer the agent on request \u2014 the closed vocabulary a client\nadvertises in ``client.capabilities`` and the backend may then ask for over ``device.request``.\nDeliberately device-shaped, not tool-shaped: a desktop client advertises none of these.",
+        "enum": [
+          "camera",
+          "microphone",
+          "location",
+          "screen_capture",
+          "notifications",
+          "photo_library",
+          "files"
+        ],
+        "title": "DeviceCapability",
+        "type": "string"
+      },
+      "DeviceRequestOptions": {
+        "additionalProperties": true,
+        "description": "Capability-specific knobs the client reads (``{quality: \"high\"}`` for a camera frame, \u2026).\nOpen by design: the capability vocabulary is closed, its options are not.",
+        "properties": {},
+        "title": "DeviceRequestOptions",
+        "type": "object"
+      },
+      "DeviceRequestParams": {
+        "additionalProperties": false,
+        "description": "``capability`` must be one the client advertised in ``client.capabilities``; the backend\nrefuses the request at once when it did not, so an agent never stalls on a phone-less client.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "capability": {
+            "$ref": "#/components/schemas/DeviceCapability"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceRequestOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "session_id",
+          "capability"
+        ],
+        "title": "DeviceRequestParams",
+        "type": "object"
+      },
+      "DeviceRequestResult": {
+        "additionalProperties": false,
+        "description": "``value`` is the JSON text the capability produced (a capture, a fix, a listing). ``denied``\nis the user's refusal \u2014 a distinct outcome from an absent capability, so a tool can report it\ninstead of surfacing a transport failure.",
+        "properties": {
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          },
+          "denied": {
+            "default": false,
+            "title": "Denied",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "title": "DeviceRequestResult",
         "type": "object"
       },
       "DiagnosticsShareNousParams": {
@@ -48020,6 +48178,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ClarifyResult"
+        }
+      }
+    },
+    {
+      "name": "device.request",
+      "summary": "Ask the client's device for one advertised capability (camera frame, location fix, \u2026).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DeviceRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeviceRequestResult"
         }
       }
     },

@@ -1317,6 +1317,31 @@ export interface ConnectorPolicySetResult {
   revision: string
   effective: ConnectorPolicyEffectiveUnrestricted | ConnectorPolicyEffectiveDenyAll | ConnectorPolicyEffectiveAllow | ConnectorPolicyEffectiveDeny
 }
+export type PingParams = Record<string, never>
+export interface PingResult {
+  pong: boolean
+}
+export interface GatewayCapabilitiesResult {
+  per_session_exclusive_submit: boolean
+}
+export interface ClientCapabilitiesParams {
+  server_requests?: boolean
+  device_capabilities?: DeviceCapability[] | null
+}
+/** What a handheld client can offer the agent on request — the closed vocabulary a client advertises in ``client.capabilities`` and the backend may then ask for over ``device.request``. Deliberately device-shaped, not tool-shaped: a desktop client advertises none of these. */
+export type DeviceCapability = 'camera' | 'microphone' | 'location' | 'screen_capture' | 'notifications' | 'photo_library' | 'files'
+export interface ClientCapabilitiesResult {
+  server_requests: string[]
+  declines_not_shown?: boolean
+  device_requests: string[]
+}
+export interface DeviceCapabilitiesParams {
+  session_id: string
+}
+export interface DeviceCapabilitiesResult {
+  session_id: string
+  capabilities: DeviceCapability[]
+}
 /** ``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for. */
 export interface DisplayStatus {
   profile: string
@@ -1903,20 +1928,6 @@ export interface I18nCatalogResult {
   lang: string
   surface: LocaleSurface
   messages: Record<string, string>
-}
-export type PingParams = Record<string, never>
-export interface PingResult {
-  pong: boolean
-}
-export interface GatewayCapabilitiesResult {
-  per_session_exclusive_submit: boolean
-}
-export interface ClientCapabilitiesParams {
-  server_requests?: boolean
-}
-export interface ClientCapabilitiesResult {
-  server_requests: string[]
-  declines_not_shown?: boolean
 }
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
@@ -5489,6 +5500,20 @@ export interface ThemeValues {
   mode?: ThemeMode | null
   layout?: string | null
 }
+/** ``capability`` must be one the client advertised in ``client.capabilities``; the backend refuses the request at once when it did not, so an agent never stalls on a phone-less client. */
+export interface DeviceRequestParams {
+  session_id: string
+  capability: DeviceCapability
+  options?: DeviceRequestOptions | null
+}
+/** Capability-specific knobs the client reads (``{quality: "high"}`` for a camera frame, …). Open by design: the capability vocabulary is closed, its options are not. */
+export type DeviceRequestOptions = Record<string, unknown>
+/** ``value`` is the JSON text the capability produced (a capture, a fix, a listing). ``denied`` is the user's refusal — a distinct outcome from an absent capability, so a tool can report it instead of surfacing a transport failure. */
+export interface DeviceRequestResult {
+  value?: string
+  denied?: boolean
+  reason?: string | null
+}
 export interface DisplayInstallSudoParams {
   session_id: string
   profile_key: string
@@ -6057,6 +6082,8 @@ export interface RpcMethods {
   'delegation.pause': { params: DelegationPauseParams; result: DelegationPauseResult }
   /** Running subagent tree plus the spawn pause flag and limits. */
   'delegation.status': { params: ProfileParams; result: DelegationStatusResult }
+  /** The device capabilities a session's attached client advertised, so an agent knows what it may ask for over device.request. */
+  'device.capabilities': { params: DeviceCapabilitiesParams; result: DeviceCapabilitiesResult }
   /** Upload a force-redacted debug bundle to Nous-internal diagnostics storage. */
   'diagnostics.share_nous': { params: DiagnosticsShareNousParams; result: DiagnosticsShareNousResult }
   /** Run the distro package install on the gateway host; progress streams as display.install.log/.done. */
@@ -6529,6 +6556,7 @@ export const RPC_METHODS = [
   'cron.manage',
   'delegation.pause',
   'delegation.status',
+  'device.capabilities',
   'diagnostics.share_nous',
   'display.install',
   'display.lease.acquire',
@@ -6882,6 +6910,8 @@ export interface ServerRequestMap {
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user 1-5 questions. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
+  /** Ask the client's device for one advertised capability (camera frame, location fix, …). */
+  'device.request': { params: DeviceRequestParams; result: DeviceRequestResult }
   /** Masked sudo password for the Bot Screen package install; app-level (empty session). */
   'display.install.sudo': { params: DisplayInstallSudoParams; result: ValueResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
@@ -6915,6 +6945,7 @@ export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
+  'device.request',
   'display.install.sudo',
   'preview.act',
   'preview.read',

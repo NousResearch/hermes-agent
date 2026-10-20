@@ -69,13 +69,17 @@ def _owner_process_gone(receipt) -> bool:
     """True when the receipt's own pid is gone, or its number now belongs to another process.
 
     The identity rule ``owner_reclaim_paused`` already applies: a live pid whose ``birth``
-    differs is a recycled number, not the owner. A live pid we cannot compare (no ``birth``
+    differs is a recycled number, not the owner. A zombie keeps its birth until reaped but has
+    already exited, so liveness goes through the dispatcher's zombie-aware ``_pid_alive``. A live pid we cannot compare (no ``birth``
     recorded) and an unreadable one are never proof of death.
     """
     try:
         pid = int(receipt['pid'])
     except (KeyError, TypeError, ValueError):
         return False
+    from hermes_cli import kanban_db as kb
+    if not kb._pid_alive(pid):
+        return True  # absent, or an exited zombie still waiting to be reaped
     try:
         from hermes_cli.process_identity import process_birth
         current = process_birth(psutil.Process(pid))

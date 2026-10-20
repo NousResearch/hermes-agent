@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_owner_recovery
+from hermes_cli.process_identity import process_birth
 from hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
@@ -229,4 +232,22 @@ def test_an_interpreter_bound_after_the_gate_keeps_its_claim(board, monkeypatch,
     assert calls[0] is False and calls[-1] is True
     row = board.state("t_ghost")
     assert (row["status"], row["current_run_id"]) == ("running", run)
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_an_exited_unreaped_owner_no_longer_holds_the_slot(board):
+    """A zombie keeps its birth until reaped, but it has exited: it cannot be executing anything."""
+    child = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
+    try:
+        birth = process_birth(psutil.Process(child.pid))
+        child.stdin.close()
+        deadline = time.time() + 10
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.time() < deadline, "child never exited"
+            time.sleep(0.02)
+        board.dead_attempt("t_ghost", owner_pid=child.pid, owner_birth=birth)
+        assert kb.release_stale_claims(board.conn) == 1
+        assert board.state("t_ghost")["status"] == "ready"
+    finally:
+        child.wait()
 

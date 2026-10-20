@@ -1,10 +1,11 @@
 'use client'
 
 import * as React from 'react'
-import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
+import type { ShikiTransformer, ThemedToken } from 'shiki'
 
+import { tokenStyle, useDiffTokens } from '@/components/chat/diff-tokens'
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
-import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
+import { exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
@@ -67,11 +68,11 @@ const DIFF_BOX_CLASS =
   '-mx-1.5 -mb-1.5 max-h-[12rem] max-w-none min-w-0 overflow-auto overscroll-x-contain overscroll-y-auto font-mono text-[0.7rem] leading-relaxed text-(--ui-text-secondary)'
 
 function diffKind(line: string): DiffKind {
-  if (line.startsWith('+') && !line.startsWith('+++')) {
+  if (line.startsWith('+')) {
     return 'add'
   }
 
-  if (line.startsWith('-') && !line.startsWith('---')) {
+  if (line.startsWith('-')) {
     return 'remove'
   }
 
@@ -152,7 +153,7 @@ function parseHunks(diff: string): ParsedHunk[] {
       continue
     }
 
-    if (!active || line.startsWith('\\')) {
+    if (!active || !/^[ +-]/.test(line)) {
       continue
     }
 
@@ -166,7 +167,7 @@ function parseHunks(diff: string): ParsedHunk[] {
 // separator kept between hunks), markers stripped, kind recorded. Old/new line
 // numbers are tracked from each `@@ -a,b +c,d @@` header so a caller that wants
 // a gutter (the preview) can render them; the blank separator carries none.
-function parseDiff(diff: string): DiffLine[] {
+export function parseDiff(diff: string): DiffLine[] {
   const hunks = parseHunks(diff)
 
   if (hunks.length === 0) {
@@ -291,36 +292,6 @@ export function DiffBody({ lines, syntax }: { lines: DiffLine[]; syntax?: boolea
   )
 }
 
-// shiki FontStyle is a bitmask: Italic=1, Bold=2, Underline=4.
-function tokenStyle({ bgColor, color, fontStyle = 0 }: ThemedToken): React.CSSProperties | undefined {
-  if (!color && !bgColor && !fontStyle) {
-    return undefined
-  }
-
-  return {
-    backgroundColor: bgColor,
-    color,
-    fontStyle: fontStyle & 1 ? 'italic' : undefined,
-    fontWeight: fontStyle & 2 ? 700 : undefined,
-    textDecorationLine: fontStyle & 4 ? 'underline' : undefined
-  }
-}
-
-function useThemeName() {
-  const current = () => (document.documentElement.classList.contains('dark') ? SHIKI_THEME.dark : SHIKI_THEME.light)
-  const [theme, setTheme] = React.useState(current)
-
-  React.useEffect(() => {
-    const observer = new MutationObserver(() => setTheme(current()))
-
-    observer.observe(document.documentElement, { attributeFilter: ['class'], attributes: true })
-
-    return () => observer.disconnect()
-  }, [])
-
-  return theme
-}
-
 function PreviewDiffRows({
   afterLines = 0,
   beforeLines = 0,
@@ -376,32 +347,7 @@ function TokenizedDiffBody({
   lines: DiffLine[]
 }) {
   const code = React.useMemo(() => lines.map(line => line.text).join('\n'), [lines])
-  const theme = useThemeName()
-  const [tokens, setTokens] = React.useState<ThemedToken[][] | null>(null)
-
-  React.useEffect(() => {
-    let cancelled = false
-
-    setTokens(null)
-    // Dynamic import so the multi-MB shiki chunk stays off the cold-start
-    // path — this effect only runs once a highlightable diff is on screen.
-    void import('shiki')
-      .then(({ codeToTokens }) => codeToTokens(code, { lang: language as BundledLanguage, theme }))
-      .then(result => {
-        if (!cancelled) {
-          setTokens(result.tokens)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setTokens([])
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [code, language, theme])
+  const tokens = useDiffTokens(code, language)
 
   if (!tokens) {
     return chunked ? (

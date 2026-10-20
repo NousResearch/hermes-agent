@@ -828,13 +828,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if not target:
             _cp(f"  {_t('resume.usage')}")
             if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
-                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
-                # next line instead of having to retype `/resume 3`. The list here must match the one shown
-                # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                # Bare-number selection and /resume N must use the table just displayed.
+                self._pending_resume_sessions = (
+                    getattr(self, "_last_session_listing", None) or self._list_recent_sessions(limit=10))
                 return
             return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
@@ -898,7 +894,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """``(session_id, meta)`` for a numbered selection, title, or id (an empty compression-chain head
         redirects to the descendant holding the transcript); None after printing why it was not resolved."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            # A widened /sessions table must not resolve its numbers against CLI-only rows.
+            sessions = getattr(self, "_last_session_listing", None)
+            if sessions is None:
+                sessions = self._list_recent_sessions(limit=10)
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(*_lines(_gt("resume.out_of_range", index=index)))
@@ -922,14 +921,15 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
+        """Handle /sessions [all|list|<id_or_title>] — ``all`` widens the recent-sessions table;
         an explicit target delegates to /resume so both spellings behave identically."""
         arg = _command_arg(cmd_original)
-        if arg and arg.lower() not in {"list", "ls", "browse"}:
+        include_all_sources = arg.lower() in {"all", "--all"}
+        if arg and not include_all_sources and arg.lower() not in {"list", "ls", "browse"}:
             self._handle_resume_command(f"/resume {arg}")
         elif not self._session_db:
             _cp(_db_unavailable_line())
-        elif not self._show_recent_sessions(reason="sessions"):
+        elif not self._show_recent_sessions(reason="sessions", include_all_sources=include_all_sources):
             _cp(f"  {_t('sessions.none_yet')}")
 
     def _handle_branch_command(self, cmd_original: str) -> None:

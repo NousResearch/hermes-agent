@@ -375,8 +375,10 @@ class CLISessionMixin:
         lines.extend(status_lines(fields, "created", "last_activity", "tokens", "agent_running"))
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+    def _list_recent_sessions(
+        self, limit: int = 10, *, include_all_sources: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return recent sessions, scoped to the CLI unless explicitly widened."""
         if not self._session_db:
             return []
         try:
@@ -385,18 +387,21 @@ class CLISessionMixin:
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
-                include_all_sources=False, include_unnamed=True, limit=limit,
+                include_all_sources=include_all_sources, include_unnamed=True, limit=limit,
                 exclude_sources=list(INTERNAL_LISTING_SOURCES))
         except Exception:
             return []
 
-    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
+    def _show_recent_sessions(
+        self, *, reason: str = "history", limit: int = 10, include_all_sources: bool = False,
+    ) -> bool:
         """Render recent sessions inline from the active chat TUI.
 
         Returns True when something was shown, False if no session list was available.
         """
         from cli import _cli_visible_print
-        sessions = self._list_recent_sessions(limit=limit)
+        sessions = self._list_recent_sessions(limit=limit, include_all_sources=include_all_sources)
+        self._last_session_listing = sessions
         if not sessions:
             return False
 

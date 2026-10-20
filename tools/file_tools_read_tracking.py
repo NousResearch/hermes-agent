@@ -255,15 +255,27 @@ def _file_metadata(resolved: str) -> tuple | None:
 
 
 def _file_version(resolved: str) -> tuple | None:
-    """A byte snapshot, not just mtime (editors/copy tools can preserve that)."""
+    """A byte snapshot, not just mtime (editors/copy tools can preserve that).
+
+    Both sides of the "did it change while being read" check come from the PATH
+    (``os.stat``), never from a mix of the handle and the path. On Windows the two
+    disagree on ``st_ctime_ns`` for a file nobody touched (the handle reports the
+    timestamp cached at open, the path re-reads it), so a mixed comparison never
+    matches, every version is ``None`` and every overwrite is refused as stale
+    (#141504). The handle still proves the descriptor is the file we stat'ed, and
+    the digest proves the bytes.
+    """
     try:
-        if not stat.S_ISREG(os.stat(resolved).st_mode):
+        before = os.stat(resolved)
+        if not stat.S_ISREG(before.st_mode):
             return None
         fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before.st_mode):
+            handle = os.fstat(stream.fileno())
+            if not stat.S_ISREG(handle.st_mode):
                 return None
+            if (handle.st_dev, handle.st_ino) != (before.st_dev, before.st_ino):
+                return None  # the path was replaced between the stat and the open
             digest = hashlib.file_digest(stream, "sha256").digest()
             after = os.stat(resolved)
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")

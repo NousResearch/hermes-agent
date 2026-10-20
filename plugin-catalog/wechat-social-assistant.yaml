@@ -1,0 +1,23 @@
+name: wechat-social-assistant
+repo: https://github.com/harrylabsj/hermes-plugin-wechat-social-assistant
+sha: fbfc1bd23fc9494ad9c4433de2574954b5f5476f
+description: 'Local-first WeChat relationship memory assistant for macOS: captures only what
+  is visible in the WeChat window via system OCR/Accessibility, stores everything in a local
+  SQLite database (0600/0700 permissions, no cloud), and serves contact briefs, follow-up
+  planning, outreach drafts and weekly relationship reports through 32 MCP tools. Engine
+  pinned to the immutable PyPI release wechat-social-assistant==1.5.1 over uvx stdio; Portable
+  Agent Plugins v1 package (mcp.json + skills/), needs uv on PATH. All data confined to
+  PLUGIN_DATA via WSA_ALLOWED_ROOT + path enforcement. Never reads WeChat databases, never
+  injects into WeChat, never sends messages — outreach is drafts for human review only. Disclosure — reads WeChat only by screenshotting/OCR-ing and walking the macOS Accessibility tree of the frontmost window (not WeChat''s databases or a bot API), compiles bundled Swift helpers with swiftc into ~/Library/Caches/wechat-social-assistant/bin on first use, and needs Screen Recording (optionally Accessibility) permission for the host terminal; no network egress, never sends messages.'
+maintainer: harrylabsj
+tier: community
+category: tools
+docs_url: https://github.com/harrylabsj/wechat-social-assistant
+version: "1.5.1"
+platforms:
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

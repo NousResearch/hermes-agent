@@ -1,0 +1,196 @@
+"""Regression tests for ``set_moa_models`` preserving undeclared config keys.
+
+Issue #58819: ``MoaConfigPayload`` does not declare ``save_traces`` or
+``trace_dir``, so a GUI save via ``PUT /api/model/moa`` silently drops
+these hand-edited keys from ``config.yaml``.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+
+from hermes_cli.moa_config import normalize_moa_config
+from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
+from hermes_cli.web_routers.models import set_moa_models
+
+
+def _base_payload(**overrides) -> MoaConfigPayload:
+    """Return a minimal valid MoaConfigPayload."""
+    defaults = dict(
+        default_preset="default",
+        active_preset="",
+        presets={
+            "default": MoaPresetPayload(
+                reference_models=[
+                    MoaModelSlot(provider="openai-codex", model="gpt-5.5"),
+                ],
+                aggregator=MoaModelSlot(provider="openrouter", model="anthropic/claude-opus-4.8"),
+                max_tokens=4096,
+                enabled=True,
+            ),
+        },
+    )
+    defaults.update(overrides)
+    return MoaConfigPayload(**defaults)
+
+
+class TestSetMoaModelsPreservesUndeclaredKeys:
+    """save_traces / trace_dir must survive a GUI save."""
+
+    def test_save_traces_preserved(self, tmp_path):
+        """Hand-edited ``moa.save_traces: true`` must not be dropped."""
+        existing_cfg = {
+            "moa": {
+                "save_traces": True,
+                "trace_dir": "/custom/traces",
+                "default_preset": "default",
+                "presets": {
+                    "default": {
+                        "reference_models": [
+                            {"provider": "openai-codex", "model": "gpt-5.5"},
+                        ],
+                        "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                        "max_tokens": 4096,
+                        "enabled": True,
+                    },
+                },
+            },
+        }
+
+        saved_cfg = {}
+
+        def fake_readable_config():
+            return dict(existing_cfg)  # shallow copy
+
+        def fake_save_config(cfg, **_kwargs):
+            saved_cfg.update(cfg)
+
+        payload = _base_payload()
+
+        with (
+            patch("hermes_cli.config.require_readable_config_before_write", side_effect=fake_readable_config),
+            patch("hermes_cli.config.save_config", side_effect=fake_save_config),
+            patch("hermes_cli.web_server_profiles._profile_scope"),
+        ):
+            set_moa_models(payload)
+
+        moa = saved_cfg["moa"]
+        assert moa.get("save_traces") is True, (
+            "save_traces was dropped by set_moa_models"
+        )
+        assert moa.get("trace_dir") == "/custom/traces", (
+            "trace_dir was dropped by set_moa_models"
+        )
+
+
+def _put_payload(payload: MoaConfigPayload) -> tuple[dict, dict]:
+    saved_cfg = {}
+
+    def fake_save_config(cfg, **_kwargs):
+        saved_cfg.update(cfg)
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("hermes_cli.config.save_config", side_effect=fake_save_config),
+        patch("hermes_cli.web_server_profiles._profile_scope"),
+    ):
+        response = set_moa_models(payload)
+    return response, saved_cfg
+
+
+@pytest.mark.parametrize("budget", [200, 12_000, 50_000])
+def test_named_preset_put_round_trip_preserves_reference_tool_result_budget(budget):
+    get_response = normalize_moa_config({
+        "default_preset": "review",
+        "presets": {
+            "review": {
+                "reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}],
+                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "reference_tool_result_budget": budget,
+            },
+        },
+    })
+
+    response, saved_cfg = _put_payload(MoaConfigPayload(**get_response))
+
+    assert response["presets"]["review"]["reference_tool_result_budget"] == budget
+    assert saved_cfg["moa"]["presets"]["review"]["reference_tool_result_budget"] == budget
+
+
+@pytest.mark.parametrize("budget", [200, 12_000, 50_000])
+def test_legacy_flat_put_round_trip_preserves_reference_tool_result_budget(budget):
+    payload = MoaConfigPayload(
+        reference_models=[MoaModelSlot(provider="openai-codex", model="gpt-5.5")],
+        aggregator=MoaModelSlot(provider="openrouter", model="anthropic/claude-opus-4.8"),
+        reference_tool_result_budget=budget,
+    )
+
+    response, saved_cfg = _put_payload(payload)
+
+    assert response["reference_tool_result_budget"] == budget
+    assert saved_cfg["moa"]["presets"]["default"]["reference_tool_result_budget"] == budget
+
+
+def test_legacy_flat_payload_survives_real_dashboard_save(tmp_path, monkeypatch):
+    """Legacy payloads retain their settings through a real save and reload."""
+    import yaml
+
+    from hermes_cli.config import get_config_path, read_raw_config
+    from hermes_cli.web_routers.models import get_moa_models
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = {
+        "reference_models": [{"provider": "openrouter", "model": "example/reference"}],
+        "aggregator": {"provider": "openrouter", "model": "example/aggregator"},
+        "reference_temperature": 0.3,
+        "aggregator_temperature": 0.7,
+        "reference_timeout": 45,
+        "fanout": "every_n:3",
+        "degraded_reference_policy": "silent",
+        "enabled": True,
+    }
+    get_config_path().write_text(
+        yaml.safe_dump({"moa": legacy, "agent": {"max_iterations": 7}}),
+        encoding="utf-8",
+    )
+    expected = normalize_moa_config(legacy)
+
+    before = read_raw_config()["moa"]
+    set_moa_models(MoaConfigPayload(**before))
+    assert get_moa_models() == expected
+    assert read_raw_config()["agent"]["max_iterations"] == 7
+
+
+def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):
+    """#89184: a MoA autosave must not re-persist the rest of the effective-config snapshot.
+
+    ``load_config()`` is a default-expanded snapshot; saving it whole after a chain was written
+    out-of-band (or was simply stale) rewrote ``fallback_providers`` too. Real config pipeline,
+    temp HERMES_HOME.
+    """
+    import hermes_yaml as yaml
+    from hermes_cli.config import get_config_path, load_config, read_raw_config
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    get_config_path().write_text(yaml.safe_dump({"model": {"default": "m1", "provider": "custom"}}), encoding="utf-8")
+    stale = load_config()                       # snapshot BEFORE the chain exists
+    stale["fallback_providers"] = []            # what the default-expanded snapshot carries
+    chain = [{"provider": "custom", "model": "glm-5.08", "base_url": "http://gw:8080/v1"}]
+    raw = read_raw_config()
+    raw["fallback_providers"] = chain
+    get_config_path().write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=stale),
+        patch("hermes_cli.web_server_profiles._profile_scope"),
+    ):
+        set_moa_models(_base_payload())
+
+    on_disk = read_raw_config()
+    assert on_disk["fallback_providers"] == chain, "MoA save clobbered fallback_providers"
+    # The MoA edit itself landed (a non-default value, so default stripping leaves it on disk).
+    assert on_disk["moa"]["presets"]["default"]["reference_models"][0]["model"] == "gpt-5.5"

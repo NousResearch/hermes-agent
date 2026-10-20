@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes CLI interface layout</title>
+  <desc id="desc">Stylized terminal window showing the Hermes CLI banner, conversation area, and fixed input prompt.</desc>
+  <rect width="960" height="520" rx="18" fill="#07070d"/>
+  <rect x="18" y="18" width="924" height="484" rx="14" fill="#0a0a12" stroke="#2b2410"/>
+  <rect x="18" y="18" width="924" height="42" rx="14" fill="#11111a" stroke="#2b2410"/>
+  <circle cx="48" cy="39" r="8" fill="#ff5f56"/>
+  <circle cx="74" cy="39" r="8" fill="#ffbd2e"/>
+  <circle cx="100" cy="39" r="8" fill="#27c93f"/>
+  <text x="480" y="44" text-anchor="middle" fill="#e8e4dc" font-family="Inter, sans-serif" font-size="18" font-weight="600">Hermes CLI</text>
+
+  <rect x="48" y="86" width="864" height="136" rx="12" fill="#0f0f18" stroke="#3a3217"/>
+  <text x="72" y="112" fill="#ffd700" font-family="JetBrains Mono, monospace" font-size="16">HERMES AGENT</text>
+  <rect x="72" y="126" width="190" height="72" rx="10" fill="#11111a" stroke="#4b3f12"/>
+  <text x="92" y="150" fill="#ffdd66" font-family="JetBrains Mono, monospace" font-size="14">Caduceus banner</text>
+  <text x="92" y="172" fill="#9a968e" font-family="JetBrains Mono, monospace" font-size="13">Model, terminal, tools,</text>
+  <text x="92" y="190" fill="#9a968e" font-family="JetBrains Mono, monospace" font-size="13">skills, working dir</text>
+  <rect x="292" y="126" width="590" height="72" rx="10" fill="#11111a" stroke="#4b3f12"/>
+  <text x="316" y="150" fill="#e8e4dc" font-family="JetBrains Mono, monospace" font-size="14">Model: anthropic/claude-sonnet-4</text>
+  <text x="316" y="172" fill="#e8e4dc" font-family="JetBrains Mono, monospace" font-size="14">Terminal: local   Working dir: /home/user/project</text>
+  <text x="316" y="194" fill="#e8e4dc" font-family="JetBrains Mono, monospace" font-size="14">Tools: 19   Skills: 12   Session: 20260315_123456_abcd1234</text>
+
+  <rect x="48" y="246" width="864" height="182" rx="12" fill="#0f0f18" stroke="#2b2410"/>
+  <text x="72" y="278" fill="#9a968e" font-family="JetBrains Mono, monospace" font-size="14">Conversation output</text>
+  <text x="72" y="320" fill="#ffdd66" font-family="JetBrains Mono, monospace" font-size="15">┊ terminal: git status</text>
+  <text x="72" y="350" fill="#7ce38b" font-family="JetBrains Mono, monospace" font-size="15">Hermes: Working tree is clean. Ready for the next task.</text>
+  <text x="72" y="380" fill="#9a968e" font-family="JetBrains Mono, monospace" font-size="15">Hermes streams tool progress and responses here.</text>
+
+  <rect x="48" y="448" width="864" height="30" rx="10" fill="#11111a" stroke="#4b3f12"/>
+  <text x="72" y="468" fill="#ffd700" font-family="JetBrains Mono, monospace" font-size="15">❯</text>
+  <text x="98" y="468" fill="#e8e4dc" font-family="JetBrains Mono, monospace" font-size="15">Fixed input area at the bottom with slash-command autocomplete</text>
+</svg>

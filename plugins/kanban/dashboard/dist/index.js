@@ -4365,19 +4365,31 @@
     const { t } = useI18n();
     const [editing, setEditing] = useState(false);
     const [v, setV] = useState(props.task.assignee || "");
+    const escaped = useRef(false);
+    const settled = useRef(false);
     useEffect(function () { setV(props.task.assignee || ""); }, [props.task.assignee]);
     if (!editing) {
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
         h("span", {
           className: "hermes-kanban-meta-value hermes-kanban-editable",
-          onClick: function () { setEditing(true); },
+          onClick: function () { escaped.current = false; settled.current = false; setEditing(true); },
           title: tx(t, "clickToEditAssignee", "Click to edit assignee"),
         }, props.task.assignee || tx(t, "unassigned", "unassigned")),
       );
     }
     const save = function () {
+      settled.current = true;
       props.onPatch({ assignee: v.trim() || "" }).then(function () { setEditing(false); });
+    };
+    // Clicking away commits a changed, non-empty value; an empty or unchanged
+    // field just closes the row. Unassigning stays an explicit Enter — a stray
+    // click must never drop an assignment.
+    const commitOnBlur = function () {
+      if (escaped.current || settled.current) return;
+      const next = v.trim();
+      if (!next || next === (props.task.assignee || "")) { setEditing(false); return; }
+      save();
     };
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
@@ -4386,8 +4398,9 @@
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
           if (e.key === "Enter") { e.preventDefault(); save(); }
-          if (e.key === "Escape") setEditing(false);
+          if (e.key === "Escape") { escaped.current = true; setEditing(false); }
         },
+        onBlur: commitOnBlur,
         placeholder: tx(t, "emptyAssignee", "(empty = unassign)"),
         className: "h-7 text-xs flex-1",
         style: { textTransform: "none" },
@@ -4402,19 +4415,31 @@
     const { t } = useI18n();
     const [editing, setEditing] = useState(false);
     const [v, setV] = useState(String(props.task.priority || 0));
+    const escaped = useRef(false);
+    const settled = useRef(false);
     useEffect(function () { setV(String(props.task.priority || 0)); }, [props.task.priority]);
     if (!editing) {
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "priority", "Priority")),
         h("span", {
           className: "hermes-kanban-meta-value hermes-kanban-editable",
-          onClick: function () { setEditing(true); },
+          onClick: function () { escaped.current = false; settled.current = false; setEditing(true); },
           title: tx(t, "clickToEdit", "Click to edit"),
         }, String(props.task.priority)),
       );
     }
     const save = function () {
+      settled.current = true;
       props.onPatch({ priority: Number(v) || 0 }).then(function () { setEditing(false); });
+    };
+    const commitOnBlur = function () {
+      if (escaped.current || settled.current) return;
+      const raw = v.trim();
+      if (!raw || String(Number(raw) || 0) === String(props.task.priority || 0)) {
+        setEditing(false);
+        return;
+      }
+      save();
     };
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, tx(t, "priority", "Priority")),
@@ -4423,8 +4448,9 @@
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
           if (e.key === "Enter") { e.preventDefault(); save(); }
-          if (e.key === "Escape") setEditing(false);
+          if (e.key === "Escape") { escaped.current = true; setEditing(false); }
         },
+        onBlur: commitOnBlur,
         className: "h-7 text-xs w-20",
       }),
     );
@@ -4460,6 +4486,8 @@
     const [catalog, setCatalog] = useState(_modelCatalogCache);
     const [busy, setBusy] = useState(false);
     const [freeText, setFreeText] = useState("");
+    const escaped = useRef(false);
+    const settled = useRef(false);
 
     useEffect(function () {
       if (!editing || catalog) return;
@@ -4484,7 +4512,7 @@
             "hermes-kanban-meta-value hermes-kanban-editable",
             !task.model_override ? "text-muted-foreground" : "",
           ),
-          onClick: function () { setEditing(true); },
+          onClick: function () { escaped.current = false; settled.current = false; setEditing(true); },
           title: tx(t, "clickToEditModel",
             "Click to override the model for this task's next run"),
         }, current),
@@ -4528,9 +4556,18 @@
     // or zero authenticated providers).
     if (!loading && providers.length === 0) {
       const saveFree = function () {
+        settled.current = true;
         const v = freeText.trim();
         if (!v) { apply({ clear_model_override: true }); return; }
         apply({ model_override: v });
+      };
+      // Click-away commits a non-empty change; an empty field just closes the
+      // row, so clearing the override stays an explicit Enter.
+      const commitFreeOnBlur = function () {
+        if (escaped.current || settled.current) return;
+        const v = freeText.trim();
+        if (!v || v === String(task.model_override || "")) { setEditing(false); return; }
+        saveFree();
       };
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
@@ -4540,8 +4577,9 @@
           onChange: function (e) { setFreeText(e.target.value); },
           onKeyDown: function (e) {
             if (e.key === "Enter") { e.preventDefault(); saveFree(); }
-            if (e.key === "Escape") setEditing(false);
+            if (e.key === "Escape") { escaped.current = true; setEditing(false); }
           },
+          onBlur: commitFreeOnBlur,
           className: "h-7 text-xs flex-1",
           style: { textTransform: "none" },
           autoCapitalize: "none", autoCorrect: "off", spellCheck: false,

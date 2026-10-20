@@ -28,7 +28,7 @@ import {
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionDotStateById } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -427,11 +427,7 @@ export function SidebarSessionsSection({
       grouping === 'date'
         ? groupEntriesByRecency(displayEntries)
         : grouping === 'status'
-          ? groupEntriesByStatus(
-              displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
-              statusDividerLabels
-            )
+          ? groupEntriesByStatus(displayEntries, entry => dotStates[entry.session.id] ?? 'idle', statusDividerLabels)
           : toSessionRows(displayEntries)
 
     return manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows

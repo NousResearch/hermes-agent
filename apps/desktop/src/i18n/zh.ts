@@ -3194,8 +3194,9 @@ export const zhOverrides = {
       thisMonth: '本月'
     },
     statusDivider: {
+      attention: '需要关注',
       working: '进行中',
-      done: '已完成'
+      idle: '空闲'
     },
     markAllRead: '全部标记为已读'
   },

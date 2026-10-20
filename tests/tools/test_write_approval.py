@@ -40,9 +40,10 @@ def test_list_pending_skips_non_dict_record(hermes_home):
                    summary="ok", origin="foreground")
     pending_dir = wa._pending_dir("memory")
     (pending_dir / "bad.json").write_text('"not a record"', encoding="utf-8")
+    (pending_dir / "0badf00d.json").write_text('"not a record"', encoding="utf-8")  # a minted-format name
     records = wa.list_pending("memory")
     assert len(records) == 1 and records[0]["payload"]["content"] == "ok"
-    assert wa.get_pending("memory", "bad") is None
+    assert wa.get_pending("memory", "bad") is None and wa.get_pending("memory", "0badf00d") is None
 
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
@@ -496,3 +497,25 @@ def test_symlinks_planted_in_the_pending_store_are_never_followed(hermes_home, t
     wa.stage_write(wa.SKILLS, {"action": "create", "name": "probe", "content": "x"},
                    summary="create probe", origin="foreground")
     assert sorted(p.name for p in outside.iterdir()) == ["cafebabe.json", "secret.json"]
+
+
+def test_a_record_is_known_by_its_file_name_not_the_id_written_inside_it(hermes_home):
+    """A forged 'id' inside a pending file must not make approve apply one record and delete another,
+    nor leave the applied record pending to be replayed."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    beta = wa.stage_write(wa.SKILLS, {"action": "create", "name": "beta",
+                                      "content": "---\nname: beta\ndescription: b\n---\nb\n"},
+                          summary="create beta", origin="foreground")
+    gamma = wa.stage_write(wa.SKILLS, {"action": "create", "name": "gamma",
+                                       "content": "---\nname: gamma\ndescription: g\n---\ng\n"},
+                           summary="create gamma", origin="foreground")
+    path = wa._pending_path(wa.SKILLS, beta["id"])
+    forged = json.loads(path.read_text(encoding="utf-8"))
+    forged["id"] = gamma["id"]
+    path.write_text(json.dumps(forged), encoding="utf-8")
+    assert sorted(r["id"] for r in wa.list_pending(wa.SKILLS)) == sorted([beta["id"], gamma["id"]])
+    assert wa.get_pending(wa.SKILLS, beta["id"])["id"] == beta["id"]
+    handle_pending_subcommand(wa.SKILLS, ["approve", beta["id"]])
+    assert wa.get_pending(wa.SKILLS, beta["id"]) is None             # applied and gone, not left to replay
+    assert wa.get_pending(wa.SKILLS, gamma["id"]) is not None        # the unreviewed record is untouched

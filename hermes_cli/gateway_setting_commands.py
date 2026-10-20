@@ -9,6 +9,8 @@ command, every surface) and the CLI prints its reply. Client-side state the CLI 
 session's agent in the gateway (as on messaging), where its result is delivered back to the session.
 ``/cron`` too: the profile's cron store belongs to the gateway that fires its jobs, so the gateway runs
 main's handler (one writer); ``/cron run`` lasts as long as the job, so a write waits with no deadline.
+``/toolsets`` too: the gateway builds the report from its own registry (MCP and plugin toolsets
+included) with this session's toolsets marked (gateway/session_info_reads.py).
 """
 from __future__ import annotations
 
@@ -31,8 +33,11 @@ def _watch_reviewer(cli, _arg):
         view.watch_subagents()
 
 
+# Reports the owner already lays out (main's own line builders): printed as is.
+_VERBATIM = frozenset({"toolsets"})
 GATEWAY_SETTINGS = {"personality": None, "busy": _mirror_busy, "approvals": None, "footer": None, "fast": None,
-                    "refine": None, "review": _watch_reviewer, "cron": None}
+                    "refine": None, "review": _watch_reviewer, "cron": None,
+                    "toolsets": None}
 
 
 def _unbounded(canonical, arg):
@@ -78,7 +83,7 @@ def run(cli, canonical, cmd):
     if reply is STOPPED:
         return True
     for line in str((reply or {}).get("output") or "").splitlines():
-        _cprint(f"  {line}" if line else "")
+        _cprint(f"  {line}" if line and canonical not in _VERBATIM else line)
     mirror = GATEWAY_SETTINGS[canonical]
     if mirror is not None:
         mirror(cli, arg)

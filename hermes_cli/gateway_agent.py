@@ -166,6 +166,8 @@ class GatewayAgent:
         # todo snapshot (``_set_todos``), read by the pet's done-plan beat.
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+        # Part of the _compress_context seam: it sets the owner's report here and compress_now reads it.
+        self.compression_summary = None
         self._generation = None
         self._admission = None
         self._turn = None  # a turn a later one replaced stops taking frames
@@ -593,7 +595,10 @@ class GatewayAgent:
                           force=True, verbatim_tail=None, **_kw):
         """Main's manual ``/compress`` seam (``compress_now``) as ``session.mutate compress``: the
         gateway summarizes and commits; the returned transcript is the gateway's compacted history.
-        ``verbatim_tail`` rows are stamped as stored, so ``compress_now`` does not rejoin them."""
+        ``verbatim_tail`` rows are stamped as stored, so ``compress_now`` does not rejoin them.
+        The gateway's own report (``summary``: flags and note (with the reason)) is kept for ``compress_now``;
+        a ``noop`` answer (a failed summary or nothing removable) committed nothing, so the history,
+        the tail and the compression count stay as they were."""
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression import COMPACTION_STATUS
         from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT
@@ -604,11 +609,16 @@ class GatewayAgent:
             payload["partial"] = True
             payload["keep_last"] = max(1, sum(1 for m in verbatim_tail if m.get("role") == "user"))
         self._emit_print(COMPACTION_STATUS)
+        self.compression_summary = None
         snapshot = self.connection.call("session.resume", session_id=self.session_id)
-        self.connection.call("session.mutate", timeout=COMPRESS_RPC_TIMEOUT, session_id=self.session_id,
-                             request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
-                             expected_generation=snapshot["execution_generation"],
-                             operation="compress", payload=payload)
+        result = self.connection.call("session.mutate", timeout=COMPRESS_RPC_TIMEOUT, session_id=self.session_id,
+                                      request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
+                                      expected_generation=snapshot["execution_generation"],
+                                      operation="compress", payload=payload) or {}
+        if isinstance(result.get("summary"), dict):
+            self.compression_summary = result["summary"]
+        if result.get("status") == "noop":
+            return list(messages), system_message
         for row in verbatim_tail or ():
             row[_DB_PERSISTED_MARKER] = True
         after = self.connection.call("session.resume", session_id=self.session_id)

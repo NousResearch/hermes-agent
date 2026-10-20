@@ -41,6 +41,8 @@ export const messageHeightKey = (msg: Msg) => {
 // ceiling was 16 lines, then full text — this is the sane middle).
 const MAX_ESTIMATE_LINES = 800
 
+const DIFF_ENVELOPE_RE = /^```diff\n([\s\S]*?)\n```$/
+
 export const wrappedLines = (text: string, width: number, maxLines: number = MAX_ESTIMATE_LINES) => {
   const w = Math.max(1, width)
   // Worst case: every cell is its own row at width=1, plus a small
@@ -107,9 +109,11 @@ export const estimatedMsgHeight = (
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
   const text = msg.text
-  let h = wrappedLines(text || ' ', bodyWidth)
+  const diffBody = msg.kind === 'diff' ? text.match(DIFF_ENVELOPE_RE)?.[1] : undefined
+  const isValidDiff = diffBody !== undefined
+  let h = wrappedLines(isValidDiff ? diffBody : text || ' ', isValidDiff ? Math.max(1, bodyWidth - 2) : bodyWidth)
 
-  if (!compact && msg.role === 'assistant') {
+  if (!compact && msg.role === 'assistant' && !isValidDiff) {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice
     // first so the regex never walks more than the first ~16k chars of
     // a giant assistant message — post-mount Yoga measurement converges

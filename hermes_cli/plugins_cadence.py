@@ -35,23 +35,28 @@ def _results_path() -> Path:
     return _marker_path().parent / "results.json"
 
 
-def record_check_results(results: list, plugins_dir: Path) -> None:
+def snapshot_installs(plugins_dir: Path) -> dict:
+    """The install records an update check is about to compare against. Take it BEFORE the check runs:
+    a record read afterwards may already include an update that finished during the check."""
+    from hermes_cli.plugins_provenance import read_sidecar_rows
+
+    return read_sidecar_rows(plugins_dir)
+
+
+def record_check_results(results: list, checked_installs: dict) -> None:
     """Persist a completed check so surfaces that list plugins (the Desktop Plugins tab) can show an
     update without a network call per listing. Each row carries the install record it was checked
-    against (source, revision, pin), so a later reader can tell whether the result still applies.
-    Never raises."""
+    against (*checked_installs*, from :func:`snapshot_installs` before the check), so a later reader
+    can tell whether the result still applies. Never raises."""
     import json
 
     from utils import atomic_write_text
 
     try:
-        from hermes_cli.plugins_provenance import read_sidecar_rows
-
-        installed = read_sidecar_rows(plugins_dir)
         rows = []
         for r in results:
             row = r.to_json() if hasattr(r, "to_json") else dict(r)
-            rows.append({**row, "checked_install": _install_fingerprint(installed.get(row.get("name")))})
+            rows.append({**row, "checked_install": _install_fingerprint(checked_installs.get(row.get("name")))})
         atomic_write_text(_markers_dir() / "results.json", json.dumps(rows, indent=2) + "\n")
     except (OSError, TypeError, ValueError):
         pass
@@ -195,7 +200,9 @@ def _run_check_locked(
 ) -> list:
     check_ok = True
     warning = ""
+    checked_installs: dict = {}
     try:
+        checked_installs = snapshot_installs(plugins_dir)
         results = run_checks_fn(plugins_dir)
     except Exception:
         warning = "plugin update check failed"
@@ -204,7 +211,7 @@ def _run_check_locked(
         check_ok = False
 
     if check_ok:
-        record_check_results(results, plugins_dir)
+        record_check_results(results, checked_installs)
 
     try:
         from pm import receipt

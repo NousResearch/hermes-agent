@@ -612,18 +612,18 @@ set and the run owns that task) — `delegate_task` children and cron jobs run i
 the worker inherit the variable but are never nudged, since they have no board tools —
 and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
 
-**Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
-before reaching the nudge, the dispatcher gives the violation a **bounded retry**
-(up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` consecutive violations, default 3)
-before auto-blocking the task instead of respawning it into the same loop. The
-budget counts only *consecutive* clean-exit protocol violations — interleaved
-rate-limited requeues are neutral, and any other failure kind resets the
-streak — and a per-task `max_retries` overrides the bound. A card blocked by
-this budget stays blocked (it is not auto-promoted like a below-`failure_limit`
-breaker block) until `hermes kanban unblock <id>`, which also grants a fresh
-retry budget. This usually means
-the model wrote a plain-text answer and exited without using the Kanban tool
-surface.
+**Dispatcher-side recovery:** If nudges are exhausted and a worker exits with
+status `0` while its task still remains `running`, the dispatcher atomically
+parks the card `blocked` on that **first occurrence**. It closes that attempt
+with task-run outcome `protocol_violation`, emits a visible
+`protocol_violation` event carrying `sticky: true`, and preserves the worker's
+last output as evidence. This block is not retried, requeued, or auto-promoted:
+inspect the work and run `hermes kanban unblock <id>` when an operator decides
+it is safe to try again. The CAS transition means a concurrent terminal board
+action wins instead; the losing reaper emits no duplicate event or run closure.
+This usually means the model wrote a plain-text answer and exited without using
+the Kanban tool surface. Nonzero crashes, timeouts, and rate-limit exits retain
+their existing retry/requeue behavior.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
@@ -1459,7 +1459,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `infrastructure_cooldown` (the host refused the last spawn — no restart-safe systemd scope — and the cooldown has not elapsed; never counted against the card), `rate_limit_cooldown` (the last run hit a quota wall; same cooldown, never counted), `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
 | `skipped_nonspawnable` | `{assignee}` | Dispatcher refused to spawn because the assignee profile does not exist in this home (or is not in `kanban.dispatch_profiles`). Written once per card — repeated only when another event landed in between — so `show`/`tail` name the missing profile without a row per tick. The card stays in `ready`; reassign it or install the profile. |
-| `protocol_violation` | `{pid, claimer, exit_code, protocol_violation, worker_output?}` | Worker exited successfully while the task was still `running`, usually because it answered without a terminal board call (`kanban_complete`, `kanban_request_review` or `kanban_block`). Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata and feeds the violation-only retry budget). Below the budget — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations, per-task `max_retries` overriding — the task simply returns to `ready` for another attempt; when the streak reaches the bound the dispatcher also emits `gave_up` and auto-blocks. `worker_output` carries the worker's own last printed text (usually its explanation of why it stopped), also folded into `last_failure_error` and shown to the retry worker as the prior-attempt error. |
+| `protocol_violation` | `{pid, claimer, exit_code, protocol_violation, sticky: true, worker_output?}` | Worker exited successfully while the task was still `running`, usually because it answered without a terminal board call (`kanban_complete`, `kanban_request_review` or `kanban_block`). Dispatcher atomically transitions the task to sticky `blocked` on its first occurrence and closes the task run with outcome `protocol_violation`; it never requeues or auto-promotes it. `worker_output` carries the worker's own last printed text (usually its explanation of why it stopped), also folded into `last_failure_error` for the operator reviewing the block. |
 | `gave_up` | `{failures, effective_limit, limit_source, error, terminal_provider?}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. `terminal_provider: true` means the worker exited `78` on a provider error a retry cannot fix (credential revoked, model gone) — including a startup credential failure that explicitly requires re-login (`hermes auth` / `setup`), which exits `78` before the first turn; other startup failures exit `1` — and the breaker fired on that first attempt, sticky, regardless of the limit. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.

@@ -1233,51 +1233,35 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
-@pytest.mark.platforms("linux")
-def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
-    """Mixed failure kinds must not consume the violation retry budget.
+def test_protocol_violation_blocks_on_first_clean_exit(kanban_home):
+    """A clean worker exit without a terminal board action is sticky immediately.
 
-    Regression for the #61233 review finding: expressed as a plain
-    ``failure_limit`` over the unified ``consecutive_failures`` counter, the
-    violation budget was consumed by earlier timeouts / nonzero exits. As a
-    violation-only streak, a prior real crash must not eat violation
-    retries, and below-budget violations must leave the unified counter
-    untouched (so the two budgets stay independent).
+    Architect decision (OP #663): a protocol violation is human-actionable,
+    not crashed/retryable — there is no violation-only streak/budget. A
+    previous nonzero crash keeps its ordinary breaker accounting, but the
+    very next protocol violation blocks on the spot regardless of that
+    unrelated counter.
     """
-    from hermes_cli import kanban_db_dispatch as _kbd
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="mixed", assignee="worker")
 
-        # One real crash: unified counter ticks to 1 (below
-        # DEFAULT_FAILURE_LIMIT=2 — task stays ready).
         _drive_nonzero_crash(conn, tid, 991000)
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
         assert task.consecutive_failures == 1
 
-        # Two violations after it: streak 1 and 2 — both retry, unified
-        # counter untouched. (Pre-fix: the crash consumed the budget and the
-        # violations blocked well before three of them happened.)
-        for i, pid in enumerate((991001, 991002)):
-            _drive_protocol_violation(conn, tid, pid)
-            task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"violation {i + 1} after a crash must still retry, "
-                f"got {task.status}"
-            )
-            assert task.consecutive_failures == 1, (
-                "below-budget violations must not tick the unified counter"
-            )
-
-        # Third consecutive violation: streak hits the bound — blocked.
-        _drive_protocol_violation(conn, tid, 991003)
+        _drive_protocol_violation(conn, tid, 991001)
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
-        assert len(gave_up) == 1
-        assert (gave_up[0].payload or {}).get("protocol_violations") == \
-            _kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT
+        assert task.consecutive_failures == 1
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)
+        ).fetchone()
+        assert run["outcome"] == "protocol_violation"
+        assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
+        event = [e for e in kb.list_events(conn, tid) if e.kind == "protocol_violation"][-1]
+        assert (event.payload or {}).get("sticky") is True
     finally:
         conn.close()
 

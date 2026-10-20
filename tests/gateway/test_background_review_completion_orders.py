@@ -238,7 +238,9 @@ def test_a_cancel_after_the_drain_released_the_waiter_marks_nothing():
     assert authority.review_completions == {}
 
 
-def test_rebinding_the_outer_admission_to_a_queued_followup_logs_the_dropped_candidate(caplog):
+def test_rebinding_the_outer_admission_to_a_queued_followup_logs_the_dropped_candidate(
+    caplog,
+):
     """The in-task follow-up (``_run_agent_followup``) binds the OUTER admission to the next
     turn: the first turn's candidate -- its reply already delivered -- is superseded by the
     follow-up's, which covers both turns. The drop is logged like every other starved review,
@@ -247,11 +249,17 @@ def test_rebinding_the_outer_admission_to_a_queued_followup_logs_the_dropped_can
     from gateway.run_turn_review import _GatewayReviewAdmission
 
     admission = _GatewayReviewAdmission("s", "p", 1)
-    first, followup = types.SimpleNamespace(session_id="s"), types.SimpleNamespace(session_id="s")
+    first, followup = (
+        types.SimpleNamespace(session_id="s"),
+        types.SimpleNamespace(session_id="s"),
+    )
     with caplog.at_level(logging.INFO, logger="gateway.run"):
         admission.bind_agent(first)
         admission.capture_candidate(
-            first, [{"role": "user", "content": "first turn"}], review_memory=True, review_skills=False
+            first,
+            [{"role": "user", "content": "first turn"}],
+            review_memory=True,
+            review_skills=False,
         )
         assert admission._candidate is not None
         admission.bind_agent(followup)

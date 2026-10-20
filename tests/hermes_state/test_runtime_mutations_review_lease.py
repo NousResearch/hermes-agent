@@ -457,7 +457,9 @@ def test_policy_refresh_still_refuses_a_foreground_holder(tmp_path):
         sid = _local_session(db, epoch, tmp_path)
         before = local_receipt(db, sid)["policy"]
         generation = db.get_session(sid)["runtime_generation"]
-        assert db.try_acquire_session_turn_lease(sid, _foreground_holder(), ttl_seconds=60)
+        assert db.try_acquire_session_turn_lease(
+            sid, _foreground_holder(), ttl_seconds=60
+        )
         with pytest.raises(SessionTurnLeaseLostError):
             _refresh(db, epoch, sid, {**before, "max_turns": 7})
         assert local_receipt(db, sid)["policy"] == before

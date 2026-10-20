@@ -1540,7 +1540,9 @@ async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
         # the runner parked on the live session Event before preparing the turn -- or, for the
         # turn /retry nests, on that turn's own synthetic event.
         carrier = (
-            event if getattr(event, "_gateway_review_completes_on_event", False) else guard
+            event
+            if getattr(event, "_gateway_review_completes_on_event", False)
+            else guard
         )
         admission = carrier._gateway_review_delivery_complete.__self__
         admission.bind_agent(agent)

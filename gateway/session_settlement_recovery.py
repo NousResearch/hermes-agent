@@ -61,6 +61,9 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
+    if isinstance(captured_result.get('error_surface'), dict):
+        # Only gateway-owned refusals set this (``session_cron.execute``); ``text`` is already their copy.
+        complete['error_surface'] = captured_result['error_surface']
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
     if captured_result.get('local_viewer'):
@@ -132,6 +135,16 @@ def owner_stop_notice(captured, outcome, row=None):
             from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
             return AUTOMATION_INTERRUPTED_NOTICE
     return notice
+
+
+def gateway_refusal_boundary(captured, outcome):
+    """``(notice, display_metadata)`` for a failed turn the gateway itself refused with a renderable
+    descriptor (``session_cron.execute``: the only producer of ``result.error_surface``), else None."""
+    value = (captured or {}).get('result') or {}
+    surface, error = value.get('error_surface'), value.get('error')
+    if outcome != 'failed' or not isinstance(surface, dict) or not isinstance(error, str) or not error:
+        return None
+    return error, {'error': error, 'error_surface': dict(surface)}
 
 
 def _release_media(authority, row):

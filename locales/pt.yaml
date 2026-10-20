@@ -3772,7 +3772,7 @@ tips:
   t237: "Quando um fornecedor retorna HTTP 402 (pagamento necessário), o cliente auxiliar recorre automaticamente ao próximo."
   t238: "agent.tool_use_enforcement redireciona modelos que descrevem ações em vez de chamar ferramentas — automático para GPT/Codex."
   t239: "agent.restart_after_turn_timeout deixa os turnos em andamento terminarem antes de /restart entrar em stop(); restart_drain_timeout é apenas o orçamento de interrupção forçada depois que stop() começa."
-  t240: "agent.api_max_retries (padrão 3) controla quantas vezes o agente tenta novamente uma chamada de API que falhou antes de exibir o erro — reduza para um fallback rápido."
+  t240: "agent.api_max_retries (padrão 3) controla quantas tentativas o agente faz numa chamada de API que falhou antes de exibir o erro — reduza para um fallback rápido."
   t241: "O gateway mantém instâncias de AIAgent em cache por sessão — destruir esse cache quebra o cache de prompt da Anthropic."
   t242: "Qualquer site pode expor skills via /.well-known/skills/index.json — o hub de skills as descobre automaticamente."
   t243: "O log de auditoria de skills em ~/.hermes/skills/.hub/audit.log registra toda operação de instalação e remoção."

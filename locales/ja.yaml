@@ -3772,7 +3772,7 @@ tips:
   t237: "プロバイダーが HTTP 402（支払いが必要）を返すと、補助クライアントは自動的に次のプロバイダーへフォールバックします。"
   t238: "agent.tool_use_enforcement は、ツールを呼ばずに操作を説明するだけのモデルをステアします。GPT/Codex では auto です。"
   t239: "agent.restart_after_turn_timeout は /restart が stop() に入る前に進行中のターンを完了させます。restart_drain_timeout は stop() 開始後の強制中断までの猶予に過ぎません。"
-  t240: "agent.api_max_retries（デフォルト 3）は、失敗した API 呼び出しをエラーとして表面化させる前に何回再試行するかを制御します。素早くフォールバックしたいなら小さくしてください。"
+  t240: "agent.api_max_retries（デフォルト 3）は、失敗した API 呼び出しをエラーとして表面化させる前に何回試行するかを制御します。素早くフォールバックしたいなら小さくしてください。"
   t241: "ゲートウェイはセッションごとに AIAgent インスタンスをキャッシュします。このキャッシュを破棄すると Anthropic のプロンプトキャッシュが壊れます。"
   t242: "どの Web サイトも /.well-known/skills/index.json でスキルを公開でき、スキルハブが自動的に検出します。"
   t243: "~/.hermes/skills/.hub/audit.log のスキル監査ログには、すべてのインストールと削除の操作が記録されます。"

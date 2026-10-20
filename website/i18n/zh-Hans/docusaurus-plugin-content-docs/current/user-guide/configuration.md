@@ -717,7 +717,7 @@ context:
 ```yaml
 agent:
   max_turns: 500               # 每次对话轮次的最大迭代次数（默认：500）
-  api_max_retries: 3           # 回退启动前每个 provider 的重试次数（默认：3）
+  api_max_retries: 3           # 回退启动前每个 provider 的尝试次数（默认：3）
 ```
 
 当迭代预算完全耗尽时，CLI 向用户显示通知：`⚠ Iteration budget reached (500/500) — response may be incomplete`。

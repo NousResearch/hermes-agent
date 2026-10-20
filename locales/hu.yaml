@@ -3789,7 +3789,7 @@ tips:
   t237: "Ha egy szolgáltató HTTP 402-t ad (fizetés szükséges), a kiegészítő kliens automatikusan a következőre vált."
   t238: "Az agent.tool_use_enforcement terelgeti azokat a modelleket, amelyek eszközhívás helyett leírják a műveletet – GPT/Codex esetén automatikus."
   t239: "Az agent.restart_after_turn_timeout megvárja a folyamatban lévő körök végét, mielőtt a /restart a stop()-ba lép; a restart_drain_timeout csak a kényszerített megszakítás kerete, miután a stop() elindult."
-  t240: "Az agent.api_max_retries (alapértelmezés: 3) szabályozza, hányszor próbálja újra az ügynök a sikertelen API-hívást, mielőtt hibát jelez – csökkentsd a gyors tartalékváltáshoz."
+  t240: "Az agent.api_max_retries (alapértelmezés: 3) szabályozza, hány próbálkozást tesz az ügynök a sikertelen API-hívásra, mielőtt hibát jelez – csökkentsd a gyors tartalékváltáshoz."
   t241: "Az átjáró munkamenetenként gyorsítótárazza az AIAgent példányokat – e cache törlése elrontja az Anthropic prompt-gyorsítótárazást."
   t242: "Bármely weboldal közzétehet skilleket a /.well-known/skills/index.json címen – a skill hub automatikusan felfedezi őket."
   t243: "A skill auditnapló a ~/.hermes/skills/.hub/audit.log fájlban minden telepítést és eltávolítást rögzít."

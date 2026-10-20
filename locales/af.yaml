@@ -3772,7 +3772,7 @@ tips:
   t237: "Wanneer 'n verskaffer HTTP 402 (betaling vereis) teruggee, val die hulpkliënt outomaties terug op die volgende een."
   t238: "agent.tool_use_enforcement stuur modelle wat aksies beskryf in plaas van gereedskap op te roep — outomaties vir GPT/Codex."
   t239: "agent.restart_after_turn_timeout laat lopende beurte klaarmaak voordat /restart stop() binnegaan; restart_drain_timeout is slegs die forseer-onderbreek-begroting sodra stop() begin."
-  t240: "agent.api_max_retries (verstek 3) beheer hoeveel keer die agent 'n mislukte API-oproep herprobeer voordat die fout vertoon word — verlaag dit vir vinnige terugval."
+  t240: "agent.api_max_retries (verstek 3) beheer hoeveel pogings die agent op 'n mislukte API-oproep maak voordat die fout vertoon word — verlaag dit vir vinnige terugval."
   t241: "Die gateway kas AIAgent-instansies per sessie — om hierdie kas te vernietig breek Anthropic se prompt-kasing."
   t242: "Enige webwerf kan vaardighede via /.well-known/skills/index.json blootstel — die vaardigheidshub ontdek hulle outomaties."
   t243: "Die vaardigheids-ouditlog by ~/.hermes/skills/.hub/audit.log hou elke installasie- en verwyderingsbewerking by."

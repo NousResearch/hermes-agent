@@ -3772,7 +3772,7 @@ tips:
   t237: "Bir sağlayıcı HTTP 402 (ödeme gerekli) döndürdüğünde yardımcı istemci otomatik olarak bir sonrakine geçer."
   t238: "agent.tool_use_enforcement, araç çağırmak yerine eylemleri betimleyen modelleri yönlendirir — GPT/Codex için otomatik."
   t239: "agent.restart_after_turn_timeout, /restart stop() aşamasına girmeden önce süren turların bitmesine izin verir; restart_drain_timeout ise yalnızca stop() başladıktan sonraki zorla kesme bütçesidir."
-  t240: "agent.api_max_retries (varsayılan 3), ajanın hatayı göstermeden önce başarısız bir API çağrısını kaç kez yeniden deneyeceğini belirler — hızlı yedeğe geçiş için düşürün."
+  t240: "agent.api_max_retries (varsayılan 3), ajanın hatayı göstermeden önce başarısız bir API çağrısında kaç deneme yapacağını belirler — hızlı yedeğe geçiş için düşürün."
   t241: "Gateway, AIAgent örneklerini oturum başına önbelleğe alır — bu önbelleği yok etmek Anthropic istem önbelleğini bozar."
   t242: "Herhangi bir web sitesi /.well-known/skills/index.json üzerinden skill yayımlayabilir — skill hub'ı bunları otomatik keşfeder."
   t243: "~/.hermes/skills/.hub/audit.log konumundaki skill denetim günlüğü her kurma ve kaldırma işlemini kaydeder."

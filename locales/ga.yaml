@@ -3772,7 +3772,7 @@ tips:
   t237: "Nuair a fhilleann soláthraí HTTP 402 (íocaíocht ag teastáil), titeann an cliant cúnta siar go huathoibríoch ar an gcéad cheann eile."
   t238: "Stiúrann agent.tool_use_enforcement samhlacha a chuireann síos ar ghníomhartha in ionad uirlisí a ghlaoch — auto do GPT/Codex."
   t239: "Ligeann agent.restart_after_turn_timeout do shealanna ar siúl críochnú roimh /restart dul isteach i stop(); níl restart_drain_timeout ach an buiséad idirbhriste fhorchurtha nuair a thosaíonn stop()."
-  t240: "Rialaíonn agent.api_max_retries (réamhshocrú 3) cé mhéad uair a athdhéanann an gníomhaire glao API ar theip air roimh an earráid a nochtadh — ísligh é le haghaidh titim siar gasta."
+  t240: "Rialaíonn agent.api_max_retries (réamhshocrú 3) cé mhéad iarracht a dhéanann an gníomhaire ar ghlao API ar theip air roimh an earráid a nochtadh — ísligh é le haghaidh titim siar gasta."
   t241: "Taisceann an gateway ásca AIAgent in aghaidh an tseisiúin — má scriostar an taisce seo, briseann sé taisceadh leideanna Anthropic."
   t242: "Is féidir le suíomh gréasáin ar bith scileanna a nochtadh trí /.well-known/skills/index.json — aimsíonn mol na scileanna iad go huathoibríoch."
   t243: "Rianaíonn loga iniúchta na scileanna ag ~/.hermes/skills/.hub/audit.log gach oibríocht suiteála agus baint."

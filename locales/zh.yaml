@@ -3772,7 +3772,7 @@ tips:
   t237: "当提供方返回 HTTP 402（需要付费）时，辅助客户端会自动回退到下一个提供方。"
   t238: "agent.tool_use_enforcement 会引导那些只描述操作而不调用工具的模型——对 GPT/Codex 自动启用。"
   t239: "agent.restart_after_turn_timeout 让进行中的回合在 /restart 进入 stop() 之前先完成；restart_drain_timeout 只是 stop() 开始后的强制中断时限。"
-  t240: "agent.api_max_retries（默认 3）控制代理在报错之前重试失败 API 调用的次数——调低它可以更快回退。"
+  t240: "agent.api_max_retries（默认 3）控制代理在报错之前对失败的 API 调用尝试的次数——调低它可以更快回退。"
   t241: "网关按会话缓存 AIAgent 实例——销毁这个缓存会破坏 Anthropic 的提示词缓存。"
   t242: "任何网站都可以通过 /.well-known/skills/index.json 公开技能——技能中心会自动发现它们。"
   t243: "技能审计日志位于 ~/.hermes/skills/.hub/audit.log，记录每一次安装和移除操作。"

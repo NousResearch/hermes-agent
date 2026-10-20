@@ -13,10 +13,14 @@ from typing import Any, Awaitable, Never, Protocol, TypeVar, runtime_checkable
 
 _MAX_IDENTITY_LENGTH = 256
 _MAX_SCOPE_LENGTH = 256
+# Permissions are protocol identifiers, not payloads. 256 characters leaves ample
+# room for namespaced identifiers while bounding attacker-controlled input.
+_MAX_PERMISSION_LENGTH = 256
 # Keep authorization deadlines bounded to values every supported event loop can
 # represent operationally, and to a duration appropriate for an ingress check.
 _MAX_AUTHORIZATION_TIMEOUT_SECONDS = 60
 _T = TypeVar("_T")
+_QUARANTINED_AUTHORIZATION_TASKS: set[asyncio.Task[Any]] = set()
 
 
 class _DeadlineExpired:
@@ -248,15 +252,37 @@ async def authorize_fail_closed(
 ) -> PermissionDecision:
     """Authorize a known permission, reducing every failure to DENY.
 
+    The principal must be a ``VerifiedPrincipal`` and the permission must be an
+    exact, non-whitespace ``str`` of at most 256 characters. ``known_permissions``
+    must be a set-like object whose membership check succeeds. Invalid inputs deny
+    before provider methods run.
+
     ``timeout_seconds`` must be a finite exact ``int`` or ``float`` (not ``bool``)
-    between zero and 60 seconds, inclusive. Invalid deadlines deny before provider
-    methods run.
+    between zero and 60 seconds, inclusive. Invalid deadlines also deny before
+    provider methods run.
+
+    Cancellation is cooperative in Python. A provider coroutine that suppresses
+    ``CancelledError`` cannot be forcibly terminated in-process, so timed-out or
+    caller-cancelled operations remain strongly tracked in a private quarantine
+    until they finish. Their eventual result is consumed and can never authorize the
+    request that already returned or was cancelled.
 
     This boundary deliberately emits no logs. Callers may audit safe identifiers and
     reason codes, but must never log the protected message or tool payload here.
     """
 
-    if permission not in known_permissions:
+    if not isinstance(principal, VerifiedPrincipal):
+        return PermissionDecision.DENY
+    if not _is_valid_permission(permission):
+        return PermissionDecision.DENY
+    try:
+        if not isinstance(known_permissions, AbstractSet):
+            return PermissionDecision.DENY
+        if not all(_is_valid_permission(item) for item in known_permissions):
+            return PermissionDecision.DENY
+        if permission not in known_permissions:
+            return PermissionDecision.DENY
+    except (asyncio.CancelledError, Exception):
         return PermissionDecision.DENY
     deadline_seconds = _validated_timeout_seconds(timeout_seconds)
     if deadline_seconds is None:
@@ -287,36 +313,70 @@ async def authorize_fail_closed(
 def _consume_task_result(task: asyncio.Future[Any]) -> None:
     try:
         task.result()
-    except (asyncio.CancelledError, Exception):
+    except BaseException:
         pass
 
 
-def _cancel_and_consume(task: asyncio.Future[Any]) -> None:
+def _is_valid_permission(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value.strip())
+        and len(value) <= _MAX_PERMISSION_LENGTH
+    )
+
+
+def _consume_quarantined_task(task: asyncio.Task[Any]) -> None:
+    try:
+        _consume_task_result(task)
+    finally:
+        _QUARANTINED_AUTHORIZATION_TASKS.discard(task)
+
+
+def _cancel_and_quarantine(task: asyncio.Task[Any]) -> None:
     if task.done():
         _consume_task_result(task)
         return
+    _QUARANTINED_AUTHORIZATION_TASKS.add(task)
+    task.add_done_callback(_consume_quarantined_task)
     task.cancel()
-    task.add_done_callback(_consume_task_result)
 
 
-def _schedule_awaitable(awaitable: Awaitable[_T]) -> asyncio.Future[_T]:
-    tasks_before = asyncio.all_tasks()
+def _quarantined_task_count() -> int:
+    """Return the owned-task quarantine size for focused invariant tests."""
+
+    return len(_QUARANTINED_AUTHORIZATION_TASKS)
+
+
+async def _normalize_awaitable(awaitable: Awaitable[_T]) -> _T:
+    return await awaitable
+
+
+def _create_owned_task(awaitable: Awaitable[_T]) -> asyncio.Task[_T]:
+    """Create an authorization task without consulting the loop task factory."""
+
+    loop = asyncio.get_running_loop()
+    coroutine = _normalize_awaitable(awaitable)
     try:
-        return asyncio.ensure_future(awaitable)
+        return asyncio.Task(coroutine, loop=loop)
     except BaseException:
-        scheduled_task = next(
-            (
-                task
-                for task in asyncio.all_tasks() - tasks_before
-                if task.get_coro() is awaitable
-            ),
-            None,
-        )
-        if scheduled_task is not None:
-            _cancel_and_consume(scheduled_task)
-        elif inspect.iscoroutine(awaitable):
+        coroutine.close()
+        if inspect.iscoroutine(awaitable):
             awaitable.close()
         raise
+
+
+def _expire_deadline(deadline: asyncio.Future[None]) -> None:
+    if not deadline.done():
+        deadline.set_result(None)
+
+
+def _cancel_and_consume_deadline(
+    deadline: asyncio.Future[None], handle: asyncio.TimerHandle
+) -> None:
+    handle.cancel()
+    if not deadline.done():
+        deadline.cancel()
+    _consume_task_result(deadline)
 
 
 def _validated_timeout_seconds(value: object) -> int | float | None:
@@ -342,17 +402,18 @@ async def _await_with_deadline(
             awaitable.close()
         return _DEADLINE_EXPIRED
 
-    operation: asyncio.Future[_T] | None = None
-    deadline: asyncio.Future[None] | None = None
+    loop = asyncio.get_running_loop()
+    operation = _create_owned_task(awaitable)
     try:
-        operation = _schedule_awaitable(awaitable)
-        deadline_coroutine = asyncio.sleep(deadline_seconds)
-        deadline = _schedule_awaitable(deadline_coroutine)
+        deadline = loop.create_future()
+        try:
+            handle = loop.call_later(deadline_seconds, _expire_deadline, deadline)
+        except BaseException:
+            deadline.cancel()
+            _consume_task_result(deadline)
+            raise
     except BaseException:
-        if operation is not None:
-            _cancel_and_consume(operation)
-        if deadline is not None:
-            _cancel_and_consume(deadline)
+        _cancel_and_quarantine(operation)
         raise
 
     try:
@@ -360,19 +421,16 @@ async def _await_with_deadline(
             (operation, deadline), return_when=asyncio.FIRST_COMPLETED
         )
     except BaseException:
-        _cancel_and_consume(operation)
-        _cancel_and_consume(deadline)
+        _cancel_and_consume_deadline(deadline, handle)
+        _cancel_and_quarantine(operation)
         raise
 
     if deadline in done:
-        _cancel_and_consume(operation)
-        try:
-            deadline.result()
-        except asyncio.CancelledError:
-            return _DEADLINE_EXPIRED
+        _cancel_and_consume_deadline(deadline, handle)
+        _cancel_and_quarantine(operation)
         return _DEADLINE_EXPIRED
 
-    _cancel_and_consume(deadline)
+    _cancel_and_consume_deadline(deadline, handle)
     try:
         return operation.result()
     except asyncio.CancelledError:

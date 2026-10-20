@@ -82,8 +82,8 @@ _DROP_HINTS = {
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
 }
 # A missing pin is account config, not one sender's mail, so connect() names its fix once per account.
-_MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, "
-                          "or " + _OPT_OUT_HINT)
+_MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's authserv-id "
+                          "(comma-separated; a `*.domain` entry matches any host under domain), or " + _OPT_OUT_HINT)
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -363,11 +363,24 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+def _authserv_id_trusted(candidate: str, authserv_id: str) -> bool:
+    """True when *candidate* (the topmost header's authserv-id, already lowercased) matches the
+    operator's pin. The pin is comma-separated; each entry is an exact id, or a ``*.suffix``
+    wildcard matching any id one or more labels under ``suffix`` (never the bare suffix), for
+    providers whose inbound MXes each stamp their own hostname (Fastmail:
+    ``phl-mx-NN.messagingengine.com``)."""
+    for pin in (p.strip() for p in authserv_id.split(",")):
+        if pin and (candidate == pin or (pin.startswith("*.") and candidate.endswith(pin[1:]))):
+            return True
+    return False
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
-    FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
+    FIRST instance is authoritative, and it must match an entry of the required, already-normalised
+    *authserv_id* pin (exact, or ``*.suffix`` for multi-MX providers — ``_authserv_id_trusted``). A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
@@ -383,7 +396,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "unbalanced quote or comment in Authentication-Results"
     if not authserv_id:  # without a pin the topmost header may be one the sender wrote
         return False, _MISSING_AUTHSERV_REASON
-    if clauses[0].strip().lower() != authserv_id:
+    if not _authserv_id_trusted(clauses[0].strip().lower(), authserv_id):
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).

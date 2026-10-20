@@ -439,7 +439,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
 | `EMAIL_SMTP_PORT` | SMTP port |
 | `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot |
-| `EMAIL_AUTHSERV_ID` | Exact authserv-id on the receiving server's topmost `Authentication-Results` header; required unless sender authentication is disabled (`EMAIL_TRUST_FROM_HEADER=true`) |
+| `EMAIL_AUTHSERV_ID` | Authserv-id on the receiving server's topmost `Authentication-Results` header; comma-separated, and a `*.domain` entry matches any host under `domain` (multi-MX providers like Fastmail). Required unless sender authentication is disabled (`EMAIL_TRUST_FROM_HEADER=true`) |
 | `EMAIL_HOME_ADDRESS` | Default recipient for proactive email delivery |
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |

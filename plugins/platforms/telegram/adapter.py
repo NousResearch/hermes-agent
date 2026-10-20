@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
 from agent.ssl_verify import platform_ssl_context
+from plugins.platforms.telegram.telegram_media import TelegramMediaMixin, _file_url_to_path
+
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -513,7 +515,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramMediaMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -5227,7 +5229,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple], metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send images as Telegram albums (``send_media_group``, 10 per chunk). Animated GIFs can't join a
-        media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
+        media group (need ``send_animation``) so they go via the animation path, as does a failed chunk."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         if not images:
@@ -5237,16 +5239,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - missing SDK
             logger.warning("[%s] InputMediaPhoto unavailable, falling back to per-image send: %s", self.name, exc)
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
-        is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)
+        is_anim = self._is_animation_url
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
         delivered = False
-        if animations:
-            anim_result = await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
-            delivered = anim_result.success
+        for animation_url, alt_text in animations:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            result = await self.send_animation(chat_id, animation_url, alt_text or None, metadata=metadata)
+            delivered = result.success or delivered
         if not photos:
             return SendResult(success=delivered, error=None if delivered else "all images failed to send")
-        from urllib.parse import unquote as _unquote
         CHUNK = 10  # Telegram's album limit
         chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
         for chunk_idx, chunk in enumerate(chunks):
@@ -5259,7 +5262,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 for image_url, alt_text in chunk:
                     source: Any = image_url
                     if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
+                        local_path = _file_url_to_path(image_url)
                         if not os.path.exists(local_path):
                             logger.warning("[%s] Skipping missing image in media group: %s", self.name, local_path)
                             continue
@@ -5305,6 +5308,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
+        image_path = _file_url_to_path(image_path) if image_path.lower().startswith("file://") else image_path
+        if os.path.splitext(image_path)[1].lower() == ".gif":
+            from pathlib import Path
+            return await self.send_animation(
+                chat_id=chat_id, animation_url=(await asyncio.to_thread(Path(image_path).resolve)).as_uri(), caption=caption,
+                reply_to=reply_to, metadata=metadata)
         # Pre-compress large raster images to progressive JPEG once; the photo send and the document
         # fallback both reuse the compressed file so either upload stays under media_write_timeout.
         compressed = self._compress_image_to_jpeg(image_path)
@@ -5340,23 +5349,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 with contextlib.suppress(OSError):
                     os.remove(compressed)
 
-    async def _send_local_file(
-        self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
-    ) -> SendResult:
-        """Shared shell for native local-file sends: existence check, open, send with routing, then
-        ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
-        if not self._bot:
-            return SendResult(success=False, error="Not connected")
-        try:
-            if not os.path.exists(path):
-                return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
-                msg = await self._send_media(
-                    getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
-                    reset_media=lambda: f.seek(0), **build_kwargs(f))
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            return await on_error(e)
 
     async def _warn_then(self, media_key: str, e: Exception, fallback) -> SendResult:
         logger.warning("[%s] Failed to send %s: %s", self.name, media_key, _redact_telegram_error_text(e))
@@ -5440,22 +5432,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 logger.error("[%s] File upload send_photo also failed: %s", self.name, e2, exc_info=True)
                 return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
-    async def send_animation(
-        self, chat_id: str, animation_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
-        if not self._bot:
-            return SendResult(success=False, error="Not connected")
-        try:
-            msg = await self._send_media(
-                self._bot.send_animation, chat_id, reply_to, metadata, "animation", animation=animation_url,
-                caption=self._caption_1024(caption))
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            logger.error(
-                "[%s] Failed to send Telegram animation, falling back to photo: %s", self.name,
-                _redact_telegram_error_text(e), exc_info=True)
-            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
     @staticmethod
     def _is_transient_typing_error(exc: Exception) -> bool:

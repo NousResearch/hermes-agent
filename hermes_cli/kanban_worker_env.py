@@ -13,6 +13,7 @@ Hermes' own location before the dispatcher adds the claim.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Mapping
 
 # Exact names (Windows matches case-insensitively). Host plumbing, never a profile's settings.
@@ -46,6 +47,10 @@ _HOST_NAMES = frozenset({
 _HOST_PREFIXES = ("LC_",)
 
 
-def worker_client_env(env: Mapping[str, str]) -> dict[str, str]:
-    """*env* reduced to what the worker client, and a gateway it starts, may take from the host."""
-    return {k: v for k, v in env.items() if k.upper() in _HOST_NAMES or k.upper().startswith(_HOST_PREFIXES)}
+def worker_client_env(env: Mapping[str, str], assignee_home: str | Path) -> dict[str, str]:
+    """*env* reduced to what the worker client for *assignee_home*, and a gateway it starts, may take
+    from the host. The launch profile's ``.env`` / source residue goes first: an allowlisted name it
+    defines (an ``HTTPS_PROXY`` with credentials in the URL) is that profile's, not the host's."""
+    from tools.environments.local import strip_launch_profile_env
+    host = strip_launch_profile_env(dict(env), assignee_home)
+    return {k: v for k, v in host.items() if k.upper() in _HOST_NAMES or k.upper().startswith(_HOST_PREFIXES)}

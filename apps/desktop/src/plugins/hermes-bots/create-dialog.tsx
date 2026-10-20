@@ -347,6 +347,14 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     draft && discardDraftProfile(draft, draftTargetRef.current)
   }
 
+  // A flight still running when the dialog goes away belongs to nobody.
+  useEffect(
+    () => () => {
+      draftGenRef.current += 1
+    },
+    []
+  )
+
   const reset = () => {
     setName('')
     setTitle('')
@@ -534,6 +542,12 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         }
       } catch {
         /* capability application is best-effort */
+      }
+
+      // Cancelled while configure ran: the discard already deleted the draft,
+      // so it gets no bot meta and is not adopted.
+      if (generation !== draftGenRef.current) {
+        return null
       }
 
       if (remoteTarget) {

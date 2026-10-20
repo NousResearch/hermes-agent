@@ -400,6 +400,41 @@ describe('cancelling New Bot discards its draft profile', () => {
     expect(mocks.deleteBot).not.toHaveBeenCalled()
   })
 
+  // The draft exists once profiles.create returns, but the flight still awaits
+  // the capability configure. A Cancel (or the dialog going away) in that window
+  // deletes the draft; the flight must not then record bot meta for it.
+  it.each([
+    ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))],
+    ['unmount', () => cleanup()]
+  ])('writes no bot meta for a draft abandoned (%s) while its configure is pending', async (_label, abandon) => {
+    const base = mocks.request.getMockImplementation()!
+    let finishConfigure!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) =>
+      method === 'profiles.describe'
+        ? Promise.resolve({ mcp_servers: [], skills: [{ enabled: true, name: 'arxiv' }], toolsets: [] })
+        : method === 'profiles.configure'
+          ? new Promise(resolve => {
+              finishConfigure = () => resolve({})
+            })
+          : base(method, params)
+    )
+
+    // The staged tabs are where a capability pick (and so a configure) is made
+    // before the profile exists, and where MCP setup mints the draft.
+    await renderDialog(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'arxiv' }))
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('profiles.configure', expect.anything()))
+
+    abandon()
+    finishConfigure()
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+  })
+
   it('never deletes a bot the dialog finished creating', async () => {
     await renderDialog(true)
     fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))

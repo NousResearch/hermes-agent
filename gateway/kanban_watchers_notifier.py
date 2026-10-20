@@ -1,4 +1,4 @@
-"""Kanban notifier: claim terminal task events per subscription and deliver them.
+"""Kanban notifier: claim subscribed task events and deliver them.
 
 ``GatewayKanbanWatchersMixin._kanban_notifier_watcher`` owns the loop and
 the GC cadence; the per-tick claim (``_notifier_collect``) and the
@@ -45,6 +45,9 @@ def _pin_first():
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
 TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+# Explicit heartbeat notes are worker-authored milestones. Automatic liveness
+# heartbeats have no note and remain silent in the formatter.
+NOTIFY_KINDS = (*TERMINAL_KINDS, "heartbeat")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -313,7 +316,7 @@ class _Collector:
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-            thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
+            thread_id=sub.get("thread_id") or "", kinds=NOTIFY_KINDS,
         )
         if not events:
             return None
@@ -354,7 +357,7 @@ class _Collector:
 
 
 def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int) -> list[dict]:
-    """Claim unseen terminal events for every owned subscription on every board.
+    """Claim unseen notification events for every owned subscription on every board.
 
     Each gateway polls only subscriptions owned by profiles whose adapters it
     hosts; legacy rows without a profile stamp are visible only to the process
@@ -466,8 +469,17 @@ def _fmt_timed_out(ev, n) -> tuple:
     return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 
-# archived / unblocked are claimed (so the cursor advances past them) but
-# intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
+def _fmt_heartbeat(ev, n) -> tuple:
+    if not n.sub.get("notify_progress"):
+        return None, None, None
+    note = _safe_review_reason(_payload(ev, "note"), 240)
+    if not note:
+        return None, None, None
+    return t("gateway.kanban.ping.status", head=n.head, status=note), None, None
+
+
+# Empty heartbeats plus archived / unblocked are claimed (so the cursor advances
+# past them) but stay silent, and all are excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
@@ -479,6 +491,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
+    "heartbeat": _fmt_heartbeat,
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,

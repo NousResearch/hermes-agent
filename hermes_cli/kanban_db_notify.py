@@ -76,6 +76,7 @@ def add_notify_sub(
     chat_type: Optional[str] = None,
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
+    notify_progress: Optional[bool] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
@@ -86,9 +87,11 @@ def add_notify_sub(
     omitting it would key the wake into a different session. ``None`` keeps an
     existing row's value. ``delivery_mode``: ``None`` leaves an existing row
     untouched, an explicit valid value is last-write-wins, unknown falls back
-    to ``"notify"``. ``delivery_metadata`` merges supplied routing anchors
-    into an existing row so re-subscribing never discards them. New subs start
-    caught up (``last_event_id`` =
+    to ``"notify"``. ``notify_progress`` is likewise last-write-wins when
+    explicit; it opts the subscription into passive notifications for
+    worker-authored heartbeat notes and defaults off. ``delivery_metadata``
+    merges supplied routing anchors into an existing row so re-subscribing
+    never discards them. New subs start caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
@@ -96,6 +99,7 @@ def add_notify_sub(
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
+    insert_progress = int(bool(notify_progress))
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
@@ -111,14 +115,14 @@ def add_notify_sub(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-                 chat_type, notifier_profile, delivery_mode, delivery_metadata,
-                 created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 chat_type, notifier_profile, delivery_mode, notify_progress,
+                 delivery_metadata, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, insert_progress, metadata_json, int(time.time()), task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -138,6 +142,11 @@ def add_notify_sub(
             conn.execute(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
+            )
+        if notify_progress is not None:
+            conn.execute(
+                "UPDATE kanban_notify_subs SET notify_progress = ? " + _SUB_KEY_WHERE,
+                (int(bool(notify_progress)), *key),
             )
 
 
@@ -193,6 +202,8 @@ def list_notify_subs(
     out: list[dict] = []
     for row in conn.execute(sql, params).fetchall():
         item = dict(row)
+        if "notify_progress" in item:
+            item["notify_progress"] = bool(item["notify_progress"])
         if "delivery_metadata" in item:
             item["delivery_metadata"] = _decode_notify_delivery_metadata(item.get("delivery_metadata"))
         out.append(item)

@@ -167,6 +167,29 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### Not Answering Machine-Generated Mail
+
+If a script or cron job on another host already sends your notices (a seminar reminder loop, a
+backup report, a monitoring heartbeat), those messages arrive in this same mailbox and would
+otherwise be answered like any DM. Suppress them by subject prefix:
+
+```yaml
+platforms:
+  email:
+    ignore_subject_prefixes:
+      - '[s3sem]'
+      - '[monitor]'
+```
+
+Matching is case-insensitive on the subject prefix, and the message is dropped **at parse time** —
+before the sender check and before any turn runs — so no reply is generated and none of the
+automatic notices (the home-channel prompt, a media-delivery warning) are sent either. A dropped
+message is still marked as seen, so it is not re-fetched on the next poll.
+
+This is a subject filter, **not** a sender deny: the same person can still email you normally, and
+a reply they write inside the filtered thread (for example `Re: [s3sem] ...`) still reaches the
+agent. Omit the key for the default behavior, which filters nothing.
+
 ---
 
 ## Access Control

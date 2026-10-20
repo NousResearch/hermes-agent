@@ -6,18 +6,20 @@ after accept). Mount as ``@app.websocket("/api/ws") async def ws(ws): await hand
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import concurrent.futures
 import json
 import logging
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
+from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
 
 _log = logging.getLogger(__name__)
 
@@ -27,20 +29,42 @@ _log = logging.getLogger(__name__)
 _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
 _dashboard_client_touched_at = 0.0
 _dashboard_client_touch_lock = threading.Lock()
+# The touch is file I/O and every caller sits on the event loop, where a slow disk stalls every
+# connection, managed-worker RPCs included (#139011). It runs on its own single worker so it never
+# ties up the pool asyncio.to_thread shares, and at most one write per path waits behind a slow one.
+_dashboard_client_touch_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="dashboard-client-touch")
+_dashboard_client_touch_pending: set = set()
+
+
+def _touch_dashboard_client_marker(path) -> None:
+    with _dashboard_client_touch_lock:
+        # Cleared before the write: activity during a slow write queues exactly one follow-up.
+        _dashboard_client_touch_pending.discard(path)
+    from gateway.scale_to_zero import touch_dashboard_client_heartbeat
+    touch_dashboard_client_heartbeat(path)  # best-effort, never raises
 
 
 def _note_dashboard_client_activity(*, force: bool = False) -> None:
-    """Refresh the dashboard-client liveness marker (throttled, best-effort)."""
+    """Refresh the dashboard-client liveness marker (throttled, best-effort, never blocks the caller)."""
     global _dashboard_client_touched_at
     now = time.monotonic()
     with _dashboard_client_touch_lock:
         if not force and now - _dashboard_client_touched_at < _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S:
             return
         _dashboard_client_touched_at = now
+    path = None
     try:
-        from gateway.scale_to_zero import touch_dashboard_client_heartbeat
-        touch_dashboard_client_heartbeat()
-    except Exception:  # noqa: BLE001 - liveness garnish must never break the WS
+        from gateway.scale_to_zero import dashboard_client_heartbeat_path
+        # Resolved here: the worker thread does not carry the caller's profile scope.
+        path = dashboard_client_heartbeat_path()
+        with _dashboard_client_touch_lock:
+            if path in _dashboard_client_touch_pending:
+                return
+            _dashboard_client_touch_pending.add(path)
+        _dashboard_client_touch_pool.submit(_touch_dashboard_client_marker, path)
+    except Exception:
+        _dashboard_client_touch_pending.discard(path)  # a refused submit (shutdown) must not wedge it
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 
@@ -67,6 +91,19 @@ _WS_WRITE_TIMEOUT_S = 10.0
 # later frame and RPC reply parked behind the writer lock (#106369).
 _WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
+# Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
+# per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
+# by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
+# handler latency (#108325). A full queue parks the reader — the old serial behaviour.
+_WS_DISPATCH_QUEUE_MAX = 256
+# These handlers only project already-owned state.  They may take seconds for a large stored
+# transcript, so running them through the serial control lane turns an inexpensive interrupt or
+# control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
+# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+_WS_CONCURRENT_READ_LIMIT = 2
+# Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
+_WS_WAITING_READ_LIMIT = 8
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -97,6 +134,8 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
+        #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
+        self.skin_home: str | None = None
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
@@ -106,15 +145,19 @@ class WSTransport:
         self._token_flush_armed = False
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
+        self._abort_requested = False
+
+    def _on_loop(self) -> bool:
+        try:
+            return asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            return False
 
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
         line = serialize_frame(obj, self._peer, _log)
-        try:
-            on_loop = asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            on_loop = False
+        on_loop = self._on_loop()
         # Streamed token: buffer it and arm the flush timer; the worker returns immediately.
         # call_soon_threadsafe is safe from a worker or the loop.
         params = obj.get("params") if isinstance(obj, dict) else None
@@ -182,18 +225,36 @@ class WSTransport:
         await self._safe_send_many(batch)
         return not self._closed
 
-    async def _safe_send_many(self, lines: list[str]) -> None:
+    async def write_many_async(self, frames: list[dict]) -> bool:
+        """``write_async`` for an ordered batch: buffered tokens, then *frames*, in one send batch."""
+        return await self.write_many_if_current_async(frames, None)
+
+    async def write_many_if_current_async(self, frames: list[dict], is_current: Callable[[], bool] | None) -> bool:
+        """Recheck the batch's owner at each send without gating other producers' buffered tokens."""
+        if self._closed:
+            return False
+        with self._token_lock:
+            batch, self._pending_tokens = self._pending_tokens, []
+            unguarded_prefix = len(batch)
+            batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
+        await self._safe_send_many(batch, is_current=is_current, unguarded_prefix=unguarded_prefix)
+        return not self._closed
+
+    async def _safe_send_many(self, lines: list[str], *, is_current: Callable[[], bool] | None = None,
+                              unguarded_prefix: int = 0) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:
             if self._closed:
                 return
-            for line in lines:
+            for index, line in enumerate(lines):
                 if self._closed:
+                    return
+                if is_current is not None and index >= unguarded_prefix and not is_current():
                     return
                 payload = _sanitize_ws_text(line)
                 try:
                     await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # The loop is responsive (the timer fired) but the socket never drained: unlike the
                     # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
                     # batches bail, and close the socket so handle_ws's read loop ends and its teardown
@@ -201,7 +262,7 @@ class WSTransport:
                     self._closed = True
                     _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
                                  self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_stalled_socket())
+                    self._loop.create_task(self._close_socket(1011, "send deadline"))
                     return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
@@ -219,13 +280,32 @@ class WSTransport:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
 
-    async def _close_stalled_socket(self) -> None:
-        """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its
-        disconnect teardown runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+    def abort(self) -> None:
+        """Close from any thread and drop the socket with 1011 so the client reconnects and replays
+        (fanout overflow). One-shot: N mirrored sessions overflowing on this socket schedule one close."""
+        self._closed = True
+        with self._token_lock:
+            if self._abort_requested:
+                return
+            self._abort_requested = True
+        if self._on_loop():
+            self._finish_abort()
+            return
+        # A loop that already shut down has nothing left to cancel or close.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._finish_abort)
+
+    def _finish_abort(self) -> None:  # loop thread
+        self.close()
+        self._loop.create_task(self._close_socket(1011, "fanout overflow"))
+
+    async def _close_socket(self, code: int, reason: str) -> None:
+        """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown
+        runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
         try:
-            await self._ws.close(code=1011)
-        except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
-            _log.debug("ws close after send deadline failed peer=%s error=%s", self._peer, exc)
+            await self._ws.close(code=code)
+        except Exception as exc:
+            _log.debug("ws close after %s failed peer=%s error=%s", reason, self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -235,6 +315,11 @@ def _ws_peer_label(ws: Any) -> str:
         return "unknown"
     host, port = getattr(client, "host", None) or "unknown", getattr(client, "port", None)
     return f"{host}:{port}" if port is not None else host
+
+
+def _is_unknown_method(resp) -> bool:
+    error = resp.get("error") if isinstance(resp, dict) else None
+    return isinstance(error, dict) and error.get("code") == -32601
 
 
 def _disable_nagle(ws: Any) -> None:
@@ -259,15 +344,58 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
+def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict | None, operator: bool):
+    """The session-authority connection for this socket (route scope, else app state), or None
+    when this backend has no authority and requests go to the legacy ``server.dispatch``."""
+    authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
+        getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
+    if authority is None:
+        return None
+    from gateway.session_controls import AuthorityConnection
+    return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
+
+
+async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
+    """One request through the authority when attached, else the legacy dispatcher."""
+    if authority_connection is None:
+        return await asyncio.to_thread(server.dispatch, req, transport)
+    resp = await authority_connection.dispatch(req)
+    actor = authority_connection.actor
+    if (_is_unknown_method(resp) and req_method in server._methods
+            and legacy_fallback_allowed(actor, req_method)):
+        # Session verbs live on the authority; everything else the sidecar still
+        # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
+        # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
+        # method neither side knows, which is what the client's version-skew notice keys on.
+        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
+    return resp
+
+
+def _start_backend_liveness() -> None:
+    """Backend heartbeat refresher + startup orphan sweep (idempotent, once per process); a
+    failure of either is logged and never blocks the connection."""
+    for start, what in (
+        (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
+        (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
+    ):
+        try:
+            start()
+        # health: allow BLE001 -- liveness boundary; logs the traceback (exc_info) via _log, a name ruff does not treat as a logger
+        except Exception:
+            _log.warning("%s failed", what, exc_info=True)
+
+
 class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
+async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
+                    operator: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
     peer, transport = _ws_peer_label(ws), None
+    authority_connection = None
     messages = parse_errors = dispatch_crashes = send_failures = 0
     disconnect_reason = "not_connected"
 
@@ -283,6 +411,109 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     def _error(code: int, message: str, req_id: Any) -> dict:
         return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id}
 
+    pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
+    dispatcher: asyncio.Task | None = None
+    concurrent_reads: set[asyncio.Task] = set()
+    started_reads: set[asyncio.Task] = set()
+    concurrent_read_slots = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT)
+    # Running + waiting reads: taken by the reader before a read is queued, so a flood parks it.
+    read_admission = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT)
+    # Set when the read lane could not send a reply: ends the reader without cancelling the
+    # control handler the serial lane is running (it finishes, then the dispatcher stops).
+    send_failed: asyncio.Future = asyncio.get_running_loop().create_future()
+    stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
+
+    async def _dispatch_one(req: Any) -> None:
+        """Dispatch one request and write its inline reply."""
+        nonlocal dispatch_crashes
+        req_id = req.get("id") if isinstance(req, dict) else None
+        req_method = req.get("method") if isinstance(req, dict) else None
+        # dispatch() may schedule long handlers on the pool; it returns None then and the worker
+        # writes the response itself via transport.write (a separate thread, so that is the safe
+        # path). Inline handlers return the response dict, written here from the loop.
+        try:
+            resp = await _dispatch_request(authority_connection, req, req_method, transport)
+        # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
+        except Exception:
+            dispatch_crashes += 1
+            _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
+                         "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            return
+        if resp is not None:
+            await _reply(resp, "send_failed_after_response",
+                         "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+
+    async def _dispatch_concurrent_read(req: Any) -> None:
+        async with concurrent_read_slots:
+            started_reads.add(asyncio.current_task())
+            try:
+                await _dispatch_one(req)
+            except _SendFailed:
+                # A failed response ends the reader even from the concurrent lane, never by
+                # cancelling the serial lane's in-flight handler.
+                if not send_failed.done():
+                    send_failed.set_result(None)
+                raise
+
+    def _finish_concurrent_read(task: asyncio.Task) -> None:
+        # Here, not in the task: a task cancelled before its first step never runs its body.
+        read_admission.release()
+        concurrent_reads.discard(task)
+        started_reads.discard(task)
+        with contextlib.suppress(asyncio.CancelledError, _SendFailed):
+            task.result()
+
+    async def _next_request() -> Any:
+        """The next queued frame, or ``stop`` once the read lane failed to send a reply."""
+        step = asyncio.ensure_future(pending.get())
+        await asyncio.wait({step, send_failed}, return_when=asyncio.FIRST_COMPLETED)
+        if step.done():
+            return stop if send_failed.done() else step.result()
+        step.cancel()
+        return stop
+
+    async def _dispatch_loop() -> None:
+        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        while (req := await _next_request()) is not stop:
+            req_method = req.get("method") if isinstance(req, dict) else None
+            if req_method in _WS_CONCURRENT_READ_METHODS:
+                task = asyncio.create_task(_dispatch_concurrent_read(req))
+                concurrent_reads.add(task)
+                task.add_done_callback(_finish_concurrent_read)
+                continue
+            await _dispatch_one(req)
+
+    async def _queue_request(req: Any) -> None:
+        if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
+            # A read past the waiting cap parks the reader, as the serial lane did; released
+            # when its task ends (a read cancelled before it ran releases it too).
+            await _unless_dispatch_failed(read_admission.acquire())
+        await _unless_dispatch_failed(pending.put(req))
+
+    async def _end_reads() -> None:
+        """Reads that never started are dropped (their client is gone); started ones finish before the
+        authority closes, unless the connection itself was cancelled (server shutdown)."""
+        task = asyncio.current_task()
+        shutting_down = task is not None and task.cancelling()
+        for read in concurrent_reads:
+            if shutting_down or read not in started_reads:
+                read.cancel()
+        await asyncio.gather(*concurrent_reads, return_exceptions=True)
+
+    async def _unless_dispatch_failed(aw: Any) -> Any:
+        """Await *aw*, or raise _SendFailed once a reply could not be sent (the dispatcher ended on one,
+        or the read lane failed one)."""
+        assert dispatcher is not None
+        step = asyncio.ensure_future(aw)
+        try:
+            await asyncio.wait({step, dispatcher, send_failed}, return_when=asyncio.FIRST_COMPLETED)
+            if step.done():
+                return step.result()
+            raise _SendFailed
+        finally:
+            step.cancel()  # no-op once done
+
     try:
         await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
         disconnect_reason = "connected"
@@ -291,6 +522,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
+        authority_connection = _authority_connection(ws, transport, auth_identity, operator)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
@@ -300,34 +532,35 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             "jsonrpc": "2.0", "method": "event",
             "params": {"type": "gateway.ready", "payload": {
                 "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
+                **({"session_authority": True} if authority_connection is not None else {}),
             }},
         })
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
+            server._ensure_lease_watcher()  # cross-process lease moves → display.lease
+            if authority_connection is not None:
+                # A served profile's TUI repaints from ITS home's skin, never the launch home's.
+                transport.skin_home = server._skin_home_for(authority_connection.actor.profile_id)
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
         # desktop app and web dashboard reach the agent via this sidecar, not entry.main()).
-        for start, what in (
-            (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
-            (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
-        ):
-            try:
-                start()
-            except Exception:
-                _log.warning("%s failed", what, exc_info=True)
+        _start_backend_liveness()
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
             _log.error("ws ready frame send failed peer=%s", peer)
             return
 
+        dispatcher = asyncio.create_task(_dispatch_loop())
         while True:
             try:
-                raw = await ws.receive_text()
+                raw = await _unless_dispatch_failed(ws.receive_text())
                 _note_dashboard_client_activity()
+            except _SendFailed:
+                raise
             except _WebSocketDisconnect as exc:
                 disconnect_reason = f"client_disconnect(code={getattr(exc, 'code', None)},reason={getattr(exc, 'reason', None)})"
                 break
@@ -347,29 +580,33 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply(_error(-32700, "parse error", None), "send_failed_after_parse_error",
                              "ws parse-error reply send failed peer=%s", peer)
                 continue
-            req_id = req.get("id") if isinstance(req, dict) else None
-            req_method = req.get("method") if isinstance(req, dict) else None
-            if req_method == "gateway.ping":
+            if isinstance(req, dict) and req.get("method") == "gateway.ping":
+                req_id = req.get("id")
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
-            # dispatch() may schedule long handlers on the pool; it returns None then and the worker
-            # writes the response itself via transport.write (a separate thread, so that is the safe
-            # path). Inline handlers return the response dict, written here from the loop.
-            try:
-                resp = await asyncio.to_thread(server.dispatch, req, transport)
-            except Exception:
-                dispatch_crashes += 1
-                _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
-                await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
-                             "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
-                continue
-            if resp is not None:
-                await _reply(resp, "send_failed_after_response",
-                             "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _queue_request(req)
     except _SendFailed:
         pass
     finally:
+        if dispatcher is not None:
+            # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
+            # did) before the teardown below parks this transport's sessions. A cancelled connection (server
+            # shutdown) stops at once instead, as the read loop's cancelled await did.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                dispatcher.cancel()
+            else:
+                with contextlib.suppress(_SendFailed):
+                    await _unless_dispatch_failed(pending.put(stop))
+            await asyncio.wait({dispatcher})
+            failure = None if dispatcher.cancelled() else dispatcher.exception()
+            if failure is not None and not isinstance(failure, _SendFailed):
+                _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
+        await _end_reads()
+        if authority_connection is not None:
+            # After the dispatcher drained: an in-flight authority call must not see its connection closed.
+            await authority_connection.close()
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)

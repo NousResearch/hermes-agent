@@ -297,14 +297,19 @@ def test_live_adapter_without_tag_caption_is_unchanged():
 # ---------------------------------------------------------------------------
 
 
-def _patch_discord_registry(monkeypatch, sender):
+def _patch_plugin_registry(monkeypatch, platform_name, sender):
+    """Swap a plugin platform's ``standalone_sender_fn`` for ``sender`` (returns the original)."""
     from hermes_cli.plugins import discover_plugins
     from gateway.platform_registry import platform_registry
     discover_plugins()
-    entry = platform_registry.get("discord")
+    entry = platform_registry.get(platform_name)
     original = entry.standalone_sender_fn
     monkeypatch.setattr(entry, "standalone_sender_fn", sender)
     return original
+
+
+def _patch_discord_registry(monkeypatch, sender):
+    return _patch_plugin_registry(monkeypatch, "discord", sender)
 
 
 def test_send_to_platform_discord_passes_tag_caption(monkeypatch):
@@ -322,16 +327,22 @@ def test_send_to_platform_discord_passes_tag_caption(monkeypatch):
 
 
 def test_send_to_platform_signal_folds_caption_into_text(monkeypatch):
-    """Signal's JSON-RPC send has no caption field: the caption must arrive as text."""
-    import tools.send_message_tool as smt
+    """Signal's JSON-RPC send has no caption field: the caption must arrive as text.
+
+    Signal routes through its plugin ``standalone_sender_fn`` (``StandaloneSendPolicy`` with
+    ``media=True, captionable=False``), so the tag caption is folded into the body there.
+    """
+    from gateway.config import Platform
+
     img = _tmpfile(".png")
     sent = []
 
-    async def fake_send_signal(extra, chat_id, chunk, media_files=None):
-        sent.append((chunk, media_files))
+    async def fake_send_signal(pconfig, chat_id, message, *, thread_id=None, media_files=None,
+                              force_document=False):
+        sent.append((message, media_files))
         return {"success": True, "platform": "signal", "chat_id": chat_id}
 
-    monkeypatch.setattr(smt, "_send_signal", fake_send_signal)
+    _patch_plugin_registry(monkeypatch, "signal", fake_send_signal)
     try:
         result = asyncio.run(_send_to_platform(
             Platform.SIGNAL,
@@ -348,14 +359,16 @@ def test_send_to_platform_signal_folds_caption_into_text(monkeypatch):
 def test_captionless_text_only_route_keeps_caption_in_body(monkeypatch):
     """A text-only platform (no native media) drops the attachment — the caption text survives."""
     import tools.send_message_tool as smt
+    from gateway.config import Platform
+
     img = _tmpfile(".png")
     sent = []
 
-    async def fake_registry_send(platform_name, pconfig, message, thread_id=None):
-        sent.append((platform_name, message))
+    async def fake_registry_send(platform_name, pconfig, chat_id, chunk, thread_id=None):
+        sent.append((platform_name, chunk))
         return {"success": True}
 
-    monkeypatch.setitem(smt._TEXT_SENDERS, "email", lambda pc, cid, chunk, tid: fake_registry_send("email", pc, chunk, tid))
+    monkeypatch.setattr(smt, "_registry_standalone_send", fake_registry_send)
     try:
         result = asyncio.run(_send_to_platform(
             Platform.EMAIL, _pconfig(), "a@b.c", "", media_files=[(img, False)],
@@ -392,7 +405,7 @@ def test_handle_send_reaches_discord_wire_with_tag_caption(monkeypatch):
     (one POST, no separate uncaptioned upload).
     """
     import json
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import MagicMock, patch
 
     import tools.send_message_tool as smt
     from plugins.platforms.discord.adapter import _remember_channel_is_forum

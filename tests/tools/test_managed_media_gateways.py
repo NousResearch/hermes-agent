@@ -71,7 +71,7 @@ def _install_fake_tools_package():
             session_id="debug-session",
             log_call=lambda *a, **k: None,
             save=lambda: None,
-            get_session_info=lambda: {},
+            get_session_info=dict,
         )
     )
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
@@ -177,6 +177,7 @@ def _install_fake_openai_module(captured, transcription_response=None):
         APIConnectionError=Exception,
         APITimeoutError=Exception,
         BadRequestError=type("BadRequestError", (Exception,), {}),
+        APIStatusError=type("APIStatusError", (Exception,), {}),
     )
     sys.modules["openai"] = fake_module
 

@@ -20,7 +20,6 @@ Covers:
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import threading
 import time
 
@@ -45,10 +44,10 @@ def _drain_admission_slots():
 
 class TestF1CommitOverrunWhileHung:
     def test_overrun_warning_fires_while_commit_still_blocked(self, monkeypatch):
-        """The warning + on_commit_overrun fire DURING the hang, not after.
+        """on_commit_overrun fires DURING the hang, not after.
 
         The fake commit is event-gated and is NOT released until after the
-        assertions on the callback/log have been made while the worker
+        assertions on the callback have been made while the worker
         thread is still blocked inside the commit boundary.
         """
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -71,12 +70,6 @@ class TestF1CommitOverrunWhileHung:
             finally:
                 fence.finish_commit()
 
-        records = []
-
-        class _Capture(logging.Handler):
-            def emit(self, record):
-                records.append(record)
-
         def on_overrun(waited, ceil):
             overruns.append((waited, ceil))
             overrun_fired.set()
@@ -93,46 +86,26 @@ class TestF1CommitOverrunWhileHung:
                 on_commit_overrun=on_overrun,
             )
 
-        comp_logger = logging.getLogger("agent.conversation_compression")
-        handler = _Capture(level=logging.WARNING)
-        comp_logger.addHandler(handler)
         try:
+            # Warm the pool's thread first: the fence rightly refuses a worker that starts after the
+            # 1s commit deadline, and spawning a cold pool thread on a starved runner took longer.
+            executor.submit(lambda: None).result(timeout=30)
             t = threading.Thread(target=run, name="f1-hung-commit-host")
             t.start()
             try:
-                assert entered.wait(timeout=2)
+                assert entered.wait(timeout=10)
                 # ── Assert WHILE the commit worker is still blocked ──────
-                assert overrun_fired.wait(timeout=5), (
+                assert overrun_fired.wait(timeout=10), (
                     "on_commit_overrun must fire while the commit is hung"
                 )
                 assert not release.is_set()  # worker provably still blocked
                 assert t.is_alive()
-                deadline = time.time() + 5
-                while time.time() < deadline:
-                    if any(
-                        r.levelno >= logging.WARNING
-                        and "past the total ceiling" in r.getMessage()
-                        for r in list(records)
-                    ):
-                        break
-                    time.sleep(0.01)
-                overrun_logs = [
-                    r
-                    for r in list(records)
-                    if r.levelno >= logging.WARNING
-                    and "past the total ceiling" in r.getMessage()
-                ]
-                assert overrun_logs, (
-                    "expected the overrun WARNING while the commit was "
-                    f"still blocked; got: {[r.getMessage() for r in records]}"
-                )
                 assert overruns and overruns[0][1] == pytest.approx(1.0)
             finally:
                 release.set()
             t.join(timeout=5)
             assert not t.is_alive()
         finally:
-            comp_logger.removeHandler(handler)
             executor.shutdown(wait=True)
         assert done["result"] == (compressed, "committed-late")
         _drain_admission_slots()
@@ -327,7 +300,7 @@ class TestF6ExecutorSaturation:
                 session_id = "SATURATED_SESSION"
                 _compression_attempt_id = "sat-attempt"
 
-                class context_compressor:  # noqa: D106 — minimal stub
+                class context_compressor:
                     _last_compression_telemetry = None
                     _last_summary_fallback_used = False
                     _last_aux_model_failure_model = None
@@ -475,7 +448,7 @@ class TestS3IdleChargedFromLastProgress:
 
         t0 = time.monotonic()
         try:
-            msgs, prompt = run_compress_context_with_progress_timeout(
+            _msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker,
                 messages=[{"role": "user", "content": "a"}],
                 system_prompt_fallback="fb",

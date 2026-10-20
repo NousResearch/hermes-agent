@@ -1,0 +1,16 @@
+name: turn-bell
+repo: https://github.com/BrokeSkill/turn-bell
+sha: b39808efe7eef1528679661ebda902c9b632a438
+description: "A bell in the Hermes desktop composer that pings the ntfy topic Hermes already uses when a turn finishes. Click to cycle off, current turn, or all turns. Disclosure — when enabled, posts the first line of each finished reply plus model, duration, token and cost figures to the ntfy server/topic Hermes is configured with (default ntfy.sh); reads NTFY_* from the profile .env and falls back to the ntfy CLI's ~/.config/ntfy/client.yml login (read-only)."
+maintainer: BrokeSkill
+tier: community
+category: desktop
+version: "1.0.1"
+requires_hermes: ">=0.21.5"
+image: https://raw.githubusercontent.com/BrokeSkill/turn-bell/b39808efe7eef1528679661ebda902c9b632a438/assets/demo-modes.gif
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

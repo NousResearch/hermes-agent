@@ -83,6 +83,84 @@ Notes:
   profile-text indicator.
 - Off by default, since it mutates the bot's global profile.
 
+### Cold-boot pending queue (Optional)
+
+By default the adapter drops server-side pending updates on a cold boot
+(`drop_pending_updates=True` on the first `start_polling`). That fits
+always-on servers: a restart means "clean up," and the queue is treated as
+stale. It does not fit hosts that turn off (a desktop shut down overnight):
+messages sent while the gateway is offline sit in Telegram's Bot API queue,
+and the next boot discards them before Hermes ever sees them — silently, no
+log, no retry.
+
+Set `drop_pending_on_cold_boot: false` to receive that backlog in order on
+startup instead:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      drop_pending_on_cold_boot: false
+```
+
+Notes:
+
+- Default is `true`: existing behavior is unchanged unless you opt in.
+- Watcher reconnects (brief network outages with the process still alive)
+  always preserve the queue regardless of this setting.
+- Conflict recovery still drops pending updates to terminate the competing
+  `getUpdates` session — that path is unrelated to this knob.
+- After a crash, a preserved queue can redeliver an update the crashed
+  instance partially processed. Telegram's offset usually prevents this,
+  but time-sensitive commands sent during a long outage will run on boot.
+
+### Concurrent update handling
+
+Updates from different chats are processed concurrently, so one slow turn
+(a long provider retry, a large download) no longer stalls every other chat.
+Updates from the same chat still run one after another, in arrival order.
+The cross-chat pool defaults to 32; an invalid value logs a warning and uses
+the default:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      max_concurrent_updates: 32   # 1 restores fully sequential processing
+```
+
+### Repeated inbound updates
+
+Hermes suppresses repeated Telegram `update_id` values before message batching,
+command/media handling, observed group-history writes and plugin observers.
+The receiving adapter and numeric bot ID scope this check; it does not deduplicate
+by text or `message_id`. A genuine edit with a new update ID can still be processed.
+
+This is bounded, **in-memory** protection, not an exactly-once guarantee:
+
+- The adapter remembers the most recent 4096 completed admissions, with no time
+  expiry. Active updates stay claimed until dispatch and its scheduled PTB handler
+  tasks finish, including nonblocking native plugins and registered error callbacks.
+- Reconnecting the same adapter retains that history. Eviction, adapter replacement
+  or a process restart can allow an old update through again. Nothing is written
+  to a replay ledger on disk.
+- Failed or cancelled preparation releases its claim if nothing has been handed
+  off. Once an update enters a batch/hold queue, gateway dispatch, an observer or
+  a native plugin, a later error does not reopen it. Native plugins own their own
+  partial effects, so entering their update or registered error callback is
+  conservatively treated as handoff. PTB's own exception logging is not a handoff.
+  Uncached static-sticker vision analysis is also a handoff: cancelling the await
+  cannot undo an auxiliary model request already submitted. Caught preparation
+  errors before any handoff remain retryable; an intentional refusal is terminal.
+- Releasing a claim only permits a later delivery; it does not request one from
+  Telegram. Polling acknowledgement is independent of agent completion. This check
+  does not retry failed replies or prevent a downstream component from independently
+  duplicating work.
+
+For a suspected late replay, compare both occurrences' bot/profile, chat/topic,
+`update_id`, update kind, `message_id` and actual receive time. An edit can reuse
+`message_id`, and the message's sent timestamp is not its receive time.
+
 ### Command menu priority and cap (Optional)
 
 Hermes registers its command menu automatically when the Telegram gateway starts. The menu is built from the central slash-command registry plus eligible plugin/skill commands, then capped so Telegram accepts the payload reliably. The default cap is 60 commands — enough to keep all built-in commands plus common skill commands visible.
@@ -697,13 +775,13 @@ Each topic gets its own conversation session, history, and context — completel
 ### Configuration
 
 :::caution Prerequisites
-Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+Before adding topics to your config, the bot owner must **enable Threaded Mode** for the bot in **@BotFather**:
 
-1. Open your private chat with the Hermes bot in Telegram
-2. Tap the bot's name at the top to open chat info
-3. Enable **Topics** (the toggle to turn the chat into a forum)
+1. Open the BotFather **Mini App** (search `botfather` in Telegram, then tap **Open** on the search result — the classic `/mybots` text menu does not expose this setting)
+2. Go to **My bots → your bot → Bot Settings → Threads Settings**
+3. Turn on **Threaded Mode**
 
-Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+There is no "Topics" toggle in the DM chat itself — a bot DM is not a group, so the group-forum toggle described in some older guides does not apply here. Without Threaded Mode, Hermes will log `The chat is not a forum` on startup and skip topic creation. See [Prerequisites](#prerequisites) below for the same steps with more detail.
 :::
 
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
@@ -838,6 +916,22 @@ After activation, the **root DM is a lobby**: normal prompts are rejected with g
 
 Every topic gets its own conversation history, model state, tool execution, and session ID. The isolation key is `agent:main:telegram:dm:{chat_id}:{thread_id}` — identical to the config-driven DM topics isolation.
 
+### Messages sent in the root DM
+
+Some Telegram clients deliver a message typed in the root DM (General / **All Messages**) without a `message_thread_id`. By default Hermes treats such a message as a continuation and answers it in your **most recently active topic** (lobby recovery).
+
+To get a fresh session for every root-DM message instead, turn on `dm_topic_auto_transfer`:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        dm_topic_auto_transfer: true   # default: false
+```
+
+With it on, a plain message in the root DM makes Hermes create a new topic (named "Hermes Chat" until the auto-title renames it), start a new session there, and post the reply inside that topic. Slash commands typed in the root DM stay lobby commands and never create a topic. If creating the topic fails (for example Threaded Mode was switched off in BotFather), Hermes falls back to the default behaviour and answers in your most recently active topic. The key only matters while `/topic` mode is on. The top-level `telegram.extra.dm_topic_auto_transfer` key (shown in Desktop Settings) works too.
+
 ### Auto-renamed topics
 
 When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
@@ -889,6 +983,7 @@ Shows the current topic's binding: session title, session ID, and hints for `/ne
 - Topics declared in `extra.dm_topics` are **never auto-renamed** — the operator-chosen name is preserved even when multi-session mode is enabled
 - Set `extra.disable_topic_auto_rename: true` to turn off auto-rename for **all** topics in the chat (ad-hoc topics created via Threaded Mode included)
 - The General (pinned top) topic in a forum-enabled DM is treated as the root lobby, regardless of whether Telegram delivers its messages with `message_thread_id=1` or with no thread_id
+- A root-lobby message is routed to the user's most recently bound topic; with `extra.dm_topic_auto_transfer: true` it instead opens a new topic via `createForumTopic` (falling back to the most recent topic if that call fails)
 - Root-lobby reminders are rate-limited to one message per 30 seconds per **(profile, chat)** — a user who forgets topic mode is on and types ten prompts in the root won't get ten replies, and two multiplexed profiles sharing a chat id do not suppress each other's reminders
 - BotFather setup screenshots are rate-limited to one send per 5 minutes per **(profile, chat)** — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
 - `/bg <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
@@ -1340,7 +1435,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 If Telegram cannot render the button card (the Bot API rejects it, or the send fails after its 15-second acknowledgement window), Hermes re-asks the same question as a plain numbered-list message and your typed reply (a number or the option text) is taken as the answer. When even that cannot be delivered, the agent is released at once with `[clarify prompt could not be delivered]` instead of waiting out the timeout and mistaking the silence for you not answering.
 

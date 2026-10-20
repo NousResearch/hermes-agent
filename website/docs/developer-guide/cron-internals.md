@@ -14,7 +14,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
-| `tools/cronjob_tools.py` | Model-facing `cronjob` tool registration and handler |
+| `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
 
@@ -29,7 +29,7 @@ Four schedule formats are supported:
 | **Cron expression** | `0 9 * * *` | Standard 5-field cron syntax (minute, hour, day, month, weekday) |
 | **ISO timestamp** | `2025-01-15T09:00:00` | One-shot, fires at the exact time |
 
-The model-facing surface is a single `cronjob` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
+The model-facing surface is a single `cronjob_manage` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
 
 ## Job Storage
 
@@ -65,17 +65,47 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 
 ### `last_status` literals
 
-`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
-renderer (`hermes cron list`/`doctor`, the `cronjob` tool, the web dashboard
-badge, the Desktop routine inspector) maps each literal explicitly — a consumer
-must never test `== "ok"` for "the user got their result":
+`last_status` is written by `cron.jobs.mark_job_run` when a run finishes and, for a
+queued delivery, rewritten once by the delivery write-back below. Every renderer
+(`hermes cron list`/`doctor`, the `cronjob_manage` tool, the web dashboard badge, the
+Desktop routine inspector) maps each literal explicitly — a consumer must never test
+`== "ok"` for "the user got their result":
 
 | Literal | Meaning | Detail field |
 |---------|---------|--------------|
 | `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `delivery_queued` | Agent run succeeded; its send was handed to the durable delivery queue and has not settled yet (transitional) | `last_delivery_queued` |
 | `error` | Agent run failed | `last_error` |
 | `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
 | `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+
+### Queued delivery lifecycle and write-back
+
+An agent run with a delivery target and an `execution_id` does not send inline: it
+hands the content to `cron/delivery_queue.py` (the profile's `cron/deliveries.db`,
+keyed by `execution_id`) and books `last_status = "delivery_queued"` with ledger
+`delivery_outcome = "queued"`. A gateway's housekeeping tick drains the queue through
+its live adapters (`scheduler.drain_delivery_queue`); each row is claimed at most once
+(`pending → delivering → delivered | failed | suppressed`). A row whose claiming gateway
+died mid-send is fenced `unknown` and never retried.
+
+`cron/delivery_outcome.py::settle_queued_delivery` then writes the terminal outcome
+back onto the run that queued it:
+
+| Queue row | Ledger `delivery_outcome` | Job `last_status` / `last_delivery_error` |
+|---|---|---|
+| `delivered` | `delivered` | `ok` / `null` |
+| `suppressed` | `suppressed` | `ok` / `null` |
+| `failed` | `failed` | `delivery_failed` / the send error |
+| `unknown` | `failed` | `delivery_failed` / "send outcome is unknown and was not retried" |
+
+Both sides call it: the drain right after it terminalizes a row, and the run right after
+its own bookkeeping, because a drain can finish before the run's `mark_job_run` lands.
+Every write is fenced on the `execution_id` (it must still be the job's latest ledger
+attempt and latest recorded completion), so the call is idempotent and never rewrites a
+later run's status; the ledger only ever moves `queued` to a terminal outcome. Until a
+gateway drains the row, `last_status` stays `delivery_queued` and `hermes cron list`
+shows "finished; delivery is still in progress".
 
 ### Job Lifecycle States
 
@@ -164,8 +194,14 @@ dropped silently. The mechanics, in the order the due scan applies them
    One-shots and future instants recompute from now on resume.
 
 The same store fields drive every topology: a standalone `hermes -p X gateway
-run` and a profile served by the default multiplexer (`_start_multiplex` ticks
-each home under `_profile_cron_scope`) evaluate the identical record.
+run` and a profile served by the host gateway (`_start_multiplex` ticks each
+home under `_profile_cron_scope`) evaluate the identical record. One gateway
+process per host ticks *every* profile's store — `gateway.multiplex_profiles`
+gates adapters, not cron — and per-run bookkeeping (in-flight claims, the
+parallel worker pool, the stale-code yield decision) is keyed by profile home,
+so two profiles may carry identically named jobs without colliding. A profile
+that runs its own gateway is skipped per tick, so the two processes never race
+its store and its deliveries always leave through its own live adapters.
 
 **Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
 a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat
@@ -205,7 +241,19 @@ What "firing" *means* (job execution + delivery) is unchanged and shared by all
 providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
 A provider only controls the trigger, never execution.
 
+A ticker whose checkout was updated under it (boot revision ≠ disk revision) yields its tick
+only to a gateway that can actually take it over: the runtime-lock holder must be a live gateway
+whose `gateway_state.json` heartbeat is fresh and whose stamped `code_sha` is the on-disk revision.
+A lock held by a process that is itself still running the pre-update code — the common case right
+after `hermes update` with a single gateway — never counts as a fresh gateway, so the ticker keeps
+dispatching instead of yielding every tick to nobody.
+
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
+
+Upgrade notes for the gateway-owned runtime (the retired
+`cron.bot_chat_delivery_timeout_seconds` key, legacy `cron/bot_chat_pending/` records,
+and runs interrupted by the cutover restart) are in
+[Updating](../getting-started/updating.md#upgrading-to-the-gateway-owned-session-runtime).
 
 ### Managed cron (Chronos) for scale-to-zero
 
@@ -293,7 +341,7 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
 4. **Default** — 3600 seconds (1 hour)
 
-This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
+This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. On platforms where Python's monotonic clock excludes suspend (macOS and Linux), time the host spends asleep does not count toward that idle period; Windows behavior is unchanged. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
 On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
 `agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
@@ -309,7 +357,7 @@ Windows continues to use `taskkill /F /T`.
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
 
-- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain.
+- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain. **Unpinned jobs only:** `_job_fallback_chain()` returns no chain for a job carrying its own `provider`, `model` or `base_url`, and the same answer feeds the credential-resolution walk in `_resolve_job_runtime()`, the pre-dispatch key check, and the mid-run ladder, so a pinned job never lands on a global chain entry (#100437). It shares `hermes_cli.fallback_config.scoped_fallback_chain()` with pinned delegation children.
 - **Credential pool** — loads via `load_pool(provider)` from `agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
 
 This mirrors the gateway's behavior — without it, cron agents would fail on rate limits without attempting recovery.
@@ -337,7 +385,7 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 | Email | `email`, `email:<address>` | `email:alerts@example.com` |
 | Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
 | Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
-| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
+| Home Assistant (plugin) | `homeassistant` or `homeassistant:<notify target>` | Bare name delivers to `HASS_HOME_CHANNEL`; needs the `homeassistant` catalog plugin |
 | DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
 | WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
 | BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |
@@ -350,7 +398,7 @@ Platforms in the first group have explicit, validated target syntax — named ch
 
 For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
 
-**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. An existing receipt never permits CLI fallback. Without a mailbox owner it retains `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` and normal ownership fencing. Both lanes deliver a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. Historical cron status does not automatically track later receipt completion. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff. `cron.bot_chat_delivery_timeout_seconds` (default 600) bounds only the legacy subprocess lane.
+**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. A profile with no Bot Chat yet gets one created by the authority on first delivery (the `--create-if-missing` semantics of the retired CLI lane). There is no local CLI fallback: without a running authority the run is recorded `delivery_failed` with the reason in `last_delivery_error` and the output kept under `hermes cron runs`; it is not redelivered automatically, and the scheduler never becomes a second writer to the profile's store. Delivery is a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. When the Bot Chat send went through the gateway delivery queue (an agent run), the write-back above settles the cron run once the drain's send returns: `ok`/`delivered` then means the target's authority **accepted** the turn, and `last_delivery_queued` keeps the receipt IDs whose Bot Chat turn may still be running. A Bot Chat delivery made inline (a `no_agent` job, or a Bot-Chat-only external worker) is not on the queue, so its run keeps `last_status=delivery_queued` / `delivery_outcome=queued`; nothing writes the later receipt completion back into cron history. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff.
 
 ### Response Wrapping
 
@@ -374,6 +422,10 @@ Cron-run sessions have the `cronjob` toolset disabled. This prevents:
 ## Locking
 
 The scheduler uses cross-process file-based locking (`fcntl.flock` on Unix, `msvcrt.locking` on Windows) to prevent overlapping ticks from executing the same due-job batch twice — even between the gateway's in-process ticker and a standalone `hermes cron` / manual `tick()` call. If the lock cannot be acquired, `tick()` returns 0 immediately.
+
+### Stale-code yield
+
+Before the tick lock, a gateway whose checkout was updated under it (boot revision ≠ disk revision) yields the tick when another process holds the gateway runtime lock — a fresher gateway's ticker dispatches instead, and the stale one must not race it with mixed `sys.modules`. The yield is raised (`CronTickYielded`) and persisted as the ticker's last error, so `hermes cron status` reports **"Gateway is running STALE code — its cron ticker yields every tick and fires NOTHING"** with both revisions and the restart command, even though the liveness heartbeat keeps refreshing. `hermes update` closes the loop: a gateway the post-update fleet version matrix proves stale is handed to the drain-first `request_restart` path (SIGUSR1) instead of being left running; a supervised gateway respawns on the new code, a bare `gateway run` is stopped and listed under "Restart manually".
 
 ## CLI Interface
 

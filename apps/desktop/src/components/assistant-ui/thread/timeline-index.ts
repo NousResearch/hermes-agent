@@ -1,4 +1,4 @@
-import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type ProfileScope, sessionReadOwnerPin } from '@/api/client'
 
 import type { TimelineEntry } from './timeline-data'
 
@@ -25,13 +25,23 @@ const MAX_INDEX_PAGES_PER_LOOKUP = 3
 export const timelineIndexKey = (id: string, scope: ProfileScope) => JSON.stringify([id, scope])
 export const cachedTimelineIndex = (key: string) => cache.get(key)
 
-/** One bounded metadata page per request; never fetch tool or assistant bodies. */
-export function fetchTimelineIndex(id: string, scope: ProfileScope): Promise<TimelineIndex> {
+/**
+ * One bounded metadata page per request; never fetch tool or assistant bodies.
+ * A complete index is final only up to the turns that existed when it was
+ * read: `beyondRowId` names a prompt the caller has seen (the live tail's
+ * newest, a jump anchor), and a complete index that does not reach it pages
+ * forward from its own cursor instead of answering from the cache.
+ */
+export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?: number): Promise<TimelineIndex> {
   const key = timelineIndexKey(id, scope)
   const cached = cache.get(key)
   const previous = cached?.complete && cached.expires <= Date.now() ? undefined : cached
 
-  if (cached?.complete && cached.expires > Date.now()) {
+  if (
+    cached?.complete &&
+    cached.expires > Date.now() &&
+    (beyondRowId === undefined || marksReach(cached.entries, beyondRowId))
+  ) {
     return Promise.resolve(cached)
   }
 
@@ -43,7 +53,10 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope): Promise<Tim
 
   const route = {
     ...capabilityScoped(scope),
-    ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {})
+    ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {}),
+    // Owner connection pin (#125372) — a timeline jump for a session owned by
+    // another registry connection must read THAT host, not the ambient one.
+    ...sessionReadOwnerPin(id, scope)
   }
 
   const query = new URLSearchParams({ limit: '500' })
@@ -126,15 +139,20 @@ export async function previousPromptRowId(
   }
 
   let previous: number | null = null
+  let known = -1
 
   for (let page = 0; page < MAX_INDEX_PAGES_PER_LOOKUP; page++) {
-    const index = await fetchTimelineIndex(id, scope)
+    const index = await fetchTimelineIndex(id, scope, rowId)
 
     previous = promptBefore(index.entries, rowId)
 
-    if (previous === null || index.complete || marksReach(index.entries, rowId)) {
+    // A complete index that gained nothing cannot name the anchor (an unpersisted
+    // or non-prompt row); stop rather than re-read the tail page.
+    if (previous === null || marksReach(index.entries, rowId) || (index.complete && index.entries.length === known)) {
       return previous
     }
+
+    known = index.entries.length
   }
 
   return previous

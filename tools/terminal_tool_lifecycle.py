@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from tools.environments.singularity import _get_scratch_dir
 from tools.terminal_tool_backends import (
     _container_config_from_config,
+    _local_config_from_config,
     _ssh_config_from_config,
 )
 from tools.terminal_tool_config import _quiet
@@ -64,11 +65,11 @@ def _check_disk_usage_warning():
 
 
 def _create_configured_env(
-    config: Dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
-    task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
+    config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
+    task_id: str, host_cwd: Optional[str],
 ):
-    """``_create_environment`` with the ssh/container kwargs shaped from *config*
-    (shared by the terminal tool and the lazy :func:`ensure_task_env` bring-up)."""
+    """``_create_environment`` with the ssh/local/container kwargs shaped from *config*
+    (shared by the terminal tool, the file tools and the lazy :func:`ensure_task_env` bring-up)."""
     from tools.terminal_tool_backends import _create_environment
     from tools.terminal_tool_config import _is_container_backend
     return _create_environment(
@@ -77,7 +78,8 @@ def _create_configured_env(
         container_config=(
             _container_config_from_config(config) if _is_container_backend(env_type) else None
         ),
-        local_config=local_config, task_id=task_id, host_cwd=host_cwd,
+        local_config=_local_config_from_config(config) if env_type == "local" else None,
+        task_id=task_id, host_cwd=host_cwd,
     )
 
 
@@ -100,11 +102,14 @@ def _cleanup_env(env: Any, *, force_remove: Optional[bool] = None) -> None:
         env.terminate()
 
 
-def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s") -> None:
-    """``_cleanup_env`` plus outcome logging. A 404/"not found" error means the
-    sandbox is already gone — logged at info."""
+def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None, done_msg: str = "Cleaned up inactive environment for task: %s", stop_idle: bool = False) -> None:
+    """``_cleanup_env`` (or, with *stop_idle*, the backend's ``stop_idle``) plus outcome logging.
+    A 404/"not found" error means the sandbox is already gone — logged at info."""
     try:
-        _cleanup_env(env, force_remove=force_remove)
+        if stop_idle:
+            env.stop_idle()
+        else:
+            _cleanup_env(env, force_remove=force_remove)
         logger.info(done_msg, task_id)
     except Exception as e:
         error_str = str(e)
@@ -152,7 +157,11 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            if process_registry.has_active_processes(task_id):
+            # A workspace container is keyed by its digest, not the spawning task id: also keep it
+            # while any process it hosts is still running (stopping it would kill that process).
+            if process_registry.has_active_processes(task_id) or (
+                    _is_workspace_key(task_id)
+                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass
@@ -170,7 +179,17 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            _teardown_env(env, task_id)
+            if _is_workspace_key(task_id) and callable(getattr(env, "stop_idle", None)):
+                # Persistent per-workspace container: stop it (state kept, restarted on next use)
+                # instead of leaving it running forever like the one profile container.
+                _teardown_env(env, task_id, stop_idle=True)
+            else:
+                _teardown_env(env, task_id)
+
+
+def _is_workspace_key(key: str) -> bool:
+    """A persistent Docker key bound to one session workspace (``<base>:ws:<digest>``)."""
+    return ":ws:" in str(key or "")
 
 
 def get_active_env(task_id: str):
@@ -230,7 +249,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 timeout=config["timeout"], task_id=effective_task_id,
                 host_cwd=_resolve_task_host_cwd(config, task_id),
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
+        except Exception as exc:
             logger.warning(
                 "Lazy %s environment init failed for task %s: %s",
                 env_type, effective_task_id[:8], exc,
@@ -263,8 +282,11 @@ def is_persistent_env(task_id: str) -> bool:
 
 
 def cleanup_all_environments():
-    """Clean up ALL active environments. Use with caution."""
+    """Clean up ALL active environments (process exit). Use with caution."""
+    from tools.environments.base import kill_live_foreground_processes
     from tools.terminal_tool import _active_environments
+    # A command still running when the host exits would outlive it in its own process group.
+    kill_live_foreground_processes()
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:

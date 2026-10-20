@@ -70,6 +70,10 @@ hermes profile create backup --clone-all
 
 复制**所有内容**——配置、API 密钥、人格、记忆、技能、cron 任务、插件。会排除每个 profile 自己的历史数据（会话历史、`state.db`、`backups/`、`state-snapshots/`、`checkpoints/`），这些数据属于源 profile 且可能达到数十 GB。若要包含历史的完整备份，请使用 `hermes profile export` 或 `hermes backup`。
 
+:::note OAuth 登录是共享的，而不是复制的
+Anthropic（Claude Pro/Max）、OpenAI Codex 和 xAI 的 OAuth 登录使用**一次性刷新令牌**——复制一份并不会得到第二个凭证，而是同一个凭证有了两个持有者，第一个刷新它的 profile 会让其他所有副本失效。因此 `--clone-all`（以及仪表盘的凭证镜像）不会把这些 OAuth 条目复制到克隆中。新 profile 继续从根目录的 `~/.hermes/auth.json` 读取登录，任何 profile 中执行的令牌刷新都会写回根目录，所有 profile 都保持登录状态。静态 API 密钥照常复制。若要让某个 profile 拥有自己独立的 OAuth 登录，请在其中运行 `hermes -p <name> auth add <provider>`。该登录保存在这个 profile 自己的 `auth.json` 中（即使根目录还没有该提供商的登录也是如此），此后该 profile 使用它而不是根目录的登录；根目录的 `auth.json` 不会被修改。如果登录无法保存，命令会报错，而不会打印 `Added`。
+:::
+
 ### 从指定 profile 克隆
 
 ```bash
@@ -232,7 +236,7 @@ hermes update
 ```bash
 hermes profile list           # 显示所有 profile 及其状态
 hermes profile show coder     # 显示某个 profile 的详细信息
-hermes profile rename coder dev-bot   # 重命名（同步更新别名和服务）
+hermes profile rename coder dev-bot   # 重命名（更新别名；移除旧名称的网关服务）
 hermes profile export coder   # 导出为 coder.tar.gz
 hermes profile import coder.tar.gz   # 从归档文件导入
 ```

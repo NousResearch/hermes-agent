@@ -130,13 +130,13 @@ def make_sandbox(work: Path):
 SUCCESS = {
     "err_python_env": lambda t, w: "ENV_OK_4477" in t,
     "err_replay_patch": lambda t, w: "CONFIG_OK_881" in t and (
-        w / "proj" / "config.py").read_text(encoding="utf-8").count("RETRY_LIMIT = 30") == 1,
+        w / "proj" / "config.py").read_text(encoding="utf-8-sig").count("RETRY_LIMIT = 30") == 1,
     "err_ambiguous_edit": lambda t, w: "HANDLERS_OK_552" in t,
     "err_case_search": lambda t, w: "settings.ini" in t and "client.go" in t,
     "err_hidden_search": lambda t, w: "rotation.cfg" in t and "ops.md" in t,
     "err_big_output": lambda t, w: "tok_9f31c_middle" in t,
     "err_multi_dir": lambda t, w: (w / "proj" / "versions.txt").exists()
-    and "1.4.2,0.9.7,3.2.1" in (w / "proj" / "versions.txt").read_text(encoding="utf-8"),
+    and "1.4.2,0.9.7,3.2.1" in (w / "proj" / "versions.txt").read_text(encoding="utf-8-sig"),
     # sum of squares of 1..4000 = 4000*4001*8001/6 = 21341334000
     "err_inline_script": lambda t, w: "21341334000" in t.replace(",", ""),
     "err_big_file_read": lambda t, w: "X99Q" in t,
@@ -149,13 +149,13 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     meta_path = resdir / "meta.jsonl"
     done = set()
     if meta_path.exists():
-        for line in meta_path.read_text(encoding="utf-8").splitlines():
+        for line in meta_path.read_text(encoding="utf-8-sig").splitlines():
             try:
                 done.add(json.loads(line)["run_id"])
             except (ValueError, KeyError):
                 continue
     for rep in range(reps):
-        for name in TASKS:
+        for name, task in TASKS.items():
             if only and name not in only:
                 continue
             run_id = f"{name}-r{rep}"
@@ -194,14 +194,14 @@ mode = "overwrite"
                 "HERMES_HOME": str(HOME),
                 "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
-            q = TASKS[name].replace("{WORK}", str(work))
+            q = task.replace("{WORK}", str(work))
             t0 = time.time()
             try:
                 p = subprocess.run(
                     [sys.executable, "-m", "hermes_cli.main", "chat", "--query", q,
                      "--quiet", "--max-turns", "30", "--accept-hooks", "--model", model],
                     cwd=work, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=600)
+                    encoding="utf-8", errors="replace", timeout=600, check=False)
                 out = (p.stdout or "").strip()
                 rc = p.returncode
             except subprocess.TimeoutExpired:
@@ -227,7 +227,7 @@ def score_run(atof: Path):
     last_err_tool = None
     if not atof.exists():
         return None
-    for line in atof.read_text(encoding="utf-8").splitlines():
+    for line in atof.read_text(encoding="utf-8-sig").splitlines():
         try:
             ev = json.loads(line)
         except ValueError:
@@ -266,7 +266,7 @@ def report(models):
             meta_path = mdir / arm / "meta.jsonl"
             if not meta_path.exists():
                 continue
-            for line in meta_path.read_text(encoding="utf-8").splitlines():
+            for line in meta_path.read_text(encoding="utf-8-sig").splitlines():
                 m = json.loads(line)
                 s = score_run(mdir / arm / f"{m['run_id']}.atof.jsonl") or {}
                 work = ROOT / "runs" / model.replace("/", "_") / arm / m["run_id"]
@@ -288,7 +288,7 @@ def report(models):
                 if not rows:
                     continue
                 n = len(rows)
-                mean = lambda k: sum(r.get(k, 0) for r in rows) / n  # noqa: E731
+                mean = lambda k: sum(r.get(k, 0) for r in rows) / n
                 okp = 100 * sum(r["ok"] for r in rows) / n
                 print(f"{task:20s} | {arm:8s} | {n:2d} {okp:3.0f}% "
                       f"{mean('llm'):5.1f} {mean('tools'):5.1f} {mean('errs'):5.1f} "

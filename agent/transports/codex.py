@@ -14,7 +14,7 @@ from agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
-    # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
+    # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
     codex_supported_efforts,
 )
 from agent.transports.base import ProviderTransport
@@ -32,7 +32,19 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     """Normalize a physical session_id into a stable logical cache scope."""
     sid = str(session_id or "")
     match = _CRON_SESSION_ID_RE.match(sid)
-    return match.group(1) if match else sid
+    if match:
+        return match.group(1)
+    # The unified scheduler admits cron fires into a ``local-*`` session. Its
+    # physical id is intentionally opaque and changes on every fire, so recover
+    # the stable job scope from the bound scheduler admission instead.
+    from gateway.session_cron import current_execution
+
+    execution = current_execution()
+    if execution is not None and str(execution[1]) == sid:
+        job_id = str(execution[2] or "").strip()
+        if job_id:
+            return f"cron_{job_id}"
+    return sid
 
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
@@ -80,7 +92,11 @@ _PERPLEXITY_RESERVED_TOOL_NAMES = (
     "people_search",
     "finance_search",
 )
+# xAI and OpenAI Responses (api.openai.com and the ChatGPT Codex backend) reserve ``tool_search``
+# for their native Tool Search ("Function 'tool_search.tool_search' not allowed in reserved
+# namespace 'tool_search'", #83122 / #95003).
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
+_OPENAI_RESPONSES_HOSTS = frozenset({"api.openai.com", "chatgpt.com"})
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
 # Reverse map used ONLY when normalize_response runs on a transport that never
@@ -171,11 +187,52 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool) -> tuple[Any, dict[str, str]]:
+def _reserves_tool_search(params: dict[str, Any], is_xai_responses: bool) -> bool:
+    """True when the Responses endpoint owns the ``tool_search`` namespace (xAI, OpenAI, ChatGPT Codex)."""
+    if is_xai_responses or params.get("is_codex_backend") is True:
+        return True
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() in _OPENAI_RESPONSES_HOSTS
+    except Exception:
+        return False
+
+
+def _openai_prefers_native_web_search() -> bool:
+    """True when the active web-search backend selects OpenAI's server-side ``web_search``.
+
+    Same contract as :func:`_xai_prefers_native_web_search` with one deliberate
+    difference: it fails CLOSED (False). A resolution failure must leave the client-side
+    Hermes tool in place rather than swap in a built-in the endpoint might reject.
+
+    Only consulted for the Codex backend (``chatgpt.com/backend-api/codex``); a custom
+    OpenAI-compatible endpoint does not implement the server-side tool.
+    """
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None:
+            return getattr(provider, "name", None) == "openai-native"
+
+        from tools.web_tools import _get_search_backend
+
+        return (_get_search_backend() or "").strip().lower() == "openai-native"
+    except Exception:
+        return False
+
+
+def _alias_wire_tools(
+    response_tools: Any, params: dict[str, Any], is_xai_responses: bool, is_codex_backend: bool = False,
+) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
     xAI: a client ``web_search`` collides with Grok's native search — native mode
     swaps it 1:1 for the built-in, client mode keeps Hermes dispatch under an alias.
+
+    OpenAI Codex: the Responses endpoint carries the same collision, so the backend
+    selection drives the same 1:1 swap (``web.search_backend: openai-native``).
     """
     wire_aliases: dict[str, str] = {}
 
@@ -190,6 +247,13 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
                 {**t, "name": _XAI_CLIENT_WEB_SEARCH_ALIAS} if is_client_web_search(t) else t for t in response_tools
             ]
             wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
+    # OpenAI Codex: the Responses endpoint exposes the same server-executed ``web_search``,
+    # and a client-side function of that name collides with it the same way. Unlike xAI there
+    # is no alias fallback: when the user has not selected ``openai-native`` we leave the
+    # client tool untouched, so an endpoint that cannot host the built-in never breaks.
+    if is_codex_backend and response_tools and any(is_client_web_search(t) for t in response_tools):
+        if _openai_prefers_native_web_search():
+            response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
     # OpenCode Responses backends reserve web_search / search_files as function names (HTTP 400 "custom
     # function name 'X' is reserved", #85589). Alias them on the wire; normalize_response maps them back.
     if response_tools and _is_opencode_responses_backend(params):
@@ -214,17 +278,26 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     # request emits is recorded here and stashed on the transport, so the reverse rewrite in
     # ``normalize_response`` applies only to aliases that were actually sent (never to a real tool that
     # merely shares an alias-shaped name).
-    if is_xai_responses and response_tools:
+    if response_tools and _reserves_tool_search(params, is_xai_responses):
         response_tools, _xai_aliases = _alias_reserved_tools(response_tools, _XAI_RESERVED_TOOL_NAMES)
         wire_aliases.update(_xai_aliases)
     return response_tools, wire_aliases
 
 
+# Models already warned that an explicit disable has no wire form on their route (one warning per process).
+_UNPROJECTABLE_DISABLE_WARNED: set[str] = set()
+# request_overrides is static config: warn about a dropped prompt_cache_options once, not every turn.
+_PROMPT_CACHE_OPTIONS_DROP_WARNED = False
+
+
 def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     """``(effort, enabled)`` for the request, effort clamped (never escalated) to the endpoint's vocabulary.
 
-    A profile-declared ``()`` means "no reasoning parameters accepted" (400 on any
-    reasoning field) and disables reasoning outright.
+    A profile-declared ``()`` (or a model that takes no ``reasoning`` field on its route) means "no
+    reasoning parameters accepted" (400 on any reasoning field) and disables reasoning outright:
+    ``(None, False)``. An explicit ``reasoning_effort: none`` on a route whose vocabulary has ``none``
+    resolves to ``("none", False)`` so the disable goes on the wire instead of being omitted — omitting
+    it re-enables the model's default effort (gpt-5.6 defaults to ``medium``, #75227).
     """
     reasoning_effort, reasoning_enabled = "medium", True
     reasoning_config = params.get("reasoning_config")
@@ -252,9 +325,21 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         declared = None
         if not (is_codex_backend or _is_openai_api_origin(base_url)):
             declared = _profile_declared_efforts(params.get("provider"), model, base_url)
-        if declared is not None and not declared:
-            reasoning_enabled = False
-        supported = declared or _codex_efforts_for_route(model, base_url, is_codex_backend=is_codex_backend)
+        supported = declared if declared is not None else _codex_efforts_for_route(
+            model, base_url, is_codex_backend=is_codex_backend)
+        if not supported:
+            return None, False
+    if not reasoning_enabled:
+        has_none = any(str(level).strip().lower() == "none" for level in supported)
+        if not has_none and model not in _UNPROJECTABLE_DISABLE_WARNED:
+            # #75227: report the unsupported configuration instead of silently falling back.
+            _UNPROJECTABLE_DISABLE_WARNED.add(model)
+            logger.warning(
+                "reasoning_effort: none cannot be sent for %s — its route accepts only %s, so the model's "
+                "default effort stays on (an omitted reasoning field does not disable it).",
+                model, ", ".join(str(level) for level in supported),
+            )
+        return ("none" if has_none else None), False
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -303,7 +388,17 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
-    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    """Effort vocabulary for a Responses route; ``()`` when the model takes no ``reasoning`` field at all.
+
+    Keeps Astra's new vocabulary off unrelated Responses-compatible endpoints, and sends nothing for the
+    chat-era OpenAI families (gpt-4o, gpt-4.1, ...) on api.openai.com, which 400 on any ``reasoning``
+    key (#76255). Only the exact OpenAI origin is judged: a relay serving those ids may translate.
+    """
+    if not is_codex_backend and _is_openai_api_origin(base_url):
+        from agent.model_metadata import openai_model_rejects_reasoning
+
+        if openai_model_rejects_reasoning(str(model or "")):
+            return ()
     if is_astra_model(model) and not (
         is_codex_backend or _is_official_openai_responses_route(model, base_url)
     ):
@@ -314,9 +409,9 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
     """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
     rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
-    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side
-    (``prompt_cache_options.ttl`` accepts only its ``30m`` default, so nothing is sent for it and the
-    pre-5.6 ``prompt_cache_retention`` knob is dropped)."""
+    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side (the
+    pre-5.6 ``prompt_cache_retention`` knob is dropped here; ``prompt_cache_options`` is already
+    stripped on every route by ``build_kwargs``)."""
     if not _is_official_openai_responses_route(model, base_url):
         return
     reasoning = kwargs.get("reasoning")
@@ -450,7 +545,8 @@ def _is_azure_responses(params: dict[str, Any]) -> bool:
 def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
     Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
-    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere."""
+    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere.
+    A trimmed row is marked ``codex_reasoning_trimmed`` so the converter still drops its ``msg_*`` id (#97427)."""
     out: list[dict[str, Any]] = []
     newest_kept = False
     for msg in reversed(messages):
@@ -458,7 +554,7 @@ def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any
         if isinstance(items, list) and any(isinstance(i, dict) and i.get("type") != "compaction" for i in items):
             if newest_kept:
                 checkpoints = [i for i in items if isinstance(i, dict) and i.get("type") == "compaction"]
-                msg = dict(msg)
+                msg = dict(msg, codex_reasoning_trimmed=True)
                 if checkpoints:
                     msg["codex_reasoning_items"] = checkpoints
                 else:
@@ -485,14 +581,29 @@ def _coerce_timeout(timeout: Any) -> Optional[float]:
     return None
 
 
+def _sends_all_turns(model: Any, params: dict[str, Any]) -> bool:
+    """``reasoning.context: "all_turns"`` goes only to api.openai.com models in the live-verified family
+    table (gpt-5.4/5.5 default to ``current_turn`` and discard replayed earlier-turn blobs without it;
+    o-series and gpt-5.1-5.3 400 on it). Never the ChatGPT Codex backend: acceptance there is unverified."""
+    from agent.codex_responses_adapter import openai_reasoning_family
+
+    return (
+        params.get("is_codex_backend") is not True and _is_openai_api_origin(params.get("base_url"))
+        and openai_reasoning_family(model) is not None
+    )
+
+
 def _reasoning_fields(
     model: str, params: dict[str, Any], *, effort: Any, enabled: bool, replay_encrypted_reasoning: bool,
-    is_xai_responses: bool, is_github_responses: bool,
+    is_xai_responses: bool, is_github_responses: bool, all_turns: bool = False,
 ) -> dict[str, Any]:
     """``reasoning`` / ``include`` request fields for the endpoint family.
 
     xAI 400s on ``reasoning.effort`` outside its allowlist; GitHub Models takes a
-    verbatim ``github_reasoning_extra`` and never ``include``.
+    verbatim ``github_reasoning_extra`` and never ``include``. A disabled ask resolved to
+    ``effort="none"`` is sent as ``{"effort": "none"}`` — the wire has no other way to switch
+    a reasoning model's default effort off (#75227). ``all_turns`` adds ``context: "all_turns"``
+    so the model renders replayed reasoning from earlier user turns (``_sends_all_turns``).
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
@@ -505,12 +616,22 @@ def _reasoning_fields(
     elif enabled:
         if is_github_responses:
             if params.get("github_reasoning_extra") is not None:
-                fields["reasoning"] = params["github_reasoning_extra"]
+                # Request a reasoning summary so the Responses API actually returns
+                # reasoning text. Without ``summary: "auto"`` the GitHub/Copilot
+                # /responses endpoint returns reasoning items with no summary, so Hermes
+                # persists empty reasoning/thinking content for every Copilot model on
+                # the Responses API (gpt-5.4, gpt-5, ...) — the same loss the non-GitHub
+                # branch below already avoids. Verified against api.githubcopilot.com
+                # /responses: the summary is only emitted when summary="auto" is sent.
+                # See #46527.
+                fields["reasoning"] = {**params["github_reasoning_extra"], "summary": "auto"}
         else:
-            fields["reasoning"] = {"effort": effort, "summary": "auto"}
+            fields["reasoning"] = {"effort": effort, "summary": "auto", **({"context": "all_turns"} if all_turns else {})}
             fields["include"] = include
     elif not is_github_responses and not is_xai_responses:
         fields["include"] = []
+        if effort == "none":
+            fields["reasoning"] = {"effort": "none"}
     return fields
 
 
@@ -525,6 +646,36 @@ class ResponsesApiTransport(ProviderTransport):
     _last_issuer_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
+    # Wire models that 400'd on ``reasoning.context`` this session (the transport is cached per agent).
+    _all_turns_rejected: frozenset = frozenset()
+    _last_sent_all_turns: bool = False
+
+    def reject_all_turns(self, error: Any) -> bool:
+        """400 naming ``reasoning.context``/``all_turns`` on a request that carried the opt-in: omit it for that
+        model for the rest of the session. False otherwise, so it buys at most one retry per model."""
+        text = str(error).lower()
+        if not self._last_sent_all_turns or getattr(error, "status_code", None) not in (400, None) or not (
+            "reasoning.context" in text or "all_turns" in text
+        ):
+            return False
+        self._all_turns_rejected = self._all_turns_rejected | {self._last_issuer_model}
+        self._last_sent_all_turns = False
+        logger.warning("reasoning.context rejected by %s; omitting it for this session", self._last_issuer_model)
+        return True
+
+    def drop_unverified_replay(self, *message_lists: Any) -> int:
+        """First ``invalid_encrypted_content`` rung: drop the replayed blobs the failing request could not vouch
+        for (not stamped by exactly its endpoint + model), keeping the session's own continuity. Returns the
+        count removed from the first list; 0 means only the route's own blobs were sent."""
+        from agent.codex_responses_adapter import strip_unverified_reasoning_items
+
+        if self._last_issuer_kind is None or self._last_issuer_model is None:
+            return 0
+        removed = [
+            strip_unverified_reasoning_items(msgs, issuer_kind=self._last_issuer_kind, issuer_model=self._last_issuer_model)
+            for msgs in message_lists
+        ]
+        return removed[0] if removed else 0
 
     @property
     def api_mode(self) -> str:
@@ -612,7 +763,9 @@ class ResponsesApiTransport(ProviderTransport):
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
-        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        response_tools, self._last_wire_aliases = _alias_wire_tools(
+            self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
+        )
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
@@ -651,14 +804,37 @@ class ResponsesApiTransport(ProviderTransport):
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
 
+        self._last_sent_all_turns = (
+            reasoning_enabled and _sends_all_turns(wire_model, params) and wire_model not in self._all_turns_rejected
+        )
         kwargs.update(_reasoning_fields(
             model, params, effort=reasoning_effort, enabled=reasoning_enabled,
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
+            all_turns=self._last_sent_all_turns,
         ))
+        # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
+        # xAI's /responses rejects unknown top-level fields, same as service_tier below.
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and not is_xai_responses:
+            kwargs["text"] = {"verbosity": text_verbosity}
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+
+        # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
+        # top-level copy (e.g. from request_overrides) fails the call with TypeError before any
+        # request is sent, on every route. Endpoints that manage cache lifetime own it
+        # server-side; a proxy that accepts the field gets it via request_overrides
+        # ``extra_body``, which the SDK merges into the body post-transform.
+        if kwargs.pop("prompt_cache_options", None) is not None:
+            global _PROMPT_CACHE_OPTIONS_DROP_WARNED
+            if not _PROMPT_CACHE_OPTIONS_DROP_WARNED:
+                _PROMPT_CACHE_OPTIONS_DROP_WARNED = True
+                logger.warning(
+                    "Dropped prompt_cache_options: not a Responses.create() kwarg "
+                    "(use request_overrides={'extra_body': ...} for wire-only fields)."
+                )
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
@@ -790,16 +966,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

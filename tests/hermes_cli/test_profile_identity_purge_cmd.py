@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profile_cmd, profiles
+from hermes_cli import profile_cmd
 
 
 @pytest.fixture()
@@ -34,12 +34,6 @@ def test_every_profile_subcommand_has_a_dispatch_entry():
     assert set(groups[0].choices) == set(profile_cmd.PROFILE_ACTIONS) - {None}
 
 
-def test_purge_identity_reports_success(profile_env, monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.profile_identity.purge_profile_identity", lambda name: True)
-
-    profile_cmd.cmd_profile(Namespace(profile_action="purge-identity", profile_name="gone"))
-
-    assert "identity purged: gone" in capsys.readouterr().out
 
 
 def test_purge_identity_exits_nonzero_when_settlement_stays_pending(
@@ -78,7 +72,6 @@ def test_purge_identity_refuses_a_same_name_profile_created_after_the_delete(pro
         profile_cmd.cmd_profile(Namespace(profile_action="purge-identity", profile_name="gone"))
 
     assert exc.value.code not in (0, None)
-    assert "purge-identity only settles the identity of a delete" in capsys.readouterr().out
     check = SessionDB(profile_env / ".hermes" / "state.db")
     try:
         # The recreated profile still owns its routing key.

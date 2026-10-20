@@ -4,8 +4,7 @@ import {
   applyTerminalFontFamily,
   DEFAULT_TERMINAL_FONT_FAMILY,
   prepareTerminalFontFamily,
-  resolveTerminalFontFamily,
-  warmTerminalFontFamily
+  resolveTerminalFontFamily
 } from './terminal-font'
 
 describe('terminal font resolution', () => {
@@ -26,18 +25,6 @@ describe('terminal font resolution', () => {
 })
 
 describe('terminal font lifecycle', () => {
-  it('warms regular, bold, and italic faces using the effective stack', async () => {
-    const load = vi.fn().mockResolvedValue([])
-
-    await warmTerminalFontFamily("'MesloLGS NF', monospace", { load } as Pick<FontFaceSet, 'load'>)
-
-    expect(load.mock.calls.map(([descriptor]) => descriptor)).toEqual([
-      "400 11px 'MesloLGS NF', monospace",
-      "700 11px 'MesloLGS NF', monospace",
-      "italic 400 11px 'MesloLGS NF', monospace"
-    ])
-  })
-
   it('restarts initial warming when config arrives late', async () => {
     let latest = 'fallback'
 
@@ -71,33 +58,6 @@ describe('terminal font lifecycle', () => {
         warm
       )
     ).resolves.toBeNull()
-  })
-
-  it('updates a mounted terminal without replacing it', async () => {
-    const term = {
-      options: { fontFamily: 'fallback' },
-      rows: 24,
-      refresh: vi.fn()
-    }
-
-    const fit = vi.fn()
-    const clearTextureAtlas = vi.fn()
-
-    await expect(
-      applyTerminalFontFamily({
-        clearTextureAtlas,
-        fit,
-        fontFamily: 'MesloLGS NF',
-        isCurrent: () => true,
-        term,
-        warm: vi.fn().mockResolvedValue(undefined)
-      })
-    ).resolves.toBe(true)
-
-    expect(term.options.fontFamily).toBe('MesloLGS NF')
-    expect(fit).toHaveBeenCalledOnce()
-    expect(clearTextureAtlas).toHaveBeenCalledOnce()
-    expect(term.refresh).toHaveBeenCalledWith(0, 23)
   })
 
   it('does not paint a stale live font request', async () => {

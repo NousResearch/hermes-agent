@@ -115,16 +115,34 @@ another host is treated as an OpenAI-compatible endpoint, so configure it with i
 
 ### Vertex AI Express Mode Keys
 
-Google issues two Gemini key families. AI Studio keys start with `AIza…`; **Vertex AI
-express-mode** keys start with `AQ.…` and only authenticate against
-`aiplatform.googleapis.com` (they get 403 on the AI Studio host). Hermes detects the
-`AQ.` prefix and routes those keys to
-`https://aiplatform.googleapis.com/v1beta1/publishers/google` automatically — set
-`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset. If you set
-`GEMINI_BASE_URL` to `https://aiplatform.googleapis.com` (with or without `/v1beta1`)
-Hermes completes it to the `publishers/google` form; a base URL on any other host (a
-proxy) is never rewritten. Express keys are separate from the OAuth-based
+Google now issues `AQ.…`-prefixed keys for **both** Google AI Studio and Vertex AI
+express mode (the legacy `AIza…` Studio format is being phased out), so a key's
+prefix no longer identifies its surface. Hermes never reroutes by key shape: the
+configured base URL decides the surface. Set `GEMINI_API_KEY` and leave
+`GEMINI_BASE_URL` unset for the default AI Studio host; set `GEMINI_BASE_URL` to
+`https://aiplatform.googleapis.com` (with or without `/v1beta1`) for a Vertex AI
+express-mode key, and Hermes completes it to the `publishers/google` form. Each
+surface only accepts its own keys — a `403 PERMISSION_DENIED` usually means the
+key/host pairing is crossed, and Hermes appends guidance naming the other surface.
+A base URL on any other host (a proxy) is never rewritten. Express keys are
+separate from the OAuth-based
 [Vertex AI provider](./google-vertex.md), which needs no API key.
+
+Models served only in the `global` location (Gemini 4 Argon) are not reachable on
+the bare express host, which routes to `us-central1`. For those, set the base URL
+to the project-scoped form,
+`https://aiplatform.googleapis.com/v1beta1/projects/<project>/locations/global`,
+and Hermes completes it to `…/publishers/google` the same way.
+
+:::warning Upgrade note for existing express-key users
+Earlier Hermes releases detected the `AQ.` prefix and rerouted such keys to
+`aiplatform.googleapis.com` automatically, so the documented setup was "set
+`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset". That
+automatic reroute is gone: with `GEMINI_BASE_URL` unset, every request — chat,
+`hermes doctor`, TTS — now goes to the AI Studio host and a Vertex express key
+gets `403 PERMISSION_DENIED` there. Add `GEMINI_BASE_URL=https://aiplatform.googleapis.com`
+to `~/.hermes/.env` (or set `base_url` on the provider) once and restart.
+:::
 
 ## Available Models
 
@@ -132,6 +150,7 @@ The `hermes model` picker shows Gemini models maintained in Hermes' provider reg
 
 | Model | ID | Notes |
 |-------|----|-------|
+| Gemini 4 Argon | `gemini-4-argon` | Flagship reasoning model; shared 1M input+output window, long decode up to 1M output tokens |
 | Gemini 3.8 Flash | `gemini-3.8-flash` | Most capable Flash model for long-horizon agentic and coding work |
 | Gemini 3.7 Flash | `gemini-3.7-flash` | Recommended default balance of speed, capability, and multimodal understanding |
 | Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Most capable reasoning, math, and coding model |
@@ -144,6 +163,33 @@ Model availability changes over time. If a model disappears or is not enabled fo
 :::info Model IDs
 Use Gemini's native model IDs such as `gemini-3.7-flash`, not OpenRouter-style IDs like `google/gemini-3.7-flash`, when `provider: gemini`.
 :::
+
+### Gemini 4 Argon: Reasoning Effort and Long Decode
+
+Gemini 4 Argon always thinks; Hermes maps the reasoning effort (`/reasoning`,
+`agent.reasoning_effort`) onto its `thinkingLevel`:
+
+| Hermes effort | `thinkingLevel` | Total output budget |
+|---------------|-----------------|---------------------|
+| `none`, `minimal`, `low` | `low` (thoughts hidden for `none`) | Per-request cap |
+| `medium` (Google's default) | `medium` | Per-request cap |
+| `high` | `high` | Per-request cap |
+| `xhigh` | `high` | 262,144 tokens (long decode) |
+| `max`, `ultra` | `high` | 1,048,576 tokens minus the input (long decode) |
+
+Without long decode a single request stops at 65,536 output tokens when streaming
+(32,768 non-streaming), thinking included. With `xhigh` or `max`, Hermes raises
+`maxOutputTokens` and, when a request reaches the per-request cap with budget left
+(`finishReason: CONTINUATION`), resends the same request with Google's
+`continuationToken` until the model finishes. The hops are joined into one reply.
+
+Usage across hops is reported the way Google bills it: every hop re-reads the
+prompt plus the output so far, so the summed input count is far larger than the
+real context. Hermes prices the summed counts but feeds context compaction and the
+context meter the first hop's prompt size, so a long-decode turn does not trigger
+an early compaction. Long decode runs only on the native endpoints (AI Studio and
+Vertex AI express); Google's `/openai` compatibility endpoint, OpenRouter and the
+OAuth [Vertex AI provider](./google-vertex.md) stop at the per-request cap.
 
 ### Latest Aliases
 

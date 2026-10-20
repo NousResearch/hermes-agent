@@ -30,6 +30,7 @@ A Chinese-language walkthrough of the minimum install path is maintained on this
 
 The native Windows install runs in Windows directly: your Windows terminal (PowerShell, Windows Terminal, etc.), Windows filesystem paths (`C:\Users\…`), and Windows processes.  Hermes uses Git Bash to run shell commands, which is how Claude Code and other agents handle Windows today — it sidesteps the POSIX-vs-Windows gap without a full rewrite.
 
+<!-- no-tmp: ok — lists /tmp as a POSIX feature WSL provides -->
 WSL2 runs a real Linux kernel in a lightweight VM, so Hermes inside it is essentially identical to running on Ubuntu.  That's valuable when you want a real POSIX environment: `fork`, `/tmp`, UNIX sockets, signal semantics, PTY-backed terminals, shells like `bash`/`zsh`, and tools like `rg`, `git`, `ffmpeg` that behave the way they do on Linux.
 
 Practical consequences of WSL2:
@@ -277,7 +278,7 @@ it on the Windows side and have it jump into WSL for you:
 That opens Windows Terminal, starts your WSL distro, drops you in your Linux
 home directory, and launches Hermes. If `hermes` is not on PATH yet, open WSL
 once manually and run `source ~/.bashrc`, or replace the command with
-`uv run hermes` inside your project checkout.
+`python hermes` inside your PM-activated project checkout.
 
 Optional polish:
 
@@ -352,7 +353,7 @@ WSL2 stores its VM disk as a sparse VHDX under `%LOCALAPPDATA%\Packages\...`. It
 
 ## Where to go next
 
-- **[Installation](../getting-started/installation.md)** — actual install steps (Linux/WSL2/Termux all use the same installer).
+- **[Installation](../getting-started/installation.md)** — actual install steps (Linux/WSL2 use the same installer).
 - **[Integrations → Providers → WSL2 Networking](../integrations/providers.md#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
 - **[MCP guide → WSL → Windows Chrome](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Hermes in WSL.
 - **[Tool Gateway](./features/tool-gateway.md)** and **[Web Dashboard](./features/web-dashboard.md)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.

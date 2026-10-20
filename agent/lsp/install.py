@@ -124,7 +124,12 @@ def _existing_binary(name: str, *, is_windows: Optional[bool] = None) -> Optiona
     """
     win = _is_windows() if is_windows is None else is_windows
     bases = [hermes_lsp_bin_dir() / name] + ([_npm_bin_dir() / name] if win else [])
-    for staged in (c for base in bases for c in _native_binary_candidates(base, is_windows=win)):
+    candidates = (
+        [Path(str(base) + suffix) for suffix in _WINDOWS_WRAPPER_SUFFIXES for base in bases] + bases
+        if win
+        else bases
+    )
+    for staged in candidates:
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
     if any(r.get("strategy") == "pip" and r.get("bin") == name for r in INSTALL_RECIPES.values()):

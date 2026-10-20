@@ -235,7 +235,7 @@ _XAI_INLINE_SPEECH_TAGS = (
     "tongue-click", "lip-smack", "breath", "inhale", "exhale", "sigh")
 _XAI_WRAPPING_SPEECH_TAGS = (
     "soft", "whisper", "loud", "build-intensity", "decrease-intensity", "higher-pitch",
-    "lower-pitch", "slow", "fast", "sing-song", "singing", "laugh-speak", "emphasis")
+    "lower-pitch", "slow", "fast", "sing-song", "singing", "emphasis")
 _XAI_SPEECH_TAG_RE = re.compile(
     rf"(\[(?:{'|'.join(_XAI_INLINE_SPEECH_TAGS)})\]|</?(?:{'|'.join(_XAI_WRAPPING_SPEECH_TAGS)})>)",
     flags=re.IGNORECASE)
@@ -259,11 +259,11 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
         "expressive speech tags.\n\n"
         "Valid inline tags (use as `[tag]`): " + ", ".join(_XAI_INLINE_SPEECH_TAGS) + ".\n"
-        "Valid wrapping tags (use as `[tag]...[/tag]`): " + ", ".join(_XAI_WRAPPING_SPEECH_TAGS) + ".\n\n"
+        "Valid wrapping tags (use as `<tag>...</tag>`): " + ", ".join(_XAI_WRAPPING_SPEECH_TAGS) + ".\n\n"
         + _TAG_REWRITE_RULES +
         "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
-        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
-        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Use wrapping `<tag>...</tag>` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Square brackets are only for inline tags.\n"
         "- Do not use SSML.\n"
         + _TAG_REWRITE_TAIL)
     return _rewrite_with_auxiliary_model(

@@ -1,0 +1,5 @@
+PASS kanban-video-orchestrator fixture validation
+plan=fixtures/sample-plan.json
+setup_sha256=ab1c193c51f8d45e8f21c1494b231fb22c6f9a3bc5d1fcb5044c092a943bc227
+brief_sha256=f31cb736b139220e5dd350431728d973c5a5721a1c2b767141603904d464a40b
+team_sha256=349dfe20e884717b7595b76e8533431f26620e62162477608a9193cff0f1e42e

@@ -1,21 +1,43 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $gateway } from '@/store/gateway'
-import {
-  $sendDiagnostics,
-  confirmSendDiagnostics,
-  dismissSendDiagnostics,
-  requestSendDiagnostics
-} from '@/store/send-diagnostics'
+type GatewayRequest = (method: string, params?: Record<string, unknown>, timeout?: number) => Promise<unknown>
 
-function stubGateway(
-  request: (method: string, params?: Record<string, unknown>, timeout?: number) => Promise<unknown>
-) {
-  const original = $gateway.get()
+const routing = vi.hoisted(() => ({
+  activeProfile: 'default',
+  calls: [] as { connectionId: null | string; profile: string }[],
+  request: null as GatewayRequest | null
+}))
 
-  $gateway.set({ request } as never)
+// The upload is a profile-routed RPC: a multiplexed backend serves several
+// profiles on one socket, so the route (connection, profile) must be explicit.
+vi.mock('@/store/gateway', () => ({
+  activeGatewayProfileKey: () => routing.activeProfile,
+  requestGatewayForAgent: (
+    connectionId: null | string,
+    profile: string,
+    method: string,
+    params?: Record<string, unknown>,
+    timeout?: number
+  ) => {
+    routing.calls.push({ connectionId, profile })
 
-  return () => $gateway.set(original)
+    if (!routing.request) {
+      return Promise.reject(new Error(`Hermes gateway unavailable for profile "${profile}"`))
+    }
+
+    return routing.request(method, params, timeout)
+  }
+}))
+
+const { $sendDiagnostics, confirmSendDiagnostics, dismissSendDiagnostics, requestSendDiagnostics } =
+  await import('@/store/send-diagnostics')
+
+function stubGateway(request: GatewayRequest) {
+  routing.request = request
+
+  return () => {
+    routing.request = null
+  }
 }
 
 function stubDesktopLogs(lines: null | string[]) {
@@ -32,6 +54,8 @@ function stubDesktopLogs(lines: null | string[]) {
 describe('send-diagnostics store', () => {
   afterEach(() => {
     $sendDiagnostics.set(null)
+    routing.activeProfile = 'default'
+    routing.calls = []
     vi.restoreAllMocks()
   })
 
@@ -42,7 +66,7 @@ describe('send-diagnostics store', () => {
     try {
       requestSendDiagnostics('layer: provider')
 
-      expect($sendDiagnostics.get()).toEqual({ errorContext: 'layer: provider', phase: 'consent' })
+      expect($sendDiagnostics.get()).toEqual({ errorContext: 'layer: provider', phase: 'consent', profile: 'default' })
       expect(request).not.toHaveBeenCalled()
     } finally {
       restore()
@@ -163,6 +187,46 @@ describe('send-diagnostics store', () => {
       // A NEW dialog opened after the stale completion is untouched by it.
       requestSendDiagnostics('fresh')
       expect($sendDiagnostics.get()?.phase).toBe('consent')
+    } finally {
+      restoreDesktop()
+      restoreGateway()
+    }
+  })
+  it('uploads for the profile focused when the dialog opened, even after a profile switch', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, view_url: 'https://nas.example/view/w1' })
+    const restoreGateway = stubGateway(request)
+    const restoreDesktop = stubDesktopLogs(null)
+
+    try {
+      routing.activeProfile = 'work'
+      requestSendDiagnostics('crash')
+      routing.activeProfile = 'default'
+      await confirmSendDiagnostics()
+
+      expect(routing.calls).toEqual([{ connectionId: null, profile: 'work' }])
+      expect(request.mock.calls[0][1].session_id).toBeUndefined()
+    } finally {
+      restoreDesktop()
+      restoreGateway()
+    }
+  })
+
+  it('scopes a session error to the session owner and its runtime id', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, view_url: 'https://nas.example/view/s1' })
+    const restoreGateway = stubGateway(request)
+    const restoreDesktop = stubDesktopLogs(null)
+
+    try {
+      routing.activeProfile = 'default'
+      requestSendDiagnostics('layer: provider', { connectionId: 'ssh-lab', profile: 'research', sessionId: 'rt-42' })
+      await confirmSendDiagnostics()
+
+      expect(routing.calls).toEqual([{ connectionId: 'ssh-lab', profile: 'research' }])
+
+      const [method, params] = request.mock.calls[0]
+
+      expect(method).toBe('diagnostics.share_nous')
+      expect(params.session_id).toBe('rt-42')
     } finally {
       restoreDesktop()
       restoreGateway()

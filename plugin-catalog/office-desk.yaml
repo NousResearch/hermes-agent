@@ -1,0 +1,47 @@
+name: office-desk
+repo: https://github.com/DECRUX9812/hermes-office
+sha: b53630cd0f0edc10645d63899a5a2515f8015fc5
+subdir: ""
+version: "0.1.1"
+title: Office Desk
+description: >-
+  Guarded Word, PowerPoint and Excel editing: tracked Word changes and comments, slide and deck edits,
+  and Excel edits with LibreOffice recalc. Every write gets a backup and a revertible receipt, and you
+  review it all on a Desk page in the Desktop app. Settings are in Settings > Plugins.
+  Disclosure: reads any Office file the agent is pointed at but writes only inside folders the user puts
+  on the Desk (backups and receipts live in the plugin's own data dir). xlsx_recalc runs the user's installed
+  LibreOffice (soffice, headless) on a temporary copy. The Desk page reads the session store read-only
+  to show a workstream's chat. No network calls, telemetry, credentials or background processes.
+  Depends on the paper-docx, paper-pptx and paper-xlsx forks. They provide the docx, pptx and openpyxl
+  import names, so they must not share an environment with python-docx, python-pptx or openpyxl.
+maintainer: DECRUX9812
+tier: community
+category: tools
+docs_url: https://github.com/DECRUX9812/hermes-office#readme
+image: https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/screenshots/workstream-docx.png
+  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/screenshots/workstream-xlsx.png
+  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/screenshots/desk-home.png
+platforms: []
+capabilities:
+  provides_tools:
+    - office_desk
+    - office_inspect
+    - office_search
+    - docx_tracked_edit
+    - docx_comment
+    - docx_redline_accept_reject
+    - pptx_inspect_formats
+    - pptx_edit_shape
+    - pptx_compose_decks
+    - pptx_diff
+    - xlsx_edit
+    - xlsx_recalc
+    - xlsx_diff
+    - office_receipt
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

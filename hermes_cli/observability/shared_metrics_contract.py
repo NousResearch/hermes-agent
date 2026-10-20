@@ -138,7 +138,7 @@ SKILL_POST_PATCH_STATES = frozenset({"no_new_patch", "not_applicable", "reused_a
 CLIENT_OS_FAMILIES = frozenset({"linux", "macos", "unknown", "windows"})
 CLIENT_ARCHITECTURES = frozenset({"arm", "arm64", "unknown", "x86", "x86_64"})
 CLIENT_INSTALL_METHODS = frozenset({
-    "apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown",
+    "apt", "docker", "git", "home-manager", "homebrew", "microsoft-store", "nixos", "pip", "unknown",
 })
 CLIENT_RESOURCE_KEYS = frozenset({"architecture", "hermes_version", "install_method", "os_family"})
 

@@ -40,6 +40,23 @@ def get_provider_stale_timeout(provider_id: str, model: str | None = None) -> fl
     return _configured_timeout(provider_id, model, "stale_timeout_seconds", "stale_timeout_seconds")
 
 
+def get_provider_stream_total_timeout(provider_id: str, model: str | None = None) -> float | None:
+    """Return the configured total wall-clock budget for one streaming request, if any.
+
+    Distinct from ``get_provider_stale_timeout``: that is an idle budget re-armed by
+    every arriving chunk, so a provider trickling a token per interval never crosses
+    it. This one runs from the start of the request and covers its internal stream
+    retries.
+
+    ``None`` (the default, unset) means no budget -- opt-in on purpose. A hard default
+    would abort legitimate long reasoning turns; the floors in
+    ``agent/reasoning_timeouts.py`` and ``_aux_stream_total_ceiling`` both sit well
+    above any value worth defaulting to.
+    """
+    return _configured_timeout(
+        provider_id, model, "stream_total_timeout_seconds", "stream_total_timeout_seconds")
+
+
 def _get_model_config(provider_config: dict[str, object], model: str | None) -> dict[str, object] | None:
     if not model:
         return None

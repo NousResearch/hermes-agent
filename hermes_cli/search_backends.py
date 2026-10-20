@@ -10,7 +10,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Optional
 
 from hermes_constants import hermes_home_key
 
@@ -42,9 +42,9 @@ class SearchBackendMatch:
 class SearchBackendResult:
     backend: str
     route_reason: str
-    matches: List[SearchBackendMatch] = field(default_factory=list)
-    files: List[str] = field(default_factory=list)
-    counts: Dict[str, int] = field(default_factory=dict)
+    matches: list[SearchBackendMatch] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     truncated: bool = False
     limit_reason: Optional[str] = None

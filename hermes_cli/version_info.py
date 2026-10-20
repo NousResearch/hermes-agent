@@ -205,7 +205,25 @@ def _stamp_version_info() -> VersionInfo | None:
 # --- Git provenance (source/dev installs) -----------------------------------
 
 
-def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> VersionInfo:
+def _git_release(repo_dir: Path) -> tuple[str, int | None]:
+    """The release the checkout runs: (base_version, distance). A semver distance is None here and
+    costs the walk one more git call; the CalVer describe answers both at once."""
+    tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
+    releases = [
+        tag[1:]
+        for tag in (tags or "").splitlines()
+        if STABLE_TAG_RE.fullmatch(tag)
+    ]
+    if releases:
+        return max(releases, key=lambda value: tuple(int(part) for part in value.split("."))), None
+    return _calver_release_version(repo_dir) or ("unknown", None)
+
+
+def _git_version_info(
+    repo_dir: Path, *, include_untracked: bool = False, release: tuple[str, int | None] | None = None,
+) -> VersionInfo:
+    """Fresh provenance unless *release* is given: the updater and stamp writer read the checkout
+    after moving it, so only the process-cached readers pass one."""
     commit = _run_git(repo_dir, "rev-parse", "HEAD")
     # A detached HEAD has no branch. Leave the field None: every formatter
     # already prints the commit separately and handles a missing branch.
@@ -237,21 +255,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     except (OSError, subprocess.SubprocessError):
         dirty = False
 
-    tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
-    releases = [
-        tag[1:]
-        for tag in (tags or "").splitlines()
-        if STABLE_TAG_RE.fullmatch(tag)
-    ]
-    base_version = (
-        max(releases, key=lambda value: tuple(int(part) for part in value.split(".")))
-        if releases else "unknown"
-    )
-    distance = _parse_nonnegative(
-        _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
-    ) if releases else None
-    if not releases:
-        base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
+    base_version, distance = release if release is not None else _git_release(repo_dir)
+    if base_version != "unknown" and distance is None:
+        distance = _parse_nonnegative(
+            _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
+        )
     short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
     if base_version == "unknown" and short_commit:
         display_version = f"git.{short_commit}{'.dirty' if dirty else ''}"
@@ -266,12 +274,55 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
 # --- Cache + public API -----------------------------------------------------
 
 _cached_version_info: VersionInfo | None = None
+# The release this process runs when no valid stamp exists, shared by get_base_version() and
+# get_version_info(). get_base_version() reads it before the stamp, so a stale source=git
+# stamp's `git rev-parse HEAD` check runs once per process, not on every call.
+_cached_git_release: tuple[str, int | None] | None = None
 
 
 def _reset_version_info_cache() -> None:
-    """Test-only cache reset."""
-    global _cached_version_info
+    """Drop the per-process version caches: get_code_identity(refresh=True), the source-stamp
+    writer and tests re-read identity after the checkout moves."""
+    global _cached_version_info, _cached_git_release
     _cached_version_info = None
+    _cached_git_release = None
+
+
+def _stamp_or_none() -> VersionInfo | None:
+    """The install stamp's provenance, or None without a valid stamp.
+
+    A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
+    payload) raises RuntimeError — the build lane that wrote it must be
+    fixed, but a crashing CLI is the wrong failure mode for every uncached
+    caller. Treat it as no stamp (live git, then "unknown") and let the
+    authoring lane's own tests surface the malformed stamp.
+    """
+    try:
+        return _stamp_version_info()
+    except RuntimeError:
+        return None
+
+
+def _process_git_release(repo_dir: Path | None) -> tuple[str, int | None]:
+    """The release this process runs, resolved once."""
+    global _cached_git_release
+    if _cached_git_release is None:
+        _cached_git_release = _git_release(repo_dir) if repo_dir is not None else ("unknown", None)
+    return _cached_git_release
+
+
+def get_base_version() -> str:
+    """Return the same base_version as get_version_info(), without the git provenance walk."""
+    global _cached_version_info
+    if _cached_version_info is not None:
+        return _cached_version_info.base_version
+    if _cached_git_release is not None:
+        return _cached_git_release[0]
+    info = _stamp_or_none()
+    if info is not None:
+        _cached_version_info = info
+        return info.base_version
+    return _process_git_release(_resolve_repo_dir())[0]
 
 
 def get_version_info() -> VersionInfo:
@@ -280,22 +331,15 @@ def get_version_info() -> VersionInfo:
     if _cached_version_info is not None:
         return _cached_version_info
 
-    # 1. Install stamp (packaged builds: Docker, Nix)
-    # A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
-    # payload) raises RuntimeError — the build lane that wrote it must be
-    # fixed, but a crashing CLI is the wrong failure mode for every uncached
-    # caller. Degrade to "unknown" and let the authoring lane's own tests
-    # surface the malformed stamp.
-    try:
-        info = _stamp_version_info()
-    except RuntimeError:
-        info = None
+    # 1. Install stamp (packaged builds: Docker, Nix). A cached git release means this
+    # process already ruled the stamp out; a stale source=git stamp costs a rev-parse.
+    info = None if _cached_git_release is not None else _stamp_or_none()
 
     # 2. Live git (source/dev installs)
     if info is None:
         repo_dir = _resolve_repo_dir()
         if repo_dir is not None:
-            info = _git_version_info(repo_dir)
+            info = _git_version_info(repo_dir, release=_process_git_release(repo_dir))
 
     # 3. Unknown — no stamp, no git
     if info is None:
@@ -319,9 +363,8 @@ def get_code_identity(refresh: bool = False) -> dict:
     it to re-read identity after swapping the checkout out from under the
     running process.
     """
-    global _cached_version_info
     if refresh:
-        _cached_version_info = None
+        _reset_version_info_cache()
     info = get_version_info()
     return {
         "sha": info.commit,

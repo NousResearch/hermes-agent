@@ -107,10 +107,7 @@ class TestVenvDiscovery:
 
         dists = [SimpleNamespace(metadata={"Name": n}, version="0.0.0") for n in ("hermes_agent", "requests")]
         monkeypatch.setattr("importlib.metadata.distributions", lambda: dists)
-        info = version_info.VersionInfo(
-            base_version=base_version, derived_version=base_version, distance=None, commit="abc", branch=None, source="build"
-        )
-        monkeypatch.setattr(version_info, "get_version_info", lambda: info)
+        monkeypatch.setattr(version_info, "get_base_version", lambda: base_version)
         return {c.name: c.version for c in sa._discover_venv()}
 
     def test_placeholder_agent_version_resolves_to_running_release(self, monkeypatch):

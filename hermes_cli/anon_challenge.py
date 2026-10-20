@@ -130,14 +130,14 @@ def client_surface() -> str:
 def client_info() -> dict[str, Any]:
     """The self-reported ``client`` block on a token exchange. It sorts honest clients (which
     surface, which challenge primitives) for the service's rules; it proves nothing, by design."""
-    from hermes_cli.version_info import get_version_info
-    return {"name": "hermes-agent", "version": get_version_info().base_version, "surface": client_surface(),
+    from hermes_cli.version_info import get_base_version
+    return {"name": "hermes-agent", "version": get_base_version(), "surface": client_surface(),
             "platform": sys.platform, "capabilities": [BROWSER_CAPABILITY]}
 
 
 def user_agent() -> str:
-    from hermes_cli.version_info import get_version_info
-    return (f"hermes-agent/{get_version_info().base_version} "
+    from hermes_cli.version_info import get_base_version
+    return (f"hermes-agent/{get_base_version()} "
             f"({client_surface()}; {sys.platform}; {platform.machine() or 'unknown'})")
 
 

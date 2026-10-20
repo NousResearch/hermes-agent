@@ -526,7 +526,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, protocol_version: int | None = None, client_capabilities: ClientCapabilities | None = None,
         client_info: Implementation | None = None, **kwargs: Any,
     ) -> InitializeResponse:
-        from hermes_cli.version_info import get_version_info
+        from hermes_cli.version_info import get_base_version
 
         auth_methods = build_auth_methods()
         logger.info(
@@ -536,7 +536,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
-            agent_info=Implementation(name="hermes-agent", version=get_version_info().base_version),
+            agent_info=Implementation(name="hermes-agent", version=get_base_version()),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),

@@ -936,12 +936,12 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 
 
 # Vercel AI Gateway attribution (HTTP-Referer → referrerUrl, X-Title → appName).
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_base_version
 
 _AI_GATEWAY_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+    "User-Agent": f"HermesAgent/{get_base_version()}",
 }
 
 # Nous Portal attribution extra_body. Tags come from agent.portal_tags so the client= marker

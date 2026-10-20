@@ -230,8 +230,8 @@ def _safe_profile() -> str:
 
 def _safe_version() -> str:
     try:
-        from hermes_cli.version_info import get_version_info
-        return get_version_info().base_version
+        from hermes_cli.version_info import get_base_version
+        return get_base_version()
     except Exception:
         return "unknown"
 

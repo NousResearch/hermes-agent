@@ -441,9 +441,9 @@ _VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 def running_hermes_version() -> str:
     """Base release version of the Hermes code that is running."""
-    from hermes_cli.version_info import get_version_info
+    from hermes_cli.version_info import get_base_version
 
-    return get_version_info().base_version
+    return get_base_version()
 
 
 _VERSION_SEGMENT_RE = re.compile(r"^\d+")

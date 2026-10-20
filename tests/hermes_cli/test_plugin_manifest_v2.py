@@ -7,7 +7,6 @@ declare-only seam (surfaced, never installed).
 """
 
 import logging
-from types import SimpleNamespace
 
 import pytest
 import hermes_yaml as yaml
@@ -399,10 +398,7 @@ class TestRequiresHermes:
     def test_gate_reads_the_running_code_version_not_dist_metadata(self, monkeypatch):
         """Compatibility gates use the running code's base release version."""
         from hermes_cli import plugins_manifest
-        monkeypatch.setattr(
-            "hermes_cli.version_info.get_version_info",
-            lambda: SimpleNamespace(base_version="0.21.4"),
-        )
+        monkeypatch.setattr("hermes_cli.version_info.get_base_version", lambda: "0.21.4")
         assert plugins_manifest.running_hermes_version() == "0.21.4"
         assert plugins_manifest.version_satisfies(">=0.21.4", plugins_manifest.running_hermes_version())
 

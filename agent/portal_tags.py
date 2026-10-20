@@ -72,8 +72,8 @@ def get_conversation_context() -> Optional[str]:
 
 def hermes_client_tag() -> str:
     """``client=hermes-client-v<MAJOR>.<MINOR>.<PATCH>`` from canonical runtime identity."""
-    from hermes_cli.version_info import get_version_info
-    return f"client=hermes-client-v{get_version_info().base_version}"
+    from hermes_cli.version_info import get_base_version
+    return f"client=hermes-client-v{get_base_version()}"
 
 
 def conversation_tag(session_id: str) -> str:

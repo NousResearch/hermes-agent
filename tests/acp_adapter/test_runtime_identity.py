@@ -34,10 +34,7 @@ def test_version_slash_command_displays_derived_version(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_initialize_advertises_base_version(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.version_info.get_version_info",
-        lambda: SimpleNamespace(base_version="1.2.3", derived_version="1.2.3+4.gabcdef0"),
-    )
+    monkeypatch.setattr("hermes_cli.version_info.get_base_version", lambda: "1.2.3")
 
     response = await object.__new__(HermesACPAgent).initialize()
 

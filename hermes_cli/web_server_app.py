@@ -8,6 +8,7 @@ import threading
 
 from fastapi import FastAPI
 from hermes_cli.pty_session import run_reaper
+from hermes_cli.version_info import get_version_info
 
 logger = logging.getLogger("hermes_cli.web_server")
 
@@ -228,6 +229,9 @@ async def http_lifespan(app: FastAPI):
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
+    # Freeze the code identity before serving: /api/health reports the commit this process
+    # booted from, and importing web_server reads only the release (get_base_version()).
+    await asyncio.to_thread(get_version_info)
     lifespan = http_lifespan if getattr(app.state, "gateway_runner", None) is not None else standalone_lifespan
     async with lifespan(app):
         yield

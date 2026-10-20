@@ -17,7 +17,6 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -405,10 +404,7 @@ class TestInstall:
 
     def test_install_enforces_hermes_requires(self, profile_env, monkeypatch):
         # Pin current Hermes version to something well below the requirement
-        monkeypatch.setattr(
-            "hermes_cli.version_info.get_version_info",
-            lambda: SimpleNamespace(base_version="0.1.0"),
-        )
+        monkeypatch.setattr("hermes_cli.version_info.get_base_version", lambda: "0.1.0")
 
         mf = DistributionManifest(
             name="future",

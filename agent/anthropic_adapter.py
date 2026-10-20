@@ -28,7 +28,7 @@ from agent.anthropic_message_convert import (
 )
 from agent.errors import EmptyStreamError
 
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_base_version
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
@@ -371,7 +371,7 @@ def _attribution_headers() -> dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
         "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+        "User-Agent": f"HermesAgent/{get_base_version()}",
     }
 
 

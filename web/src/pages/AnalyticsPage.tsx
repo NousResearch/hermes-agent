@@ -15,7 +15,7 @@ import type {
   AnalyticsDailyEntry,
   AnalyticsModelEntry,
   AnalyticsSkillEntry,
-} from "@/lib/api";
+} from "@/lib/api-analytics";
 import { timeAgo } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -24,6 +24,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/c
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
+import { ModelStackChart, TokenSplitCharts } from "@/components/AnalyticsTokenCharts";
+import { formatDate, formatTokens } from "@/lib/analytics-series";
 import { errorMessage } from "@/lib/api-error";
 
 const PERIODS = [
@@ -31,23 +33,6 @@ const PERIODS = [
   { label: "30d", days: 30 },
   { label: "90d", days: 90 },
 ] as const;
-
-const CHART_HEIGHT_PX = 160;
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function formatDate(day: string): string {
-  try {
-    const d = new Date(day + "T00:00:00");
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  } catch {
-    return day;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Sorting
@@ -127,111 +112,6 @@ function SortHeader({
 }
 
 
-
-function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
-  const { t } = useI18n();
-  if (daily.length === 0) return null;
-
-  const maxTokens = Math.max(
-    ...daily.map((d) => d.input_tokens + d.output_tokens),
-    1,
-  );
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <BarChart3 className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.analytics.dailyTokenUsage}
-          </CardTitle>
-        </div>
-        <div className="flex items-center gap-4 font-mondwest normal-case text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            <div
-              className="h-2.5 w-2.5"
-              style={{ backgroundColor: "var(--series-input-token)" }}
-            />
-            {t.analytics.input}
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div
-              className="h-2.5 w-2.5"
-              style={{ backgroundColor: "var(--series-output-token)" }}
-            />
-            {t.analytics.output}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div
-          className="flex items-end gap-[2px]"
-          style={{ height: CHART_HEIGHT_PX }}
-        >
-          {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
-            const inputH = Math.round(
-              (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
-            );
-            const outputH = Math.round(
-              (d.output_tokens / maxTokens) * CHART_HEIGHT_PX,
-            );
-            return (
-              <div
-                key={d.day}
-                className="flex-1 min-w-0 group relative flex flex-col justify-end"
-                style={{ height: CHART_HEIGHT_PX }}
-              >
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
-                  <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
-                    <div className="font-medium">{formatDate(d.day)}</div>
-                    <div>
-                      {t.analytics.input}: {formatTokens(d.input_tokens)}
-                    </div>
-                    <div>
-                      {t.analytics.output}: {formatTokens(d.output_tokens)}
-                    </div>
-                    <div>
-                      {t.analytics.total}: {formatTokens(total)}
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  className="w-full"
-                  style={{
-                    backgroundColor:
-                      "color-mix(in srgb, var(--series-input-token) 70%, transparent)",
-                    height: Math.max(inputH, total > 0 ? 1 : 0),
-                  }}
-                />
-
-                <div
-                  className="w-full"
-                  style={{
-                    backgroundColor:
-                      "color-mix(in srgb, var(--series-output-token) 70%, transparent)",
-                    height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0),
-                  }}
-                />
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="flex justify-between mt-2 font-mondwest normal-case text-xs text-text-tertiary">
-          <span>{daily.length > 0 ? formatDate(daily[0].day) : ""}</span>
-          {daily.length > 2 && (
-            <span>{formatDate(daily[Math.floor(daily.length / 2)].day)}</span>
-          )}
-          <span>
-            {daily.length > 1 ? formatDate(daily[daily.length - 1].day) : ""}
-          </span>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
@@ -539,42 +419,46 @@ export default function AnalyticsPage() {
 
       {showTokens && data && (
         <>
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Card>
-              <CardContent className="py-6">
-                <Stats
-                  items={[
-                    {
-                      label: t.analytics.totalTokens,
-                      value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
-                      ),
-                    },
-                    {
-                      label: t.analytics.input,
-                      value: formatTokens(data.totals.total_input),
-                    },
-                    {
-                      label: t.analytics.output,
-                      value: formatTokens(data.totals.total_output),
-                    },
-                    {
-                      label: t.analytics.totalSessions,
-                      value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg})`,
-                    },
-                    {
-                      label: t.analytics.apiCalls,
-                      value: String(
-                        data.totals.total_api_calls ??
-                          data.daily.reduce((sum, d) => sum + d.sessions, 0),
-                      ),
-                    },
-                  ]}
-                />
-              </CardContent>
-            </Card>
+          <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+            <div className="flex flex-col gap-6 min-w-0">
+              <Card>
+                <CardContent className="py-6">
+                  <Stats
+                    items={[
+                      {
+                        label: t.analytics.totalTokens,
+                        value: formatTokens(
+                          data.totals.total_input + data.totals.total_output,
+                        ),
+                      },
+                      {
+                        label: t.analytics.input,
+                        value: formatTokens(data.totals.total_input),
+                      },
+                      {
+                        label: t.analytics.output,
+                        value: formatTokens(data.totals.total_output),
+                      },
+                      {
+                        label: t.analytics.totalSessions,
+                        value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg})`,
+                      },
+                      {
+                        label: t.analytics.apiCalls,
+                        value: String(
+                          data.totals.total_api_calls ??
+                            data.daily.reduce((sum, d) => sum + d.sessions, 0),
+                        ),
+                      },
+                    ]}
+                  />
+                </CardContent>
+              </Card>
 
-            <TokenBarChart daily={data.daily} />
+              <ModelStackChart daily={data.daily} dailyByModel={data.daily_by_model ?? []} />
+            </div>
+
+            <TokenSplitCharts daily={data.daily} />
           </div>
 
           <DailyTable daily={data.daily} />

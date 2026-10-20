@@ -205,6 +205,12 @@ export const hu: Translations = {
     perDayAvg: "/nap átlag",
     acrossModels: "{count} modellen át",
     inOut: "{input} be / {output} ki",
+    inputPerDay: "Bemeneti tokenek / nap",
+    outputPerDay: "Kimeneti tokenek / nap",
+    ioRatio: "Bemenet / kimenet arány",
+    ratioAverage: "{ratio} időszaki átlag",
+    tokensByModel: "Tokenek modellenként / nap",
+    otherModels: "Egyéb modellek",
   },
 
   models: {

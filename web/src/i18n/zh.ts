@@ -203,6 +203,12 @@ export const zh: Translations = {
     perDayAvg: "/天 平均",
     acrossModels: "共 {count} 个模型",
     inOut: "输入 {input} / 输出 {output}",
+    inputPerDay: "输入 token / 天",
+    outputPerDay: "输出 token / 天",
+    ioRatio: "输入 / 输出 比例",
+    ratioAverage: "期间平均 {ratio}",
+    tokensByModel: "各模型 token / 天",
+    otherModels: "其他模型",
   },
 
   models: {

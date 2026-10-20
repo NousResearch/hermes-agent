@@ -205,6 +205,12 @@ export const af: Translations = {
     perDayAvg: "/dag gem.",
     acrossModels: "oor {count} modelle",
     inOut: "{input} in / {output} uit",
+    inputPerDay: "Invoer-tokens / dag",
+    outputPerDay: "Uitvoer-tokens / dag",
+    ioRatio: "Invoer/uitvoer-verhouding",
+    ratioAverage: "{ratio} periodegemiddeld",
+    tokensByModel: "Tokens per model / dag",
+    otherModels: "Ander modelle",
   },
 
   models: {

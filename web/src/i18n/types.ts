@@ -260,6 +260,12 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    inputPerDay: string;
+    outputPerDay: string;
+    ioRatio: string;
+    ratioAverage: string;
+    tokensByModel: string;
+    otherModels: string;
   };
 
   // ── Models page ──

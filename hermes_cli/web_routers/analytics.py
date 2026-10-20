@@ -77,6 +77,35 @@ def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
+def _daily_by_model(db, cutoff: float) -> List[Dict[str, Any]]:
+    """Per-(day, model) input/output tokens for the stacked per-model chart. Same two sources as
+    ``by_model`` (main-agent sessions + task-tagged aux rows), so each model's days sum to its
+    ``by_model`` totals."""
+    rows = _rows(db, """
+        SELECT date(started_at, 'unixepoch', 'localtime') as day, model,
+               SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens
+        FROM sessions WHERE started_at > ? AND model IS NOT NULL
+        GROUP BY day, model
+    """, cutoff)
+    try:
+        rows += _rows(db, """
+            SELECT date(s.started_at, 'unixepoch', 'localtime') as day, u.model,
+                   SUM(u.input_tokens) as input_tokens, SUM(u.output_tokens) as output_tokens
+            FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
+            WHERE s.started_at > ? AND u.task != ''
+            GROUP BY day, u.model
+        """, cutoff)
+    except sqlite3.OperationalError:
+        pass  # read-only DB that predates the task column (see _aux_usage_rows)
+    per_day: Dict[tuple, Dict[str, Any]] = {}
+    for row in rows:
+        key = (row["day"], row.get("model") or "unknown")
+        target = per_day.setdefault(key, {"day": key[0], "model": key[1], "input_tokens": 0, "output_tokens": 0})
+        target["input_tokens"] += row.get("input_tokens") or 0
+        target["output_tokens"] += row.get("output_tokens") or 0
+    return sorted(per_day.values(), key=lambda r: (r["day"], r["model"]))
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
@@ -132,6 +161,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         return {
             "daily": daily,
             "by_model": by_model,
+            "daily_by_model": _daily_by_model(db, cutoff),
             "by_task": _aux_task_summary(aux_rows),  # "what is compression costing me"
             "totals": totals,
             "period_days": days,

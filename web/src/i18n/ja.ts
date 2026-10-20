@@ -205,6 +205,12 @@ export const ja: Translations = {
     perDayAvg: "/日 平均",
     acrossModels: "{count} モデル全体",
     inOut: "{input} 入力 / {output} 出力",
+    inputPerDay: "入力トークン / 日",
+    outputPerDay: "出力トークン / 日",
+    ioRatio: "入力 / 出力 比率",
+    ratioAverage: "期間平均 {ratio}",
+    tokensByModel: "モデル別トークン / 日",
+    otherModels: "その他のモデル",
   },
 
   models: {

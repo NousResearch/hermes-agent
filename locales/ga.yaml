@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Chuaigh rud éigin amú agus níorbh fhéidir liom an freagra seo a chríochnú.{hint}\nÚsáid /retry le triail eile a bhaint as, nó /new chun comhrá úr a thosú. Tá na sonraí teicniúla i log an gateway (`hermes logs`)."
     history_unavailable: "⚠️ Níl stair an tseisiúin seo ar fáil go sealadach, mar sin níor próiseáladh an teachtaireacht seo. Iarr ar an oibreoir state.db a scrúdú, ansin seol arís í nuair a bheidh sé folláin. Ná húsáid /reset ach amháin más mian leat comhrá nua a thosú d'aon ghnó."
     no_credentials: "⚠️ Níorbh fhéidir liom ceangal le seirbhís na samhla AI, mar sin níor próiseáladh an teachtaireacht seo. Úsáid /login chun síniú isteach arís, nó /model chun samhail eile a roghnú. Má leanann sé ag teip, rith `hermes doctor` ar an óstach."
+    cron_session_read_only: "⚠️ Baineann an comhrá seo le jab sceidealaithe agus ní ritheann sé ach an jab sin, mar sin níor ritheadh do theachtaireacht. Tosaigh comhrá nua chun í a sheoladh."
   skills:
     disabled: "Tá an scil **{name}** suiteáilte ach díchumasaithe.\nCumasaigh í le: `hermes skills config`"
     not_installed: "Tá an scil **{name}** ar fáil ach níl sí suiteáilte.\nSuiteáil í le: `hermes skills install {install_name}`"

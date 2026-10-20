@@ -836,6 +836,26 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
+    def list_quiet_open_cron_sessions(self, *, max_idle_seconds: float) -> list[dict[str, Any]]:
+        """Return open cron rows that have been quiet long enough for scheduler-owned settlement.
+
+        Cron's execution ledger supplies the ownership proof; this query intentionally only
+        narrows the state.db side of that two-store predicate.
+        """
+        if max_idle_seconds <= 0:
+            return []
+        cutoff = time.time() - max_idle_seconds
+        rows = self._read_all(
+            f"""SELECT id, started_at, {_sql_session_last_active('sessions')} AS last_active
+                 FROM sessions
+                WHERE source = 'cron' AND ended_at IS NULL
+                  AND started_at < ?
+                  AND {_sql_session_last_active('sessions')} < ?
+                ORDER BY started_at ASC""",
+            (cutoff, cutoff),
+        )
+        return [dict(row) for row in rows]
+
     def get_recent_session_model_route(self, session_id: str) -> Optional[dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple
         (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).

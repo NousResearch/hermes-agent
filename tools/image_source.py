@@ -12,6 +12,7 @@ import asyncio
 import base64
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -50,6 +51,59 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
+# Typographic apostrophes/quotes that macOS and other tooling freely substitute
+# for their ASCII equivalents in localized filenames ("Capture d'écran…"). A
+# reference that round-tripped through JSON or a JS string often arrives with
+# U+0027 where the on-disk name uses U+2019 (or vice versa); those are distinct
+# codepoints the filesystem never equates, so we fold them before comparing.
+_TYPOGRAPHIC_QUOTE_FOLD = str.maketrans({
+    "\u2018": "'",   # left single quotation mark
+    "\u2019": "'",   # right single quotation mark
+    "\u201a": "'",   # single low-9 quotation mark
+    "\u201b": "'",   # single high-reversed-9 quotation mark
+    "\u02bc": "'",   # modifier letter apostrophe
+    "\u02b9": "'",   # modifier letter prime
+    "\u201c": '"',   # left double quotation mark
+    "\u201d": '"',   # right double quotation mark
+    "\u201e": '"',   # double low-9 quotation mark
+})
+
+
+def _filename_comparison_key(name: str) -> str:
+    """A comparison key tolerant of macOS filename Unicode drift.
+
+    Composes decomposed accents (NFD -> NFC) and folds typographic
+    apostrophes/quotes to their ASCII counterparts, so a reference that
+    swapped either still matches the on-disk filename.
+    """
+    return unicodedata.normalize("NFC", name).translate(_TYPOGRAPHIC_QUOTE_FOLD)
+
+
+def _unicode_tolerant_path(candidate: str) -> Path:
+    """Resolve a path tolerating macOS Unicode drift in the filename.
+
+    macOS stores filenames in NFD (decomposed) form, and OS tooling freely
+    uses typographic characters — curly apostrophes (U+2019) and accented
+    letters — in localized names ("Capture d'écran…"). A reference that
+    round-tripped through JSON or a JS string can arrive NFC-composed or with
+    an ASCII quote substitution, so a plain ``Path`` lookup misses the real
+    file and vision reports "media file not found". When the exact path is
+    absent, fall back to a directory scan matching by the comparison key.
+    """
+    p = Path(os.path.expanduser(candidate))
+    if p.exists():
+        return p
+    try:
+        entries = list(p.parent.iterdir())
+    except OSError:
+        return p
+    key = _filename_comparison_key(p.name)
+    for entry in entries:
+        if _filename_comparison_key(entry.name) == key:
+            return entry
+    return p
+
+
 async def resolve_image_source(
     src: str, ctx: ResolveContext, *, permitted: tuple = ("image",)) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
@@ -71,7 +125,7 @@ async def resolve_image_source(
     # Everything else is a filesystem path — including bare relative names like "pic.png"
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    p = _unicode_tolerant_path(candidate)
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)

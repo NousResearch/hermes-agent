@@ -100,6 +100,44 @@ class TestLocalBackend:
         assert res.origin == "file"
 
 
+class TestUnicodeTolerantPath:
+    """macOS stores filenames in NFD (decomposed) and localized OS names use
+    typographic apostrophes ("Capture d'écran…"). A reference that round-trips
+    through JSON or a JS string can arrive NFC-composed or with an ASCII quote,
+    which a plain Path lookup misses ("media file not found"). The resolver
+    must tolerate the drift instead of failing the image."""
+
+    @pytest.mark.asyncio
+    async def test_nfd_on_disk_nfc_reference_resolves(self, tmp_path, monkeypatch):
+        """Decomposed accents on disk + composed accents in the reference."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        nfd = "Capture d\u2019e\u0301cran.png"  # curly apostrophe + e+combining acute
+        (tmp_path / nfd).write_bytes(PNG)
+        ref = str(tmp_path / "Capture d'\u00e9cran.png")  # ASCII apostrophe + NFC é
+        res = await isrc.resolve_image_source(ref, isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_curly_vs_ascii_apostrophe_resolves(self, tmp_path, monkeypatch):
+        """U+2019 (') on disk vs U+0027 (') in the reference — different
+        codepoints the filesystem never equates."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        (tmp_path / "Capture d\u2019\u00e9cran.png").write_bytes(PNG)
+        ref = str(tmp_path / "Capture d'\u00e9cran.png")
+        res = await isrc.resolve_image_source(ref, isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    def test_missing_file_still_misses(self, tmp_path, monkeypatch):
+        """Tolerance must not manufacture a file that isn't there."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        got = isrc._unicode_tolerant_path(str(tmp_path / "nope.png"))
+        assert not got.exists()
+
+
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to
     the media caches; every other path is read inside the sandbox."""

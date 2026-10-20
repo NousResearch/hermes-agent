@@ -414,6 +414,10 @@ async def _cancel_and_quarantine(
             pass
         if _start_quarantine_reaper(task, loop):
             return
+        authorization_task = asyncio.current_task()
+        cancellation_requests_before_await = (
+            authorization_task.cancelling() if authorization_task is not None else 0
+        )
         try:
             await task
         except BaseException:
@@ -423,6 +427,12 @@ async def _cancel_and_quarantine(
                 _consume_authorization_task_result(task)
             finally:
                 _discard_quarantined_task(task)
+        if (
+            authorization_task is not None
+            and authorization_task.cancelling()
+            > cancellation_requests_before_await
+        ):
+            raise asyncio.CancelledError
         return
     try:
         task.cancel()

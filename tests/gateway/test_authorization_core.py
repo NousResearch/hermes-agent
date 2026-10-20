@@ -1462,6 +1462,125 @@ def test_callback_and_reaper_failures_await_owned_operation_before_deny() -> Non
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("cancel_before_direct_await", [False, True])
+@pytest.mark.parametrize("cancel_requests", [1, 3])
+def test_double_fallback_preserves_caller_cancellation(
+    cancel_requests: int,
+    cancel_before_direct_await: bool,
+) -> None:
+    import gateway.authorization as authorization
+
+    from gateway.authorization import (
+        PermissionDecision,
+        _quarantined_task_count,
+        _reaper_task_count,
+        authorize_fail_closed,
+    )
+
+    class CallbackRegistrationFailure(BaseException):
+        pass
+
+    class ReaperConstructionFailure(BaseException):
+        pass
+
+    async def scenario() -> None:
+        provider_started = asyncio.Event()
+        cleanup_awaiting_provider = asyncio.Event()
+        release_provider = asyncio.Event()
+        propagated_cancellation_suppressed = asyncio.Event()
+        provider_finished = asyncio.Event()
+        unhandled: list[dict[str, object]] = []
+        registration_failures = 0
+        reaper_failures = 0
+
+        class CallbackFailureTask(asyncio.Task[Any]):
+            def add_done_callback(self, callback: Any, *, context: Any = None) -> None:
+                nonlocal registration_failures
+                if callback is authorization._consume_quarantined_task:
+                    registration_failures += 1
+                    raise CallbackRegistrationFailure(
+                        "injected add_done_callback failure"
+                    )
+                super().add_done_callback(callback, context=context)
+
+        def failing_reaper_task(*_args: object, **_kwargs: object) -> Any:
+            nonlocal reaper_failures
+            reaper_failures += 1
+            raise ReaperConstructionFailure("injected reaper Task failure")
+
+        class Provider:
+            async def readiness(self) -> bool:
+                provider_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cleanup_awaiting_provider.set()
+                    try:
+                        await release_provider.wait()
+                    except asyncio.CancelledError:
+                        propagated_cancellation_suppressed.set()
+                    await asyncio.sleep(0)
+                    provider_finished.set()
+                    raise RuntimeError("provider finished after cancellation")
+                raise AssertionError("readiness should only finish after cancellation")
+
+            async def authorize(self, **_kwargs: object) -> PermissionDecision:
+                raise AssertionError("late readiness must not authorize")
+
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        original_task_type = authorization.asyncio.Task
+        original_reaper_task = authorization._NATIVE_ASYNCIO_TASK
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        setattr(authorization.asyncio, "Task", CallbackFailureTask)
+        setattr(authorization, "_NATIVE_ASYNCIO_TASK", failing_reaper_task)
+        tasks_before = asyncio.all_tasks()
+        caller = original_task_type(
+            authorize_fail_closed(
+                Provider(),
+                principal=_issuer().issue_user(
+                    principal_id="telegram:123", authz_version=7
+                ),
+                permission="agent.use",
+                known_permissions={"agent.use"},
+                timeout_seconds=60 if cancel_before_direct_await else 0,
+            ),
+            loop=loop,
+        )
+        try:
+            cancellation_requests_during_await = cancel_requests
+            if cancel_before_direct_await:
+                await provider_started.wait()
+                caller.cancel()
+                cancellation_requests_during_await -= 1
+            await cleanup_awaiting_provider.wait()
+            for _ in range(cancellation_requests_during_await):
+                caller.cancel()
+            if cancellation_requests_during_await == 0:
+                release_provider.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+
+            assert propagated_cancellation_suppressed.is_set() is (
+                cancellation_requests_during_await > 0
+            )
+            assert provider_finished.is_set()
+            assert caller.cancelling() == cancel_requests
+            assert registration_failures == 1
+            assert reaper_failures == 1
+            assert _quarantined_task_count() == 0
+            assert _reaper_task_count() == 0
+            assert asyncio.all_tasks() == tasks_before
+        finally:
+            setattr(authorization, "_NATIVE_ASYNCIO_TASK", original_reaper_task)
+            setattr(authorization.asyncio, "Task", original_task_type)
+            loop.set_exception_handler(previous_handler)
+
+        assert unhandled == []
+
+    asyncio.run(scenario())
+
+
 def test_provider_contract_excludes_indefinite_cancellation_suppression() -> None:
     from gateway.authorization import AuthorizationProvider, authorize_fail_closed
 

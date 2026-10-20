@@ -664,6 +664,14 @@ def _notif_group_completions(notifications, route):
     return groups
 
 
+def _notif_settle_stopped_completions(session, notifications):
+    if not session.get("_turn_cancel_requested"):
+        return
+    from gateway.session_approval_completion import release_completion_event_reservation
+    for event, _text in notifications:
+        release_completion_event_reservation(event)
+
+
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
     from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
@@ -676,6 +684,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
             _notif_dispatch_completions(sid, session, group, registry, deferred)
         return
     if not _notif_claim_turn(session):
+        _notif_settle_stopped_completions(session, notifications)
         for event, _text in notifications:
             (deferred.append if deferred is not None else registry.completion_queue.put)(event)
         if deferred is None:

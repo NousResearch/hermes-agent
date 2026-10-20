@@ -122,12 +122,14 @@ def test_queued_submit_generation_and_stop_fence_reviewer(monkeypatch):
 
 
 @pytest.mark.parametrize('origins', [1, 2], ids=['single-origin', 'coalesced-distinct-origins'])
+@pytest.mark.parametrize('stopped', [False, True], ids=['normal-exit', 'human-stop'])
 @pytest.mark.usefixtures('turn_env')
-def test_authenticated_desktop_process_completion_retains_command_authority(tmp_path, monkeypatch, origins):
+def test_authenticated_desktop_process_completion_retains_command_authority(tmp_path, monkeypatch, origins, stopped):
     """The registry's process completion must carry the direct submit past turn exit."""
     import json
 
     from hermes_state import SessionDB
+    from queue import Empty
     from tests.tui_gateway.test_approval_request_origin import LoginSocket
     from tools import approval_context
     from tools.process_registry import ProcessSession, process_registry
@@ -135,6 +137,12 @@ def test_authenticated_desktop_process_completion_retains_command_authority(tmp_
     from tools.terminal_tool_background import spawn_background_process
     from tools.terminal_tool import terminal_tool
     from tui_gateway.transport import bind_transport, reset_transport
+
+    while True:
+        try:
+            process_registry.completion_queue.get_nowait()
+        except Empty:
+            break
 
     db = SessionDB(tmp_path / 'state.db')
     monkeypatch.setattr(server, '_get_db', lambda: db)
@@ -196,16 +204,26 @@ def test_authenticated_desktop_process_completion_retains_command_authority(tmp_
         assert len(spawned) == origins and decisions == []
         assert all(proc.approval_task_reservation is not None and
                    proc.approval_task_reservation.lease.live() for proc in processes)
+        reservations = [proc.approval_task_reservation for proc in processes]
+        if stopped:
+            stopped_result = server.handle_request({'id': 'stop', 'method': 'session.interrupt',
+                                                    'params': {'session_id': sid}})
+            assert stopped_result['result']['status'] == 'interrupted', stopped_result
+            assert all(not reservation.lease.live() for reservation in reservations)
         for proc in processes:
             process_registry._finish_exited(proc, 0)
         events = [process_registry.completion_queue.get(timeout=5) for _ in processes]
         assert {event['session_id'] for event in events} == {proc.id for proc in processes}
         server._notif_handle_ready(sid, session, events, set(), process_registry,
                                    format_process_notification, None)
-        assert len(decisions) == origins
-        assert {evidence.text for evidence, _verdict in decisions} == set(prompts)
-        assert all(verdict['output'].strip() == 'ok' for _evidence, verdict in decisions), decisions
+        if stopped:
+            assert decisions == []
+        else:
+            assert len(decisions) == origins
+            assert {evidence.text for evidence, _verdict in decisions} == set(prompts)
+            assert all(verdict['output'].strip() == 'ok' for _evidence, verdict in decisions), decisions
         assert all(proc.approval_task_reservation is None for proc in processes)
+        assert all(not reservation.active() for reservation in reservations)
     finally:
         reset_transport(token)
         with process_registry._lock:

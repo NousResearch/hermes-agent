@@ -153,21 +153,28 @@ def board(tmp_path, monkeypatch):
     scratch.close()
 
 
-# --- the incident shape is reclaimed by the platform's own paths ---------------------------
+# --- the incident shape is named by diagnostics and reclaimed by the platform's own paths --
 
-def test_dead_attempt_behind_an_unresolved_receipt_is_reclaimed(board):
-    """Every reclaim path declined this card; the stale-claim and crash paths must now take it."""
+def test_dead_attempt_behind_an_unresolved_receipt_is_named_and_reclaimed(board):
+    """Every reclaim path declined this card and no diagnostic could see it; both must now act."""
     board.dead_attempt("t_ghost")
     board.dead_attempt("t_ghost2")
+    board.dead_attempt("t_live", worker_pid=os.getpid(), worker_fingerprint=kbd._process_fingerprint(os.getpid()))
     assert owner_reclaim_paused(board.conn, "t_ghost") is True      # the pause still applies
     assert bound_interpreter_gone(board.conn, "t_ghost") is False   # nothing bound to read
     assert owner_reclaim_blocked(board.conn, "t_ghost") is False
+
+    hits = [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
+    assert [d.severity for d in hits] == ["critical"]                  # 15x the 1h grace
+    assert [a.kind for a in hits[0].actions] == ["reclaim", "cli_hint"]
+    assert not [d for d in board.diagnostics("t_live") if d.kind == "stale_running"]
 
     assert kb.release_stale_claims(board.conn) == 2
     row = board.state("t_ghost")
     assert (row["status"], row["claim_lock"], row["worker_pid"], row["current_run_id"]) == ("ready", None, None, None)
     run = board.conn.execute("SELECT status, outcome FROM task_runs WHERE task_id = 't_ghost'").fetchone()
     assert tuple(run) == ("reclaimed", "reclaimed")
+    assert board.state("t_live")["status"] == "running"
 
 
 @pytest.mark.parametrize("shape", [
@@ -187,14 +194,3 @@ def test_the_pause_still_holds_every_attempt_that_may_be_alive(board, shape):
     assert kb.release_stale_claims(board.conn) == 0
     assert kbd.detect_crashed_workers(board.conn) == []
     assert board.state("t_ghost")["status"] == "running"
-
-
-# --- the jam itself becomes visible to `kanban diagnostics` --------------------------------
-
-def test_stale_running_diagnostic_names_the_jam_and_stays_silent_for_a_live_worker(board):
-    board.dead_attempt("t_ghost")
-    board.dead_attempt("t_live", worker_pid=os.getpid(), worker_fingerprint=kbd._process_fingerprint(os.getpid()))
-    hits = [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-    assert [d.severity for d in hits] == ["critical"]                  # 15x the 1h grace
-    assert [a.kind for a in hits[0].actions] == ["reclaim", "cli_hint"]
-    assert not [d for d in board.diagnostics("t_live") if d.kind == "stale_running"]

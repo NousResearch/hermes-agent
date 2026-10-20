@@ -36,5 +36,16 @@ export const esNotices = {
     message:
       'Hermes puede mantener tu equipo activo mientras se ejecuta una tarea. La pantalla se sigue apagando, y con batería el equipo aún puede entrar en suspensión.',
     action: 'Mantener activo mientras trabaja'
+  },
+  billingBlock: {
+    titleNous: 'Sin créditos de Nous',
+    titleProvider: provider => `Sin créditos — ${provider}`,
+    fallbackMessage: 'Tu cuenta se quedó sin créditos. Añade créditos para continuar.',
+    openBilling: 'Abrir facturación',
+    addCredits: 'Añadir créditos',
+    dismiss: 'Descartar'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

@@ -19,8 +19,8 @@ from typing import Mapping
 _HOST_NAMES = frozenset({
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TZ", "LANG", "LANGUAGE",
     "TMPDIR", "TMP", "TEMP", "PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING", "VIRTUAL_ENV", "CONDA_PREFIX",
-    # A user systemd manager, so a gateway started from a system unit can still scope its children.
-    "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+    # The user systemd manager (a gateway started from a system unit still scopes its children).
+    "DBUS_SESSION_BUS_ADDRESS", "SUDO_USER",
     # TLS trust and proxies are the host's network, which a cold-started gateway needs to reach a provider.
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -28,14 +28,17 @@ _HOST_NAMES = frozenset({
     "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "OS", "PROCESSOR_ARCHITECTURE",
     "NUMBER_OF_PROCESSORS", "PUBLIC", "ALLUSERSPROFILE", "PROGRAMDATA", "PROGRAMFILES",
     "PROGRAMFILES(X86)", "PROGRAMW6432", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "USERDOMAIN",
-    "USERNAME", "HOMEDRIVE", "HOMEPATH", "COMPUTERNAME",
-    # Hermes' own location and install facts, read before any config loads; and two host-wide
-    # board settings (the shared board root, the board lock's busy timeout).
+    "USERNAME", "HOMEDRIVE", "HOMEPATH", "COMPUTERNAME", "PROCESSOR_ARCHITEW6432",
+    # Hermes' own location, install and host policy, read before any profile config loads: the
+    # host-wide gateway lock directory (else a cold-started gateway takes a different "host" lock),
+    # the no-install policy, and the shared board root and its lock's busy timeout.
     "HERMES_HOME", "HERMES_REAL_HOME", "HERMES_SCRATCH_DIR", "HERMES_RUNTIME_DIR", "HERMES_INSTALL_ROOT",
-    "HERMES_PYTHON_SRC_ROOT", "HERMES_HOME_MODE", "HERMES_MANAGED", "HERMES_CONTAINER",
-    "HERMES_SKIP_CHMOD", "HERMES_KANBAN_HOME", "HERMES_KANBAN_BUSY_TIMEOUT_MS",
+    "HERMES_PYTHON_SRC_ROOT", "HERMES_DATA_DIR_SUFFIX", "HERMES_HOME_MODE", "HERMES_MANAGED",
+    "HERMES_CONTAINER", "HERMES_SKIP_CHMOD", "HERMES_GATEWAY_LOCK_DIR", "HERMES_DISABLE_LAZY_INSTALLS",
+    "HERMES_KANBAN_HOME", "HERMES_KANBAN_BUSY_TIMEOUT_MS",
 })
-_HOST_PREFIXES = ("LC_",)
+# XDG_*: the user's base directories (state: the host gateway lock; config: package index).
+_HOST_PREFIXES = ("LC_", "XDG_")
 
 
 def worker_client_env(env: Mapping[str, str]) -> dict[str, str]:

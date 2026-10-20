@@ -5,7 +5,8 @@ from hermes_cli.kanban_worker_env import worker_client_env
 
 def test_keeps_host_plumbing_and_hermes_location():
     env = {"PATH": "/bin", "HOME": "/home/u", "LC_ALL": "C.UTF-8", "HTTPS_PROXY": "http://p",
-           "https_proxy": "http://p", "HERMES_HOME": "/h", "XDG_RUNTIME_DIR": "/run/user/1"}
+           "https_proxy": "http://p", "HERMES_HOME": "/h", "XDG_RUNTIME_DIR": "/run/user/1",
+           "XDG_STATE_HOME": "/s", "HERMES_GATEWAY_LOCK_DIR": "/locks", "HERMES_DISABLE_LAZY_INSTALLS": "1"}
     assert worker_client_env(env) == env
 
 

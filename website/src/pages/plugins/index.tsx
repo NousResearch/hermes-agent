@@ -14,6 +14,7 @@ import {
   TIER_CONFIG,
   authorPagePath,
   capToolChips,
+  cardSummary,
   categoryOf,
   desktopInstallLink,
   formatDate,
@@ -86,7 +87,8 @@ function PluginCard({
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const toolChips = capToolChips(caps.providesTools);
-  const description = plugin.description || "No description available.";
+  // Cards show what the plugin does; its disclosure sits at the bottom of the plugin's own page.
+  const description = cardSummary(plugin.description || "") || "No description available.";
   // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
   // height (every card in a grid row shares one height; see .grid in styles.module.css).
   const [imageBroken, setImageBroken] = useState(false);
@@ -795,7 +797,7 @@ export default function PluginCatalogPage() {
               <CatalogFeatured
                 author={featured.maintainer}
                 cta="View plugin"
-                description={featured.description}
+                description={cardSummary(featured.description || "")}
                 href={pluginPagePath(featured.name)}
                 label="Featured plugin"
                 tags={[

@@ -37,6 +37,7 @@ import { atom } from 'nanostores'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
+import { isHudWindow } from '@/store/windows'
 
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
@@ -1021,11 +1022,16 @@ export const discoverRuntimePlugins = (): Promise<void> => scanDiskPlugins(true)
 export const $diskPluginsScanPending = atom(false)
 
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
- *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */
+ *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent.
+ *
+ *  Skipped in the HUD window: it renders no pane tree, so a disk plugin's
+ *  contributions have no outlet there and only its side effects run — a plugin
+ *  that paints its own DOM (the home dashboard grid) covers the composer
+ *  instead of docking into a layout it will never see (#138663). */
 export function watchRuntimePlugins(): void {
   const desktop = window.hermesDesktop
 
-  if (watching || !desktop) {
+  if (watching || !desktop || isHudWindow()) {
     return
   }
 

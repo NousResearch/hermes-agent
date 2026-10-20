@@ -1097,3 +1097,26 @@ def test_stream_finish_in_a_later_event_than_the_call_still_maps_the_reason(raw,
     last = translate_stream_event({"candidates": [{"content": {"parts": []}, "finishReason": raw}]},
                                   model="gemini-2.5-flash", tool_call_indices=slots)
     assert last[-1].choices[0].finish_reason == mapped
+
+
+_VERTEX_NATIVE_BASE = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+
+
+@pytest.mark.parametrize("api_key,base_url,bearer", [
+    ("ya29.token", _VERTEX_NATIVE_BASE, True),
+    ("opaque-oauth-token", _VERTEX_NATIVE_BASE, True),
+    ("AIzaExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AQ.ExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AIzaStudioKey", "https://generativelanguage.googleapis.com/v1beta", False),
+])
+def test_vertex_oauth_token_sent_as_bearer_but_api_keys_are_not(api_key, base_url, bearer):
+    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+    assert is_native_gemini_base_url(base_url)
+    headers = GeminiNativeClient(api_key=api_key, base_url=base_url)._headers()
+    if bearer:
+        assert headers["Authorization"] == f"Bearer {api_key}"
+        assert "x-goog-api-key" not in headers
+    else:
+        assert headers["x-goog-api-key"] == api_key
+        assert "Authorization" not in headers

@@ -32,7 +32,7 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
-import { createAckWatch } from './ack_watch.js';
+import { bridgeStatus, createAckWatch } from './ack_watch.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
@@ -162,7 +162,7 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
   return enqueueSend(() =>
     Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
       .then((sent) => {
-        ackWatch.sent(sent?.key?.id);
+        ackWatch.sent(sent?.key?.id, chatId);
         return sent;
       })
       .finally(() => clearTimeout(timer))
@@ -1128,12 +1128,20 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// Did WhatsApp ack what the bridge sent to a chat since a moment? (freightman#2463)
+// GET /sends?chatId=<jid or digits>&since=<epoch seconds>
+app.get('/sends', (req, res) => {
+  const chatId = String(req.query.chatId || '');
+  if (!chatId) return res.status(400).json({ error: 'chatId is required' });
+  const sinceMs = Math.max(0, Number(req.query.since) || 0) * 1000;
+  res.json({ chatId, ...ackWatch.sends(chatId, sinceMs) });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   const { stale, ...acks } = ackWatch.health();
   res.json({
-    // Anything but "connected" makes the gateway recover the bridge.
-    status: connectionState === 'connected' && stale ? 'sends_unacked' : connectionState,
+    status: bridgeStatus(connectionState, { stale }),
     ...acks,
     queueLength: messageQueue.length,
     uptime: process.uptime(),

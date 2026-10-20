@@ -1,0 +1,4 @@
+name: whatsapp-capture
+description: Store WhatsApp conversations in Stomaton via MCP after each agent response
+events:
+  - agent:end

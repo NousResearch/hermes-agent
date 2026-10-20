@@ -51,7 +51,7 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "search", help="Search the curated Hermes plugin catalog")
     plugins_search.add_argument(
         "term", nargs="?", default="",
-        help="Query matched against entry names, descriptions and declared tools (omit to list the whole catalog)")
+        help="Query matched against entry names, descriptions, maintainers and declared tools (omit to list the whole catalog)")
     add_json_flag(plugins_search, "Print machine-readable JSON")
 
     plugins_subparsers.add_parser("browse", help="List every curated plugin catalog entry")

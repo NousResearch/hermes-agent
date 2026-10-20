@@ -3,6 +3,7 @@ import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
+import { runDashboardPluginUpdate } from "@/lib/plugin-update";
 import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 import type {
   CatalogEntry,
@@ -1162,20 +1163,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    const res = await api.updateAgentPlugin(row.name);
-                    if (res.consent_required) {
-                      // The new pin widens the plugin; the backend changed nothing until confirmed.
-                      const body = [
-                        (t.pluginsPage.updateConsentBody ?? en.pluginsPage.updateConsentBody!)(
-                          row.name,
-                          (res.sha ?? "").slice(0, 8),
-                        ),
-                        ...(res.delta_lines ?? []),
-                      ].join("\n");
-                      if (!window.confirm(body)) return;
-                      await api.updateAgentPlugin(row.name, true);
-                    }
-                    showToast(t.pluginsPage.updateGit, "success");
+                    const pp = t.pluginsPage;
+                    const applied = await runDashboardPluginUpdate(row.name, {
+                      consentBody: pp.updateConsentBody ?? en.pluginsPage.updateConsentBody!,
+                      scanBody: pp.updateScanBody ?? en.pluginsPage.updateScanBody!,
+                      scanBlocked: pp.updateScanBlocked ?? en.pluginsPage.updateScanBlocked!,
+                    });
+                    if (applied) showToast(pp.updateGit, "success");
                   });
                 }}
               >

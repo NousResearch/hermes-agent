@@ -10,7 +10,7 @@ Some Hermes providers — **Spotify** (the `spotify` catalog plugin) and **remot
 
 This works perfectly when Hermes and your browser are on the same machine. It breaks the moment they aren't: your laptop's browser tries to reach `127.0.0.1` on **your laptop**, but the listener is bound to `127.0.0.1` on **the remote server**.
 
-The fix is a one-line SSH local-forward. For MCP servers on an interactive terminal, you can often paste the redirect URL back instead (no tunnel).
+The fix is a one-line SSH local-forward. For MCP servers on an interactive terminal, and for plugin sign-ins (`hermes auth add <plugin>:<id>`), you can paste the redirect URL back instead (no tunnel).
 
 **xAI Grok OAuth (`xai-oauth`) uses OAuth device code**, not a loopback callback — open the printed verification URL in any browser and Hermes polls until approval. No SSH tunnel is required. See [xAI Grok OAuth](./xai-grok-oauth.md).
 
@@ -35,6 +35,7 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 |----------|---------------|----------------|
 | Spotify | `43827` (default) | Yes, when Hermes is remote |
 | MCP servers (`auth: oauth`) | auto-picked per server | Yes, when Hermes is remote (or paste redirect URL) |
+| Plugin OAuth clients (`hermes auth add <plugin>:<id>`) and model-provider plugins on the PKCE helper | OS-assigned | No — Hermes asks you to paste the redirect URL back; a tunnel still works |
 | `xai-oauth` (Grok SuperGrok) | n/a | No — device code flow |
 | `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
 | `openai-codex` (ChatGPT Plus/Pro) | n/a (default device code); `1455` with `--browser` / `auth.codex_login_flow: browser` | Only for the opt-in browser PKCE flow, when Hermes is remote |
@@ -81,6 +82,18 @@ ssh -N -L <port>:127.0.0.1:<port> user@remote-host
 Then open the authorize URL in your browser as normal; the redirect tunnels through and the listener picks it up. Use this when you need the flow to complete unattended (e.g. scripted re-auth where you can't paste interactively).
 
 **Pitfall — the 30s config-reload race.** If you edit `~/.hermes/config.yaml` to add an OAuth MCP server from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough time to complete an interactive OAuth flow, and the reload will give up. Use `hermes mcp login <server>` from a fresh terminal instead — it has no such cap and waits the full 5 min for you to paste back.
+
+## Plugin Sign-ins
+
+A plugin that declares its own OAuth client signs in with `hermes auth add <plugin>:<id>` (model-provider plugins built on the same PKCE helper use `hermes auth add <provider>`). Where Hermes cannot open a browser (an SSH session, a cloud shell, a headless server), it prints the authorize URL and asks for the address your browser ends on:
+
+```
+After you authorize, the browser goes to http://127.0.0.1:41377/callback. If it runs on another machine, that page will not load: copy the full address from the address bar and paste it here.
+(Over an SSH tunnel to port 41377 the page loads instead; then just press Enter.)
+Redirect address: http://127.0.0.1:41377/callback?code=...&state=...
+```
+
+The `?code=...&state=...` part alone is accepted too. Hermes checks the `state` in it against this sign-in before anything goes to the token endpoint. With an SSH tunnel to the printed port the page loads instead and says the authorization was received; then press Enter at the prompt.
 
 ## Why the listener can't just bind 0.0.0.0
 

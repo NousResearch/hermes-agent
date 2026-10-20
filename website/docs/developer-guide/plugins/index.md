@@ -494,8 +494,11 @@ oauth:
 
 The user signs in once from a terminal with `hermes auth add gemini-voice:google`
 (the plugin's key, a colon, the entry's `id`). That is the same PKCE login the
-model-provider helper runs: a loopback redirect on `127.0.0.1`, with an SSH
-tunnel hint when Hermes runs on a remote host. If the IdP grants fewer scopes
+model-provider helper runs: a loopback redirect on `127.0.0.1`. Where the
+browser runs on another machine (an SSH session, a cloud shell, a headless
+server), Hermes asks for the address the browser ended on, and the user pastes
+it from the address bar ([OAuth over SSH](../../guides/oauth-over-ssh.md)).
+If the IdP grants fewer scopes
 than declared, nothing is saved. `hermes auth status|refresh|logout
 gemini-voice:google` show, refresh and remove the grant. It lives in the active
 profile's `auth.json`; Hermes refreshes it on use once less than two minutes

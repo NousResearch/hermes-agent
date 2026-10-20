@@ -10,7 +10,8 @@ factories into the ``ProviderProfile`` hooks::
 Hermes owns the security boundary: HTTPS-only endpoints (plain HTTP only for a loopback-literal host,
 i.e. a local development IdP), token endpoint host checked against the same allowlist as the authorize
 URL BEFORE any request, S256 PKCE, CSRF ``state`` compared in constant time, an RFC 8252 loopback
-listener on the literal ``127.0.0.1`` (explicit port, ``0`` = OS-assigned), persistence as a
+listener on the literal ``127.0.0.1`` (explicit port, ``0`` = OS-assigned; when the browser runs on
+another machine, the user pastes back the address it was redirected to), persistence as a
 ``PooledCredential`` and single-use refresh tokens re-read from the store under the auth lock. No token,
 ``state`` or verifier is ever logged.
 
@@ -29,7 +30,7 @@ import uuid
 import webbrowser
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +161,49 @@ def _pool_provider(args: Any) -> str:
     return profile.name if profile is not None else raw
 
 
+def _redirect_params(pasted: str) -> dict[str, Optional[str]]:
+    """code/state/error from a pasted redirect: the whole address, or just its ``?code=...&state=...`` part."""
+    query = pasted.split("?", 1)[1] if "?" in pasted else pasted
+    params = parse_qs(query.split("#", 1)[0])
+    return {key: params.get(key, [None])[0] for key in ("code", "state", "error", "error_description")}
+
+
+def _pasted_callback(server: Any, result: dict[str, Any], redirect_uri: str,
+                     err: Callable[[str, str], Exception]) -> dict[str, Any]:
+    """The address a browser on another machine ended on, pasted by the user. The loopback keeps serving, so
+    an SSH tunnel still works: an empty line then takes what it received. Only this thread reads stdin, so
+    nothing is left waiting on it after sign-in."""
+    print(f"After you authorize, the browser goes to {redirect_uri}. If it runs on another machine, that page "
+          "will not load: copy the full address from the address bar and paste it here.\n"
+          f"(Over an SSH tunnel to port {urlparse(redirect_uri).port} the page loads instead; then just press Enter.)")
+    from agent.memory_provider import spawn_context_thread
+
+    thread = spawn_context_thread(server.serve_forever, name="oauth-pkce-callback", kwargs={"poll_interval": 0.1})
+    thread.start()
+    try:
+        while True:
+            try:
+                line = input("Redirect address: ").strip()
+            except EOFError:
+                raise err("no redirect address was pasted.", "oauth_no_code") from None
+            callback = _redirect_params(line) if line else dict(result)
+            if callback["code"] or callback["error"]:
+                return callback
+            print("That address carries no authorization code; paste the whole address the browser ended on."
+                  if line else "Nothing has arrived yet; paste the address the browser ended on.")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
 def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> dict[str, Any]:
-    """Run the browser Authorization-Code + PKCE flow; returns the pool fields for the new grant."""
+    """Run the browser Authorization-Code + PKCE flow; returns the pool fields for the new grant. Where the
+    browser runs on another machine (SSH, a cloud shell, a headless server) the user pastes back the address
+    it ended on; elsewhere the loopback callback completes the flow on its own."""
     from hermes_cli.auth_device_flow import (
-        _bind_loopback_callback_server, _can_open_graphical_browser, _make_loopback_callback_handler,
-        _pkce_code_challenge, _pkce_code_verifier, _print_loopback_ssh_hint, _serve_loopback_callback)
+        _bind_loopback_callback_server, _can_open_graphical_browser, _is_remote_session,
+        _make_loopback_callback_handler, _pkce_code_challenge, _pkce_code_verifier, _serve_loopback_callback)
 
     validate_config(provider, cfg)
     path = cfg.redirect_path if cfg.redirect_path.startswith("/") else f"/{cfg.redirect_path}"
@@ -186,15 +225,17 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
     authorize_url = f"{cfg.authorize_url}{'&' if urlparse(cfg.authorize_url).query else '?'}{urlencode(params)}"
 
     print(f"\nOpen this URL to authorize Hermes with {cfg.label or provider}:\n  {authorize_url}\n")
-    print(f"Waiting for callback on {redirect_uri} (timeout {int(cfg.timeout_seconds)}s, Ctrl+C to cancel)...")
-    _print_loopback_ssh_hint(redirect_uri)
-    if open_browser and _can_open_graphical_browser():
+    graphical = _can_open_graphical_browser()
+    paste = _is_remote_session() or not graphical  # the browser is on another machine
+    if not paste:
+        print(f"Waiting for callback on {redirect_uri} (timeout {int(cfg.timeout_seconds)}s, Ctrl+C to cancel)...")
+    if open_browser and graphical:
         try:
             webbrowser.open(authorize_url)
         except Exception:
             print("Could not open the browser automatically; use the URL above.")
     try:
-        callback = _serve_loopback_callback(
+        callback = _pasted_callback(server, result, redirect_uri, err) if paste else _serve_loopback_callback(
             server, result, timeout_seconds=cfg.timeout_seconds, err=err, timeout_code="oauth_callback_timeout")
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

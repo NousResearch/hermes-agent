@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import json
+import re
+import socket
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import pytest
@@ -25,9 +28,51 @@ PROVIDER = "example-pkce"
 @pytest.fixture
 def idp(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # A local session unless a test says otherwise: run over SSH, these tests would take the paste path.
+    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: False)
     server = FakeIdP().start()
     yield server
     server.stop()
+
+
+class PastingUser:
+    """Hermes runs where it cannot open a browser; this user reads the printed authorize URL and answers each
+    prompt in turn: a string as typed, an exception raised by ``input``, or a callable given the URL."""
+
+    def __init__(self, capsys):
+        self.capsys, self.answers, self.prompts, self.printed = capsys, [], [], ""
+
+    def authorize_url(self) -> str:
+        return re.search(r"^  (https?://\S+)$", self.printed, re.MULTILINE).group(1)
+
+    def redirect_uri(self) -> str:
+        return parse_qs(urlparse(self.authorize_url()).query)["redirect_uri"][0]
+
+    def input(self, prompt: str = "") -> str:
+        self.prompts.append(prompt)
+        self.printed += self.capsys.readouterr().out
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer(self.authorize_url()) if callable(answer) else answer
+
+
+@pytest.fixture
+def pasting(idp, monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: True)
+    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: False)
+    monkeypatch.setattr(pkce.webbrowser, "open", Mock(side_effect=AssertionError("no browser on this machine")))
+    user = PastingUser(capsys)
+    monkeypatch.setattr("builtins.input", user.input)
+    return user
+
+
+def _port_is_closed(redirect_uri: str) -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", urlparse(redirect_uri).port), timeout=1).close()
+    except OSError:
+        return True
+    return False
 
 
 def _config(idp: FakeIdP, **overrides) -> pkce.OAuthPKCEConfig:
@@ -162,3 +207,57 @@ def test_alias_login_stores_the_row_under_the_canonical_profile_name(idp, monkey
     assert PROVIDER in pool and alias not in pool
     assert handler("status", args) is True
     assert load_pool(PROVIDER).entries()[0].provider == PROVIDER
+
+
+def test_browser_on_another_machine_signs_in_with_the_pasted_address(pasting, idp):
+    landed = []
+
+    def copy_from_the_address_bar(authorize_url: str) -> str:
+        landed.append(idp.landing_address(authorize_url))
+        return landed[0]
+
+    pasting.answers.append(copy_from_the_address_bar)
+    tokens = pkce.login(PROVIDER, _config(idp))
+
+    exchange = idp.token_requests[-1]
+    assert exchange["grant_type"] == "authorization_code" and exchange["code_verifier"]
+    assert exchange["redirect_uri"] == landed[0].split("?", 1)[0] == pasting.redirect_uri()
+    assert tokens["access_token"] and tokens["refresh_token"] in idp.refresh_tokens
+    assert pasting.prompts == ["Redirect address: "]
+    printed = pasting.printed + pasting.capsys.readouterr().out
+    assert "paste" in printed and exchange["code"] not in printed  # the pasted address is never echoed
+    assert _port_is_closed(pasting.redirect_uri())
+
+
+def test_paste_prompt_asks_again_until_the_address_carries_a_code(pasting, idp):
+    pasting.answers += ["", "https://example.invalid/somewhere-else",
+                        lambda url: "?" + idp.landing_address(url).split("?", 1)[1]]  # the query part works too
+    assert pkce.login(PROVIDER, _config(idp))["access_token"]
+    assert len(pasting.prompts) == 3 and len(idp.token_requests) == 1
+
+
+def test_pasted_address_from_another_sign_in_is_refused_before_the_token_endpoint(pasting, idp):
+    idp.override_state = "forged"
+    pasting.answers.append(idp.landing_address)
+    with pytest.raises(AuthError) as excinfo:
+        pkce.login(PROVIDER, _config(idp))
+    assert excinfo.value.code == "oauth_state_mismatch" and idp.token_requests == []
+
+
+def test_an_ssh_tunnel_still_completes_the_sign_in_on_an_empty_line(pasting, idp):
+    def browser_through_the_tunnel(authorize_url: str) -> str:
+        with urlopen(authorize_url, timeout=5) as page:  # the IdP 302s to the loopback, which the tunnel reaches
+            assert b"received" in page.read()
+        return ""
+
+    pasting.answers.append(browser_through_the_tunnel)
+    assert pkce.login(PROVIDER, _config(idp))["access_token"]
+    assert [r["grant_type"] for r in idp.token_requests] == ["authorization_code"]
+
+
+def test_closed_input_at_the_paste_prompt_fails_and_frees_the_port(pasting, idp):
+    pasting.answers.append(EOFError())
+    with pytest.raises(AuthError) as excinfo:
+        pkce.login(PROVIDER, _config(idp))
+    assert excinfo.value.code == "oauth_no_code" and idp.token_requests == []
+    assert _port_is_closed(pasting.redirect_uri())

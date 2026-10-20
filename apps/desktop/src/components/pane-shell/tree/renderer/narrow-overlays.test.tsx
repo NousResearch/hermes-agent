@@ -12,6 +12,8 @@ import { $hiddenTreePanes, $layoutTree, $narrowViewport, declareDefaultTree } fr
 
 import { NarrowOverlays, narrowOverlayWidth } from './narrow-overlays'
 
+const edgeStrip = (side: 'left' | 'right') => document.querySelector<HTMLElement>(`[data-narrow-edge="${side}"]`)
+
 // Ground truth for "the Bots tab is still visible when the sessions sidebar
 // collapses on a narrow window". A collapsible pane DOCKED into the sessions
 // zone (SESSIONS | BOTS) must leave the grid with the zone, and the narrow
@@ -128,6 +130,65 @@ describe('narrow overlay of a stacked zone', () => {
     const dragSpacer = overlay?.querySelector<HTMLElement>('[aria-hidden="true"]')
     expect(dragSpacer).not.toBeNull()
     expect(dragSpacer?.style.height).toBe('34px')
+  })
+
+  it('sizes a minimized zone at its pane width, not the 28px rail', () => {
+    // The docked rail of a minimized zone is 28px (MINIMIZED_TRACK). The
+    // narrow overlay is a REVEAL, not the rail: sizing it from the minimized
+    // zone's track rendered an unreadable sliver (the user's "compacted down
+    // to a little side pane"). It must resolve to the same width the zone
+    // would have while docked-open — declared width refined by the drag
+    // override.
+    $layoutTree.set(split('row', [group(['sessions'], { minimized: true }), group(['workspace'])]))
+
+    const tree = $layoutTree.get()!
+    const sessions = registry.getArea('panes').find(p => p.id === 'sessions')!
+    const width = narrowOverlayWidth(
+      { paneFor: id => registry.getArea('panes').find(p => p.id === id), paneGone: () => false, overrides: {} },
+      tree,
+      sessions
+    )
+
+    expect(width).toBe('237px')
+  })
+
+  it('keeps a dismissed hover reveal closed until the pointer leaves the edge', () => {
+    // The overlay opens OVER the 6px strip, so dismissing it re-exposes the
+    // strip under the cursor — without hysteresis the next mouse move re-fires
+    // mouseenter and the sidebar pops back mid-task ("overstays its welcome").
+    // A dismissed hover reveal stays closed until the pointer leaves the edge
+    // zone, which re-arms the intent.
+    render(<NarrowOverlays />)
+    const strip = edgeStrip('left')!
+
+    fireEvent.mouseEnter(strip)
+    expect(document.querySelector('[data-narrow-overlay]')).not.toBeNull()
+
+    fireEvent.mouseLeave(document.querySelector('[data-narrow-overlay]')!, { relatedTarget: document.body })
+    expect(document.querySelector('[data-narrow-overlay]')).toBeNull()
+
+    fireEvent.mouseEnter(strip)
+    expect(document.querySelector('[data-narrow-overlay]')).toBeNull()
+
+    fireEvent.mouseLeave(strip)
+    fireEvent.mouseEnter(strip)
+    expect(document.querySelector('[data-narrow-overlay]')).not.toBeNull()
+  })
+
+  it('dismisses a hover reveal on a click outside, but never a pinned one', () => {
+    render(<NarrowOverlays />)
+    fireEvent.mouseEnter(edgeStrip('left')!)
+
+    fireEvent.pointerDown(document.querySelector('[data-narrow-overlay]')!)
+    expect(document.querySelector('[data-narrow-overlay]')).not.toBeNull()
+
+    fireEvent.pointerDown(document.body)
+    expect(document.querySelector('[data-narrow-overlay]')).toBeNull()
+
+    // ⌘B / titlebar 'open' is explicit intent: a click elsewhere must not eat it.
+    revealPane('sessions')
+    fireEvent.pointerDown(document.body)
+    expect(document.querySelector('[data-narrow-overlay]')).not.toBeNull()
   })
 
   it('honors the user drag width, not the declared width, when the zone collapsed', () => {

@@ -1879,6 +1879,16 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Up/Down in classic CLI and modern TUI: navigate wrapped draft rows first.
+  # auto:   Enter history only at the first/last visual row (default).
+  # cursor: Keep arrows inside the draft, including at its boundaries.
+  arrow_key_mode: auto
+
+  # Modern TUI: copy a finished mouse selection and show a temporary receipt.
+  # Set false to require an explicit copy gesture. Terminal-native selection
+  # preferences are separate; classic printed replies belong to the terminal.
+  tui_copy_on_select: true
+
   # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

@@ -29,6 +29,7 @@ function form(overrides: Partial<CronJobFormState> = {}): CronJobFormState {
     continuity: false,
     enabled_toolsets: [],
     workdir: "",
+    category: "",
     ...overrides,
   };
 }

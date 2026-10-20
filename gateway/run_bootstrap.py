@@ -719,6 +719,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _ensure_windows_gateway_venv_imports,
         _gateway_loop_exception_handler,
         _host_attach_or_none,
+        _install_loop_heartbeat,
         _log_standalone_profiles_at_boot,
         _multiplex_profile_homes,
         _refresh_host_gateway_record,
@@ -739,6 +740,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
+
+    # Loop stall observability: the gateway loop serves every WS client, so a GIL-heavy task in one
+    # session silently starves the rest. This tick turns that into a direct log signal.
+    _best_effort(lambda: _install_loop_heartbeat(asyncio.get_running_loop()), "loop heartbeat install")
 
     # Config verdicts come before the duplicate-instance guard: `--replace` must not stop a healthy
     # gateway for a launch that cannot start.

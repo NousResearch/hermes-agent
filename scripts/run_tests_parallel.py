@@ -87,27 +87,35 @@ def _rmtree_force(path: str) -> None:
             pass
     shutil.rmtree(path, onerror=_chmod_retry)
 
-def _runner_scratch_root() -> str:
-    """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
-    gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
-    the FHS disk-backed temp root and is used because the alternatives fail tests that assume
-    the root's shape: under the Hermes home conftest relocates the basetemp; under a dot-dir
-    (~/.cache) the hidden-dir search tests see every fixture as hidden; anything longer than
-    the old /tmp root pushes AF_UNIX test sockets past sun_path.
+def _scratch_root_candidates(native_parent: Path | None = None) -> list[Path]:
+    """Return ordered, per-user scratch roots with a distinct escape per base directory.
 
-    The name is per-USER because a fixed literal in a world-writable sticky dir belongs to
-    whoever created it first: a root-owned root (a container or system-service run) makes every
-    later makedirs/mkdtemp here fail with EPERM for every other user on the host, with no way
-    back that does not need root. Keying by uid means no run is blocked by another's leftovers.
+    ``tempfile.gettempdir()`` can resolve to ``/var/tmp``. Keep the fallback name even
+    when that makes the preferred and system-temp candidates identical: a stale named
+    root can be unusable while its parent is still writable.
     """
     name = "hermes-pytest" + (f"-{os.getuid()}" if hasattr(os, "getuid") else "")
-    candidates = []
-    if os.name != "nt" and os.path.isdir("/var/tmp"):  # no-tmp: ok — probing the disk-backed FHS root
-        candidates.append(f"/var/tmp/{name}")  # no-tmp: ok — disk-backed FHS root
-    candidates.append(os.path.join(tempfile.gettempdir(), name))
+    bases: list[tuple[Path, bool]] = []
+    has_var_tmp = os.name != "nt" and os.path.isdir("/var/tmp")
+    if has_var_tmp:  # no-tmp: ok — probing the disk-backed FHS root
+        bases.append((Path("/var/tmp"), False))  # no-tmp: ok — disk-backed FHS root
+    if native_parent is not None and (os.name == "nt" or not has_var_tmp):
+        bases.append((native_parent, True))
+    bases.append((Path(tempfile.gettempdir()), False))
+    if native_parent is not None:
+        bases.append((native_parent, True))
 
+    candidates: list[Path] = []
+    for base, is_native in bases:
+        base_name = "hermes-pytest" if is_native else name
+        candidates.extend((base / base_name, base / f"{base_name}-fallback"))
+    return list(dict.fromkeys(candidates))
+
+
+def _select_scratch_root(candidates: list[Path]) -> Path:
+    """Choose the first candidate whose directory and private probe both work."""
     errors = []
-    for root in dict.fromkeys(candidates):
+    for root in candidates:
         probe = None
         try:
             os.makedirs(root, exist_ok=True)
@@ -121,6 +129,22 @@ def _runner_scratch_root() -> str:
             return root
     detail = "; ".join(f"{root}: {exc}" for root, exc in errors)
     raise OSError(f"could not create Hermes test scratch root ({detail})")
+
+
+def _runner_scratch_root() -> str:
+    """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
+    gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
+    the FHS disk-backed temp root and is used because the alternatives fail tests that assume
+    the root's shape: under the Hermes home conftest relocates the basetemp; under a dot-dir
+    (~/.cache) the hidden-dir search tests see every fixture as hidden; anything longer than
+    the old /tmp root pushes AF_UNIX test sockets past sun_path.
+
+    The name is per-USER because a fixed literal in a world-writable sticky dir belongs to
+    whoever created it first: a root-owned root (a container or system-service run) makes every
+    later makedirs/mkdtemp here fail with EPERM for every other user on the host, with no way
+    back that does not need root. Keying by uid means no run is blocked by another's leftovers.
+    """
+    return str(_select_scratch_root(_scratch_root_candidates()))
 
 
 

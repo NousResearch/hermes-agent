@@ -657,8 +657,26 @@ def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:
     assert mine.parent == tmp_path and theirs.parent == tmp_path
 
 
+@pytest.mark.platforms("posix")
+def test_scratch_candidates_keep_a_distinct_fallback_when_tempdir_is_var_tmp(monkeypatch) -> None:
+    """A duplicate preferred/system-temp path must not erase the fallback candidate."""
+    import importlib
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    runner = importlib.import_module("run_tests_parallel")
+    monkeypatch.setattr(runner.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(runner.os.path, "isdir", lambda path: str(path) == "/var/tmp")
+    monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: "/var/tmp")
+
+    assert runner._scratch_root_candidates() == [
+        Path("/var/tmp/hermes-pytest-1000"),
+        Path("/var/tmp/hermes-pytest-1000-fallback"),
+    ]
+
+
 def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, monkeypatch) -> None:
-    """A visible but read-only /var/tmp must not prevent the canonical runner from starting."""
+    """A root whose mkdir succeeds but probe fails must use a distinct sibling."""
     import importlib
 
     scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
@@ -666,7 +684,12 @@ def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, mo
     runner = importlib.import_module("run_tests_parallel")
 
     real_makedirs = runner.os.makedirs
+    real_mkdtemp = runner.tempfile.mkdtemp
     real_isdir = runner.os.path.isdir
+    uid_suffix = ""
+    if hasattr(runner.os, "getuid"):
+        monkeypatch.setattr(runner.os, "getuid", lambda: 1000)
+        uid_suffix = "-1000"
     monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(runner.os.path, "isdir",
                         lambda path: True if str(path) == "/var/tmp" else real_isdir(path))
@@ -676,16 +699,77 @@ def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, mo
             raise PermissionError("read-only test fixture")
         return real_makedirs(path, *args, **kwargs)
 
+    def fail_existing_root(*args, **kwargs):
+        if Path(kwargs["dir"]) == tmp_path / f"hermes-pytest{uid_suffix}":
+            raise PermissionError("existing root is not writable")
+        return real_mkdtemp(*args, **kwargs)
+
     monkeypatch.setattr(runner.os, "makedirs", deny_var_tmp)
-    uid_suffix = ""
-    if hasattr(runner.os, "getuid"):
-        monkeypatch.setattr(runner.os, "getuid", lambda: 1000)
-        uid_suffix = "-1000"
+    monkeypatch.setattr(runner.tempfile, "mkdtemp", fail_existing_root)
 
     root = Path(runner._runner_scratch_root())
 
-    assert root == tmp_path / f"hermes-pytest{uid_suffix}"
+    assert root == tmp_path / f"hermes-pytest{uid_suffix}-fallback"
     assert root.is_dir()
+
+
+def test_runner_subprocess_uses_fallback_after_existing_root_probe_fails(tmp_path: Path) -> None:
+    """The real runner path survives mkdir success followed by mkdtemp failure."""
+    repo_root = Path(__file__).resolve().parents[2]
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
+    blocked = scratch / f"hermes-pytest{uid_suffix}"
+    blocked.mkdir()
+
+    shim = tmp_path / "sitecustomize"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import os, tempfile\n"
+        "_isdir = os.path.isdir\n"
+        "os.path.isdir = lambda path: False if str(path) == '/var/tmp' else _isdir(path)\n"
+        "_mkdtemp = tempfile.mkdtemp\n"
+        "_blocked = os.environ['HERMES_TEST_BLOCKED_ROOT']\n"
+        "def _probe(*args, **kwargs):\n"
+        "    if str(kwargs.get('dir')) == _blocked:\n"
+        "        raise PermissionError('existing root is not writable')\n"
+        "    return _mkdtemp(*args, **kwargs)\n"
+        "tempfile.mkdtemp = _probe\n",
+        encoding="utf-8",
+    )
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_fallback.py").write_text(
+        "import tempfile\n"
+        "from pathlib import Path\n"
+        "def test_runner_selected_distinct_fallback():\n"
+        "    assert Path(tempfile.gettempdir()).parent.name.endswith('-fallback')\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update({
+        "TMPDIR": str(scratch),
+        "TMP": str(scratch),
+        "TEMP": str(scratch),
+        "PYTHONPATH": str(shim),
+        "HERMES_TEST_BLOCKED_ROOT": str(blocked),
+    })
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         "--paths", str(probe_dir), "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "1 tests passed" in proc.stdout, proc.stdout
 
 
 def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Path) -> None:

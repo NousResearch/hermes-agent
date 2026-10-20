@@ -91,6 +91,8 @@ Use this when no classic template fits, or when the user wants something origina
 
 ## Examples
 
+When choosing captions and field counts for classic templates, read [EXAMPLES.md](EXAMPLES.md) for worked this-is-fine, drake, two-buttons, expanding-brain, and change-my-mind examples. Resolve the generator through this skill's `scripts/generate_meme.py`; use the current scratch/output path rather than copying historical paths verbatim.
+
 **"debugging production at 2 AM":**
 ```bash
 python generate_meme.py this-is-fine ~/.hermes/cache/scratch/meme.png "SERVERS ARE ON FIRE" "This is fine"

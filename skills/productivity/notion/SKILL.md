@@ -68,6 +68,10 @@ Windows users: skip step 2 entirely until native `ntn` ships — Path B works fi
 
 `Notion-Version: 2025-09-03` is required on all HTTP requests. `ntn` handles this for you. In this version, what users call "databases" are called **data sources** in the API.
 
+Before reading block JSON or constructing block payloads through either path,
+read [the block-type reference](references/block-types.md) with `read_file`
+for per-type payload shapes and readable-text locations.
+
 ## Path A — `ntn` CLI (preferred, macOS / Linux)
 
 ### Raw API calls (shorthand for curl)

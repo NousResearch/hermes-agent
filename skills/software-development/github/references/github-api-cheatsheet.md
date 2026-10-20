@@ -4,9 +4,19 @@ Base URL: `https://api.github.com`
 
 All requests need: `-H "Authorization: token $GITHUB_TOKEN"`
 
-Use the `gh-env.sh` helper to set `$GITHUB_TOKEN`, `$GH_OWNER`, `$GH_REPO` automatically:
+Use `gh-env.sh` to detect authentication and repository metadata, not to obtain a
+PAT from Git's credential store. Prefer `gh` when authenticated; `curl` requires
+a `GITHUB_TOKEN` already configured in the environment/profile `.env`. Stop API
+steps for `git` or `none`; never print credentials or enable shell tracing.
+
 ```bash
-source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+_helper="${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+if [ ! -f "$_helper" ]; then
+  _helper="${HERMES_HOME:-$HOME/.hermes}/skills/software-development/github/scripts/gh-env.sh"
+fi
+source "$_helper"
+unset _helper
+case "$GH_AUTH_METHOD" in gh|curl) ;; *) echo "API authentication required" >&2; exit 1 ;; esac
 ```
 
 ## Repositories
@@ -94,6 +104,11 @@ Note: The Issues API also returns PRs. Filter with `"pull_request" not in item` 
 | Upload asset | POST | `https://uploads.github.com/repos/{owner}/{repo}/releases/{id}/assets?name={filename}` |
 
 ## Secrets
+
+Secret creation/rotation and plaintext encryption/upload are user-only steps;
+see [Secrets Management](repo-management.md#7-secrets-management-github-actions).
+The agent can inspect names and metadata, but must never handle secret values.
+The endpoint table is API reference material, not authorization to write secrets.
 
 | Action | Method | Endpoint |
 |--------|--------|----------|

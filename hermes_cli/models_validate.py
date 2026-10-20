@@ -538,10 +538,15 @@ def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
 
     models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
     if models is None:
+        # Name the active provider and endpoint: the model the user typed may not look Anthropic at
+        # all (e.g. ``openai-codex/gpt-5.5`` while still on a Messages-API proxy); only the SELECTED
+        # provider is Anthropic-shaped, and a generic "Anthropic-compatible proxies" note hid that.
+        provider_str = _m.provider_label(req.provider) or (req.provider or "the active provider")
+        endpoint_str = (req.base_url or "").strip() or "the configured endpoint"
         return _soft_accept(
-            f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
-            "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
-            "without verification."
+            f"Note: could not verify `{req.requested}` against `{provider_str}` at {endpoint_str}.  That "
+            "endpoint speaks the Anthropic Messages API, which often does not expose GET /v1/models.  The "
+            "model name has been accepted without verification."
         )
     # Vendor alias pairs sit below the default 0.5 similarity cutoff (kimi-k3 vs k3 ≈ 0.44).
     match = _match_in_catalog(req.lookup, models, case_insensitive=True, suggest_query=req.requested,

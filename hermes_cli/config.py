@@ -1221,11 +1221,16 @@ def print_config_warnings(config: Optional[dict[str, Any]] = None) -> None:
     if not issues:
         return
 
-    lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
+    warn = lambda text: color(text, Colors.YELLOW, stream=sys.stderr)
+    error = lambda text: color(text, Colors.RED, stream=sys.stderr)
+    dim = lambda text: color(text, Colors.DIM, stream=sys.stderr)
+
+    lines = [warn("⚠ Config issues detected in config.yaml:")]
     for ci in issues:
-        marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
+        marker = error("✗") if ci.severity == "error" else warn("⚠")
         lines.append(f"  {marker} {ci.message}")
-    lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
+    doctor_hint = dim("Run 'hermes doctor' for fix suggestions.")
+    lines.append(f"  {doctor_hint}")
     sys.stderr.write("\n".join(lines) + "\n\n")
 
 
@@ -1238,20 +1243,24 @@ def warn_deprecated_cwd_env_vars() -> None:
     except Exception:
         return
 
+    warn = lambda text: color(text, Colors.YELLOW, stream=sys.stderr)
+    dim = lambda text: color(text, Colors.DIM, stream=sys.stderr)
+    warn_mark = warn("⚠")
+
     lines: list[str] = []
     for name in ("MESSAGING_CWD", "TERMINAL_CWD"):
         val = str(env_map.get(name) or "").strip()
         if val:
-            lines.append(f"  \033[33m⚠\033[0m {name}={val} found in .env — this is deprecated.")
+            lines.append(f"  {warn_mark} {name}={val} found in .env — this is deprecated.")
     if lines:
         from hermes_constants import display_hermes_home
 
         hint_path = display_hermes_home()
-        lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
-        lines.append(
-            "  \033[2mMove to config.yaml instead:  "
-            "terminal:\\n    cwd: /your/project/path\033[0m")
-        lines.append(f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m")
+        lines.insert(0, warn("⚠ Deprecated .env settings detected:"))
+        moved = dim("Move to config.yaml instead:  terminal:\\n    cwd: /your/project/path")
+        lines.append(f"  {moved}")
+        removal = dim(f"Then remove the old entries from {hint_path}/.env")
+        lines.append(f"  {removal}")
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 

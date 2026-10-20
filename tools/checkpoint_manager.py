@@ -163,6 +163,12 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
+# Wall-clock ceiling for the pre-checkpoint file count. The walk is pure Python and holds the
+# GIL, so a multi-second count freezes every other gateway thread (the event loop included) while
+# an agent waits. Timing out is treated as "too big to snapshot" — the same verdict the
+# _MAX_FILES cap produces, just reached by time instead of entry count.
+_DIR_COUNT_BUDGET_S = 0.5
+
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
 
@@ -732,13 +738,21 @@ def _pre_v2_shadow_repos(base: Path) -> list[dict]:
 
 
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Quick file count estimate (stops early if over _MAX_FILES or out of time).
+
+    The pre-checkpoint guard must never outlast a turn: a 50k-entry walk on a cold or
+    network-backed tree costs seconds of pure-Python GIL time. Anything that cannot be counted
+    inside ``_DIR_COUNT_BUDGET_S`` is reported over the cap, so the caller skips the snapshot
+    instead of stalling the gateway's event loop."""
     count = 0
+    deadline = time.monotonic() + _DIR_COUNT_BUDGET_S
     try:
         for _ in Path(path).rglob("*"):
             count += 1
             if count > _MAX_FILES:
                 return count
+            if (count & 0x7FF) == 0 and time.monotonic() > deadline:
+                return _MAX_FILES + 1
     except (PermissionError, OSError):
         pass
     return count

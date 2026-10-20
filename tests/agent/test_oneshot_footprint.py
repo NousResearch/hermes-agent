@@ -51,6 +51,69 @@ def interactive_prompt(tmp_path, monkeypatch):
     return prompt
 
 
+def test_oneshot_with_terminal_names_existing_skills_search(oneshot, tmp_path):
+    """A one-shot session that has a terminal may be told the existing CLI command.
+
+    The sentence uses the agent's own task words. skill_view stays, skill authoring stays gone,
+    and no new model tool is introduced.
+    """
+    prompt = build_skills_system_prompt(
+        available_tools={"skill_view", "skills_list", "terminal"},
+        skills_dir_override=_skills_dir(tmp_path),
+    )
+    assert "hermes skills search" in prompt
+    assert "your own task words" in prompt
+    assert "skill_view(name)" in prompt
+    assert "do not create or edit" in prompt
+    assert "security scan and approval" in prompt
+    assert "skill_manage" not in prompt and "offer to save as a skill" not in prompt
+    assert "skills_search(" not in prompt
+
+
+def test_oneshot_local_only_omits_terminal_skills_search(oneshot, tmp_path):
+    """Local skill readers without a terminal stay on skill_view. No hub command is named."""
+    prompt = build_skills_system_prompt(
+        available_tools={"skill_view", "skills_list"},
+        skills_dir_override=_skills_dir(tmp_path),
+    )
+    assert "skills search" not in prompt
+    assert "skill_view(name)" in prompt
+    assert "do not create or edit" in prompt
+
+
+def test_missing_terminal_omits_skills_search(oneshot, tmp_path, monkeypatch):
+    """Unknown tools and an interactive session without terminal both omit the command."""
+    unknown = build_skills_system_prompt(
+        available_tools=None, skills_dir_override=_skills_dir(tmp_path))
+    assert "skills search" not in unknown
+
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    interactive = build_skills_system_prompt(
+        available_tools={"skill_view", "skills_list", "skill_manage"},
+        skills_dir_override=_skills_dir(tmp_path),
+    )
+    assert "skills search" not in interactive
+    assert "skill_manage" in interactive and "offer to save as a skill" in interactive
+
+
+def test_interactive_terminal_keeps_authoring_and_names_search(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    prompt = build_skills_system_prompt(
+        available_tools={"skill_view", "skills_list", "skill_manage", "terminal"},
+        skills_dir_override=_skills_dir(tmp_path),
+    )
+    assert "hermes skills search" in prompt
+    assert "your own task words" in prompt
+    assert "security scan and approval" in prompt
+    assert "skill_manage" in prompt and "offer to save as a skill" in prompt
+
+
+def test_search_guidance_does_not_add_a_model_tool(oneshot):
+    kept = {t["function"]["name"] for t in oneshot_footprint.prune_oneshot_tools(
+        _tools("skill_manage", "skill_view", "skills_list", "terminal"))}
+    assert kept == {"skill_view", "skills_list", "terminal"}
+
+
 def test_oneshot_delegation_budget_charges_total_children_then_refuses(oneshot, monkeypatch):
     from tools import delegate_tool
 

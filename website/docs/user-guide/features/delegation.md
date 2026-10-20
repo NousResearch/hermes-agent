@@ -669,8 +669,9 @@ With isolation on:
 - Each child starts its terminal in `<repo>/.worktrees/subagent-<id>` on its
   own branch `hermes-subagent/subagent-<id>`, and its goal message tells it to
   work and commit there.
-- The parent's checkout stays untouched; children can't clobber each other's
-  edits.
+- Children have separate checkouts. Creation may add `.worktrees/` to the
+  parent's `.gitignore`; worktrees are not a filesystem sandbox and do not
+  restrict absolute-path access or isolate profile credentials.
 - When a child finishes, its result entry gains a `worktree` field reporting
   `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
   reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
@@ -682,10 +683,12 @@ With isolation on:
   defaults, not measurements, so inspect the worktree rather than assuming
   the child produced nothing.
 
-Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
-directory, on docker/ssh/modal backends, or if worktree creation fails, the
-setting degrades silently to today's shared-workspace behavior — never an
-error.
+Scope: opt-in, git-only, and local-terminal-backend-only. When requested,
+isolation is required: a non-git directory, a non-local terminal backend, a
+failed worktree creation or a failed child-cwd binding stops that child before
+its conversation runs. The result reports an error naming the cause; it does
+not silently use the parent's files. Start from a local repository with at
+least one commit, or turn the setting off to share the parent's workspace.
 
 ## Delegation vs execute_code
 

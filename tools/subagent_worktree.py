@@ -1,7 +1,7 @@
 """Opt-in git worktree isolation for delegated subagents (``delegation.worktree_isolation``).
 
-Git-only (outside a repo children share the parent's cwd); local terminal backend only (on
-docker/ssh/modal the host worktree is invisible in the sandbox, so isolation is skipped). One
+Git-only and local-terminal-backend-only. The delegation caller refuses to run a child
+when requested isolation is unavailable; this module reports creation failure as None. One
 worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``hermes-subagent/<id>``.
 On finish: zero commits AND clean (both probes ok) -> removed; work left behind -> archived to
 ``refs/hermes/archive/<tree>`` then removed (``worktrees.archive_dirty``, branch kept so the parent
@@ -75,7 +75,7 @@ def _ensure_gitignore_entry(repo_root: str) -> None:
 
 
 def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[dict[str, str]]:
-    """Create an isolated worktree for one child; None (silent downgrade) outside git/on failure."""
+    """Create a worktree, or return None outside git/on failure for the caller to refuse."""
     repo_root = resolve_repo_root(parent_cwd)
     if not repo_root:
         return None
@@ -98,7 +98,7 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         logger.warning("subagent worktree: creation failed: %s", exc)
         return None
     if result.returncode != 0:
-        # Common on repos with zero commits (unborn HEAD) — degrade silently.
+        # Common on repos with zero commits (unborn HEAD); the caller refuses the child.
         logger.warning("subagent worktree: git worktree add failed: %s", result.stderr.strip())
         return None
     logger.info("subagent worktree created: %s (branch %s)", wt_path, branch)

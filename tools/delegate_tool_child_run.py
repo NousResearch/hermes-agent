@@ -420,25 +420,40 @@ def _register_child(
     return _subagent_id
 
 def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
-    """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
-    child's terminal starts there). Git-only, local-backend-only; failures
-    degrade silently to the shared workspace. Returns the worktree info or None."""
+    """Return an isolated worktree, or None only when isolation was not requested.
+
+    A requested boundary is mandatory: fail before the child conversation starts
+    rather than running it in the parent's workspace on an unsupported backend or error.
+    """
     from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
     if not _get_worktree_isolation():
         return None
-    with _quiet("worktree isolation setup failed: %s"):
-        from tools import subagent_worktree
-        if not subagent_worktree.local_backend_active():
-            logger.debug("worktree isolation skipped: non-local terminal backend")
-            return None
-        _parent_cwd = None
-        with _quiet(None):
-            from tools.terminal_tool import get_session_cwd as _gsc
-            _parent_cwd = _gsc(parent_task_id)
-        return subagent_worktree.create_subagent_worktree(
-            _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
-        )
-    return None
+    from tools import subagent_worktree
+    from tools.terminal_tool import get_session_cwd
+    if not subagent_worktree.local_backend_active():
+        raise RuntimeError(
+            "delegation.worktree_isolation needs terminal.backend: local (a host worktree is invisible to "
+            "non-local backends such as docker, ssh or modal); child was not run. Switch to the local backend "
+            "or disable delegation.worktree_isolation.")
+    parent_cwd = get_session_cwd(parent_task_id) or _resolve_workspace_hint(parent_agent)
+    if not parent_cwd:
+        raise RuntimeError(
+            "delegation.worktree_isolation needs the parent's working directory, but none is recorded for this "
+            "session; child was not run. Start the parent session from the Git checkout, or disable "
+            "delegation.worktree_isolation.")
+    repo_root = subagent_worktree.resolve_repo_root(parent_cwd)
+    if not repo_root:
+        raise RuntimeError(
+            f"delegation.worktree_isolation needs a Git repository, but the parent workspace {parent_cwd!r} is not "
+            "inside one; child was not run. Start the parent in a local Git checkout or disable "
+            "delegation.worktree_isolation.")
+    info = subagent_worktree.create_subagent_worktree(repo_root, subagent_id=subagent_id)
+    if info is None:
+        raise RuntimeError(
+            f"delegation.worktree_isolation could not add a worktree in {repo_root!r}; child was not run. Git's error "
+            "is in the 'subagent worktree' log warning. A repository with no commits needs an initial commit; "
+            "otherwise fix the reported git error or disable delegation.worktree_isolation.")
+    return info
 
 def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
@@ -811,9 +826,18 @@ class _ChildRun:
 
         self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
         if self.worktree_info is not None:
-            with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
-                from tools.terminal_tool import record_session_cwd as _rsc
-                _rsc(self.child_task_id, self.worktree_info["path"])
+            # A created tree is not isolation until the child's tools are bound to it.
+            from tools.terminal_tool import record_session_cwd as _rsc
+            try:
+                with child_profile_scope(self.child):
+                    _rsc(self.child_task_id, self.worktree_info["path"])
+            except Exception as exc:
+                raise RuntimeError(
+                    f"delegation.worktree_isolation created {self.worktree_info['path']!r} but could not bind the "
+                    f"child's terminal to it ({type(exc).__name__}: {exc}); child was not run. Check this child's "
+                    "'worktree' result for cleanup status and any archive or recovery details. Retry the "
+                    "delegation; if this keeps failing, set delegation.worktree_isolation: false to run children in "
+                    "the parent's checkout without isolation.") from exc
             # The child's context is already built; carry the isolation contract on
             # the goal message instead (same turn, no system-prompt mutation).
             from tools.subagent_worktree import build_worktree_context_note

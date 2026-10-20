@@ -258,6 +258,26 @@ class TestClarifyBatchPanel:
         assert cli._connection_state is None
 
 
+    def test_connection_card_opens_on_the_unfinished_app_and_a_reopen_keeps_its_draft(self):
+        cli = _make_cli_stub()
+        cli._connection_state = None
+        cli._capture_modal_input_snapshot = MagicMock()
+        cli._restore_modal_input_snapshot = MagicMock()
+        cli._ring_bell = MagicMock()
+        form = [{"name": "TOKEN", "prompt": "Token", "required": True}]
+        payload = {"op_id": "op", "seq": 4, "targets": [
+            {"name": "linear", "state": "connected"},
+            {"name": "asana", "state": "pending", "required_env": form},
+        ]}
+        cli._connection_callback(payload)
+        assert cli._connection_state["target"]["name"] == "asana"
+        cli._connection_state["drafts"]["asana"]["TOKEN"] = "typed-not-sent"
+        cli._connection_callback(dict(payload))  # a replay-gap recovery re-sends the same snapshot
+        assert cli._connection_state["target"]["name"] == "asana"
+        assert cli._connection_state["drafts"]["asana"]["TOKEN"] == "typed-not-sent"
+        assert cli._capture_modal_input_snapshot.call_count == 1
+
+
 class TestClarifyBatchNavigation:
     """Shift-Tab, answer restore on re-visit, and Other edit-prefill."""
 

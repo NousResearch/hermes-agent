@@ -694,9 +694,19 @@ class CLIModalMixin:
     def _connection_callback(self, payload):
         if not isinstance(payload, dict):
             return
-        if self._connection_state is None:  # a recovery re-open keeps the draft the first open saved
+        state = self._connection_state
+        if state is not None and state["payload"].get("op_id") == payload.get("op_id"):
+            # A replay-gap re-open of the card already shown: apply it as an update so the active
+            # target, field and unsent input survive; an identical snapshot changes nothing.
+            if int(payload.get("seq") or 0) > int(state["payload"].get("seq") or 0):
+                self._connection_on_change(payload)
+            return
+        if state is None:
             self._capture_modal_input_snapshot()
-        self._connection_show_target(payload, 0)
+        targets = payload.get("targets") or []
+        # Open on the first app that still needs the user, not one already connected or skipped.
+        index = next((i for i, item in enumerate(targets) if item.get("state") not in {"connected", "skipped"}), 0)
+        self._connection_show_target(payload, index)
         state = self._connection_state
         if state is not None and state["phase"] != "waiting":
             self._ring_bell(prompt=True, context=t("cli.connect.bell_context"))

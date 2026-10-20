@@ -1152,7 +1152,7 @@ def _recover_deleted_session_cwd() -> None:
     races sibling forks."""
     import os
 
-    import agent.runtime_cwd as runtime_cwd
+    from agent.runtime_cwd import set_session_cwd
 
     try:
         _cwd_is_live = os.path.isdir(os.getcwd())  # getcwd itself raises on a deleted cwd
@@ -1163,7 +1163,7 @@ def _recover_deleted_session_cwd() -> None:
             return
         for fallback in (os.environ.get("HOME"), "/tmp"):
             if fallback and os.path.isdir(fallback):
-                runtime_cwd.set_session_cwd(fallback)
+                set_session_cwd(fallback)
                 return
     except Exception:
         pass  # best-effort: the outer handler still reports a fork failure normally

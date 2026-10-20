@@ -6,8 +6,10 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
+import functools
 import logging
 import json
+import math
 import os
 import posixpath
 import re
@@ -16,6 +18,45 @@ from typing import Any, overload
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
+
+
+_DEFAULT_PROBE_TIMEOUT = 20.0
+# A probe has no reason to wait longer, and subprocess rejects timeouts past ~2.1e6 s.
+_MAX_PROBE_TIMEOUT = 600.0
+
+
+def _probe_timeout() -> float:
+    """Seconds to wait for a backend's executable probe (e.g. ``docker version``).
+
+    A Docker daemon that has just started, or is under load, can take well over
+    five seconds to answer. A timeout here makes the requirements check fail,
+    which removes the terminal and file tools from the session, so the default
+    is generous. ``TERMINAL_PROBE_TIMEOUT`` (read scope-aware) overrides it; a
+    missing, unparsable, non-positive or infinite value falls back to the
+    default, and a value above 600 is capped at 600.
+    """
+    return _parse_probe_timeout(_tenv("TERMINAL_PROBE_TIMEOUT", "").strip())
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_probe_timeout(raw: str) -> float:
+    """Parse once per distinct value, so a bad setting warns once rather than on every probe."""
+    if not raw:
+        return _DEFAULT_PROBE_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: not a number; using %ss", raw, _DEFAULT_PROBE_TIMEOUT)
+        return _DEFAULT_PROBE_TIMEOUT
+    if not value > 0 or math.isinf(value):
+        logger.warning("Ignoring TERMINAL_PROBE_TIMEOUT=%r: must be a positive number; using %ss",
+                       raw, _DEFAULT_PROBE_TIMEOUT)
+        return _DEFAULT_PROBE_TIMEOUT
+    if value > _MAX_PROBE_TIMEOUT:
+        logger.warning("TERMINAL_PROBE_TIMEOUT=%r is above the %ss maximum; using %ss",
+                       raw, _MAX_PROBE_TIMEOUT, _MAX_PROBE_TIMEOUT)
+        return _MAX_PROBE_TIMEOUT
+    return value
 
 
 @contextmanager

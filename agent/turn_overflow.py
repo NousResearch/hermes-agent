@@ -24,8 +24,9 @@ from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
     get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
-    parse_available_output_tokens_from_error,
+    parse_available_output_tokens_from_error, parse_context_limit_from_error,
 )
+from agent.turn_context_window import remember_provider_context_limit
 from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 from utils import base_url_host_matches
@@ -329,8 +330,10 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
 
     agent = st.agent
     compressor = agent.context_compressor
-    new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
+    new_ctx = (parse_context_limit_from_error(error_msg) if old_ctx <= 0
+               else get_context_length_from_provider_error(error_msg, old_ctx))
     if new_ctx is not None:
+        remember_provider_context_limit(agent, new_ctx)
         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
         compressor.update_model(
             model=agent.model, context_length=new_ctx, base_url=agent.base_url,

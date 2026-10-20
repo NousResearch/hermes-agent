@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
+from agent.system_wrappers import strip_system_wrappers
 from hermes_state_errors import is_malformed_db_error
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
@@ -806,6 +807,8 @@ class SessionSearchMixin:
                 preview = describe_skill_invocation(decoded) or decoded
             else:
                 preview = _flatten_text(decoded)
+            # Mirrored cron output carries the delivery banner; /rewind shows the content, not the wrapper.
+            preview = strip_system_wrappers(preview)
             preview = " ".join(preview.split())
             if len(preview) > 80:
                 preview = preview[:77] + "..."

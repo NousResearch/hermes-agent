@@ -138,6 +138,22 @@ class TestSubprocessEnvironment:
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
 
+    def test_browser_use_telemetry_overrides_contrary_parent(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {
+            "ANONYMIZED_TELEMETRY": "true",
+            "KEEP_ME": "yes",
+        }
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+
+        env = bu_cli._base_subprocess_env()
+
+        assert env["ANONYMIZED_TELEMETRY"] == "false"
+        assert env["KEEP_ME"] == "yes"
+
     def test_subprocess_env_replaces_parent_python_import_paths(self, monkeypatch):
         """#83427/#84841/#86006/#86104: an inherited PYTHONPATH/PYTHONHOME must never reach the
         harness child; PYTHONPATH is replaced by the harness's own site dir, unrelated vars survive."""

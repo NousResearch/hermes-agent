@@ -178,7 +178,7 @@ def _base_subprocess_env() -> dict:
     else:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
-    env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    env["ANONYMIZED_TELEMETRY"] = "false"
     namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
     return env
 

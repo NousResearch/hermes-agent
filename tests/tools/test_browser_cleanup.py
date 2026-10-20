@@ -188,6 +188,78 @@ class TestInactivityJanitorMultiplex:
         assert "t1" not in self.bt._session_last_activity
         assert "t1" not in self.bt._cleanup_failures
 
+    def _run_janitor_with_mid_selection_action(self, action):
+        """Run the janitor once with ``action`` injected between the stale-list build and
+        the per-session recheck — the exact window of #138797. The first ``time.time()``
+        call is the selection snapshot; the second (the recheck) fires ``action`` first.
+        ``action`` must not take ``_cleanup_lock`` (the recheck holds it — a locked
+        ``_update_session_activity`` would deadlock; touch via a direct store instead).
+        A positive timeout is required: with the 0s default even a just-touched
+        session reads as `elapsed > 0`."""
+        import time as _time
+
+        self.bt.BROWSER_SESSION_INACTIVITY_TIMEOUT = 60
+        real_time = _time.time
+        calls = {"n": 0}
+
+        def fake_time():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_time() + 10_000.0  # far-future snapshot: activity 1.0 looks stale
+            if calls["n"] == 2:
+                action()
+            return real_time()
+
+        with (
+            patch.object(bt_lifecycle.time, "time", side_effect=fake_time),
+            patch("tools.browser_tool_lifecycle.cleanup_browser") as mock_cleanup,
+        ):
+            bt_lifecycle._cleanup_inactive_browser_sessions()
+        return mock_cleanup
+
+    def test_janitor_skips_session_touched_after_selection(self):
+        """A command touching activity after the janitor built its stale list must save the
+        session: the recheck under the lock sees the fresh timestamp and skips (#138797)."""
+        self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
+        self.bt._session_last_activity["t1"] = 1.0  # stale at selection time
+
+        real_time = bt_lifecycle.time.time
+
+        def touch():
+            # What _update_session_activity would store, minus the lock it cannot take here.
+            self.bt._session_last_activity["t1"] = real_time()
+
+        mock_cleanup = self._run_janitor_with_mid_selection_action(touch)
+
+        mock_cleanup.assert_not_called()
+        assert "t1" in self.bt._active_sessions
+        assert "t1" in self.bt._session_last_activity
+
+    def test_janitor_still_cleans_untouched_stale_session(self):
+        """Counterpart to the skip: with no touch in the window the session is still torn
+        down (the recheck must not turn the janitor into a no-op)."""
+        self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
+        self.bt._session_last_activity["t1"] = 1.0
+
+        mock_cleanup = self._run_janitor_with_mid_selection_action(lambda: None)
+
+        mock_cleanup.assert_called_once()
+
+    def test_janitor_skips_session_untracked_after_selection(self):
+        """A session whose tracking vanished in the window (cleaned by another path) is
+        skipped, not force-cleaned through a missing entry (#138797)."""
+        self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
+        self.bt._session_last_activity["t1"] = 1.0
+
+        def untrack():
+            self.bt._session_last_activity.pop("t1", None)
+            self.bt._active_sessions.pop("t1", None)
+
+        mock_cleanup = self._run_janitor_with_mid_selection_action(untrack)
+
+        mock_cleanup.assert_not_called()
+        assert "t1" not in self.bt._session_last_activity
+
 
 class TestAtexitStopSwallowsInterrupt:
     def test_second_ctrl_c_during_join_does_not_propagate(self, monkeypatch):

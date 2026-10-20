@@ -160,6 +160,15 @@ def _cleanup_inactive_browser_sessions():
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
     for task_id in sessions_to_cleanup:
+        with _bt._cleanup_lock:
+            # Re-check under the lock: a command may have touched this session's
+            # activity after the stale list was built — it is back in use, not stale.
+            # See #138797. Timestamp first, then the read: together with the lock this
+            # never misses a touch that completed before the recheck began.
+            now = time.time()
+            last_time = _bt._session_last_activity.get(task_id)
+            if last_time is None or now - last_time <= _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT:
+                continue
         with _session_owner_scope(task_id):
             if _human_holds_shared_browser(task_id):
                 # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.

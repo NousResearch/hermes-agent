@@ -5,6 +5,7 @@ per-session vars, the ``init_session`` bootstrap, and the per-command wrapper.
 No module state lives here; ``BaseEnvironment`` supplies quoting hooks.
 """
 
+import os
 import re
 import shlex
 from typing import Iterable
@@ -32,6 +33,33 @@ _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "HERMES_RPC_|HERMES_KERNEL_DIR)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# --- capture-time secret redaction -----------------------------------------------------
+# A deployment that holds provider credentials in the agent's process environment (the
+# standard container-agent posture) would otherwise clone every one of them into the
+# shared bash snapshot on every per-command re-dump — ``hermes-snap-*.sh`` files that
+# outlive the session in scratch trees. The wrapper's ``source`` then re-exports the
+# stored copy OVER the ``local_env_policy`` child-env scrub (SECURITY.md §2.3: provider
+# credentials are stripped from shell subprocesses by default), silently undoing it.
+# Unsetting the secret-shaped NAMES of the PARENT env before ``export -p`` stops the
+# clone at the write point. This is lossless for the session: a parent-env name still
+# reaches every command through the (scrubbed) Popen inheritance, and names a SESSION
+# exports are deliberately NOT touched — there the snapshot is the only cross-command
+# carrier, and stripping would break the next command. Kill-switch (disable doctrine,
+# cf. HERMES_DISABLE_FILE_STATE_GUARD): ``HERMES_DISABLE_SNAPSHOT_SECRET_REDACTION=1``
+# restores the verbatim dump.
+_SNAPSHOT_SECRET_NAME_RE = re.compile(
+    r"[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASS(?:WORD|WD|PHRASE)?|CREDENTIALS?)S?", re.IGNORECASE)
+_SNAPSHOT_SECRET_HEX64_RE = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def _secret_class_parent_env_names() -> set:
+    """Parent-env names that are secret-shaped: NAME ends on a credential keyword, or
+    the VALUE is an unprefixed 64-hex blob (the shape of most API/DB keys)."""
+    return {name for name, value in os.environ.items()
+            if _SNAPSHOT_SECRET_NAME_RE.fullmatch(name)
+            or _SNAPSHOT_SECRET_HEX64_RE.fullmatch(value)}
+
+
 # mktemp template suffix + the shell variable holding the allocated temp path.
 _SNAP_TMP_SUFFIX = ".tmp.XXXXXXXXXX"
 _SNAP_TMP = '"$__hermes_snap_tmp"'
@@ -49,7 +77,9 @@ def _cwd_marker_printf(marker: str) -> str:
 
 def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[str] = ()) -> str:
     """Shell snippet dumping ``export -p`` to *tmp_path* minus the per-session bridged vars (see
-    ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and *excluded_names*. The vars are ``unset`` in a subshell
+    ``_SNAPSHOT_EXCLUDED_ENV_REGEX``), secret-shaped parent-env names (see
+    ``_SNAPSHOT_SECRET_NAME_RE``; disable with ``HERMES_DISABLE_SNAPSHOT_SECRET_REDACTION=1``)
+    and *excluded_names*. The vars are ``unset`` in a subshell
     BEFORE ``export -p``: a line-based ``grep -vE`` is unsafe because bash 3.2 prints a value
     containing a newline as a multi-line ``declare -x`` block, so smuggled continuation lines would
     survive into the snapshot and execute on the next ``source``. ``|| true`` keeps the success
@@ -65,6 +95,12 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
     # under 2>/dev/null. Caller names are quoted so malformed config can never
     # become shell syntax (valid names stay unquoted by shlex.quote()).
     safe_names = {name for name in excluded_names if isinstance(name, str) and name}
+    disable = os.environ.get("HERMES_DISABLE_SNAPSHOT_SECRET_REDACTION", "")  # health: allow HX002 -- break-glass kill switch for a redaction that could wed a workflow; disable doctrine of HERMES_DISABLE_FILE_STATE_GUARD, read at build time so it needs no config plumbing into a pure string builder
+    if disable.strip().lower() not in ("1", "true", "yes"):
+        safe_names |= _secret_class_parent_env_names()
+        # Session-bridged prefixes are already unset by the snippet itself; dropping them
+        # here keeps the explicit unset list small on credential-dense parent envs.
+        safe_names -= {n for n in safe_names if n.startswith(("HERMES_SESSION_", "HERMES_RPC_"))}
     extra_unset = "".join(f" {shlex.quote(name)}" for name in sorted(safe_names))
     return (
         "{ ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "

@@ -137,6 +137,35 @@ def http_status_detail(response: Any) -> str:
     return (response.text or "").strip() or f"HTTP {response.status_code}"
 
 
+def http_error_message(label: str, resp: httpx.Response) -> str:
+    """``"<label> returned HTTP <code>"`` plus what the server said about it, so the agent can
+    act on a rate limit's wait or a missing parameter instead of guessing from the bare code.
+
+    Reads a JSON body's ``error`` (string, or ``{"message": ...}``) and ``detail``/``message``,
+    or a ``text/plain`` body, capped at 300 characters, and the ``Retry-After`` header.
+    """
+    message = f"{label} returned HTTP {resp.status_code}"
+    detail = ""
+    try:
+        body = resp.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            error = error.get("message") or error.get("code")
+        explanation = body.get("detail") or body.get("message")
+        detail = ": ".join(str(part) for part in (error, explanation) if part)
+    elif resp.headers.get("content-type", "").startswith("text/plain"):
+        detail = resp.text.strip()
+    if detail:
+        message += f": {detail[:300]}"
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        message += f" (retry after {retry_after})"
+    return message
+
+
 def http_get_json(
     label: str, url: str, *, params: dict[str, Any], headers: dict[str, str], timeout: int,
     logger: logging.Logger, reach_target: Optional[str] = None,
@@ -147,8 +176,9 @@ def http_get_json(
         resp = httpx.get(url, params=params, headers=headers, timeout=timeout)
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        logger.warning("%s HTTP error: %s", label, exc)
-        return None, search_fail(f"{label} returned HTTP {exc.response.status_code}")
+        message = http_error_message(label, exc.response)
+        logger.warning("%s HTTP error: %s", label, message)
+        return None, search_fail(message)
     except httpx.RequestError as exc:
         logger.warning("%s request error: %s", label, exc)
         return None, search_fail(f"Could not reach {reach_target or label}: {exc}")

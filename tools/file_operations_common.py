@@ -117,8 +117,14 @@ class SearchResult:
     warning: Optional[str] = None
     error: Optional[str] = None
 
-    # Below this many matches the verbose array is already compact enough that
-    # a path-grouping header would cost more tokens than it saves.
+    # How the backend actually applied the macOS protected-folder exclusions:
+    # "glob" (rg excludes the contents but still opens the folder entry itself)
+    # or "prune" (find -prune never descends). Underscored so it stays internal
+    # — serialized payloads drop underscored keys.
+    _macos_exclusion_mode: Optional[str] = None
+
+    # Below this many matches the verbose array is already compact enough
+    # that a path-grouping header would cost more tokens than it saves.
     _DENSIFY_MIN_MATCHES: ClassVar[int] = 5
 
     def _densify_matches(self) -> Optional[str]:

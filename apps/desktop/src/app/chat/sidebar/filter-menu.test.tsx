@@ -7,6 +7,7 @@ import { $interfaceMode } from '@/store/interface-mode'
 import {
   $sidebarListGroupIds,
   $sidebarOrdering,
+  $sidebarRowMeta,
   $sidebarStatusFilter,
   resetSidebarView,
   setSidebarGrouping,
@@ -58,4 +59,33 @@ it('translates the live filter menu while preserving selected values and the cur
   expect(screen.getByRole('menuitemcheckbox', { name: ja.needsInput }).getAttribute('aria-checked')).toBe('true')
   expect(screen.queryByRole('menuitemcheckbox', { name: zh.needsInput })).toBeNull()
   expect($sidebarOrdering.get()).toBe('manual')
+})
+
+it('offers no checkbox for the always-on profile chip, and still decodes a persisted one', async () => {
+  $interfaceMode.set('advanced')
+  // A value written by an older build, before the chip became unconditional.
+  $sidebarRowMeta.set(['updated', 'preview', 'profile'])
+  render(
+    <I18nProvider configClient={null} initialLocale="en">
+      <Menu />
+    </I18nProvider>
+  )
+  const f = TRANSLATIONS.en.sidebar.filter
+  fireEvent.keyDown(screen.getByRole('button', { name: f.filters }), { key: 'Enter' })
+
+  // The row-details submenu is gated on showsAdvancedChrome only; its options
+  // are the ROW_META entries. 'profile' must not be among them, since the chip
+  // renders unconditionally and a switch here would change nothing on screen.
+  fireEvent.keyDown(screen.getByRole('menuitem', { name: f.show }), { key: 'ArrowRight' })
+  expect(screen.queryByRole('menuitemcheckbox', { name: f.profile })).toBeNull()
+  // Its siblings are still present, so the assertion above is about 'profile'
+  // specifically and not an empty submenu.
+  expect(screen.getByRole('menuitemcheckbox', { name: f.updated })).toBeTruthy()
+
+  // The stored value survives the codec round-trip rather than being stripped:
+  // the union member is still legal input, just unread.
+  await act(async () => {
+    $sidebarRowMeta.set($sidebarRowMeta.get())
+  })
+  expect($sidebarRowMeta.get()).toContain('profile')
 })

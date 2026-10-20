@@ -110,6 +110,7 @@ vi.mock('@/i18n', () => ({
           markRead: 'Mark as read',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
+          ownedByProfile: (profile: string) => `Profile: ${profile}`,
           pin: 'Pin',
           rename: 'Rename',
           renamed: 'Renamed',

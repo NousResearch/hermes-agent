@@ -1592,10 +1592,15 @@ def check_respawn_guard(
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
-            ended_at = _kb._to_epoch(latest_run["ended_at"])
-            if ended_at is not None and (now - ended_at) < rl_cooldown:
-                return "infrastructure_cooldown"
+        if _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
+            if rl_cooldown > 0:
+                ended_at = _kb._to_epoch(latest_run["ended_at"])
+                if ended_at is not None and (now - ended_at) < rl_cooldown:
+                    return "infrastructure_cooldown"
+            # An infrastructure refusal never spends the card's retry budget.
+            # With cooldown disabled, do not let its diagnostic text fall
+            # through to the ordinary blocker classifier.
+            return None
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -2512,11 +2517,18 @@ def _rotate_worker_log(
         pass
 
 
-def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+def _module_hermes_argv(module: str = "hermes_cli.main") -> list[str]:
+    """Installation-bound Hermes CLI invocation for a detached worker.
 
+    The PM store interpreter runs isolated, so a bare ``python -m
+    hermes_cli.main`` cannot rely on the dispatcher's in-process import path
+    or on ``PYTHONPATH``. ``runtime_command`` restores the checkout, runs
+    ``hermes_bootstrap``, and activates the selected dependency generation
+    before entering the CLI.
+    """
+    from hermes_cli._launchers import runtime_command
+
+    return runtime_command(Path(__file__).resolve().parents[1], module=module)
 
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
@@ -2579,12 +2591,11 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
+    same-directory file), then this install's bootstrap command, then
+    ``which("hermes")`` (Windows: safe PATH search, batch shims fall back to
+    the bootstrap command) only when ``hermes_cli`` is not importable. The
+    installation-bound command must win over PATH: a PATH-first lookup lets an
+    attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
@@ -2743,9 +2754,8 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """The profile owner executes; this subprocess only waits for its receipt."""
-    import sys
-    return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    """Start the receipt client through this install's PM-aware bootstrap."""
+    return _module_hermes_argv(module="hermes_cli.kanban_worker_client")
 
 
 def _open_worker_log(task: Task, board: Optional[str]):
@@ -2908,13 +2918,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
-    # The worker is `-m hermes_cli.kanban_worker_client`: Hermes itself, with no console-script
-    # bootstrap. The routed-profile scrub above strips Hermes-owned PYTHONPATH entries (user
-    # children must not see our tree), so a PYTHONPATH-launched dispatcher spawned a child that
-    # died on `No module named 'hermes_cli'` before it ever reached the owner. Same pin as cron's
-    # external worker (#112729): applied to the sanitized env, after every other decision stands.
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    env = pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parent.parent)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

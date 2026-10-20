@@ -7,7 +7,6 @@ The authority test is "does this worker act for a ROUTED home", exactly as ``ser
 decides it. The secret scope bound around the env build is what supplies B's OWN values for the
 dispatcher's declared ``terminal.env_passthrough`` names.
 """
-import os
 from pathlib import Path
 
 import pytest
@@ -106,11 +105,11 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
     assert captured and captured[0].get("OPENAI_API_KEY") == "dispatcher-launch-key"
 
 
-def test_worker_for_another_profile_can_still_import_hermes(profile_b, tmp_path, monkeypatch):
-    """The routed-profile scrub strips Hermes-owned PYTHONPATH entries, but the worker IS Hermes
-    (`-m hermes_cli.kanban_worker_client`): a PYTHONPATH-launched dispatcher must hand it a tree
-    it can import, or it dies on `No module named 'hermes_cli'` before reaching the owner."""
-    repo_root = Path(kanban_db_dispatch.__file__).resolve().parent.parent
-    monkeypatch.setenv("PYTHONPATH", str(repo_root))
-    env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
-    assert str(repo_root) in env.get("PYTHONPATH", "").split(os.pathsep)
+def test_worker_for_another_profile_bootstraps_without_dispatcher_pythonpath(profile_b, monkeypatch):
+    """A routed worker starts from the installation-bound bootstrap, not PYTHONPATH."""
+    monkeypatch.setenv("PYTHONPATH", "/stale/import/root")
+    argv = kanban_db_dispatch._worker_argv(None, "b", str(profile_b))
+    assert argv[1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in argv[3]
+    assert "hermes_cli.kanban_worker_client" in argv[3]
+    assert "os.environ.pop('PYTHONPATH', None)" in argv[3]

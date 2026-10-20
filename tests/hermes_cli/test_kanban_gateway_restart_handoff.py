@@ -83,7 +83,11 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 :] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    worker_argv = captured_cmd[separator + 1 :]
+    assert worker_argv[1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in worker_argv[3]
+    assert "hermes_cli.kanban_worker_client" in worker_argv[3]
+    assert "os.environ.pop('PYTHONPATH', None)" in worker_argv[3]
     assert task.assignee is not None
     assert captured_env["HERMES_PROFILE"] == task.assignee
     assert captured_env["HERMES_HOME"] == str(workspace.parent / ".hermes" / "profiles" / task.assignee)
@@ -143,7 +147,10 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert captured_cmd[1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in captured_cmd[3]
+    assert "hermes_cli.kanban_worker_client" in captured_cmd[3]
+    assert "os.environ.pop('PYTHONPATH', None)" in captured_cmd[3]
 
 
 @pytest.mark.platforms("linux")
@@ -181,8 +188,11 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     monkeypatch.setattr(process_registry, "_scope_degraded_warned", False)
     with caplog.at_level("WARNING", logger=process_registry.logger.name):
         kbd._default_spawn(task, str(workspace))
-    # Unwrapped: the bare worker argv (the profile owner executes; this client waits for its receipt).
-    assert spawned[-1] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    # Unwrapped: the installation-bound worker bootstrap remains safe without a scope.
+    assert spawned[-1][1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in spawned[-1][3]
+    assert "hermes_cli.kanban_worker_client" in spawned[-1][3]
+    assert "os.environ.pop('PYTHONPATH', None)" in spawned[-1][3]
     warned = [r.getMessage() for r in caplog.records if "KILLED when the unit exits" in r.getMessage()]
     assert len(warned) == 1 and "KillMode=process" in warned[0]
 

@@ -563,12 +563,13 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     from tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr(process_registry, "_IS_LINUX", True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
 
     def spawn_via_real_boundary(task, workspace, board=None):
-        kbd._restart_safe_worker_argv(task, ["hermes", "chat"])  # raises: real probe verdict, real _degrade()
+        kbd._restart_safe_worker_argv(task, ["hermes", "chat"])
         raise AssertionError("unreachable")
 
     with kbc.connect() as conn:
@@ -1569,39 +1570,32 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the interpreter-bound module form (exactly this install; a PATH
-# shim could be attacker-planted or belong to another install, #111569) and
-# only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# prefers this install's bootstrap command (a PATH shim could be attacker-
+# planted or belong to another install, #111569) and only falls back to the
+# PATH shim when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
+def test_resolve_hermes_argv_prefers_bootstrap_command_over_path_shim(monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
-    the module argv wins whenever ``hermes_cli`` is importable; only an
+    the bootstrap command wins whenever ``hermes_cli`` is importable; only an
     explicit ``$HERMES_BIN`` overrides it."""
     import shutil
-    import sys
     from hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    assert "hermes_bootstrap" in argv[3]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
 
-def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
-
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
-    """
+def test_resolve_hermes_argv_bootstraps_from_isolated_worker_cwd(tmp_path):
+    """A PM-isolated worker boots without the dispatcher's import path (#137079)."""
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
@@ -1611,32 +1605,25 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    offline = {**os.environ, "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False, env=offline)
+    env = {**os.environ, "PYTHONPATH": "", "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
+    r = subprocess.run(
+        argv + ["--version"], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
 
 
-def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
-    """The dispatcher's worker must carry the import context of the install that spawned it.
-
-    The worker is always ``sys.executable -m hermes_cli.kanban_worker_client`` (it only submits
-    the claim to the profile owner), and the worker env scrub strips Hermes-owned PYTHONPATH
-    entries, so a bare module child died on import and the board auto-blocked (#122299,
-    #122487, #122500). The spawned env must put the running install's root first on
-    PYTHONPATH. Main's carve-out for a resolved ``hermes`` shim path does not apply here: the
-    worker never runs the resolved CLI argv, so a ``$HERMES_BIN``/PATH shim can neither replace
-    the module child nor drop the pin.
-    """
+def test_default_spawn_uses_runtime_bootstrap_for_worker_client(tmp_path, monkeypatch):
+    """The real receipt-client spawn owns PM bootstrap, not ``PYTHONPATH`` (#137079)."""
     import os
     import sys
     from pathlib import Path
 
     from hermes_cli import kanban_db_dispatch as kbd
 
-    root = str(Path(kbd.__file__).resolve().parents[1])
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -1662,11 +1649,12 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
         claim_expires=None, tenant=None, branch_name=None,
     )
 
-    for resolved in ([sys.executable, "-m", "hermes_cli.main"], ["/opt/hermes/bin/hermes"]):
-        monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda resolved=resolved: resolved)
-        kbd._default_spawn(task, str(tmp_path / "ws"))
-        assert captured["cmd"][-3:] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
-        assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == root
+    monkeypatch.setenv("PYTHONPATH", "/stale/import/root")
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert captured["cmd"][1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in captured["cmd"][3]
+    assert "hermes_cli.kanban_worker_client" in captured["cmd"][3]
+    assert "os.environ.pop('PYTHONPATH', None)" in captured["cmd"][3]
 
 
 # ---------------------------------------------------------------------------

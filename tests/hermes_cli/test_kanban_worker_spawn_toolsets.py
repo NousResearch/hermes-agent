@@ -56,8 +56,6 @@ agent:
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
-
     captured = {}
 
     class FakeProc:
@@ -78,7 +76,10 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
-    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    assert captured["cmd"][1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in captured["cmd"][3]
+    assert "hermes_cli.kanban_worker_client" in captured["cmd"][3]
+    assert "os.environ.pop('PYTHONPATH', None)" in captured["cmd"][3]
     assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "7"
     assert captured["env"]["HERMES_KANBAN_CLAIM_LOCK"] == "lock"
 
@@ -93,7 +94,6 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:
@@ -112,7 +112,10 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     kbd._default_spawn(task, str(workspace))
 
     # Mutable model strings are not launch authority; the owner reads the claimed card.
-    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    assert captured["cmd"][1:3] == ["-I", "-c"]
+    assert "hermes_bootstrap" in captured["cmd"][3]
+    assert "hermes_cli.kanban_worker_client" in captured["cmd"][3]
+    assert "os.environ.pop('PYTHONPATH', None)" in captured["cmd"][3]
     assert task.model_override not in captured["cmd"]
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
@@ -133,8 +136,6 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
     from agent.secret_scope import set_multiplex_active
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
-
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
     captured = {}
 

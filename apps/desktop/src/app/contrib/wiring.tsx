@@ -14,6 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { AuthorizationUrlDialog } from '@/components/authorization-url-dialog'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
@@ -1425,6 +1426,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Fallback modal when opening an external URL fails — carries the URL
           so a dead system-browser click is never silent. */}
       <ExternalOpenFailedDialog />
+      <AuthorizationUrlDialog />
 
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}

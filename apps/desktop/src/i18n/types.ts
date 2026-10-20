@@ -94,6 +94,14 @@ export interface Translations extends NoticeTranslations {
       message: string
     }
   }
+  /** Shown instead of auto-opening an authorization URL in the default browser profile. */
+  authorizationUrl: {
+    title: string
+    message: string
+    copyUrl: string
+    openInBrowser: string
+    close: string
+  }
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]

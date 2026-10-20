@@ -1,3 +1,4 @@
+import type { requestGatewayForAgent as GatewayAgentRequest } from '@/store/gateway'
 import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
@@ -53,9 +54,10 @@ export function saveMcpServers(
  *  Import the store lazily: it consumes the API barrel during initialization. */
 export function mcpOAuthRpc(scope?: ProfileScope) {
   const { connectionId = null, profile = 'default' } = capabilityScoped(scope)
+  let requestGatewayForAgent: typeof GatewayAgentRequest | undefined
 
   return async <T>(action: 'start' | 'poll' | 'callback' | 'cancel', params: Record<string, unknown>): Promise<T> => {
-    const { requestGatewayForAgent } = await import('@/store/gateway')
+    requestGatewayForAgent ??= (await import('@/store/gateway')).requestGatewayForAgent
 
     return requestGatewayForAgent<T>(connectionId, profile, `mcp.servers.oauth.${action}`, params, 60_000)
   }

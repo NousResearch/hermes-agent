@@ -92,6 +92,28 @@ describe('credentials under a row', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
     expect(onConnect).toHaveBeenCalledWith({ LINEAR_API_KEY: 'lin_abc', LINEAR_URL: 'https://api.linear.app' })
   })
+
+  it('lets the user copy an authorization URL instead of only opening the default browser', () => {
+    render(
+      <SetupFormDialog
+        copy={copy}
+        fields={[]}
+        onCancel={vi.fn()}
+        onConnect={vi.fn()}
+        onOpenBrowser={vi.fn()}
+        open
+        pending={false}
+        server="Linear"
+        status="initiated"
+        url="https://idp.example/authorize?state=abc"
+      />
+    )
+
+    const url = screen.getByText('https://idp.example/authorize?state=abc')
+
+    expect(url.className).toContain('select-text')
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeTruthy()
+  })
 })
 
 describe('where a mark is read from', () => {

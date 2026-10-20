@@ -34,6 +34,14 @@ export const en: Translations = {
       message: 'This file does not exist — it may have been deleted or moved, or it lives on another machine.'
     }
   },
+  authorizationUrl: {
+    title: 'Sign in in the browser you choose',
+    message:
+      'The default browser profile may be the wrong account. Copy this link and paste it into the Chrome profile you want, or open it in the default browser.',
+    copyUrl: 'Copy link',
+    openInBrowser: 'Open in default browser',
+    close: 'Close'
+  },
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
   firstRun: enFirstRun,

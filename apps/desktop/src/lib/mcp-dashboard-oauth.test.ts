@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { requestGatewayForAgent } from '@/store/gateway'
 
+import * as authorizationUrl from './authorization-url'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from './mcp-dashboard-oauth'
 
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent: vi.fn() }))
@@ -45,6 +46,7 @@ function harness() {
 
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { mcpOauth: bridge, api, openExternal } })
   let relayed = false
+  let polls = 0
   const rpc = vi.mocked(requestGatewayForAgent)
   rpc.mockImplementation(async (_connection, _profile, method) => {
     if (method.endsWith('.start')) {
@@ -59,6 +61,12 @@ function harness() {
 
     if (method.endsWith('.cancel')) {
       return { ok: true, status: 'error' }
+    }
+
+    polls += 1
+
+    if (polls > 5 && !relayed) {
+      throw new Error(`POLL_BOUND polls=${polls} relayed=${relayed}`)
     }
 
     return { ok: true, status: relayed ? 'approved' : 'pending', tools }
@@ -81,13 +89,24 @@ describe('Desktop MCP client callback lifecycle', () => {
       setApiRequestConnection(connectionId)
       setApiRequestProfile('origin-profile')
       const callbackResult = { code: 'code-1', state: 'expected', error: null }
-      bridge.wait.mockResolvedValue(callbackResult)
-      openExternal.mockImplementation(async () => {
+      bridge.wait.mockImplementation(async () => callbackResult)
+
+      const present = vi.spyOn(authorizationUrl, 'presentAuthorizationUrl').mockImplementation(url => {
         setApiRequestConnection('other-gateway')
         setApiRequestProfile('other-profile')
+
+        return url
       })
-      const result = await completeMcpDesktopOAuth({ serverName: 'reports', sleep: async () => {} })
+
+      const result = await completeMcpDesktopOAuth({
+        serverName: 'reports',
+        maxPollFailures: 1,
+        sleep: () => new Promise(resolve => setTimeout(resolve, 0))
+      })
+
       expect(result).toMatchObject({ status: 'approved', tools })
+      expect(openExternal).not.toHaveBeenCalled()
+      expect(present).toHaveBeenCalledWith(authUrl)
       expect(rpc).toHaveBeenCalledWith(
         connectionId,
         'origin-profile',

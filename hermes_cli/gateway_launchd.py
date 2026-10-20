@@ -369,6 +369,30 @@ def service_path_prefix_entries() -> list[str]:
     return list(dict.fromkeys(entries))
 
 
+def _service_shell_path_entries(path: str) -> list[str]:
+    """The invoking PATH minus package-manager environment dirs, for the plist's PATH.
+
+    Every launcher prepends the selected environment's ``venv/bin`` at boot (pm/environments.py), so
+    the CLI that writes the plist always carries it. Baked in, it dies with the next environment
+    rotation, and the staleness check masks PATH so it is never rewritten (#83699). The gateway
+    re-selects the live environment at boot, so dropping it loses nothing."""
+    entries = [p for p in path.split(":") if p]
+    try:
+        from pm.environments import installs_root
+        root = installs_root().resolve()
+    except ImportError:  # external installs without the package manager
+        return entries
+    kept = []
+    for entry in entries:
+        try:
+            if Path(entry).resolve().is_relative_to(root):
+                continue
+        except (OSError, ValueError):
+            pass
+        kept.append(entry)
+    return kept
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -383,7 +407,7 @@ def generate_launchd_plist() -> str:
     priority_dirs = service_path_prefix_entries()
     # Only the prefix may carry a store Node: a refresh run inside the gateway inherits the old plist PATH.
     store_node = str(_gw().get_hermes_home() / "tools" / "node-")
-    shell_dirs = [p for p in os.environ.get("PATH", "").split(":") if p and not p.startswith(store_node)]
+    shell_dirs = [p for p in _service_shell_path_entries(os.environ.get("PATH", "")) if not p.startswith(store_node)]
     sane_path = ":".join(dict.fromkeys(priority_dirs + shell_dirs))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping

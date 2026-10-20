@@ -1144,6 +1144,96 @@ class TestGatewaySystemServiceRouting:
         assert result is True
         assert "DEGRADED" in capsys.readouterr().out
 
+    def test_wait_extends_deadline_while_boot_platforms_advance(self, monkeypatch, capsys):
+        """A serial multi-adapter boot can outlast the supervisor-derived restart budget; platform
+        entries flipping to connected in gateway_state.json are proof the replacement is alive, so
+        each advance must extend the wait instead of expiring mid-boot (#137995)."""
+        ticks = iter((0.0, 0.0, 2.0, 2.0, 4.0))
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+        runtime_records = iter(
+            (
+                {"pid": 777, "gateway_state": "starting", "platforms": {"telegram:0": {"state": "connecting"}}},
+                {
+                    "pid": 777,
+                    "gateway_state": "starting",
+                    "platforms": {"telegram:0": {"state": "connected"}, "telegram:1": {"state": "connecting"}},
+                },
+                {"pid": 777, "gateway_state": "running"},
+            )
+        )
+        monkeypatch.setattr(gateway_cli, "_read_gateway_runtime_status", lambda: next(runtime_records))
+
+        result = gateway_cli._wait_for_systemd_service_restart(previous_pid=654, timeout=3.0)
+
+        assert result is True
+        assert "extending the readiness wait" in capsys.readouterr().out
+
+    def test_wait_still_expires_when_boot_makes_no_progress(self, monkeypatch, capsys):
+        """Extending on progress must not become an endless wait: a boot whose platform entries
+        stop advancing still expires on the original deadline (#137995)."""
+        ticks = iter((0.0, 0.0, 2.0, 4.0))
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {
+                "pid": 777,
+                "gateway_state": "starting",
+                "platforms": {"telegram:0": {"state": "connecting"}},
+            },
+        )
+
+        result = gateway_cli._wait_for_systemd_service_restart(previous_pid=654, timeout=3.0)
+
+        assert result is False
+        assert "did not become active within 3s" in capsys.readouterr().out
+
+    def test_restart_does_not_wedge_kill_a_starting_boot(self, monkeypatch):
+        """The liveness probe can read a busy serial boot as wedged (the loop is starved by boot
+        work), but gateway_state.json says the gateway is starting; the destructive escalation
+        must stand down and the graceful path must apply instead (#137995)."""
+        calls = []
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr(
+            gateway_cli, "probe_gateway_loop_liveness", lambda pid, **_: gateway_cli.GATEWAY_LOOP_WEDGED
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {"pid": 654, "gateway_state": "starting", "platforms": {"telegram:0": {"state": "connected"}}},
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_escalate_wedged_gateway", lambda pid, **_: calls.append(("escalated", pid))
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_systemd_graceful_restart_action", lambda system, pid: calls.append(("graceful", pid)) or "start"
+        )
+        monkeypatch.setattr(gateway_cli, "_systemd_reset_and_run", lambda action, **kw: calls.append(("run", action)))
+
+        gateway_cli.systemd_restart()
+
+        assert ("escalated", 654) not in calls
+        assert ("graceful", 654) in calls
+        assert ("run", "start") in calls
+
     def test_launchd_restart_uses_sigusr1_and_exit_wait_budget(self, monkeypatch, capsys):
         """launchd_restart must take the same graceful path as systemd_restart.
 

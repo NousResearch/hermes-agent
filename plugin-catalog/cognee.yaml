@@ -1,8 +1,8 @@
 name: cognee
 repo: https://github.com/topoteretes/cognee-integrations
 subdir: integrations/hermes-agent
-sha: b9cce3c3fd4c809257efe456e682e7701d7a14e2
-version: "1.3.1"
+sha: ccfb0e4e3fa8f3ce09c023d258c205ca972e48a8
+version: "1.3.2"
 description: "Knowledge-graph memory for Hermes, shared with Cognee's Claude Code, Codex and OpenClaw plugins: automatic recall, remember, forget, recaps and code search, on a local cognee server or Cognee Cloud. Disclosure — runs a local cognee server (127.0.0.1:8011) and a session watcher in the background; turns and tool calls (redacted) go to that server and your LLM provider, or to Cognee Cloud; data lives in ~/.cognee; cognee sends anonymous telemetry unless TELEMETRY_DISABLED=1."
 maintainer: topoteretes
 tier: community

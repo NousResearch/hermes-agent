@@ -16,6 +16,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -298,6 +299,20 @@ def _repair_snapshot_timeout_seconds(source_path: Path) -> float:
         with contextlib.suppress(FileNotFoundError):  # a sidecar may vanish mid-walk
             source_bytes += candidate.stat().st_size
     return max(_REPAIR_LOCK_TIMEOUT_SECONDS, source_bytes / _REPAIR_SNAPSHOT_MIN_THROUGHPUT_BYTES_PER_SECOND)
+
+
+def _recover_salvage_timeout_seconds(source_path: Path) -> float:
+    """Bound a ``sqlite3 .recover`` salvage by source size.
+
+    ``.recover`` walks the leaf pages twice (once to scan, once to emit) and is far slower per byte
+    than the snapshot copy above, so it gets a quarter of the snapshot throughput. The generous
+    floor keeps small-but-pathological databases from tripping an absurdly tight bound.
+    """
+    try:
+        source_bytes = source_path.stat().st_size
+    except FileNotFoundError:
+        source_bytes = 0
+    return max(900.0, source_bytes / (_REPAIR_SNAPSHOT_MIN_THROUGHPUT_BYTES_PER_SECOND / 4))
 
 
 def _repair_failure_consumes_attempt(exc: BaseException) -> bool:
@@ -1139,6 +1154,68 @@ _REPAIR_STRATEGIES = (
 )
 
 
+def _run_recover_salvage(db_path: Path, report: dict[str, Any]) -> None:
+    """Salvage committed rows from a state.db whose BASE-TABLE b-trees are damaged.
+
+    Every ``_REPAIR_STRATEGIES`` entry only repairs the FTS index or the schema b-tree, and the
+    final ``VACUUM`` has to read every base-table row — so torn ``messages``/``sessions`` pages make
+    all of them fail and the doctor punts to a manual ``sqlite3 state.db ".recover"`` that the field
+    rarely runs (the forensic backup it leans on is typically weeks stale). ``.recover`` salvages
+    committed rows straight from the readable leaf pages, skipping the corrupt ones, and emits a SQL
+    script that rebuilds the file. Its one hazard: it reconstructs the FTS5 virtual tables as raw
+    shadow-table rows that bypass the FTS5 engine — the result passes ``integrity_check`` but
+    re-corrupts on the next message write — so the replay is followed by the same drop-FTS surgery
+    as ``drop_fts_rebuild``; the indexes rebuild from ``messages`` on the next open. A salvage whose
+    result does not open cleanly (garbage in, no hermes schema out) is not a repair. Absent
+    ``sqlite3`` CLI (stock Windows) raises ``OSError`` and the report falls through unchanged; a
+    3.40-era CLI aborts on torn pages the same way — both degrade to today's behaviour.
+
+    See #141757.
+    """
+    salvage_sql = db_path.with_name(f"{db_path.name}.recover.sql")
+    recovered_db = db_path.with_name(f"{db_path.name}.recovered")
+    try:
+        sqlite3_bin = shutil.which("sqlite3")
+        if sqlite3_bin is None:
+            raise OSError("sqlite3 CLI not found on PATH")
+        _unlink_db_triple(recovered_db)
+        try:
+            with open(salvage_sql, "wb") as out:
+                subprocess.run(
+                    [sqlite3_bin, str(db_path), ".recover"], stdout=out, stderr=subprocess.PIPE,
+                    check=False, timeout=_recover_salvage_timeout_seconds(db_path))
+            if not salvage_sql.exists() or salvage_sql.stat().st_size < 1:
+                raise OSError("sqlite3 .recover produced no salvage SQL")
+            with open(salvage_sql, "rb") as src:
+                replay = subprocess.run(
+                    [sqlite3_bin, str(recovered_db)], stdin=src, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, check=False,
+                    timeout=_recover_salvage_timeout_seconds(db_path))
+            if not recovered_db.exists():
+                detail = (replay.stderr or b"").decode("utf-8", "replace")[:400]
+                raise OSError(f"salvage replay produced no database: {detail}")
+        finally:
+            with contextlib.suppress(OSError):  # the script is a transient artifact, never evidence
+                salvage_sql.unlink()
+        # The .recover FTS5 reconstruction is untrustworthy (raw shadow rows the engine never built):
+        # drop it wholesale and let the next open rebuild the indexes from messages.
+        with _repair_conn(recovered_db) as conn:
+            _strategy_drop_fts_vacuum(conn)
+        reason = _db_opens_cleanly(recovered_db)
+        if reason is None:
+            _copy_database_snapshot(recovered_db, db_path)
+            report.pop("error", None)
+            report["repaired"], report["strategy"] = True, "recover_salvage"
+            logger.warning(
+                "state.db base tables salvaged via sqlite3 .recover; FTS indexes will rebuild from "
+                "messages on next open: %s", db_path)
+        else:
+            report["error"] = reason
+    finally:
+        if (cleanup_error := _unlink_db_triple(recovered_db)) is not None:
+            logger.warning("Could not remove state.db recover artifacts after repair: %s", cleanup_error)
+
+
 def _run_repair_strategies(db_path: Path, report: dict[str, Any]) -> dict[str, Any]:
     """Escalating repair attempts, applied to *db_path* IN PLACE — only ever a scratch copy nothing else holds open,
     never the user's database. The "could not recover" log lives in the caller so it names the user's database."""
@@ -1158,4 +1235,10 @@ def _run_repair_strategies(db_path: Path, report: dict[str, Any]) -> dict[str, A
             return report
         if failure_msg is None:
             report["error"] = reason
+    # ── Salvage: base-table b-tree damage no strategy above can heal (#141757). Runs after the
+    # final strategy's failure, so it is only reached when the scratch still fails the clean probe.
+    try:
+        _run_recover_salvage(db_path, report)
+    except (OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
+        report["error"] = f"recover salvage failed: {exc}"
     return report

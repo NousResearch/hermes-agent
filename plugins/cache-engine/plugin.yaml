@@ -1,0 +1,9 @@
+name: cache-engine
+version: 0.2.0
+description: "Context Economy Engine: clips oversized tool results before they enter context while keeping the prompt prefix byte-stable, so provider prompt caching keeps hitting. Reports the tokens it saves."
+author: "Hadi Aljurdi"
+license: MIT
+requires_hermes: ">=0.21"
+tags: [tokens, cost, context, cache, middleware]
+provides_tools: []
+provides_hooks: ["middleware:llm_request"]

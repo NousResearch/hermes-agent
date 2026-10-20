@@ -1,0 +1,17 @@
+name: aistupidlevel
+title: AI Stupid Level
+repo: https://github.com/StudioPlatforms/aistupidlevel-sdk
+sha: ba908770f2e97b0a85cc1f5a83240cbe94c8dfa9
+subdir: integrations/hermes/aistupidlevel
+description: "AI Stupid Level Smart Router — OpenAI-compatible; routing modes such as auto-tooling send each request to the model currently scoring best on continuously re-run benchmarks, called with your own provider keys. Disclosure — sends your prompts, tool results and ASL_ROUTER_KEY to aistupidlevel.info (Studio Platforms), which forwards each request to the AI provider it routes to under your own key for that provider; model usage is billed to your provider accounts."
+maintainer: StudioPlatforms
+tier: community
+category: models
+docs_url: https://github.com/StudioPlatforms/aistupidlevel-sdk/tree/main/integrations/hermes/aistupidlevel#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ASL_ROUTER_KEY
+version: 0.1.0

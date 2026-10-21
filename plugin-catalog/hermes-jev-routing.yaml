@@ -1,6 +1,6 @@
 name: hermes-jev-routing
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 70d4ec0648e4bc2d61b923f35fbcf63047d9b7ac
+sha: 12f91d5a5962bda2ba95126cc41a2db7bbc43945
 subdir: public/hermes-jev-routing
 description: "Per-turn model routing for the request that is about to go out. Jev reads the turn, picks the tier it deserves, and the plugin rewrites the provider request onto that model, including the reasoning level when the request carries one. Shadow by default, with notify, confirm and auto modes, a strip under the composer for the turn that was just routed, and a spend ledger. A pick on another provider is reported rather than sent, because a plugin cannot open a second provider client. Disclosure: on every routed turn the plugin sends the current message, up to four previous turns, an estimate of context tokens and the spend snapshot to TypeSafe."
 maintainer: apoapostolov
@@ -9,7 +9,7 @@ category: models
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/hermes-jev-routing
 version: "1.1.0"
 requires_hermes: ">=0.21.4"
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/70d4ec0648e4bc2d61b923f35fbcf63047d9b7ac/public/hermes-jev-routing/docs/hero.png
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/12f91d5a5962bda2ba95126cc41a2db7bbc43945/public/hermes-jev-routing/docs/hero.png
 platforms: []
 capabilities:
   provides_tools:

@@ -243,26 +243,44 @@ def record_start_and_check_storm(
 _GATEWAY_STATE_GUARD_BYPASS_ENV = "HERMES_GATEWAY_STATE_GUARD_BYPASS"
 
 
+def _home_is_production_root(home: Path, root: Path) -> bool:
+    """*home* is *root* itself, or ``<root>/profiles/<name>`` — nothing deeper."""
+    if home == root:
+        return True
+    try:
+        parts = home.relative_to(root).parts
+    except ValueError:
+        return False
+    return len(parts) == 2 and parts[0] == "profiles"
+
+
 def _is_production_hermes_home(home: Path) -> bool:
     """*home* is the real platform-default root or a profile directly under it
-    (``~/.hermes`` or ``~/.hermes/profiles/<name>``). Deeper scratch paths are not matched."""
+    (``~/.hermes`` or ``~/.hermes/profiles/<name>``). Deeper scratch paths are not matched.
+
+    Compared lexically FIRST, because ``resolve()`` is the one filesystem call this
+    guard must not depend on: under the test harness' home-I/O guard, resolving a path
+    inside the live home is refused, and a refusal there must not read as "not the
+    production home" (that is the fail-open the guard exists to close)."""
     try:
         root = hermes_state_guard._real_platform_state_root()
     except Exception:
         return False
     if root is None:
         return False
+    unexpanded = os.path.expanduser(str(home))
+    lexical = Path(os.path.abspath(unexpanded))
+    lexical_root = Path(os.path.abspath(str(root)))
+    if _home_is_production_root(lexical, lexical_root):
+        return True
+    # Symlinked layouts (``~/.hermes`` itself, or ``profiles/`` pointing elsewhere) only
+    # match once resolved; that is a real path, so production resolves it fine.
     try:
-        resolved = Path(home).expanduser().resolve(strict=False)
+        resolved = Path(os.path.abspath(unexpanded)).resolve(strict=False)
+        resolved_root = root.resolve(strict=False)
     except Exception:
         return False
-    if resolved == root:
-        return True
-    try:
-        parts = resolved.relative_to(root).parts
-    except ValueError:
-        return False
-    return len(parts) == 2 and parts[0] == "profiles"
+    return _home_is_production_root(resolved, resolved_root)
 
 
 def _assert_safe_gateway_state_home(home: Path) -> None:

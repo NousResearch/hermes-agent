@@ -221,6 +221,20 @@ class TestCheckLintDelta:
         assert r.success is False
         assert "pre-existing" in (r.message or "").lower()
 
+    def test_pre_existing_error_moved_by_edit_is_not_new(self, ops):
+        pre = 'x = 1\ndef a(:\n    pass\n'
+        post = 'import os\nx = 1\ndef a(:\n    pass\n'
+        r = ops._check_lint_delta("/tmp/d.py", pre_content=pre, post_content=post)
+        assert r.success is False
+        assert "pre-existing" in (r.message or "").lower()
+
+    def test_new_error_with_different_message_is_still_new(self, ops):
+        pre = 'x = 1\ndef a(:\n    pass\n'
+        post = '    x = 1\ndef a(:\n    pass\n'
+        r = ops._check_lint_delta("/tmp/d.py", pre_content=pre, post_content=post)
+        assert r.success is False
+        assert "new lint errors" in (r.output or "").lower()
+
 
 # =========================================================================
 # Pagination bounds

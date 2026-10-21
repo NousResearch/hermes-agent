@@ -297,11 +297,12 @@ def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> A
 
 
 def _aggregate_validated(lint_results: dict[str, dict], validation_failed: bool) -> Optional[bool]:
-    """False when any landed file failed lint, True when at least one passed, None when all skipped."""
-    statuses = {r.get("status") for r in lint_results.values() if isinstance(r, dict)}
-    if validation_failed or "error" in statuses:
+    """False when an op introduced a lint failure, True when any landed file was linted, None when all skipped.
+    A lint ``error`` without ``validation_failed`` is pre-existing, so it does not make the patch invalid."""
+    if validation_failed:
         return False
-    return True if "ok" in statuses else None
+    statuses = {r.get("status") for r in lint_results.values() if isinstance(r, dict)}
+    return True if statuses & {"ok", "error"} else None
 
 
 def _unified_diff(path: str, old: str, new: Optional[str]) -> str:

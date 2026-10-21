@@ -8,6 +8,7 @@ import ast
 import json
 import logging
 import os
+import re
 import tomllib
 from typing import Callable, Dict, Optional
 
@@ -137,6 +138,14 @@ LINTERS_INPROC: dict[str, Callable[[str], tuple[bool, str]]] = {
 # Python keeps the non-blocking lint-delta report.
 _FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
 
+# Line/column positions in linter output: "(line 3, column 7)", "line 3", "f.go:3:7:", "f.ts(3,7)".
+_LINT_POSITION_RE = re.compile(r"\bline \d+(?:, column \d+)?|:\d+(?::\d+)?(?=[:\s]|$)|\(\d+,\d+\)")
+
+
+def _lint_line_key(line: str) -> str:
+    """Compare lint lines without positions: an edit above an old error moves its line number."""
+    return _LINT_POSITION_RE.sub("#", line.strip())
+
 
 class LintMixin:
     """Post-write syntax lint + LSP diagnostics. Requires ``_exec``,
@@ -232,8 +241,8 @@ class LintMixin:
             return post  # pre-write was clean (or unlintable): all post errors are new
         # Single-error parsers stop at the first error, so if every post error already
         # existed we can't prove the edit is clean — say nothing new was introduced.
-        pre_lines = {ln.strip() for ln in pre.output.splitlines() if ln.strip()}
-        post_lines = [ln for ln in post.output.splitlines() if ln.strip() and ln.strip() not in pre_lines]
+        pre_lines = {_lint_line_key(ln) for ln in pre.output.splitlines() if ln.strip()}
+        post_lines = [ln for ln in post.output.splitlines() if ln.strip() and _lint_line_key(ln) not in pre_lines]
         if not post_lines:
             return LintResult(success=False, output=post.output, message=(
                 "Pre-existing lint errors — this edit didn't introduce new ones but the file is still broken."))

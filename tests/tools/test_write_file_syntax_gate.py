@@ -73,6 +73,19 @@ class TestFailClosedSyntaxGate:
         assert "VALIDATION FAILED AFTER EDIT" in res.error
         assert "IndentationError" in res.lint["output"]
 
+    def test_edit_above_pre_existing_error_is_not_a_validation_failure(self, ops, tmp_path: Path):
+        """The old error moves down a line; it is still not this edit's error."""
+        target = tmp_path / "legacy.py"
+        target.write_text("x = 1\ndef f(:\n    pass\n")
+
+        res = ops.patch_replace(str(target), "x = 1", "import os\nx = 1")
+
+        assert target.read_text() == "import os\nx = 1\ndef f(:\n    pass\n"
+        assert res.error is None, res.error
+        assert res.success is True
+        assert res.validated is True
+        assert res.lint["status"] == "error"
+
 
     def test_custom_tagged_yaml_is_valid_and_written(self, ops, tmp_path: Path):
         """Application-defined tags (CloudFormation !Sub/!Ref, Ansible !vault)

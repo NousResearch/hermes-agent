@@ -1577,14 +1577,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if lint_result.success or lint_result.skipped:
             lsp_diagnostics = self._maybe_lsp_diagnostics(
                 path, pre_content=pre_content, post_content=content, started=started) or None
+        introduced = _introduced_lint_failure(lint_result)
         # The bytes landed either way; a NEW lint failure makes the write an error the
         # model must repair, while ``applied`` keeps "changed on disk" distinguishable.
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
             lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics,
-            applied=True, validated=None if lint_result.skipped else lint_result.success,
-            error=_validation_failure_error(path, lint_result) if _introduced_lint_failure(lint_result) else None)
+            applied=True, validated=None if lint_result.skipped else not introduced,
+            error=_validation_failure_error(path, lint_result) if introduced else None)
 
     # --- PATCH (replace mode) -----------------------------------------------
 

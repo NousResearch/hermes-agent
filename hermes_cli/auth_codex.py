@@ -655,7 +655,9 @@ def resolve_codex_runtime_credentials(
             # read-only caller: the picker fingerprint resolves on every cache-only read.
             if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
-                clear_codex_pool_quota_cooldowns()
+                clear_codex_pool_quota_cooldowns(
+                    access_token=str(pool_rate_limit.get("access_token") or "").strip() or None,
+                )
                 pool_token, pool_base = _pool_codex_credential()
                 if pool_token:
                     return _codex_runtime_result(
@@ -832,6 +834,10 @@ def _probe_codex_pool_entry_quota_restored(entry: dict[str, Any]) -> Optional[bo
     fresh = _refresh_expired_codex_probe_token(token, entry.get("refresh_token"))
     if fresh:
         token = fresh["access_token"]
+        # Keep the caller's metadata in sync with the persisted row. The live probe may refresh
+        # an expired token before checking quota; the scoped cooldown clear below must match the
+        # rotated token rather than the stale token that entered this function.
+        entry["access_token"] = token
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
@@ -854,8 +860,8 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     Called after the upstream quota is KNOWN to be restored (a ``/usage reset`` redemption or a
     positive live probe) so auth.json stops freezing credentials behind a stale
     ``last_error_reset_at``. With *access_token* only the matching entry clears; otherwise every
-    rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted
-    entry just re-freezes with fresh metadata on its next 429).
+    rate-limited entry does. Account-specific reset and probe callers must pass the token so an
+    unrelated exhausted pool entry cannot be reactivated.
     """
     from agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store

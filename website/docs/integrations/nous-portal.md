@@ -81,7 +81,7 @@ They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is t
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
 /model openai/gpt-5.5-pro              # strong reasoning + tool calling
-/model google/gemini-3-pro-preview     # huge context window
+/model google/gemini-3.1-pro-preview    # huge context window
 /model deepseek/deepseek-v4-pro        # cost-effective coder
 ```
 
@@ -165,7 +165,7 @@ Inside a session:
 ```bash
 /model anthropic/claude-sonnet-4.6
 /model openai/gpt-5.5-pro
-/model google/gemini-3-pro-preview
+/model google/gemini-3.1-pro-preview
 ```
 
 Or open the picker:

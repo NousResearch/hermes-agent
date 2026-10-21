@@ -38,9 +38,9 @@ _PROPERTIES: dict[str, Any] = {
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal). Use `run_steps` to send an ordered BATCH of actions in ONE call — the "
-            "right way to do multi-key input: a sequence split across separate calls is "
-            "not atomic, so a step can go missing from the plan and nothing reports it."
+            "focus steal). Use `run_steps` to send an ordered BATCH of actions in ONE call; "
+            "separate calls do not provide batch-level validation or one end-of-batch observation. "
+            "Parallel tool calls have no guaranteed input order."
         ),
     },
     "mode": {
@@ -198,8 +198,10 @@ _PROPERTIES: dict[str, Any] = {
             "pid/window_id/element_token. A step may add 'wait_for' (must hold before the action) "
             "and/or 'expect' (checks that must hold after it). Steps run IN ORDER and stop at the "
             "first failure; all steps are validated before the first one runs, so a malformed step "
-            "changes nothing. Use this for multi-key sequences — a sequence split across "
-            "separate calls is not atomic, so a step can go missing from the plan. "
+            "changes nothing. The 'key' alias supports key combo spellings; 'type' accepts text= or "
+            "value=; 'middle_click' maps to a middle-button click. Capture a target window (or use "
+            "focus_app) before the batch; role/name steps need a window to address. Use this for "
+            "ordered multi-step sequences. "
             "press_key takes a KEY NAME, and cua-driver's key vocabulary is narrow: letters, digits, "
             "and named keys like 'return', 'enter', 'escape', 'space', 'tab', 'delete', '=', '-' work. "
             "Arithmetic/operator names do NOT: 'plus'/'+'/'percent' are silently re-routed to "

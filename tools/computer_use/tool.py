@@ -85,31 +85,31 @@ def _reject_unsafe_steps(steps: Any) -> Optional[str]:
         if not isinstance(step, dict):
             continue
         if "tool" in step:
-            _tool, raw = step.get("tool"), step.get("args")
+            tool, raw = step.get("tool"), step.get("args")
         else:
-            named = [k for k in step if k in ("click", "double_click", "right_click", "set_value",
-                                              "type_text", "press_key", "hotkey", "scroll", "drag",
-                                              "move_cursor", "type", "key", "middle_click")]
-            if len(named) != 1:
+            names = [name for name in step if name in ("click", "double_click", "right_click", "set_value",
+                                                       "type_text", "press_key", "hotkey", "scroll", "drag",
+                                                       "move_cursor", "type", "key", "middle_click")]
+            if len(names) != 1:
                 continue
-            _tool, raw = named[0], step.get(named[0])
+            tool, raw = names[0], step.get(names[0])
         if not isinstance(raw, dict):
             continue
-        text = raw.get("text")
-        if isinstance(text, str) and (pat := next((p.pattern for p in _BLOCKED_TYPE_PATTERNS
-                                                   if p.search(text)), None)):
-            return json.dumps({"error": f"blocked pattern in type text: {pat!r}",
-                               "hint": f"Dangerous shell patterns cannot be typed via computer_use (step {i + 1})."})
+        text = raw.get("text", raw.get("value") if tool in {"type", "type_text"} else None)
+        if isinstance(text, str) and any(pattern.search(text) for pattern in _BLOCKED_TYPE_PATTERNS):
+            return json.dumps({"error": f"blocked pattern in type text (step {i + 1})"})
         combo = raw.get("keys")
-        if isinstance(combo, str) and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
-                                                        if b.issubset(_canon_key_combo(combo))), None)) is not None:
-            return json.dumps({"error": f"blocked key combo: {sorted(blocked)}",
-                               "hint": f"Destructive system shortcuts are hard-blocked (step {i + 1})."})
-        if isinstance(combo, list):
-            canon = frozenset(_KEY_ALIASES.get(str(p).lower(), str(p).lower()) for p in combo)
-            if (blocked := next((b for b in _BLOCKED_KEY_COMBOS if b.issubset(canon)), None)) is not None:
-                return json.dumps({"error": f"blocked key combo: {sorted(blocked)}",
-                                   "hint": f"Destructive system shortcuts are hard-blocked (step {i + 1})."})
+        if combo is None and tool in {"key", "press_key"} and isinstance(raw.get("key"), str):
+            modifiers = raw.get("modifiers")
+            combo = [*modifiers, raw["key"]] if isinstance(modifiers, list) else raw["key"]
+        if isinstance(combo, str):
+            keys = _canon_key_combo(combo)
+        elif isinstance(combo, list):
+            keys = frozenset(part for item in combo for part in _canon_key_combo(str(item)))
+        else:
+            keys = frozenset()
+        if any(blocked.issubset(keys) for blocked in _BLOCKED_KEY_COMBOS):
+            return json.dumps({"error": f"blocked key combo in step {i + 1}"})
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:

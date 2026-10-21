@@ -259,6 +259,24 @@ Configure Hermes as a custom agent server in Zed settings:
 
 3. Start a new Hermes external-agent thread.
 
+The thread's composer shows three pickers, all scoped to that session (your
+Hermes-wide defaults are untouched):
+
+- **Model**: every model from providers you have authenticated in Hermes, as in
+  `hermes model`. Same `provider:model` ids as the [Buzz model picker](#model-picker).
+- **Reasoning effort**: shows the level the next turn runs at. Picking `Off` or a
+  level pins it for this session, like `/reasoning <level>`; picking
+  `Default (profile)` returns to your configured level, like `/reasoning reset`.
+  Changes apply when the session is idle.
+- **Edits**: when file edits ask before they are written (Default, Accept Edits,
+  Don't Ask).
+
+Past Hermes threads started from Zed appear in the Threads Sidebar's history and
+in **Import Threads**.
+
+To pin a default for new threads, set it under the agent's entry in Zed's
+settings, e.g. `"default_config_options": {"reasoning_effort": "high"}`.
+
 Prerequisites:
 
 - Configure Hermes provider credentials first with `hermes model`, or set them in `~/.hermes/.env` / `~/.hermes/config.yaml`.

@@ -167,7 +167,7 @@ def snapshot_native(runner, event):
     from gateway.session_ingress_context import capture_provenance
     from gateway.trusted_turn_origin import capture_origin_claim
     provenance = capture_provenance(runner, event)
-    projected = capture_origin_claim(runner, event)
+    projected = capture_origin_claim(runner, event, provenance=provenance, native=True)
     return _snapshot_native(runner, _adapter_event(event), provenance, origin_claim=projected)
 
 
@@ -181,7 +181,7 @@ async def prepare_native(runner, event):
     frozen = _adapter_event(event, source=copy(event.source))
     # The SDK payload is caller-owned and may mutate across the role/auth await.
     # Keep only the validated JSON projection, never raw_message itself.
-    projected = capture_origin_claim(runner, frozen)
+    projected = capture_origin_claim(runner, frozen, provenance=provenance, native=True)
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
@@ -303,7 +303,8 @@ def restore_native(payload, runner=None):
         if runner is None:
             raise RuntimeStoreError('permission_denied', field='origin_projector')
         from gateway.trusted_turn_origin import restore_origin_claim
-        restore_origin_claim(runner, event, envelope['origin_claim_v1'])
+        restore_origin_claim(runner, event, envelope['origin_claim_v1'],
+                             provenance=envelope.get('provenance'))
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

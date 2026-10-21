@@ -37,6 +37,7 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.trusted_turn_origin import GatewayOriginTurnMixin
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -171,7 +172,8 @@ from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayOriginTurnMixin, GatewayTurnPrepareMixin,
+                       GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -991,17 +993,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
-
-    async def _run_agent(
-        self, message: str, context_prompt: str, history: list[dict[str, Any]],
-        source: SessionSource, session_id: str, *, turn_event: MessageEvent | None = None, **turn_kwargs,
-    ) -> dict[str, Any]:
-        """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
-        when multiplexing is off)."""
-        with self._profile_scope_for_source(source):
-            from gateway.trusted_turn_origin import bind_turn_origin, origin_for_event
-            with bind_turn_origin(origin_for_event(self, turn_event, source)):
-                return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
     def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""

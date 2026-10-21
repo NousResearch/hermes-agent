@@ -2,15 +2,22 @@
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
+import weakref
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
+from gateway.profile_routing import parse_profile_routes
+from gateway.run_runtime import initialize_gateway_runtime
+from gateway.runtime_ownership import process_ownership
 from gateway.session import SessionSource
 from gateway.session_envelope import prepare_native, restore_native, snapshot_native
-from gateway.trusted_turn_origin import current_origin
+from gateway.session_identity import RoutingIdentity
+from gateway.trusted_turn_origin import (capture_origin_claim, current_origin, origin_for_event,
+                                         restore_origin_claim)
 from hermes_cli.plugins import PluginContext, PluginManager
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_state_runtime import RuntimeStoreError
@@ -59,14 +66,22 @@ async def test_native_origin_projection_freezes_before_await_and_rechecks_source
     assert "raw_message" not in str(payload)
     assert "secret" not in str(payload)
     assert payload["native_text_v1"]["origin_claim_v1"]["claim"]["user"] == "U1"
+    assert payload["native_text_v1"]["origin_claim_v1"]["transport_profile"] == "default"
     restored = restore_native(payload, runner)
     assert restored._trusted_origin_claim["claim"]["user"] == "U1"
+    assert restored._trusted_origin_claim["transport_profile"] == "default"
 
     forged = dict(payload)
     forged["native_text_v1"] = dict(payload["native_text_v1"])
     forged["native_text_v1"]["source"] = dict(payload["native_text_v1"]["source"], user_id="U2")
     with pytest.raises(RuntimeStoreError):
         restore_native(forged, runner)
+    other_bot = dict(payload)
+    other_bot["native_text_v1"] = dict(payload["native_text_v1"])
+    other_bot["native_text_v1"]["origin_claim_v1"] = dict(
+        payload["native_text_v1"]["origin_claim_v1"], transport_profile="other-bot")
+    with pytest.raises(RuntimeStoreError):
+        restore_native(other_bot, runner)
     registration.dispose()
     with pytest.raises(RuntimeStoreError):
         restore_native(payload, runner)
@@ -102,6 +117,7 @@ async def test_origin_scopes_first_queued_concurrent_missing_and_internal_turns(
     await asyncio.gather(run("first", restored.source, restored),
                          run("concurrent", second.source, second))
     assert {(origin.user_id, origin.message_ts) for origin in seen} == {("U1", "m1"), ("U2", "m2")}
+    assert {origin.transport_profile for origin in seen} == {"default", None}
     assert seen[0].claims["sample"]["user"] == "U1" or seen[1].claims["sample"]["user"] == "U1"
     with pytest.raises(TypeError):
         seen[0].claims["new"] = "spoof"
@@ -124,6 +140,133 @@ async def test_origin_scopes_first_queued_concurrent_missing_and_internal_turns(
     async with _recursive_probe(runner, event, second, internal, seen):
         pass
     assert [(o.user_id if o else None) for o in seen] == ["U1", "U2", None, None, "U1"]
+    assert current_origin() is None
+    registration.dispose()
+
+
+def test_receiving_bot_remains_distinct_from_routed_runtime_on_queued_and_restore(tmp_path, monkeypatch):
+    runner, event, registration, _ = _setup(tmp_path, monkeypatch)
+    source = replace(event.source, profile="brain")
+    source._identity = RoutingIdentity(
+        transport_profile="peppy", runtime_profile="brain", authorization_home=tmp_path,
+        runtime_home=tmp_path, multiplexed=True)
+    queued = replace(event, source=source)
+    queued._gateway_accepted = True
+    projected = capture_origin_claim(runner, queued, native=True,
+                                     provenance={"transport_profile": "peppy"})
+    assert projected["transport_profile"] == "peppy"
+    assert projected["binding"][1] == "brain"
+
+    restored_source = replace(source)
+    restored_source._identity = source._identity
+    restored = replace(queued, source=restored_source)
+    restore_origin_claim(runner, restored, projected, provenance={"transport_profile": "peppy"})
+    restored._native_origin_restored = True
+    restored._gateway_accepted = True
+    origin = origin_for_event(runner, restored, restored.source)
+    assert (origin.profile, origin.transport_profile) == ("brain", "peppy")
+
+    # Runtime route remains the same, but a later different receiving bot cannot
+    # borrow the first bot's projection or its plugin privileges.
+    restored.source._identity = replace(source._identity, transport_profile="other-bot")
+    assert origin_for_event(runner, restored, restored.source) is None
+    restored.source._identity = replace(source._identity, runtime_profile="wrong-runtime")
+    assert origin_for_event(runner, restored, restored.source) is None
+    with pytest.raises(RuntimeStoreError):
+        restore_origin_claim(runner, restored, projected,
+                             provenance={"transport_profile": "other-bot"})
+    registration.dispose()
+
+
+@pytest.mark.asyncio
+async def test_native_restore_pins_secondary_receiving_bot_across_runtime_route(tmp_path, monkeypatch):
+    _, _, registration, _ = _setup(tmp_path, monkeypatch)
+    root = tmp_path / ".hermes"
+    root.mkdir(mode=0o700)
+    homes = [("default", root)]
+    for name in ("peppy", "brain"):
+        home = root / "profiles" / name
+        home.mkdir(parents=True, mode=0o700)
+        (home / "config.yaml").write_text("{}")
+        homes.append((name, home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    config = GatewayConfig(multiplex_profiles=True)
+    config._runtime_profile_homes = tuple(homes)
+    config.profile_routes = parse_profile_routes([
+        {"name": "test-channel", "platform": "slack", "chat_id": "C1",
+         "bot_profile": "peppy", "profile": "brain"}])
+    runner = GatewayRunner(config)
+    process_ownership.reserve([home for _, home in homes])
+    try:
+        await initialize_gateway_runtime(runner)
+        from gateway.session_ingress_context import native_callback, register_transport_home
+
+        class Adapter:
+            pass
+
+        adapter = Adapter()
+        runner._profile_adapters["peppy"] = {Platform.SLACK: adapter}
+        runner._is_user_authorized_for_source = lambda *args, **kwargs: True
+        register_transport_home(runner, "peppy", dict(homes)["peppy"])
+        source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="channel",
+                               user_id="U1", scope_id="T1")
+        source._transport_adapter_ref = weakref.ref(adapter)
+        source.profile = runner._profile_name_for_source(source)
+        assert source.profile == "brain"
+        event = MessageEvent(text="hello", source=source, message_id="m1",
+                             raw_message={"user": "U1", "channel": "C1", "team": "T1"})
+        with native_callback(runner, event, dict(homes)["peppy"], "peppy"):
+            payload = snapshot_native(runner, event)
+        claim = payload["native_text_v1"]["origin_claim_v1"]
+        assert (claim["binding"][1], claim["transport_profile"]) == ("brain", "peppy")
+        restored = restore_native(payload, runner)
+        restored._gateway_accepted = True
+        origin = origin_for_event(runner, restored, restored.source)
+        assert (origin.profile, origin.transport_profile) == ("brain", "peppy")
+
+        forged = dict(payload)
+        forged["native_text_v1"] = dict(payload["native_text_v1"])
+        forged["native_text_v1"]["origin_claim_v1"] = dict(claim, transport_profile="default")
+        with pytest.raises(RuntimeStoreError):
+            restore_native(forged, runner)
+    finally:
+        registration.dispose()
+        for authority in list(getattr(runner, "session_authorities", []) or []):
+            authority.db.close()
+        for _, home in homes:
+            process_ownership.release(home)
+
+
+@pytest.mark.asyncio
+async def test_recursive_queued_turn_uses_its_own_receiving_bot(tmp_path, monkeypatch):
+    runner, event, registration, _ = _setup(tmp_path, monkeypatch)
+
+    def routed(message_id, transport):
+        source = replace(event.source, profile="brain")
+        source._identity = RoutingIdentity(
+            transport_profile=transport, runtime_profile="brain", authorization_home=tmp_path,
+            runtime_home=tmp_path, multiplexed=True)
+        turn = replace(event, message_id=message_id, source=source)
+        turn._gateway_accepted = True
+        return turn
+
+    first, queued = routed("m1", "peppy"), routed("m2", "other-bot")
+    seen = []
+
+    async def inner(*args, **kwargs):
+        seen.append(current_origin())
+        if len(seen) == 1:
+            await runner._run_agent("queued", "", [], queued.source, "s", turn_event=queued)
+            assert current_origin() is seen[0]
+        return {"final_response": "ok"}
+
+    monkeypatch.setattr(runner, "_run_agent_inner", inner)
+    await runner._run_agent("first", "", [], first.source, "s", turn_event=first)
+    assert [(origin.profile, origin.transport_profile, origin.message_ts) for origin in seen] == [
+        ("brain", "peppy", "m1"), ("brain", "other-bot", "m2")]
     assert current_origin() is None
     registration.dispose()
 

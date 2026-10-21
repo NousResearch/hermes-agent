@@ -284,9 +284,12 @@ older rows without a projection do not acquire one on replay.
 Plugin-owned tools can call `gateway.trusted_turn_origin.current_origin()` to
 read an immutable `TrustedTurnOrigin` for the executing human turn. The claim is
 available as `origin.claims[plugin_id]`; absent claims grant nothing. The origin
-also carries the gateway's platform, profile, workspace, channel, user, message
-and thread identifiers. Queued human follow-ups rebind it to their own sender;
-internal and eventless turns expose `None`. `admission_id` is optional, since a
+also carries the gateway's platform, runtime `profile`, receiving
+`transport_profile`, workspace, channel, user, message and thread identifiers.
+The transport is derived from pinned ingress identity or verified native
+provenance; it is `None` if that proof is unavailable. Queued human follow-ups
+rebind it to their own sender; internal and eventless turns expose `None`.
+`admission_id` is optional, since a
 queued follow-up need not have a separate native admission. Plugins should use
 the `TRUSTED_TURN_ORIGIN_API_VERSION` constant for this contract's version.
 

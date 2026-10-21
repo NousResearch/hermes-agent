@@ -213,6 +213,17 @@ class GatewayTurnPersistenceMixin:
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                # Per-turn usage/billing counters. ``agent_result`` already carries every
+                # ``session_*`` counter (packed by turn_finalizer), so the footer renders
+                # them without extra plumbing from the agent layer.
+                total_tokens=agent_result.get("total_tokens"),
+                input_tokens=agent_result.get("input_tokens"),
+                output_tokens=agent_result.get("output_tokens"),
+                cache_read_tokens=agent_result.get("cache_read_tokens"),
+                cache_write_tokens=agent_result.get("cache_write_tokens"),
+                reasoning_tokens=agent_result.get("reasoning_tokens"),
+                estimated_cost_usd=agent_result.get("estimated_cost_usd"),
+                api_calls=agent_result.get("api_calls"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)

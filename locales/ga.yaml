@@ -3808,7 +3808,7 @@ tips:
   t272: "Úsáideann GPT-5 agus Codex an ról 'developer' in ionad 'system' i bhformáid na dteachtaireachtaí."
   t273: "Sáruithe cúnta de réir taisc: auxiliary.vision.provider, auxiliary.compression.model, srl. in config.yaml."
   t274: "Láimhseálann an cliant cúnta 'main' mar ailias soláthraí — réitíonn sé go dtí do phríomhsholáthraí + samhail iarbhír."
-  t275: "Réamhthaispeánann hermes claw migrate --dry-run imirce OpenClaw gan aon rud a scríobh."
+  t275: "Réamhthaispeánann hermes import-agent openclaw --dry-run imirce OpenClaw gan aon rud a scríobh."
   t276: "Láimhseáiltear conairí comhaid a ghreamaítear le comharthaí athfhriotail nó spásanna éalaithe go huathoibríoch — ní gá glanadh de láimh."
   t277: "Ní spreagann orduithe slaise cumhdach na greamála móire choíche — oibríonn /command le hargóintí móra i gceart."
   t278: "I mód idirbhriste, seachnaíonn orduithe slaise a chlóscríobhtar le linn rith an ghníomhaire loighic an idirbhriste agus ritheann siad ar an toirt."

@@ -1,4 +1,5 @@
-"""`hermes import-agent` left core for the agent-importers catalog plugin.
+"""`hermes import-agent` and `hermes claw` (OpenClaw migration) left core for the agent-importers
+catalog plugin.
 
 Real parser and real config files under a temp HERMES_HOME; the catalog lookup and the install are
 stand-ins (the live install is exercised end to end outside the unit suite).
@@ -21,11 +22,12 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
 
 
-def test_old_spelling_without_the_plugin_names_the_install(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("argv", [["import-agent", "claude-code", "--dry-run"], ["claw", "migrate", "--dry-run"]])
+def test_old_spelling_without_the_plugin_names_the_install(argv, tmp_path, monkeypatch, capsys):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(sys, "argv", ["hermes", "import-agent", "claude-code", "--dry-run"])
+    monkeypatch.setattr(sys, "argv", ["hermes", *argv])
     from hermes_cli.main import _build_cli_parser
 
     parser, _subparsers = _build_cli_parser()
@@ -33,7 +35,7 @@ def test_old_spelling_without_the_plugin_names_the_install(tmp_path, monkeypatch
         parser.parse_args(sys.argv[1:])
     err = capsys.readouterr().err
     assert exc.value.code == 2
-    assert "moved out of core into the 'agent-importers' plugin, which is not loaded" in err
+    assert f"`hermes {argv[0]}` moved out of core into the 'agent-importers' plugin, which is not loaded" in err
     assert "hermes plugins install agent-importers" in err
 
 

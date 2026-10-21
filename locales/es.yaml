@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 y Codex usan el rol 'developer' en lugar de 'system' en el formato de mensajes."
   t273: "Anulaciones auxiliares por tarea: auxiliary.vision.provider, auxiliary.compression.model, etc. en config.yaml."
   t274: "El cliente auxiliar trata 'main' como alias de proveedor: se resuelve a tu proveedor y modelo principales reales."
-  t275: "hermes claw migrate --dry-run muestra una vista previa de la migración desde OpenClaw sin escribir nada."
+  t275: "hermes import-agent openclaw --dry-run muestra una vista previa de la migración desde OpenClaw sin escribir nada."
   t276: "Las rutas de archivo pegadas con comillas o espacios escapados se procesan automáticamente: no hace falta limpiarlas a mano."
   t277: "Los comandos de barra nunca activan el colapso de pegados grandes: /command con argumentos largos funciona correctamente."
   t278: "En modo interrupción, los comandos de barra escritos durante la ejecución del agente omiten la lógica de interrupción y se ejecutan de inmediato."

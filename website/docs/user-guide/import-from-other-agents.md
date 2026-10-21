@@ -1,21 +1,30 @@
 ---
 sidebar_position: 9
 title: "Import from Other Agents"
-description: "One-command import of a Claude Code (~/.claude), OpenAI Codex CLI (~/.codex) or Cursor (~/.cursor) setup into Hermes — instructions, rules, allowlists, MCP servers, skills, and memories."
+description: "One-command import of an OpenClaw (~/.openclaw), Claude Code (~/.claude), OpenAI Codex CLI (~/.codex) or Cursor (~/.cursor) setup into Hermes — instructions, rules, allowlists, MCP servers, skills, and memories."
 ---
 
 # Import from Other Agents
 
-`hermes import-agent` imports your existing **Claude Code**, **OpenAI Codex CLI** or **Cursor** setup into Hermes with one command. It follows the same preview-first pattern as [`hermes claw migrate`](../guides/migrate-from-openclaw.md): you always see a per-item plan before anything is written, and `--dry-run` never touches disk.
+`hermes import-agent` imports your existing **OpenClaw**, **Claude Code**, **OpenAI Codex CLI** or **Cursor** setup into Hermes with one command. You always see a per-item plan before anything is written, and `--dry-run` never touches disk.
 
-The command comes from the official **`agent-importers` plugin** from the [plugin catalog](./features/plugins.md), maintained by Nous Research in [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/agent-importers). Install it once per profile:
+The command comes from the official **`agent-importers` plugin** from the [plugin catalog](./features/plugins.md), maintained by Nous Research in [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/agent-importers).
+
+## The easy way: `hermes setup`
+
+On a fresh install, `hermes setup` checks for `~/.openclaw` (or legacy `~/.clawdbot` / `~/.moltbot`), `~/.claude`, `~/.codex` and `~/.cursor` before anything else. When it finds one it asks **"Import your setup from Claude Code?"** (naming what it found); with several found you then pick which from a checklist, all checked. Say yes and setup installs the `agent-importers` plugin from the catalog, unless you already have it, and runs the import below for each pick, preview and confirmation included. For OpenClaw it passes `--migrate-secrets`, as Hermes' old built-in OpenClaw step did, so your API keys and bot tokens come over and the provider and messaging sections that follow are already filled in. Say no, or have none of these folders, and nothing is installed. Already set up? Use the commands below.
+
+## By hand
+
+Install the plugin once per profile:
 
 ```bash
 hermes plugins install agent-importers
 ```
 
 ```bash
-hermes import-agent                    # auto-detect ~/.claude, ~/.codex or ~/.cursor
+hermes import-agent                    # auto-detect ~/.openclaw, ~/.claude, ~/.codex or ~/.cursor
+hermes import-agent openclaw           # import from ~/.openclaw (see the OpenClaw guide)
 hermes import-agent claude-code        # import from ~/.claude
 hermes import-agent codex              # import from ~/.codex
 hermes import-agent cursor             # import from ~/.cursor
@@ -25,6 +34,10 @@ hermes import-agent claude-code --overwrite --yes  # replace conflicts, skip pro
 ```
 
 ## What gets imported
+
+### OpenClaw (`~/.openclaw`)
+
+OpenClaw has its own guide, **[Migrate from OpenClaw](../guides/migrate-from-openclaw.md)**, with the full mapping (persona, memory, skills, model providers, messaging platforms, agent behaviour, MCP servers and more), the `--preset`, `--migrate-secrets`, `--workspace-target` and `--skill-conflict` flags, the pre-migration backup and `hermes claw cleanup`. The older spelling `hermes claw migrate` still works and runs the same import.
 
 ### Claude Code (`~/.claude`)
 
@@ -61,7 +74,7 @@ Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`
 
 ## What is never imported
 
-**API keys and credentials.** Credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.cursor/cli-config.json`) are never read, and MCP server environment variables or headers with secret-looking names (`*_TOKEN`, `*_API_KEY`, `Authorization`, ...) are stripped and listed in the report so you can re-add them deliberately. Run `hermes setup` to configure providers, or add secrets to `~/.hermes/.env`.
+**API keys and credentials.** (OpenClaw is the one exception: its allowlisted API keys and bot tokens come over only when you pass `--migrate-secrets`.) Credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.cursor/cli-config.json`) are never read, and MCP server environment variables or headers with secret-looking names (`*_TOKEN`, `*_API_KEY`, `Authorization`, ...) are stripped and listed in the report so you can re-add them deliberately. Run `hermes setup` to configure providers, or add secrets to `~/.hermes/.env`.
 
 ## Behavior notes
 
@@ -69,11 +82,10 @@ Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`
 - **Merges, not replaces.** Memory entries are deduplicated against your existing `MEMORY.md`; allowlist/denylist patterns merge with what's already in `config.yaml`.
 - **Conflicts are skipped by default.** An MCP server or skill that already exists in Hermes is reported as a conflict; pass `--overwrite` to replace it.
 - **Malformed files don't abort the run.** A broken `settings.json` or `config.toml` becomes a per-item error in the report while everything else still imports.
-- Coming from OpenClaw instead? Use [`hermes claw migrate`](../guides/migrate-from-openclaw.md).
 
 ## Keeping imports in sync
 
-Every successful import registers its source (and the digest of everything it read) in `~/.hermes/import-sync.json`. When the other agent's setup changes later — new skills, edited `CLAUDE.md`/`AGENTS.md`, added MCP servers — pull the changes in with:
+Every successful Claude Code, Codex CLI or Cursor import registers its source (and the digest of everything it read) in `~/.hermes/import-sync.json`. When the other agent's setup changes later — new skills, edited `CLAUDE.md`/`AGENTS.md`, added MCP servers — pull the changes in with:
 
 ```bash
 hermes import-agent --sync            # re-import every changed source
@@ -93,7 +105,7 @@ The manifest is per profile. A profile created with `hermes profile create <name
 
 ## Upgrading from a version with `import-agent` built in
 
-`hermes import-agent` used to ship inside Hermes core. The command, its flags and the `import-sync.json` manifest are unchanged in the plugin:
+`hermes import-agent` and `hermes claw` used to ship inside Hermes core. The commands, their flags and the `import-sync.json` manifest are unchanged in the plugin:
 
 - **Profiles with a registered sync source** (an `import-sync.json`, which scheduled `--sync` runs read) get the plugin installed automatically by `hermes update`, or on the first start after updating (this honours `security.allow_lazy_installs`). If you later remove it (`hermes plugins remove agent-importers`), it stays removed.
-- **Everyone else** installs it when they next need it: running `hermes import-agent` without the plugin prints the install command.
+- **Everyone else** installs it when they next need it: a fresh `hermes setup` that finds one of these agents offers it, and running `hermes import-agent` or `hermes claw` without the plugin prints the install command.

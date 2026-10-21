@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 ve Codex, mesaj biçiminde 'system' yerine 'developer' rolünü kullanır."
   t273: "Görev başına yardımcı geçersiz kılmalar: config.yaml içinde auxiliary.vision.provider, auxiliary.compression.model vb."
   t274: "Yardımcı istemci 'main' değerini bir sağlayıcı takma adı olarak ele alır — gerçek birincil sağlayıcınız + modelinize çözümlenir."
-  t275: "hermes claw migrate --dry-run, OpenClaw geçişini hiçbir şey yazmadan önizler."
+  t275: "hermes import-agent openclaw --dry-run, OpenClaw geçişini hiçbir şey yazmadan önizler."
   t276: "Tırnaklı veya kaçış boşluklu yapıştırılan dosya yolları otomatik işlenir — elle temizlik gerekmez."
   t277: "Slash komutları büyük yapıştırma daraltmasını asla tetiklemez — büyük argümanlı /command doğru çalışır."
   t278: "Kesme modunda, ajan çalışırken yazılan slash komutları kesme mantığını atlar ve hemen çalışır."

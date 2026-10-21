@@ -224,6 +224,9 @@ class LeftCoreFeature:
     # (``hermes mcp serve`` -> ``hermes mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
     command: str = ""
     old_command: str = ""
+    # Other top-level commands core shipped that the same plugin now registers (``hermes claw``, the
+    # OpenClaw migration's spelling before ``hermes import-agent openclaw``); hinted like *cli*.
+    old_cli: tuple[str, ...] = ()
     # Key of the bundled plugin core shipped (``observability/langfuse``). It stays an alias of the
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
     # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
@@ -270,7 +273,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     LeftCoreFeature(
         plugin="agent-importers", label="`hermes import-agent`", in_use=agent_imports_in_use,
         unchanged="`hermes import-agent`, its flags and your import-sync.json sync sources are unchanged",
-        cli="import-agent",
+        cli="import-agent", old_cli=("claw",),
     ),
 )
 
@@ -308,8 +311,8 @@ def legacy_plugin_keys(plugin: str) -> set[str]:
 def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     """For a command a left-core plugin took over: ``hermes auth [<action>] <cli>`` (core's old login
     spelling), core's old nested spelling (``hermes mcp serve``), or the plugin's own ``hermes <cli>`` /
-    ``hermes <command>`` while the plugin is not loaded, the line saying where it went and how to get it
-    for the active home, else ``""``."""
+    ``hermes <command>`` / ``hermes <old_cli>`` while the plugin is not loaded, the line saying where it
+    went and how to get it for the active home, else ``""``."""
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     moved = next((f for f in LEFT_CORE if f.old_command and f.old_command == f"{prog} {value}"), None)
@@ -321,7 +324,7 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
     if prog == "hermes auth":
         feature = next((f for f in LEFT_CORE if f.cli and f.cli == value), None)
     elif prog == "hermes":
-        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command)), None)
+        feature = next((f for f in LEFT_CORE if value and value in (f.cli, f.command, *f.old_cli)), None)
     else:
         feature = None
     if feature is None:
@@ -335,7 +338,8 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         old = " ".join(p for p in ("hermes auth", action, value) if p)
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
-    return f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
+    label = f"`hermes {value}`" if value in feature.old_cli else feature.label
+    return f"{label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
 
 
 def moved_plugin_hint(name: str) -> str:

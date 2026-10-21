@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 和 Codex 在消息格式中使用 'developer' 角色，而不是 'system'。"
   t273: "按任务覆盖辅助设置：在 config.yaml 中设置 auxiliary.vision.provider、auxiliary.compression.model 等。"
   t274: "辅助客户端把 'main' 视为提供方别名——解析为你实际使用的主提供方和模型。"
-  t275: "hermes claw migrate --dry-run 预览 OpenClaw 迁移结果，不会写入任何内容。"
+  t275: "hermes import-agent openclaw --dry-run 预览 OpenClaw 迁移结果，不会写入任何内容。"
   t276: "粘贴的带引号或转义空格的文件路径会被自动处理——无需手动清理。"
   t277: "斜杠命令永远不会触发大段粘贴折叠——带大参数的 /command 也能正常工作。"
   t278: "在中断模式下，代理执行期间输入的斜杠命令会绕过中断逻辑并立即执行。"

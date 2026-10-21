@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 與 Codex 在訊息格式中使用 'developer' 角色，而非 'system'。"
   t273: "按任務覆寫輔助設定：config.yaml 中的 auxiliary.vision.provider、auxiliary.compression.model 等。"
   t274: "輔助客戶端把 'main' 視為提供方別名 — 會解析為你實際使用的主要提供方與模型。"
-  t275: "hermes claw migrate --dry-run 可預覽 OpenClaw 遷移，而不會寫入任何內容。"
+  t275: "hermes import-agent openclaw --dry-run 可預覽 OpenClaw 遷移，而不會寫入任何內容。"
   t276: "貼上帶有引號或跳脫空格的檔案路徑會自動處理 — 不需手動清理。"
   t277: "指令絕不會觸發大量貼上的收合 — 帶有大量參數的 /command 也能正常運作。"
   t278: "在中斷模式下，代理執行期間輸入的指令會繞過中斷邏輯並立即執行。"

@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 e Codex usam o papel 'developer' em vez de 'system' no formato de mensagens."
   t273: "Substituições auxiliares por tarefa: auxiliary.vision.provider, auxiliary.compression.model etc. no config.yaml."
   t274: "O cliente auxiliar trata 'main' como alias de fornecedor — resolve para o seu fornecedor + modelo primário real."
-  t275: "hermes claw migrate --dry-run pré-visualiza a migração do OpenClaw sem gravar nada."
+  t275: "hermes import-agent openclaw --dry-run pré-visualiza a migração do OpenClaw sem gravar nada."
   t276: "Caminhos de arquivo colados com aspas ou espaços escapados são tratados automaticamente — sem limpeza manual."
   t277: "Comandos de barra nunca acionam o recolhimento de colagens grandes — /command com argumentos extensos funciona corretamente."
   t278: "No modo de interrupção, comandos de barra digitados durante a execução do agente ignoram a lógica de interrupção e rodam imediatamente."

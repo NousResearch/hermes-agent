@@ -3808,7 +3808,7 @@ tips:
   t272: "GPT-5 und Codex verwenden im Nachrichtenformat die Rolle 'developer' statt 'system'."
   t273: "Hilfs-Overrides pro Aufgabe: auxiliary.vision.provider, auxiliary.compression.model usw. in config.yaml."
   t274: "Der Hilfs-Client behandelt 'main' als Anbieter-Alias — er wird zu Ihrem tatsächlichen Hauptanbieter + Modell aufgelöst."
-  t275: "hermes claw migrate --dry-run zeigt eine Vorschau der OpenClaw-Migration, ohne etwas zu schreiben."
+  t275: "hermes import-agent openclaw --dry-run zeigt eine Vorschau der OpenClaw-Migration, ohne etwas zu schreiben."
   t276: "Eingefügte Dateipfade mit Anführungszeichen oder maskierten Leerzeichen werden automatisch verarbeitet — kein manuelles Aufräumen nötig."
   t277: "Slash-Befehle lösen nie das Zusammenklappen großer Einfügungen aus — /command mit großen Argumenten funktioniert korrekt."
   t278: "Im Unterbrechungsmodus umgehen Slash-Befehle, die während der Agentenausführung eingegeben werden, die Unterbrechungslogik und laufen sofort."

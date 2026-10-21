@@ -1,8 +1,8 @@
 name: skill-lineage
 title: Skill Lineage
 repo: https://github.com/simin-yuan/hermes-skill-lineage
-sha: 37132da4b8fb8935f4ef07430bc854cf2bcc680c
-version: "0.1.0"
+sha: 8df4bcb730c7627a58ec5241c732f043a648c950
+version: "0.1.3"
 description: >-
   Records where each skill version's content came from, so a skill that rewrites itself can be audited
   afterwards. For every skill write — a foreground skill_manage call, a background-review edit, or a
@@ -21,15 +21,17 @@ description: >-
   shown in `status` rather than happening silently. The plugin does not stop a write and does not judge
   a skill: it records and it verifies, and it does not claim a source caused an edit. Prior work on
   memory lineage (MemLineage, arXiv:2605.14421) is acknowledged in the README.
-  Measured on 2026-10-21 against Hermes 3166d61: Python 3.14 59 passed; Python 3.11 51 passed,
+  Measured on 2026-10-22 against Hermes 3166d61: Python 3.14 62 passed; Python 3.11 54 passed,
   1 skipped; `hermes plugins validate` reports no warning other than one known false positive (a
   test template that quotes a "curl | sh" instruction as data and never runs it).
-  A labelled synthetic evaluation — 600 generated scenarios on a held-out seed, with the acceptance
-  floors fixed before the run — puts precision at 0.988 for the default link set, with recall 1.00
-  on verbatim, paraphrase-with-operative-token and two-hop-via-curator cases, against 0.385 when
-  every link is recorded; the README states plainly that the paraphrases keep their operative token
-  by construction and that a rewrite by a real model is not yet measured. Raw output in
-  eval/results-seed2.json, reproducible with `python eval/run_eval.py --seed 2 --per-label 100`. A manual end-to-end run in an isolated HERMES_HOME
+  A labelled synthetic evaluation — 600 generated scenarios on two held-out seeds, with the acceptance
+  floors fixed before the run — puts precision at 1.000 on the second seed for the default link set,
+  with recall 1.00 on verbatim, paraphrase-with-operative-token and two-hop-via-curator cases, against
+  0.385 when every link is recorded. A real model was then run through the plugin, 60 runs per plugin
+  build: pre-registered false links fell from 53/60 to 6/60 and clean ones from 10/60 to 2/60
+  (Fisher exact, two-sided, 4.1e-19 and 0.029), with the two batches being independent samples. Raw
+  output in eval/results-seed2.json, eval/results-seed4-v013.json and eval/real/, reproducible with
+  `python eval/run_eval.py --seed 2 --per-label 100`. A manual end-to-end run in an isolated HERMES_HOME
   (one real session creating a skill through skill_manage, then
   status/trace/descendants/report/verify/head) passed, raw output in tests/smoke-2026-10-21.txt.
   Disclosure — four read-only hooks (on_session_start, pre_llm_call, pre_tool_call, post_tool_call);

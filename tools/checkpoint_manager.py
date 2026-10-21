@@ -160,6 +160,11 @@ DEFAULT_EXCLUDES = [
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
+# Minimum age of a zero-byte index lock file before we consider it stale and
+# reclaim it (seconds).  Five minutes is well above any legitimate git hold
+# time and well below the "failing forever" symptom window.
+_STALE_INDEX_LOCK_MIN_AGE_SECONDS: int = 300
+
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
@@ -354,6 +359,60 @@ def _git_env(
     return env
 
 
+def _lock_has_live_holder(lock_path: Path) -> bool:
+    """True if ``lock_path`` is currently held by a live process.
+
+    Fail-safe: any probe failure (missing ``lsof``, timeout, unexpected
+    exception, Windows) returns True so we never reclaim a lock we cannot
+    verify is orphaned.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        result = subprocess.run(
+            ["lsof", "-t", str(lock_path)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return True
+
+
+def _reclaim_stale_index_lock(
+    lock_path: Path,
+    *,
+    store: Path,
+    min_age_seconds: int = _STALE_INDEX_LOCK_MIN_AGE_SECONDS,
+) -> bool:
+    """Remove a zero-byte, unheld, old index lock if it is inside the store.
+
+    Returns True when the lock was removed.  All guards must hold: the
+    resolved path lives under ``store/"indexes"``, the file exists, size is
+    zero, mtime age is at least ``min_age_seconds``, and no live process
+    holds it.  Any unlink failure returns False.
+    """
+    try:
+        resolved = lock_path.resolve()
+        indexes_root = (store / _INDEXES_DIRNAME).resolve()
+        if not str(resolved).startswith(str(indexes_root) + os.sep) and resolved != indexes_root:
+            return False
+        if not resolved.is_file():
+            return False
+        st = resolved.stat()
+        if st.st_size != 0:
+            return False
+        age = time.time() - st.st_mtime
+        if age < min_age_seconds:
+            return False
+        if _lock_has_live_holder(resolved):
+            return False
+        resolved.unlink()
+    except OSError:
+        return False
+    logger.info("Reclaimed stale git index lock %s (age=%.0fs, size=0 bytes)", resolved, age)
+    return True
+
+
 def _run_git(
     args: list[str],
     store: Path,
@@ -362,6 +421,7 @@ def _run_git(
     allowed_returncodes: Optional[set[int]] = None,
     index_file: Optional[Path] = None,
     extra_env: Optional[dict[str, str]] = None,
+    _retried_lock_reclaim: bool = False,
 ) -> tuple[bool, str, str]:
     """Run a git command against the shared store.  Returns (ok, stdout, stderr).
 
@@ -409,6 +469,45 @@ def _run_git(
         stdout = os.fsdecode(result.stdout) if "-z" in args else result.stdout.strip()
         stderr = result.stderr.decode("utf-8", errors="replace").strip() if "-z" in args else result.stderr.strip()
         if not ok and result.returncode not in allowed_returncodes:
+            # One-shot reclaim for orphaned zero-byte index locks.  The lock
+            # path comes from git's stderr; when absent we fall back to the
+            # per-project index file we set via GIT_INDEX_FILE.
+            if (
+                not _retried_lock_reclaim
+                and "Unable to create" in stderr
+                and "File exists" in stderr
+            ):
+                match = re.search(r"Unable to create '(.+?)': File exists", stderr)
+                if match:
+                    lock_path = Path(match.group(1))
+                elif index_file is not None:
+                    lock_path = Path(str(index_file) + ".lock")
+                else:
+                    lock_path = None
+                if lock_path is not None and _reclaim_stale_index_lock(lock_path, store=store):
+                    retry = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        **text_options,
+                        timeout=timeout,
+                        env=env,
+                        cwd=str(normalized_working_dir),
+                        stdin=subprocess.DEVNULL,
+                        creationflags=windows_hide_flags(),
+                        check=False,
+                    )
+                    retry_ok = retry.returncode == 0
+                    retry_stdout = os.fsdecode(retry.stdout) if "-z" in args else retry.stdout.strip()
+                    retry_stderr = retry.stderr.decode("utf-8", errors="replace").strip() if "-z" in args else retry.stderr.strip()
+                    if retry_ok or retry.returncode in allowed_returncodes:
+                        return retry_ok, retry_stdout, retry_stderr
+                    # Reclaim succeeded but the retry still failed — log the
+                    # retry's failure and return it (do not re-reclaim).
+                    logger.error(
+                        "Git command failed after index-lock reclaim: %s (rc=%d) stderr=%s",
+                        " ".join(cmd), retry.returncode, retry_stderr,
+                    )
+                    return retry_ok, retry_stdout, retry_stderr
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
                 " ".join(cmd), result.returncode, stderr,

@@ -45,7 +45,9 @@ def _redirect_reason(path: Path, part: str) -> str:
         dest = dest[:77] + "..."
     return (
         f"{part} is a symlink to {dest}; refusing to install through it "
-        "so a later uninstall cannot delete files outside the skills directory"
+        "so a later uninstall cannot delete files outside the skills directory. "
+        "Omit --category to install the skill directly under skills/, or pass "
+        "--category with a real directory that is not a symlink."
     )
 
 

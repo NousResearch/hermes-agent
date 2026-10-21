@@ -38,7 +38,7 @@ dependencies = [
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
   "openai==2.24.0; python_version >= '3.14'",
-  "certifi==2026.5.20; python_version >= '3.14'",
+  "certifi==2026.7.22; python_version >= '3.14'",
   # TLS trust comes from the OS certificate store (agent/ssl_verify.py), so
   # a corporate/internal root installed on the machine just works. certifi
   # above stays a direct pin because httpx/requests/openai each depend on

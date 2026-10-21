@@ -1,0 +1,44 @@
+name: qemu-vm
+version: 0.1.0
+description: "QEMU/KVM terminal backend: a persistent, per-profile Debian VM (headless, checksum-pinned cloud image, SSH on loopback only). Kernel-level isolation without a cloud account. Selected with terminal.backend: qemu_vm; managed with `hermes vm`."
+author: NousResearch
+kind: backend
+platforms:
+  - linux
+external_dependencies:
+  - name: qemu-system-x86_64
+    install: "apt install qemu-system-x86 qemu-utils genisoimage openssh-client"
+    check: "qemu-system-x86_64 --version"
+config_schema:
+  cpus:
+    type: int
+    default: 2
+    description: vCPUs given to the VM (re-read on every start)
+  memory_mb:
+    type: int
+    default: 2048
+    description: RAM in MB (re-read on every start)
+  disk_gb:
+    type: int
+    default: 20
+    description: Disk size in GB (fixed at `hermes vm create`)
+  network:
+    type: str
+    default: egress
+    description: "egress (NAT out, no inbound) or none (no outbound; only the SSH forward)"
+  user:
+    type: str
+    default: hermes
+    description: Guest login user created by cloud-init (fixed at create)
+  passwordless_sudo:
+    type: bool
+    default: true
+    description: Grant the guest user NOPASSWD sudo (fixed at create)
+  autostart:
+    type: bool
+    default: true
+    description: Boot a stopped VM automatically on the first terminal command
+  boot_timeout:
+    type: int
+    default: 180
+    description: Seconds to wait for SSH after boot

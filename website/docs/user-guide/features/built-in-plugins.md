@@ -62,6 +62,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `image_gen/openai` | image backend | OpenAI GPT Image 2 and 2.5 Flare/Sunburst generation and editing (API key) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
+| `terminal_env/qemu_vm` | terminal backend | Persistent per-profile Debian VM on local QEMU/KVM (`terminal.backend: qemu_vm`, managed with `hermes vm`). Kernel-level isolation, no cloud account. See [Terminal Backends](./tools.md#qemu-vm-plugin). |
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 

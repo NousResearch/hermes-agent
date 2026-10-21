@@ -30,6 +30,31 @@ def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypat
 
 
 @pytest.mark.platforms("linux")
+def test_detached_restart_without_service_never_runs_the_gateway_in_the_caller(monkeypatch):
+    """Desktop runs `gateway restart --detach` as a bounded, piped client. In the foreground the
+    client became the gateway: a Desktop child its timeout killed, holding app quit open."""
+    from hermes_cli import gateway as gw
+    from hermes_cli import gateway_runtime_start as start
+
+    monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
+    monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
+    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gw, "stop_profile_gateway", lambda: True)
+    monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
+    foreground, detached = [], []
+    monkeypatch.setattr(gw, "run_gateway", lambda **k: foreground.append(k))
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda home, **k: detached.append(home))
+
+    with pytest.raises(SystemExit) as exited:
+        gw._cmd_restart(SimpleNamespace(system=False, all=False, detach=True))
+
+    assert exited.value.code == 0
+    assert not foreground, "--detach must not turn the restarting client into the gateway"
+    assert detached == [gw.get_hermes_home()]
+
+
+@pytest.mark.platforms("linux")
 def test_restart_with_systemd_unit_still_reports_missing_linger(monkeypatch):
     from hermes_cli import gateway as gw
 

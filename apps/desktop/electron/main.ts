@@ -11680,13 +11680,13 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
 // bounded so a wedged drain cannot hang Restart. The gateway's own drain is unaffected by the kill.
 const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 
-// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process):
-// the same resolver, spawn helper and Windows quoting as `gateway ensure`, against the profile
-// that owns the gateway process. A non-zero exit is logged, not thrown: the re-ensure that
-// follows reports what actually answers.
+// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process): the
+// `gateway ensure` resolver, spawn helper and quoting, against the profile owning the process.
+// `--detach`: without a service the CLI would run the replacement as this bounded client, a child
+// the timeout kills. A non-zero exit is logged, not thrown: the re-ensure reports what answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
   const backend = await ensureRuntime(
-    await resolveHermesBackend(['--profile', ownerProfile, 'gateway', 'restart']),
+    await resolveHermesBackend(['--profile', ownerProfile, 'gateway', 'restart', '--detach']),
     () => undefined
   )
 

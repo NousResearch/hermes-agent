@@ -80,6 +80,20 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
         raise RuntimeStartError(reason) from exc
 
 
+def start_detached_replacement(profile_home: Path) -> int:
+    """``gateway restart --detach`` with no service: start the stopped owner's replacement the way
+    ``gateway ensure`` starts an absent one. In the foreground, the restarting client (Desktop's
+    bounded, piped call) would itself become the long-lived gateway it only meant to restart."""
+    import time
+    try:
+        spawn_unmanaged_gateway(profile_home, deadline=time.monotonic() + 30)
+    except RuntimeStartError as exc:
+        print(f"✗ Could not start the gateway in the background: {exc}", file=sys.stderr)
+        return 1
+    print("✓ Started the gateway in the background")
+    return 0
+
+
 def stdio_log_path(profile_home: Path) -> Path:
     return profile_home / "logs" / "gateway-stdio.log"
 

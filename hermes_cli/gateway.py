@@ -5523,7 +5523,7 @@ def _cmd_restart(args):
     from gateway.status import get_running_pid
     from hermes_cli.gateway_supervised_restart import (
         gateway_declares_external_supervisor, refuse_restart_of_service_managed_gateway,
-        restart_externally_supervised_gateway,
+        restart_externally_supervised_gateway, start_restart_replacement,
     )
     supervised_pid = get_running_pid()
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
@@ -5537,7 +5537,7 @@ def _cmd_restart(args):
     _wait_for_api_server_port_free()
     _forget_host_gateway_probe()
     print("Starting gateway...")
-    run_gateway(verbose=0, force=force)
+    start_restart_replacement(args, force=force)
 
 
 # ``hermes gateway status`` hints for a manually-run / stopped gateway, keyed by host kind.

@@ -16,6 +16,7 @@ from contextlib import suppress
 from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.auxiliary_task_config import authoritative_auxiliary_task
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
@@ -468,6 +469,89 @@ def _is_prompt_example_echo(title: str) -> bool:
     return normalized in _EXAMPLE_ECHO_REJECT
 
 
+def _is_guard_refusal(exc: Exception) -> bool:
+    """True when *exc* is the on-device Apple FM input-classifier refusal.
+
+    The plugin raises a typed ``AppleFMGuardError`` carrying ``error_code``
+    ``apple_fm_guard_triggered`` and the measured refusal text
+    ``May contain unsafe content``. We detect both ways so the fallback
+    survives a plugin refactor that keeps the message stable but renames
+    the class, and also a future provider that classifies the same
+    refusal via ``classify_api_error`` as ``content_policy_blocked``.
+    """
+    error_code = getattr(exc, "error_code", "") or ""
+    if error_code == "apple_fm_guard_triggered":
+        return True
+    message = str(exc).lower()
+    if "unsafe content" in message:
+        return True
+    try:
+        from agent.error_classifier import classify_api_error
+        verdict = classify_api_error(exc)
+        if verdict.reason == "content_policy_blocked":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _request_title(
+    prompt: str,
+    user_snippet: str,
+    *,
+    timeout: Optional[float],
+    main_runtime: Optional[dict],
+    provider: Optional[str] = None,
+    task: Any = "title_generation",
+) -> Optional[str]:
+    """One title request + post-parse. Returns the cleaned title, or None for
+    answer-shaped / example-echo output. Raises on transport/provider errors so
+    the caller can decide whether to retry or degrade to ``derived``.
+    """
+    response = call_llm(
+        task=task,
+        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
+        # A title is a handful of tokens, but 64 was cut mid-JSON by fenced/prefixed replies and by
+        # reasoning models whose thinking survives the disable below (#83903, #82291). A model that
+        # honours the JSON contract stops after ~15 tokens regardless, so the ceiling only costs on
+        # replies that would have been garbage anyway. temperature=None: omitted from the wire so
+        # default-only reasoning models accept the first request (#72351).
+        max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
+        provider=provider,
+        extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+        # The module contract above promises thinking-disabled operation,
+        # but nothing enforced it: with the aux default reasoning_effort
+        # "" (provider default), Gemini enables internal thinking and
+        # bills thought tokens against max_tokens=64 — the JSON payload
+        # never lands, and the prose fallback stores the opening fence
+        # ("```json") as the session title (#91927).
+        reasoning_config={"enabled": False},
+    )
+    message = response.choices[0].message
+    title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+    # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
+    # ignored the task and answered the user's message instead ("I don't have context on X — that's not
+    # something I recognize..."). Truncating would store half an assistant blob as the session title,
+    # which is still an assistant blob — reject instead so the caller retries on the next exchange
+    # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
+    if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+        # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
+        logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+        return None
+    # Example-echo guard: a title that parrots one of the prompt's own
+    # examples back verbatim says nothing about the session — reject it so
+    # the instant derived title (a slice of the user's actual words)
+    # survives instead. Exact match after wrapper-stripping, deliberately
+    # not fuzzy, so a genuinely topical title that merely resembles an
+    # example still passes. Wrappers are stripped for the comparison only
+    # ("(Fix login button on mobile)" is the same canned echo as the bare
+    # example). Port of QwenLM/qwen-code#9709.
+    if title is not None and _is_prompt_example_echo(title):
+        logger.debug("Rejecting prompt-example echo title: %r", title)
+        return None
+    return title
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -511,48 +595,27 @@ def generate_title(
         # and reject explicit temperature values, causing the daemon title
         # thread to fail with "Unsupported value: 'temperature'".
         # See: #72351, #51083, #51157
-        response = call_llm(
-            task="title_generation",
-            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens, but 64 was cut mid-JSON by fenced/prefixed replies and by
-            # reasoning models whose thinking survives the disable below (#83903, #82291). A model that
-            # honours the JSON contract stops after ~15 tokens regardless, so the ceiling only costs on
-            # replies that would have been garbage anyway. temperature=None: omitted from the wire so
-            # default-only reasoning models accept the first request (#72351).
-            max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-            # The module contract above promises thinking-disabled operation,
-            # but nothing enforced it: with the aux default reasoning_effort
-            # "" (provider default), Gemini enables internal thinking and
-            # bills thought tokens against max_tokens=64 — the JSON payload
-            # never lands, and the prose fallback stores the opening fence
-            # ("```json") as the session title (#91927).
-            reasoning_config={"enabled": False},
-        )
-        message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
-        # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
-        # ignored the task and answered the user's message instead ("I don't have context on X — that's not
-        # something I recognize..."). Truncating would store half an assistant blob as the session title,
-        # which is still an assistant blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
-            # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
-            return None
-        # Example-echo guard: a title that parrots one of the prompt's own
-        # examples back verbatim says nothing about the session — reject it so
-        # the instant derived title (a slice of the user's actual words)
-        # survives instead. Exact match after wrapper-stripping, deliberately
-        # not fuzzy, so a genuinely topical title that merely resembles an
-        # example still passes. Wrappers are stripped for the comparison only
-        # ("(Fix login button on mobile)" is the same canned echo as the bare
-        # example). Port of QwenLM/qwen-code#9709.
-        if title is not None and _is_prompt_example_echo(title):
-            logger.debug("Rejecting prompt-example echo title: %r", title)
-            return None
-        return title
+        return _request_title(prompt, user_snippet, timeout=timeout, main_runtime=main_runtime)
     except Exception as e:
+        # Guard refusal on the configured (on-device) lane: retry once on the
+        # API lane with the same prompt + input. ``authoritative_auxiliary_task``
+        # strips the configured route fields (apple-fm/system) from the task
+        # config so the retry resolves onto the main runtime instead of
+        # re-resolving to the same failing destination. No general retry loop —
+        # every other failure path keeps today's behaviour (log, report, return
+        # None; the caller's ``derived`` placeholder survives).
+        if _is_guard_refusal(e):
+            logger.info("Title lane guard refusal (%s); retrying on the API lane", e)
+            try:
+                return _request_title(
+                    prompt, user_snippet, timeout=timeout, main_runtime=main_runtime,
+                    provider="auto", task=authoritative_auxiliary_task("title_generation"),
+                )
+            except Exception as fallback_err:
+                logger.warning("Title generation fallback failed: %s", fallback_err)
+                logger.debug("Title generation fallback traceback", exc_info=True)
+                _report_failure(failure_callback, fallback_err, "Title generation fallback")
+                return None
         # WARNING so it shows in agent.log without debug mode; stack at debug.
         logger.warning("Title generation failed: %s", e)
         logger.debug("Title generation traceback", exc_info=True)

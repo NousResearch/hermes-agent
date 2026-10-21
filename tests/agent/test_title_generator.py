@@ -898,3 +898,84 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestGuardRefusalFallback:
+    """The on-device Apple FM lane's input classifier refuses explicit prose;
+    the title path must retry once on the API lane instead of degrading to
+    ``derived`` (so a Discord thread still gets a semantic name, not the first
+    80 chars of the opener)."""
+
+    def _response(self, content: str):
+        return MagicMock(choices=[MagicMock(message=MagicMock(content=content))])
+
+    def test_guard_refusal_retries_on_the_api_lane(self):
+        """A refusal from the configured lane triggers one retry on the API lane
+        with ``provider='auto'`` and an authoritative task so the retry does not
+        re-resolve to the same failing destination."""
+        from agent.title_generator import generate_title
+
+        class GuardError(RuntimeError):
+            def __init__(self):
+                super().__init__("May contain unsafe content")
+                self.error_code = "apple_fm_guard_triggered"
+                self.status_code = 400
+
+        calls = []
+
+        def fake_call_llm(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("provider") == "auto":
+                return self._response('{"title": "Explicit scene"}')
+            raise GuardError()
+
+        with patch("agent.title_generator.call_llm", side_effect=fake_call_llm):
+            title = generate_title("explicit prose opener here")
+
+        assert title == "Explicit scene"
+        assert len(calls) == 2
+        assert calls[0].get("provider") is None  # primary: default route
+        assert calls[1].get("provider") == "auto"  # fallback: API lane
+        # The fallback task is an AuthoritativeAuxiliaryTask (strips cfg_model
+        # so the retry does not re-resolve to apple-fm/system).
+        from agent.auxiliary_task_config import AuthoritativeAuxiliaryTask
+        assert isinstance(calls[1].get("task"), AuthoritativeAuxiliaryTask)
+        assert str(calls[1]["task"]) == "title_generation"
+
+    def test_non_guard_failure_does_not_retry(self):
+        """A generic transport error keeps today's behaviour: log, report,
+        return None (derived placeholder survives)."""
+        from agent.title_generator import generate_title
+
+        calls = []
+
+        def fake_call_llm(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("connection timeout")
+
+        with patch("agent.title_generator.call_llm", side_effect=fake_call_llm):
+            title = generate_title("clean opener")
+
+        assert title is None
+        assert len(calls) == 1  # no retry
+        assert calls[0].get("provider") is None
+
+    def test_fallback_failure_degrades_gracefully(self):
+        """If the API lane also fails, the derived placeholder survives — no
+        crash, no partial title."""
+        from agent.title_generator import generate_title
+
+        class GuardError(RuntimeError):
+            def __init__(self):
+                super().__init__("May contain unsafe content")
+                self.error_code = "apple_fm_guard_triggered"
+
+        def fake_call_llm(**kwargs):
+            if kwargs.get("provider") == "auto":
+                raise RuntimeError("API lane unreachable")
+            raise GuardError()
+
+        with patch("agent.title_generator.call_llm", side_effect=fake_call_llm):
+            title = generate_title("explicit prose")
+
+        assert title is None  # derived placeholder survives

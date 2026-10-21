@@ -12,11 +12,14 @@ from pathlib import Path
 import sqlite3
 
 from acp.schema import (
-    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionInfoUpdate, SessionMode, SessionModeState,
-    SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
+    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
-from acp_adapter.modes import DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_TO_MODE, MODES
+from acp_adapter.modes import (
+    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE,
+    MODE_TO_EDIT_APPROVAL_POLICY, MODES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,43 @@ def model_state(info: dict) -> SessionModelState | None:
         return None
     choice = encode_model_choice(provider, model)
     return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+
+
+MODEL_CONFIG_ID = "model"
+REASONING_CONFIG_ID = "reasoning_effort"
+# Hands the session back to the profile's level (``agent.reasoning_effort`` / ``reasoning_overrides``).
+REASONING_DEFAULT = "default"
+
+
+def reasoning_choices() -> tuple[str, ...]:
+    """Values of the ``reasoning_effort`` option: the profile default, off, then the CLI's ``--reasoning`` levels."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    return (REASONING_DEFAULT, "none", *VALID_REASONING_EFFORTS)
+
+
+def _select(option_id, name, category, current, rows):
+    return SessionConfigOptionSelect(type="select", id=option_id, name=name, category=category, current_value=current,
+                                     options=[SessionConfigSelectOption(value=value, name=label, description=about)
+                                              for value, label, about in rows])
+
+
+def config_options(models: SessionModelState | None, mode: str, effort: str) -> list[SessionConfigOptionSelect]:
+    """``configOptions`` for session replies and ``config_option_update``. A client that reads them ignores
+    ``modes`` (ACP spec) and renders them where the model picker was, so the edit mode and the model picker
+    are offered here as well, beside the session's reasoning effort. ``effort`` is ``session.info``'s
+    ``reasoning_effort``; empty (no level resolved) shows as the profile default."""
+    options = [_select(EDIT_APPROVAL_POLICY_CONFIG_ID, "Mode", "mode",
+                       MODE_TO_EDIT_APPROVAL_POLICY.get(mode, DEFAULT_EDIT_APPROVAL_POLICY),
+                       [(policy, name, description) for policy, name, description in MODES.values()])]
+    if models is not None:
+        options.append(_select(MODEL_CONFIG_ID, "Model", "model", models.current_model_id,
+                               [(m.model_id, m.name, m.description) for m in models.available_models]))
+    choices = reasoning_choices()
+    options.append(_select(REASONING_CONFIG_ID, "Reasoning effort", "thought_level",
+                           effort if effort in choices else REASONING_DEFAULT,
+                           [(REASONING_DEFAULT, "Default", "The profile's agent.reasoning_effort"),
+                            ("none", "None", "Thinking off"), *((level, level, None) for level in choices[2:])]))
+    return options
 
 
 def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict | None:

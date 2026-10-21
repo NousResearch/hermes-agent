@@ -379,6 +379,20 @@ row does not prove its client has disconnected. After closing the relevant edito
 sessions, inspect unwanted rows with `hermes sessions show <id>` and remove only
 confirmed unwanted sessions with `hermes sessions delete <id>`.
 
+### Session config options
+
+Session replies carry ACP `configOptions`, which clients such as Zed and JetBrains render as pickers:
+
+| Config id | Category | Values |
+|---|---|---|
+| `edit_approval_policy` | `mode` | `ask`, `workspace_session`, `session` (the Default / Accept Edits / Don't Ask modes) |
+| `model` | `model` | the model picker's `provider:model` ids |
+| `reasoning_effort` | `thought_level` | `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+
+A new session starts at `agent.reasoning_effort` (or a matching `agent.reasoning_overrides` entry) from
+`config.yaml`. `session/set_config_option` with `reasoning_effort` changes the level for that session only,
+from its next turn, and the level persists with the session. `default` returns it to the profile's level.
+
 ## Working directory behavior
 
 ACP sessions bind the editor's cwd to the Hermes task ID so file and terminal tools run relative to the editor workspace, not the server process cwd.

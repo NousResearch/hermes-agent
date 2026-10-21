@@ -11,7 +11,7 @@ from acp.schema import SessionConfigOptionSelect, SessionConfigSelectOption
 
 logger = logging.getLogger("acp_adapter.server")
 
-# Per-provider row cap (clients render all `availableModels` in one dropdown; mirrors the
+# Per-provider row cap (clients render the model config option in one dropdown; mirrors the
 # MoA picker cap). Not a total cap; the current model is always kept via the fallback insert.
 ACP_MAX_MODELS_PER_PROVIDER = 200
 

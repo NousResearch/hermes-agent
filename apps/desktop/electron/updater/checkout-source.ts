@@ -18,12 +18,39 @@ export interface SourceUpdateProbe {
   hermesHome: string
   branch?: string
   channel?: 'main' | 'stable' | 'canary'
+  /** Persist this install's channel first (the About selector); the check then reports it. */
+  setChannel?: 'main' | 'stable'
   force?: boolean
   cachePath?: string
   branchConfigPath?: string
 }
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
+
+/** The two channels a source checkout can select from Settings. */
+export function sourceChannelName(name: unknown): 'main' | 'stable' {
+  if (name !== 'stable' && name !== 'main') {
+    throw new Error('The update channel must be stable or main.')
+  }
+
+  return name
+}
+
+/** The probe's optional arguments, in the order source_check parses them. */
+function probeFlags(probe: SourceUpdateProbe): string[] {
+  const flags: [string, string | undefined][] = [
+    ['--branch', probe.branch],
+    ['--channel', probe.channel],
+    ['--set-channel', probe.setChannel],
+    ['--cache-path', probe.cachePath],
+    ['--branch-config-path', probe.branchConfigPath]
+  ]
+
+  return [
+    ...flags.flatMap(([flag, value]): string[] => (value ? [flag, value] : [])),
+    ...(probe.force ? ['--force'] : [])
+  ]
+}
 
 export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -71,11 +98,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
     probe.hermesHome,
     '--git',
     probe.git,
-    ...(probe.branch ? ['--branch', probe.branch] : []),
-    ...(probe.channel ? ['--channel', probe.channel] : []),
-    ...(probe.force ? ['--force'] : []),
-    ...(probe.cachePath ? ['--cache-path', probe.cachePath] : []),
-    ...(probe.branchConfigPath ? ['--branch-config-path', probe.branchConfigPath] : [])
+    ...probeFlags(probe)
   ]
 
   const command: string = (managed ? launcher : probe.python)!

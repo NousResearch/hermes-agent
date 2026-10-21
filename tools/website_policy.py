@@ -25,7 +25,7 @@ _DEFAULT_WEBSITE_BLOCKLIST = {"enabled": False, "domains": [], "shared_files": [
 # Without this cache a 50-URL extract would mean 51 YAML parses of config.yaml.
 _CACHE_TTL_SECONDS = 30.0
 _cache_lock = threading.Lock()
-_cached_policy: Optional[Dict[str, Any]] = None
+_cached_policy: Optional[dict[str, Any]] = None
 _cached_policy_path: Optional[str] = None
 _cached_policy_time: float = 0.0
 
@@ -44,7 +44,7 @@ def _normalize_rule(rule: Any) -> Optional[str]:
     return value.split("/", 1)[0].strip().rstrip(".").removeprefix("www.") or None
 
 
-def _iter_blocklist_file_rules(path: Path) -> List[str]:
+def _iter_blocklist_file_rules(path: Path) -> list[str]:
     """Rules from a shared blocklist file; missing/unreadable files warn and yield nothing rather than
     raising — a bad file path must not disable all web tools."""
     try:
@@ -58,14 +58,14 @@ def _iter_blocklist_file_rules(path: Path) -> List[str]:
     return [rule for rule in map(_normalize_rule, raw.splitlines()) if rule]
 
 
-def _require_mapping(value: Any, label: str) -> Dict[str, Any]:
+def _require_mapping(value: Any, label: str) -> dict[str, Any]:
     """``None`` (empty YAML section) counts as an empty mapping; other non-dicts are errors."""
     if value is not None and not isinstance(value, dict):
         raise WebsitePolicyError(f"{label} must be a mapping")
     return value or {}
 
 
-def _load_policy_config(config_path: Path) -> Dict[str, Any]:
+def _load_policy_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
@@ -86,7 +86,7 @@ def _load_policy_config(config_path: Path) -> Dict[str, Any]:
     return {**_DEFAULT_WEBSITE_BLOCKLIST, **website_blocklist}
 
 
-def _require_type(policy: Dict[str, Any], key: str, kind: type, default: Any) -> Any:
+def _require_type(policy: dict[str, Any], key: str, kind: type, default: Any) -> Any:
     """Typed policy field; ``None``/empty list values are coerced to ``[]`` for lists only."""
     value = policy.get(key, default)
     if kind is list:
@@ -97,7 +97,7 @@ def _require_type(policy: Dict[str, Any], key: str, kind: type, default: Any) ->
     return value
 
 
-def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]:
+def load_website_blocklist(config_path: Optional[Path] = None) -> dict[str, Any]:
     """Parsed website blocklist policy (``{"enabled", "rules"}``); cached for ``_CACHE_TTL_SECONDS`` for
     the default config path only — an explicit ``config_path`` (tests) bypasses and never populates it."""
     global _cached_policy, _cached_policy_path, _cached_policy_time
@@ -112,7 +112,7 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     config_path = config_path or default_path
     policy = _load_policy_config(config_path)
     domains = map(_normalize_rule, _require_type(policy, "domains", list, []))
-    pairs: List[Tuple[str, str]] = [(p, "config") for p in domains if p]
+    pairs: list[tuple[str, str]] = [(p, "config") for p in domains if p]
     shared_files = _require_type(policy, "shared_files", list, [])
     enabled = _require_type(policy, "enabled", bool, True)
     for shared_file in shared_files:
@@ -148,7 +148,7 @@ def _extract_host_from_urlish(url: str) -> str:
     return host
 
 
-def check_website_access(url: str, config_path: Optional[Path] = None) -> Optional[Dict[str, str]]:
+def check_website_access(url: str, config_path: Optional[Path] = None) -> Optional[dict[str, str]]:
     """``None`` if the URL is allowed by the blocklist policy, else block metadata (host/rule/source/message).
 
     Fails open on policy errors (warn + ``None``) so a config typo can't break all web tools — except with

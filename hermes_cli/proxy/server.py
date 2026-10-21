@@ -49,7 +49,7 @@ def _require_aiohttp() -> None:
         raise RuntimeError("aiohttp is required for `hermes proxy`. Run `hermes setup` to install it.")
 
 
-def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":
+def _json_error(status: int, message: str, code: str = "proxy_error") -> web.Response:
     """OpenAI-style error JSON response."""
     body = {"error": {"message": message, "type": code, "code": code}}
     return web.json_response(body, status=status)
@@ -126,7 +126,7 @@ def _filter_headers(headers, drop: frozenset = _HOP_BY_HOP_HEADERS) -> dict:
     return {key: value for key, value in headers.items() if key.lower() not in drop}
 
 
-async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cred: UpstreamCredential):
+async def _open_upstream(request: web.Request, rel_path: str, body: bytes, cred: UpstreamCredential):
     """Send the request upstream with ``cred``; returns ``(session, response)`` or
     ``(error_response, None)``."""
     upstream_url = f"{cred.base_url.rstrip('/')}{rel_path}"
@@ -150,7 +150,7 @@ async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cre
         await session.close()
         logger.warning("proxy: upstream connection failed: %s", exc)
         return _json_error(502, f"upstream connection failed: {exc}", code="upstream_unreachable"), None
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await session.close()
         return _json_error(504, "upstream request timed out", code="upstream_timeout"), None
     except Exception:
@@ -159,7 +159,7 @@ async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cre
     return session, upstream_resp
 
 
-async def _stream_back(request: "web.Request", session, upstream_resp) -> "web.StreamResponse":
+async def _stream_back(request: web.Request, session, upstream_resp) -> web.StreamResponse:
     """Relay status + filtered headers, then the body chunk-by-chunk, appending a missing SSE
     ``[DONE]`` only after a clean EOF."""
     resp = web.StreamResponse(
@@ -191,7 +191,7 @@ async def _stream_back(request: "web.Request", session, upstream_resp) -> "web.S
     return resp
 
 
-def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web.Application":
+def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> web.Application:
     """Build the aiohttp application bound to a specific upstream adapter.
 
     Every adapter method is synchronous and blocking (the Nous adapter takes the 15s cross-process
@@ -206,7 +206,7 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web
     allowed_hosts = _LOOPBACK_HOSTS | {bound}
 
     @web.middleware
-    async def local_only(request: "web.Request", handler):
+    async def local_only(request: web.Request, handler):
         refusal = _local_request_error(
             request.headers.get("Host", ""),
             request.headers.get("Origin"),
@@ -226,11 +226,11 @@ def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web
     # AppKey: forward-compat with aiohttp versions that strip bare-string keys.
     app[web.AppKey("adapter", UpstreamAdapter)] = adapter
 
-    async def handle_health(request: "web.Request") -> "web.Response":
+    async def handle_health(request: web.Request) -> web.Response:
         authenticated = await asyncio.to_thread(adapter.is_authenticated)
         return web.json_response({"status": "ok", "upstream": adapter.display_name, "authenticated": authenticated})
 
-    async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
+    async def handle_proxy(request: web.Request) -> web.StreamResponse:
         rel_path = "/" + request.match_info.get("tail", "").lstrip("/")
         if rel_path not in adapter.allowed_paths:
             allowed = ", ".join(sorted(adapter.allowed_paths))
@@ -300,4 +300,4 @@ async def run_server(
         await runner.cleanup()
 
 
-__all__ = ["create_app", "run_server", "DEFAULT_HOST", "DEFAULT_PORT", "AIOHTTP_AVAILABLE"]
+__all__ = ["AIOHTTP_AVAILABLE", "DEFAULT_HOST", "DEFAULT_PORT", "create_app", "run_server"]

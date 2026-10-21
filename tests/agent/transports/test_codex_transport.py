@@ -10,7 +10,7 @@ from agent.transports.types import NormalizedResponse
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex  # noqa: F401
+    import agent.transports.codex
     return get_transport("codex_responses")
 
 
@@ -53,7 +53,7 @@ class TestCodexBuildKwargs:
             reasoning_config=reasoning,
             github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
         )
-        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
+        assert kw.get("reasoning") == ({"effort": expected, "summary": "auto"} if expected else None)
 
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
@@ -1962,7 +1962,7 @@ def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
     (its /responses rejects unknown top-level fields), and the chat_completions
     transport has no such field at all.
     """
-    from agent.transports import chat_completions  # noqa: F401  (registers the sibling)
+    from agent.transports import chat_completions
 
     msgs = [{"role": "user", "content": "hi"}]
     assert transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")["text"] == {"verbosity": "low"}
@@ -1990,7 +1990,7 @@ class TestOpenAIReasoningWireProjection:
 
     def test_explicit_none_is_sent_and_unset_keeps_the_default(self, transport):
         assert self._reasoning(transport, "gpt-5.6-sol", {"enabled": False}) == {"effort": "none"}
-        assert self._reasoning(transport, "gpt-5.6-sol", None) == {"effort": "medium", "summary": "auto"}
+        assert self._reasoning(transport, "gpt-5.6-sol", None) == {"effort": "medium", "summary": "auto", "context": "all_turns"}
         # Astra's vocabulary has no ``none``: nothing to send, never an escalated level.
         assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
 

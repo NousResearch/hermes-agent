@@ -24,7 +24,7 @@ import pytest
 @pytest.fixture
 def commandcode_profile():
     """Resolve the registered CommandCode (chat_completions) profile."""
-    import model_tools  # noqa: F401 — triggers discovery
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("commandcode")
@@ -35,7 +35,7 @@ def commandcode_profile():
 @pytest.fixture
 def commandcode_anthropic_profile():
     """Resolve the registered CommandCode Anthropic profile."""
-    import model_tools  # noqa: F401 — triggers discovery
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("commandcode-anthropic")

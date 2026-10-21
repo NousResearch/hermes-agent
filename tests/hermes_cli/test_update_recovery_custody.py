@@ -64,7 +64,7 @@ def test_torn_custody_modules_cannot_authorize_uncontained_repair(tmp_path, live
             (package / name).write_bytes(b'"""torn')
         result = subprocess.run([sys.executable, "-I", str(recovery_script), str(root)],
                                 cwd=tmp_path, env=env, capture_output=True, text=True,
-                                encoding="utf-8", timeout=30)
+                                encoding="utf-8", timeout=30, check=False)
         assert (owner.poll() is None) == live_owner
         assert payload.read_bytes() == b"after\n", "repair wrote without verifiable child custody"
         assert marker.exists(), "unverified custody must retain the interrupted-update record"

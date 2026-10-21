@@ -16,7 +16,7 @@ import json
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,18 +64,18 @@ def _make_httpx_response(status_code: int, body: dict | None = None, text: str =
 
 def _future_iso(seconds_from_now: int = 3600) -> str:
     ts = time.time() + seconds_from_now
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 def _past_iso(seconds_ago: int = 3600) -> str:
     ts = time.time() - seconds_ago
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 # ---------------------------------------------------------------------------
 # 0. test_resolve_token_expiry_unix_ttl_vs_absolute_ms
 # ---------------------------------------------------------------------------
 
 def test_resolve_token_expiry_unix_ttl_seconds():
-    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
     got = _minimax_resolve_token_expiry_unix(3600, now=now)
     assert abs(got - (now.timestamp() + 3600)) < 0.01
 
@@ -105,7 +105,7 @@ def test_pkce_pair_produces_valid_s256():
     assert len(state) >= 8
 
     # Two calls must return different values (randomness)
-    v2, c2, s2 = _minimax_pkce_pair()
+    v2, _c2, s2 = _minimax_pkce_pair()
     assert verifier != v2
     assert state != s2
 
@@ -619,7 +619,7 @@ def test_concurrent_refresh_rotates_token_once_and_keeps_login(tmp_path, monkeyp
             barrier.wait()
             try:
                 results[name] = ("ok", provider())
-            except Exception as exc:  # noqa: BLE001 -- test witness, recorded not swallowed
+            except Exception as exc:
                 results[name] = ("error", repr(exc))
 
         threads = [threading.Thread(target=_provider_call, args=(f"t{i}",)) for i in range(2)]

@@ -8,7 +8,7 @@ PR #58421 and extended in the follow-up.
 """
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
-import tools.discord_tool as discord_tool
+from tools import discord_tool
 from plugins.platforms.discord import onboarding
 from plugins.platforms.discord.onboarding import interactive_setup
 from tests.fakes.platforms.discord_standin import APP_ID, TOKEN, DiscordStandin

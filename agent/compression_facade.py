@@ -198,6 +198,12 @@ def _mirror_result_onto_live_lists(agent, result, messages, *, direct_path: bool
     if isinstance(session_messages, list) and session_messages is not messages:
         # Durable-parent adoption can leave `_session_messages` on the pre-adoption list.
         _sync_persisted_markers(session_messages, result_messages)
+    if result_messages is not messages:
+        # The token-estimate memo pins message strings; bodies the summary replaced can never hit again,
+        # and close() only sees the compressed history.
+        from agent.model_metadata_token_memo import forget_message_token_memo
+        with contextlib.suppress(Exception):
+            forget_message_token_memo(messages, keep=result_messages)
 
 
 def _rebind_caller_session_context(agent) -> None:
@@ -219,10 +225,10 @@ class CompressionFacadeMixin:
     """``_compress_context`` (see module docstring)."""
 
     def _compress_context(
-        self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default",
-        focus_topic: str = None, force: bool = False, bypass_cooldown: bool = False,
-        defer_context_engine_notification: bool = False, commit_fence=None, verbatim_tail: list = None,
-        trigger: str = None, snapshot_is_current=None,
+        self, messages: list, system_message: str, *, approx_tokens: int | None = None, task_id: str = "default",
+        focus_topic: str | None = None, force: bool = False, bypass_cooldown: bool = False,
+        defer_context_engine_notification: bool = False, commit_fence=None, verbatim_tail: list | None = None,
+        trigger: str | None = None, snapshot_is_current=None, overflow_reason: str | None = None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``
@@ -283,6 +289,7 @@ class CompressionFacadeMixin:
                     bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
                     verbatim_tail=verbatim_tail, trigger=trigger, snapshot_is_current=snapshot_is_current,
+                    overflow_reason=overflow_reason,
                 )
 
             # Callers that already own a progress-aware wait (gateway session

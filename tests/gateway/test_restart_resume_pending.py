@@ -27,7 +27,7 @@ PRs #9850, #9934, #7536):
 import asyncio
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -677,7 +677,7 @@ async def test_startup_auto_resume_freshness_survives_spring_forward(monkeypatch
         marked = datetime(2026, 3, 8, 1, 50)
         now = datetime(2026, 3, 8, 3, 10)
         if aware_marker:
-            marked = datetime.fromtimestamp(marked.timestamp(), tz=timezone.utc)
+            marked = datetime.fromtimestamp(marked.timestamp(), tz=UTC)
 
         class _FrozenDatetime(datetime):
             @classmethod
@@ -1307,7 +1307,6 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
 
     async def never_returns(*_args, **_kwargs):
         await hung.wait()
-        return None
 
     runner._send_restart_notification = never_returns
     runner._claim_pending_obligations = AsyncMock(return_value=[])

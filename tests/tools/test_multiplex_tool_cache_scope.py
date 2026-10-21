@@ -88,7 +88,6 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     from tools import mcp_tool_loop
 
     ac._reset_aux_semaphores()
-    cu._AUX_VISION_ROUTE_CACHE.clear()
 
     with _scoped(a):
         assert cu._should_route_through_aux_vision() is False  # no explicit aux vision: native path

@@ -282,7 +282,7 @@ describe('openSession', () => {
     openSessionFromPicker('s2', navigate)
 
     expect($sessionResumeRequest.get()?.sessionId).toBe('s2')
-    expect(($sessionResumeRequest.get()?.sequence ?? 0)).toBeGreaterThan(1)
+    expect($sessionResumeRequest.get()?.sequence ?? 0).toBeGreaterThan(1)
   })
 
   it('window pops out when the bridge supports it', () => {

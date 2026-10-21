@@ -39,7 +39,7 @@ def test_installed_hermes_runs_under_restricted_policy(tmp_path):
                "Invoke-InstalledHermes @('setup')")
     result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                              "-Command", command],
-                            cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                            cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False)
     output = result.stdout + result.stderr
     assert "running scripts is disabled" not in output, output
     assert f"runtime-from {helper.parents[2]} setup" in result.stdout, output
@@ -75,6 +75,7 @@ def test_installer_runs_runtime_command_from_apostrophe_account_path(tmp_path):
         [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
         cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     output = result.stdout + result.stderr
     assert result.returncode == 0, output

@@ -15,10 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 from agent.conversation_compression import (
-    CompressionCheckpointUnavailable,
-    _checkpoint_blocked,
     _direct_messages_for_pre_compress_memory,
     _pre_compress_memory_context,
+)
+from agent.conversation_compression_checkpoint import (
+    CompressionCheckpointUnavailable,
+    _checkpoint_blocked,
     _warn_checkpoint_required_without_capable_provider,
 )
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
@@ -500,7 +502,7 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
         def __init__(self):
             self.calls = 0
 
-        def _micro_compact(self, messages):
+        def _micro_compact(self, messages, **_kwargs):
             self.calls += 1
             return list(messages)
 

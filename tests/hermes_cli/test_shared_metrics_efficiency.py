@@ -14,7 +14,7 @@ from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_efficiency as eff
 from hermes_cli.observability.shared_metrics_model import record_model_friction
-from tests.hermes_cli.test_relay_shared_metrics_runtime import (  # noqa: F401 - fixture
+from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
     direct_runtime,
 )
@@ -214,7 +214,7 @@ def test_prompt_rebuild_names_a_model_switch_apart_from_other_rebuilds(monkeypat
 
 
 def test_nothing_is_recorded_while_disabled(direct_runtime, tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", dict)
     agent = _agent()
     eff.note_tool_result(agent, "terminal", "c1", "x" * 10, "x" * 10)
     assert not getattr(agent, "_shared_metrics_tool_outputs", None)
@@ -231,7 +231,7 @@ def test_turn_activity_buckets_reach_long_agentic_loops(count, bucket):
 
 
 def test_v3_schema_accepts_exactly_the_contract_values():
-    import hermes_cli.observability as observability
+    from hermes_cli import observability
 
     schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}

@@ -10,7 +10,14 @@ import {
   getQueuedPrompts
 } from '@/store/composer-queue'
 import { $activeConnectionId } from '@/store/connections'
-import { $activeSessionId, $connection, $gatewayState, $selectedStoredSessionId, setSessions, setSessionsLoading } from '@/store/session'
+import {
+  $activeSessionId,
+  $connection,
+  $gatewayState,
+  $selectedStoredSessionId,
+  setSessions,
+  setSessionsLoading
+} from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -217,7 +224,9 @@ describe('ContribWiring background queue: independent remote owner', () => {
       attachments: [],
       fromQueue: true,
       sessionId: 'rt-remote',
-      storedSessionId: 'stored-remote'
+      storedSessionId: 'stored-remote',
+      // The queued row's id rides every drain so the gateway admits it at most once.
+      submission_id: expect.any(String)
     })
     expect.soft(fixture.remoteRequest).toHaveBeenCalledExactlyOnceWith('remote-healthy', 'worker', 'prompt.submit', {
       session_id: 'rt-remote',

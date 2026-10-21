@@ -49,7 +49,7 @@ def test_refresh_retires_the_hermes_replace_dropin_even_when_the_unit_text_is_cu
 
 def test_refresh_keeps_an_operator_written_dropin_of_the_same_name(tmp_path, monkeypatch):
     """Only the file Hermes authored (recognised by its own comment) is retired."""
-    unit, dropin, calls = _current_unit_with_dropin(
+    _unit, dropin, calls = _current_unit_with_dropin(
         tmp_path, monkeypatch, "[Service]\nExecStart=\nExecStart=/opt/hermes gateway run --replace\n")
 
     assert gateway_cli.refresh_systemd_unit_if_needed() is False

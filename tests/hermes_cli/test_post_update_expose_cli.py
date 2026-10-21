@@ -72,6 +72,115 @@ def test_windows_converges_on_the_installer_user_bin(create, monkeypatch, tmp_pa
     assert calls == [create]
 
 
+@pytest.fixture
+def user_path_writes(monkeypatch):
+    """User PATH registrations, recorded instead of written to the registry.
+
+    Launcher publication is stubbed: these tests cover only the registration
+    decision, and publication has its own tests."""
+    registered = []
+    monkeypatch.setattr(_launchers, "ensure_install_launchers",
+                        lambda root, out: [str(out / f"{name}.exe") for name in _launchers.WINDOWS_BIN_LAUNCHERS])
+    monkeypatch.setattr(_launchers, "_register_windows_user_path",
+                        lambda entry: registered.append(Path(entry)) or "added")
+    return registered
+
+
+@pytest.mark.platforms("windows")
+def test_sandbox_home_keeps_its_launchers_off_the_user_path(user_path_writes, tmp_path, monkeypatch):
+    """A review sandbox's HERMES_HOME publishes into its own bin and never reaches the User PATH.
+
+    The console environment is not stubbed: Windows builds it from the user's
+    stored variables, so these overrides are exactly what a sandbox sets."""
+    box = tmp_path / "box"
+    monkeypatch.setenv("HERMES_HOME", str(box / "hermes"))
+    monkeypatch.setenv("LOCALAPPDATA", str(box / "local"))
+    monkeypatch.setenv("USERPROFILE", str(box / "user"))
+
+    result = _launchers._expose_windows_user_bin(tmp_path / "checkout", create=True)
+
+    assert result["ok"] and result["skipped"]
+    assert result["written"] == [f"{name}.exe" for name in _launchers.WINDOWS_BIN_LAUNCHERS]
+    assert user_path_writes == []
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("hermes_home", [None, ("hermes",), ("hermes", "profiles", "work")])
+def test_the_home_new_consoles_use_registers_its_bin(user_path_writes, hermes_home, tmp_path, monkeypatch):
+    local = tmp_path / "local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    if hermes_home is None:
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_HOME", str(local.joinpath(*hermes_home)))
+    monkeypatch.setattr(_launchers, "_new_console_environment", lambda: {"LOCALAPPDATA": str(local)})
+
+    result = _launchers._expose_windows_user_bin(tmp_path / "checkout", create=True)
+
+    assert result["path"] == "added"
+    assert user_path_writes == [local / "hermes" / "bin"]
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("stored_home, override", [
+    ("%LOCALAPPDATA%\\hermes-data", "LOCALAPPDATA"),
+    ("~\\hermes-data", "USERPROFILE"),
+])
+def test_inherited_home_reference_expands_from_the_console_environment(
+        user_path_writes, stored_home, override, tmp_path, monkeypatch):
+    """A sandbox that inherits a stored HERMES_HOME such as %LOCALAPPDATA%\\x and overrides
+    LOCALAPPDATA resolves a different root from a new console, so it must not match."""
+    real = tmp_path / "real"
+    console = {"LOCALAPPDATA": str(real / "local"), "USERPROFILE": str(real / "user"), "HERMES_HOME": stored_home}
+    monkeypatch.setattr(_launchers, "_new_console_environment", lambda: dict(console))
+    monkeypatch.setenv("LOCALAPPDATA", console["LOCALAPPDATA"])
+    monkeypatch.setenv("USERPROFILE", console["USERPROFILE"])
+    monkeypatch.setenv("HERMES_HOME", stored_home)
+    monkeypatch.setenv(override, str(tmp_path / "box" / override.lower()))
+
+    result = _launchers._expose_windows_user_bin(tmp_path / "checkout", create=True)
+
+    assert result["skipped"]
+    assert user_path_writes == []
+
+
+@pytest.mark.platforms("windows")
+def test_unknown_console_environment_leaves_the_user_path(user_path_writes, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(_launchers, "_new_console_environment", lambda: None)
+
+    assert _launchers._expose_windows_user_bin(tmp_path / "checkout", create=True)["skipped"]
+    assert user_path_writes == []
+
+
+@pytest.mark.platforms("windows")
+def test_new_console_environment_ignores_this_process(tmp_path, monkeypatch):
+    """The real Win32 read: variables set only in this process are absent from a new console's environment."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_TEST_ONLY_IN_THIS_PROCESS", "1")
+
+    environ = _launchers._new_console_environment()
+
+    assert environ is not None
+    assert "HERMES_TEST_ONLY_IN_THIS_PROCESS" not in environ
+    assert environ.get("LOCALAPPDATA")
+    assert Path(environ["LOCALAPPDATA"]) != tmp_path / "local"
+    assert environ.get("HERMES_HOME") != str(tmp_path / "hermes")
+
+
+@pytest.mark.platforms("windows")
+def test_environment_block_reader_counts_utf16_units():
+    """An emoji takes two UTF-16 units but one Python character; the variables after it must survive."""
+    import ctypes
+
+    block = ctypes.create_unicode_buffer("A=1\0MOOD=\U0001F600\0HERMES_HOME=C:\\h\0=C:=C:\\\0\0")
+
+    assert _launchers._read_environment_block(ctypes.addressof(block)) == {
+        "A": "1", "MOOD": "\U0001F600", "HERMES_HOME": "C:\\h"}
+
+
 def test_registered_as_a_home_step():
     assert ("expose_cli", _launchers.expose_cli) in post_update.HOME_STEPS
 
@@ -137,7 +246,7 @@ class TestExposeCli:
 
     @posix_only
     def test_leaves_another_installs_wrapper_alone(self, fake_install):
-        home, root = fake_install
+        home, _root = fake_install
         other = "/somewhere/else/checkout"
         wrapper_dir = home / ".local" / "bin"
         wrapper_dir.mkdir(parents=True)
@@ -252,7 +361,7 @@ def test_direct_packaged_cli_exposes_shims_before_electron(tmp_path):
     # `--help` reaches main()'s boot bootstrap (which owns expose_cli) before argparse
     # exits; `--version` is answered on the pre-import fast path and never gets there.
     result = subprocess.run([str(bin_dir / "hermes"), "--help"], env=env,
-                            capture_output=True, text=True, timeout=30, encoding="utf-8")
+                            capture_output=True, text=True, timeout=30, encoding="utf-8", check=False)
     assert result.returncode == 0, result.stderr
     for name in ("hermes", "hermes-agent", "hermes-acp"):
         assert (home / ".local/bin" / name).is_symlink()

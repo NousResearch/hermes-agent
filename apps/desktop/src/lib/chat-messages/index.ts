@@ -9,6 +9,7 @@ export {
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
   finalizeInterruptedMessages,
+  lastTextPartText,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
@@ -25,6 +26,8 @@ export {
   spliceOlderPreservedRows
 } from './reconciliation'
 export {
+  hasUnresolvedToolCall,
+  QUESTION_CARD_TOOLS,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,

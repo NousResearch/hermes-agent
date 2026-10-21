@@ -41,6 +41,8 @@ def test_status_policy(job, result, ordinary, excluded, release):
     ("e2e_upgrade", ("tests", "tests-os")),
     ("desktop_updater", ("tests-os",)),
     ("e2e_desktop_update", ("e2e-desktop-update",)),
+    ("remote_backends", ("remote-backends",)),
+    ("catalog", ("catalog-tests",)),
 ])
 @pytest.mark.parametrize("result", ["skipped", "absent", "success"])
 def test_selected_update_consumers_must_succeed(lane, jobs, result):
@@ -58,7 +60,7 @@ def test_selected_update_consumers_must_succeed(lane, jobs, result):
 
 def test_release_exclusion_policy():
     assert required_results.EXCLUDED_JOBS == {
-        "history-check", "lockfile-diff", "supply-chain", "e2e-desktop",
+        "history-check", "lockfile-diff", "prompt-surface-diff", "supply-chain", "e2e-desktop",
     }
 
 
@@ -85,6 +87,7 @@ def test_cli_stdin_exit_codes_and_output(tmp_path, release, results, code, repor
         [sys.executable, str(SCRIPT), *(["--release"] if release else [])],
         input=json.dumps(needs), capture_output=True, text=True, timeout=30,
         env={**os.environ, "GITHUB_OUTPUT": str(output)},
+        check=False,
     )
     assert child.returncode == code, child.stderr
     assert report in child.stdout

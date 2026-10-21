@@ -294,7 +294,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                 payload = None
             pl = f" {payload}" if payload else ""
             print(
-                f"[{_fmt_ts(r['created_at'])}] {r['task_id']:10s} "
+                f"[{_fmt_ts(kb._to_epoch(r['created_at']))}] {r['task_id']:10s} "
                 f"{r['kind']:18s} (@{r['assignee'] or '-'}){pl}",
                 flush=True,
             )

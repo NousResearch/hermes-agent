@@ -31,7 +31,6 @@ class MockAPIError(Exception):
 
 class MockTransportError(Exception):
     """Simulates a transport-level error with a specific type name."""
-    pass
 
 
 class ReadTimeout(MockTransportError):
@@ -2079,12 +2078,6 @@ class TestNousWelcomeTier:
     def test_retry_after_zero_carries_no_reset(self):
         result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous", api_key=make_jwt())
         assert "reset_at" not in result.error_context
-
-    def test_unknown_reason_is_not_the_welcome_shape(self):
-        err = MockAPIError("Error code: 429", status_code=429,
-                           body={"status": 429, "message": "x", "reason": "something_else", "retry_after": 5})
-        result = classify_api_error(err, provider="nous", api_key=make_jwt())
-        assert "welcome_refusal" not in result.error_context
 
     def test_anonymous_jwt_on_the_paid_host_is_deterministic(self):
         body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}

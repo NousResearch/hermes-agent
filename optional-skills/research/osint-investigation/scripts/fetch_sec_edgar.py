@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get, get_json  # noqa: E402
+from _http import get, get_json
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 COLUMNS = [

@@ -1,9 +1,9 @@
-import { reconnectBackoffDelayMs } from '@hermes/shared'
+import { isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
 
 import type { HermesConnection } from '@/global'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
-import { getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped } from './client'
+import { $apiRequestScope, getApiRequestConnection, getApiRequestProfile, hermesApi, profileScoped } from './client'
 
 /** Resolve the ACTIVE backend's connection descriptor, (connectionId,
  *  profile)-scoped — mirroring how store/profile resolves $connection: a
@@ -86,35 +86,144 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
   })
 }
 
+/** Refusals in a row that do not clear by themselves before the socket stops for its current
+ *  (connection, profile) scope. Every attempt is gateway traffic that keeps an idle-exit gateway awake. */
+const MAX_REFUSED_PLUGIN_DIALS = 5
+
+/** What a plugin socket dials: a URL, null to stay on polling, or main's named refusal. */
+type PluginSocketTarget = null | string | { refused: 'permission' }
+
+/** The URL a plugin socket dials, or null to stay on polling. A local gateway
+ *  (`authMode: 'native'`, no static token) gets a fresh one-use URL from main:
+ *  its native grant rides a request header main attaches to that one dial. */
+async function pluginSocketUrl(connection: HermesConnection, pluginId: string, suffix: string): Promise<PluginSocketTarget> {
+  if (connection.authMode === 'native') {
+    const mint = window.hermesDesktop.getPluginWsUrl
+
+    // An IPC round-trip with no deadline of its own, bounded like activeConnection().
+    return mint
+      ? withTimeout(
+          mint({ connectionId: getApiRequestConnection(), path: suffix, pluginId, profile: getApiRequestProfile() }),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          `Timed out preparing plugin socket "${pluginId}"`
+        )
+      : null
+  }
+
+  const base = connection.baseUrl.replace(/^http/, 'ws')
+  const join = suffix.includes('?') ? '&' : '?'
+
+  return `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
+}
+
+const requestScopeKey = () => `${getApiRequestConnection() ?? ''}\n${getApiRequestProfile() ?? ''}`
+
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
  *  way: `path` is relative to `/api/plugins/<pluginId>` ('/events' → the
  *  plugin's own event stream). Token-mode backends auth via the same query
- *  credential the app's own sockets use; OAuth remotes resolve null (callers
- *  keep their polling fallback — every consumer must have one anyway, since a
- *  socket can drop). Auto-reconnects with backoff until disposed. */
+ *  credential the app's own sockets use, a local gateway via the native grant
+ *  its REST twin uses; OAuth remotes resolve null (callers keep their polling
+ *  fallback — every consumer must have one anyway, since a socket can drop).
+ *
+ *  Auto-reconnects with capped backoff until disposed. A dial that never opens,
+ *  or a connection descriptor or grant that can't be resolved yet, keeps
+ *  retrying: the browser cannot tell a refused upgrade from a gateway that is
+ *  restarting, draining or being re-ensured. It stops after
+ *  MAX_REFUSED_PLUGIN_DIALS refusals in a row that do not clear by themselves:
+ *  main refusing the grant mint for a permission reason, or a server that
+ *  accepts and closes at once. A connection or profile change drops a dial
+ *  still resolving for the old scope, closes a socket bound to it, resets the
+ *  count and dials for the new scope. */
 export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void): () => void {
   const suffix = pluginPathSuffix('pluginSocket', path)
 
   let socket: null | WebSocket = null
   let disposed = false
   let attempt = 0
+  let refused = 0
+  let scope = requestScopeKey()
+  // Bumped on every connection or profile change. A lookup, backoff timer or socket started under an
+  // older generation belongs to another scope: its result is dropped and never counts as a refusal.
+  let generation = 0
 
-  const connect = async () => {
-    const connection = await activeConnection().catch(() => null)
-
-    // No bridge / OAuth cookie auth (WS tickets are single-use, core-managed):
-    // stay on the polling fallback rather than half-working.
-    if (disposed || !connection || connection.authMode === 'oauth') {
+  const retry = (dial: number, refusal: boolean) => {
+    if (disposed || dial !== generation) {
       return
     }
 
-    const base = connection.baseUrl.replace(/^http/, 'ws')
-    const join = suffix.includes('?') ? '&' : '?'
-    socket = new WebSocket(
-      `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
-    )
+    refused = refusal ? refused + 1 : refused
 
-    socket.onmessage = event => {
+    if (refused >= MAX_REFUSED_PLUGIN_DIALS) {
+      return
+    }
+
+    // Full-jitter exponential backoff: same rationale as the gateway
+    // socket reconnect loops — an immediate-retry loop across many
+    // desktop clients floods the gateway with connection attempts
+    // during a restart.
+    window.setTimeout(() => {
+      if (dial === generation) {
+        void connect()
+      }
+    }, reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
+    attempt += 1
+  }
+
+  const connect = async () => {
+    const dial = generation
+    const stale = () => disposed || dial !== generation
+
+    // No bridge: stay on the polling fallback.
+    if (!window.hermesDesktop?.getConnection) {
+      return
+    }
+
+    let connection: HermesConnection
+
+    try {
+      connection = await activeConnection()
+    } catch {
+      // The descriptor can't be resolved yet or the lookup timed out (gateway starting, draining,
+      // or re-ensured after a stale ticket): a connection failure, like a dial that never opened.
+      return retry(dial, false)
+    }
+
+    // OAuth cookie auth (WS tickets are single-use, core-managed): stay on the
+    // polling fallback rather than half-working.
+    if (stale() || connection.authMode === 'oauth') {
+      return
+    }
+
+    let url: PluginSocketTarget
+
+    try {
+      url = await pluginSocketUrl(connection, pluginId, suffix)
+    } catch {
+      // The local mint failed or timed out (owner away, re-ensuring): a connection failure.
+      return retry(dial, false)
+    }
+
+    if (stale() || !url) {
+      return
+    }
+
+    if (typeof url !== 'string') {
+      return retry(dial, true)
+    }
+
+    const current = new WebSocket(url)
+    socket = current
+    let openedAt: null | number = null
+
+    current.onopen = () => {
+      openedAt = Date.now()
+    }
+
+    current.onmessage = event => {
+      if (stale()) {
+        return
+      }
+
       attempt = 0
 
       try {
@@ -124,24 +233,51 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       }
     }
 
-    socket.onclose = () => {
-      socket = null
-
-      if (!disposed) {
-        // Full-jitter exponential backoff: same rationale as the gateway
-        // socket reconnect loops — an immediate-retry loop across many
-        // desktop clients floods the gateway with connection attempts
-        // during a restart.
-        window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
-        attempt += 1
+    current.onclose = () => {
+      if (socket === current) {
+        socket = null
       }
+
+      if (stale()) {
+        return
+      }
+
+      // Only a socket that stayed up resets the ladder. An accept-then-close server
+      // (Kanban on an archived board) is up and answering, so it counts as a refusal.
+      if (isStableOpen(openedAt)) {
+        attempt = 0
+        refused = 0
+      }
+
+      retry(dial, openedAt !== null && !isStableOpen(openedAt))
     }
   }
+
+  // Another connection or profile is another gateway or another consent. A socket bound to the
+  // old scope would show that profile's stream in this view: close it, and dial for the new scope
+  // with a fresh count.
+  const unlisten = $apiRequestScope.listen(() => {
+    const next = requestScopeKey()
+
+    if (next === scope || disposed) {
+      return
+    }
+
+    scope = next
+    generation += 1
+    attempt = 0
+    refused = 0
+    const old = socket
+    socket = null
+    old?.close()
+    void connect()
+  })
 
   void connect()
 
   return () => {
     disposed = true
+    unlisten()
     socket?.close()
   }
 }

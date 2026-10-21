@@ -27,7 +27,7 @@ from pathlib import Path
 
 from pm.environment import BuildFailure, ResolutionConflict
 from pm.environments import install_state_dir, runtime_facts_path
-from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
+from pm.filesystem import durable_write_bytes, file_digest, native, read_bytes_or_none
 from pm.package import InstallError
 
 Entry = tuple[Path, str, Path]  # (home plugins dir, selection key, plugin dir)
@@ -40,7 +40,7 @@ def _interpreter_version() -> str:
     tools = _toolchain(explicit=True)
     if tools is None:
         raise InstallError("venv", "PM's pinned toolchain is unavailable")
-    probe = subprocess.run([str(tools[1]), "-I", "-c", "import platform; print(platform.python_version())"],
+    probe = subprocess.run([native(tools[1]), "-I", "-c", "import platform; print(platform.python_version())"],
                            capture_output=True, text=True, check=True, timeout=60)
     return probe.stdout.strip()
 

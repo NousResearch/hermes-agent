@@ -155,7 +155,7 @@ def test_auth_failure_remedy_is_an_actionable_command(outcomes):
     for command in REMEDY_RE.findall(out.run.stdout):
         argv = [sys.executable, "-m", "hermes_cli.main", *command.split()[1:]]
         proc = subprocess.run(argv, cwd=out.nh.project, env=out.nh.env(), capture_output=True, text=True,
-                              timeout=60, stdin=subprocess.DEVNULL)
+                              timeout=60, stdin=subprocess.DEVNULL, check=False)
         said = (proc.stdout + proc.stderr).lower()
         with known_gate(KNOWN, "auth_remedy", raises=KnownSymptom):
             if "not implemented" in said:

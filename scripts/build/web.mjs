@@ -1,10 +1,96 @@
 #!/usr/bin/env node
 // Pure dashboard compilation; icon/dependency preparation belongs to callers.
-import { cpSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { frontendArgs, isMain, productOutput, repoRoot, withProduct, workspaceTool } from './frontend-common.mjs'
 import { recordProduct, buildInputs } from './freshness.mjs'
+
+// --- Bounded build (#63338) -------------------------------------------------
+// `npm run build` drives Vite 8's Rust-native bundler (Rolldown), whose rayon
+// thread pool saturates every CPU on small hosts (200%+ `top` readings, OOMs
+// and frozen SSH sessions on 2–4 vCPU VPS boxes). Vite exposes no worker knob,
+// but Rolldown's native binding honours RAYON_NUM_THREADS, and V8's heap is
+// capped with --max-old-space-size. `--max-old-space-size` cannot affect an
+// already-running process, so the default heap cap is enforced with a single
+// re-exec (spawnSync → exit); the thread cap is set before vite is imported.
+// User-set env (NODE_OPTIONS heap flag, RAYON_NUM_THREADS) always wins, and
+// HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE / HERMES_WEB_BUILD_THREADS tailor the
+// caps; HERMES_WEB_BUILD_LIGHT=1 tightens them (1 thread, minimum heap) for
+// hosts that cannot spare full CPU during the build.
+const MIN_HEAP_MB = 1024
+const MAX_HEAP_MB = 4096
+const MAX_THREADS = 8
+const TRUTHY = new Set(['1', 'true', 'yes', 'on'])
+
+const webBuildLight = () => TRUTHY.has(String(process.env.HERMES_WEB_BUILD_LIGHT ?? '').toLowerCase())
+
+function availableCores() {
+  try {
+    return Math.max(1, os.availableParallelism?.() ?? (os.cpus().length || 1))
+  } catch {
+    return 1
+  }
+}
+
+// Half the cores (the dashboard graph is small), clamped to [1, MAX_THREADS].
+function boundedThreads() {
+  return Math.max(1, Math.min(MAX_THREADS, Math.ceil(availableCores() / 2)))
+}
+
+// cgroup v2/v1 memory limit in MB, or null when unconstrained.
+function readCgroupLimitMb() {
+  for (const cgroupPath of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
+    try {
+      const raw = String(readFileSync(cgroupPath, 'utf-8')).trim()
+      if (raw === 'max' || !/^\d+$/.test(raw)) continue
+      const value = Number(raw)
+      if (value <= 0 || value >= 2 ** 50) return null // the v1 "unlimited" sentinel
+      return Math.floor(value / (1024 * 1024))
+    } catch { /* unconstrained or unsupported */ }
+  }
+  return null
+}
+
+// 75% of the cgroup limit when constrained (mirrors the TUI launcher's heap
+// sizing), else the conservative ceiling. Never below the GC-thrash floor.
+function boundedHeapMb() {
+  const limitMb = readCgroupLimitMb()
+  const sized = limitMb ? Math.floor(limitMb * 0.75) : MAX_HEAP_MB
+  return Math.max(MIN_HEAP_MB, Math.min(MAX_HEAP_MB, sized))
+}
+
+function applyThreadCap() {
+  if (process.env.RAYON_NUM_THREADS) return
+  const explicit = Number.parseInt(process.env.HERMES_WEB_BUILD_THREADS ?? '', 10)
+  const threads = Number.isFinite(explicit) && explicit > 0 ? explicit
+    : (webBuildLight() ? 1 : boundedThreads())
+  process.env.RAYON_NUM_THREADS = String(Math.max(1, threads))
+}
+
+// Re-exec with the heap cap appended to NODE_OPTIONS unless the user already
+// set one. Runs only for direct invocation (isMain), before vite is imported.
+async function ensureHeapCapForFreshProcess() {
+  const tokens = (process.env.NODE_OPTIONS ?? '').split(/\s+/).filter(Boolean)
+  if (tokens.some(token => token.startsWith('--max-old-space-size='))) return
+  const explicit = Number.parseInt(process.env.HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE ?? '', 10)
+  const heapMb = Number.isFinite(explicit) && explicit > 0
+    ? Math.max(MIN_HEAP_MB, explicit)
+    : (webBuildLight() ? MIN_HEAP_MB : boundedHeapMb())
+  tokens.push(`--max-old-space-size=${heapMb}`)
+  const { spawnSync } = await import('node:child_process')
+  const result = spawnSync(process.execPath, process.argv.slice(1), {
+    stdio: 'inherit',
+    env: { ...process.env, NODE_OPTIONS: tokens.join(' ') },
+  })
+  process.exit(result.status ?? 1)
+}
+
+if (isMain(import.meta.url)) {
+  applyThreadCap()
+  await ensureHeapCapForFreshProcess()
+}
 
 function typecheck(ts, root, scratch) {
   const diagnostics = []

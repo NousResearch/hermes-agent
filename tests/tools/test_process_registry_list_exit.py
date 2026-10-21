@@ -96,6 +96,7 @@ def test_list_reconciles_real_exit_without_consuming_owned_result(tmp_path):
         cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

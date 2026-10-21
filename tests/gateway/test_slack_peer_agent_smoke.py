@@ -45,7 +45,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 BOT_USER_ID = "U_TARGET_BOT"

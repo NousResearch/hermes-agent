@@ -158,7 +158,7 @@ def test_auth_provider_kept_out_of_manager_teardown_order():
 
 def test_auth_provider_re_register_rotates_in_place():
     """A forced re-discovery (e.g. password change) upserts the new provider."""
-    manager, ctx = _real_ctx()
+    _manager, ctx = _real_ctx()
     old = _Basic("old")
     new = _Basic("new")
     stale = ctx.register_dashboard_auth_provider(old)

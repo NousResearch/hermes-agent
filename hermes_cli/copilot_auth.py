@@ -139,7 +139,7 @@ def _probe_gh_cli_token() -> Optional[str]:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
                                     errors='replace', timeout=5, env=clean_env,
-                                    stdin=subprocess.DEVNULL, **_popen_kwargs)
+                                    stdin=subprocess.DEVNULL, **_popen_kwargs, check=False)
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
             continue
@@ -391,7 +391,7 @@ def _fetch_exchange_with_retry(req, timeout: float, fp: str) -> dict:
                 data = json.loads(resp.read().decode())
             _exchange_failure_cache.pop(fp, None)
             return data
-        except Exception as exc:  # noqa: BLE001 — retry all, re-raise below
+        except Exception as exc:
             last_exc = exc
             status = getattr(exc, "code", None) or getattr(exc, "status", None)
             permanent_failure = status in _EXCHANGE_PERMANENT_HTTP_STATUSES

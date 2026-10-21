@@ -1,6 +1,7 @@
 name: snyk
-repo: https://github.com/NousResearch/hermes-plugin-snyk
-sha: 2a41a07f81e45125bf82a19af1b13396ace4b81f
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: abec9e822a23089943dd1d476a104bf746f19f86
+subdir: snyk
 description: 'Scan code (SAST), dependencies, container images, IaC and SBOMs with Snyk through its
   first-party MCP server (pinned snyk@1.1306.0 over npx stdio, CLI analytics disabled), with the
   snyk-security-scan workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/);
@@ -8,7 +9,8 @@ description: 'Scan code (SAST), dependencies, container images, IaC and SBOMs wi
 maintainer: NousResearch
 tier: official
 category: tools
-docs_url: https://github.com/NousResearch/hermes-plugin-snyk
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/snyk
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/abec9e822a23089943dd1d476a104bf746f19f86/assets/snyk.jpg
 platforms: []
 capabilities:
   provides_tools: []

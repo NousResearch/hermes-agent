@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -22,7 +22,7 @@ def client(_isolate_hermes_home, monkeypatch):
     (freebie / "config.yaml").write_text("model: {}\n", encoding="utf-8")
 
     from hermes_constants import get_hermes_home
-    import hermes_cli.nous_account as nous_account
+    from hermes_cli import nous_account
 
     # The launch profile's account is paid, the "freebie" profile's is free tier.
     monkeypatch.setattr(nous_account, "get_nous_portal_account_info", lambda **_k: SimpleNamespace(

@@ -29,6 +29,7 @@ def test_all_tui_subprocess_calls_have_stdin():
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, (
         f"subprocess stdin= check failed:\n{result.stdout}\n{result.stderr}"

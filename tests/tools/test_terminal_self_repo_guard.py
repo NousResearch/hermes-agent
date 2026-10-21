@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.self_repo_guard as self_repo_guard
+from tools import self_repo_guard
 
 
 def _make_env_config(**overrides):

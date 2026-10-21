@@ -28,8 +28,11 @@ def register(ctx):
 
 _TICK = '''
 import json, sys
-from cron import scheduler
+from cron import scheduler, scheduler_authority
 from cron.executions import list_executions
+from tests.cron.conftest import owner_execution_runner
+# Cron executes inside the profile's owner; run the owner's execution seam in-process.
+scheduler_authority.run_canonical_job = owner_execution_runner()
 from hermes_cli.plugins import get_plugin_manager
 scheduler.tick(verbose=False, sync=True)
 ctx = get_plugin_manager()._plugins["cron-identity-probe"].module.CTX
@@ -63,7 +66,7 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
                and not k.endswith(("_API_KEY", "_TOKEN"))}
         env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
         result = subprocess.run([sys.executable, "-c", _TICK], env=env, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=180)
+                                capture_output=True, text=True, timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
     seen = json.loads((home / "seen.json").read_text())

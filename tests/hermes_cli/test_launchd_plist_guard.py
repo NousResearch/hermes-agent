@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Regression tests for the launchd plist scan's malformed-file tolerance.
 
 ``_loaded_launchd_backend_jobs`` documents that unreadable or

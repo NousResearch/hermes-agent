@@ -89,3 +89,21 @@ def test_provider_lookups_reuse_the_home_plugin_stamp_within_its_ttl(tmp_path, m
     assert providers.get_provider_profile("known") is profile
 
     assert stamp_calls == 1
+
+
+def test_api_key_profiles_declare_their_registry_key_env():
+    """Every api_key profile backed by an api_key ``PROVIDER_REGISTRY`` row declares that row's key
+    variable first in ``env_vars``. Surfaces that read the profile (the provider-catalog e2e
+    matrix, doctor, setup prompts) otherwise see a keyless provider. Runs on the default lane so
+    the gap is caught even when the change classifier skips the e2e lane (#134320 -> #134385)."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    missing = []
+    for profile in providers.list_providers():
+        row = PROVIDER_REGISTRY.get(profile.name)
+        if profile.auth_type != "api_key" or row is None or row.auth_type != "api_key" or not row.api_key_env_vars:
+            continue
+        keys = [v for v in profile.env_vars if not v.endswith(("_BASE_URL", "_URL"))]
+        if not keys or keys[0] not in row.api_key_env_vars:
+            missing.append((profile.name, tuple(profile.env_vars), tuple(row.api_key_env_vars)))
+    assert not missing, f"profiles whose env_vars miss their registry key: {missing}"

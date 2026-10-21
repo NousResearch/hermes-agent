@@ -106,15 +106,23 @@ export function localModelsStatusOptions(owner: LocalModelsOwner): UseQueryOptio
   })
 }
 
+const STATUS_POLL_MS = 2_000
+
 interface StatusWatch {
   observer: QueryObserver<LocalModelsStatus>
+  liveUsers: number
   users: number
 }
 const statusWatches: WeakMap<QueryClient, Map<string, StatusWatch>> = new WeakMap()
 
+// One cached read per owner. It polls only while a `live` consumer (the
+// Local Models page, an open picker) is mounted or the server itself reports
+// a model loading; job completions and owner changes re-read through
+// refreshLocalModels, so idle sessions stay quiet.
 export function useLocalModelsStatus(
   owner: LocalModelsOwner,
-  enabled: boolean = true
+  enabled: boolean = true,
+  live: boolean = false
 ): UseQueryResult<LocalModelsStatus> {
   const client: QueryClient = useQueryClient()
   const result: UseQueryResult<LocalModelsStatus> = useQuery({ ...localModelsStatusOptions(owner), enabled: false })
@@ -134,28 +142,43 @@ export function useLocalModelsStatus(
     let watch: StatusWatch | undefined = watches.get(key)
 
     if (!watch) {
-      const observer: QueryObserver<LocalModelsStatus> = new QueryObserver<LocalModelsStatus>(client, {
-        ...localModelsStatusOptions(owner),
-        refetchInterval: 2_000
-      })
+      const created: StatusWatch = { liveUsers: 0, observer: undefined as never, users: 0 }
 
-      watch = { observer, users: 0 }
+      created.observer = new QueryObserver<LocalModelsStatus>(client, {
+        ...localModelsStatusOptions(owner),
+        refetchInterval: (query): number | false =>
+          created.liveUsers > 0 || Object.keys(query.state.data?.loading ?? {}).length > 0 ? STATUS_POLL_MS : false
+      })
+      watch = created
       watches.set(key, watch)
-      observer.subscribe((): void => {})
+      created.observer.subscribe((): void => {})
     }
 
     const acquired: StatusWatch = watch
     acquired.users += 1
 
+    if (live) {
+      acquired.liveUsers += 1
+      acquired.observer.setOptions(acquired.observer.options)
+
+      if (Date.now() - acquired.observer.getCurrentQuery().state.dataUpdatedAt >= STATUS_POLL_MS) {
+        void acquired.observer.refetch()
+      }
+    }
+
     return (): void => {
       acquired.users -= 1
+
+      if (live) {
+        acquired.liveUsers -= 1
+      }
 
       if (acquired.users === 0) {
         acquired.observer.destroy()
         watches.delete(key)
       }
     }
-  }, [client, owner, enabled])
+  }, [client, owner, enabled, live])
 
   return result
 }

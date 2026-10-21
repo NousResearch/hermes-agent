@@ -47,6 +47,7 @@ print(json.dumps(result))
         [sys.executable, "-c", script], env=env,
         cwd=Path(__file__).resolve().parents[2],
         text=True, capture_output=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     base = tmp_path / "AppData" / "Local" / "hermes" if sys.platform == "win32" else tmp_path / ".hermes"

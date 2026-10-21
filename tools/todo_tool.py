@@ -28,14 +28,14 @@ class TodoStore:
     ``{id, content, status, parent?}`` — ``parent`` nests a subtask."""
 
     def __init__(self):
-        self._items: List[Dict[str, str]] = []
+        self._items: list[dict[str, str]] = []
         self._revision = 0
 
-    def _fresh_items(self, todos: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    def _fresh_items(self, todos: list[dict[str, Any]]) -> list[dict[str, str]]:
         """Validate, dedupe and order a whole new list (replace / restore)."""
         return self._normalize_order([self._validate(t) for t in self._dedupe_by_id(todos)])
 
-    def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
+    def write(self, todos: list[dict[str, Any]], merge: bool = False) -> list[dict[str, str]]:
         """Replace the list (default) or merge by id; returns the full list after writing.
         Raises ValueError (leaving the list untouched) if any item is invalid."""
         before = self.read()
@@ -53,7 +53,7 @@ class TodoStore:
             self._revision += 1
         return self.read()
 
-    def _merge(self, todos: List[Dict[str, Any]]) -> None:
+    def _merge(self, todos: list[dict[str, Any]]) -> None:
         """Update existing items only in the fields provided; append new ones (validated)."""
         existing = {item["id"]: item for item in self._items}
         for t in self._dedupe_by_id(todos):
@@ -80,17 +80,17 @@ class TodoStore:
         rebuilt = {item["id"]: existing.get(item["id"], item) for item in self._items}
         self._items = self._normalize_order(list(rebuilt.values()))
 
-    def read(self) -> List[Dict[str, str]]:
+    def read(self) -> list[dict[str, str]]:
         return [item.copy() for item in self._items]
 
     def has_items(self) -> bool:
         return bool(self._items)
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
         """Full state clients can reconcile atomically."""
         return {"todos": self.read(), "revision": self._revision}
 
-    def restore(self, todos: List[Dict[str, Any]], *, revision: Any = 0) -> List[Dict[str, str]]:
+    def restore(self, todos: list[dict[str, Any]], *, revision: Any = 0) -> list[dict[str, str]]:
         """Restore a trusted snapshot without manufacturing a new revision."""
         self._items = self._fresh_items(todos)[:MAX_TODO_ITEMS]
         try:
@@ -106,13 +106,13 @@ class TodoStore:
         active so subtasks keep context."""
         if not self._items:
             return None
-        children: Dict[str, List[Dict[str, str]]] = {}
+        children: dict[str, list[dict[str, str]]] = {}
         for item in self._items:
             if item.get("parent"):
                 children.setdefault(item["parent"], []).append(item)
 
-        def render(item: Dict[str, str], depth: int, out: List[str]) -> bool:
-            kid_lines: List[str] = []
+        def render(item: dict[str, str], depth: int, out: list[str]) -> bool:
+            kid_lines: list[str] = []
             has_active_kid = False
             for kid in children.get(item["id"], []):
                 has_active_kid |= render(kid, depth + 1, kid_lines)
@@ -138,7 +138,7 @@ class TodoStore:
         return content
 
     @staticmethod
-    def _validate(item: Dict[str, Any]) -> Dict[str, str]:
+    def _validate(item: dict[str, Any]) -> dict[str, str]:
         """Normalize one item to ``{id, content, status, parent?}`` (placeholders when missing)."""
         if not isinstance(item, dict):
             return {"id": "?", "content": "(invalid item)", "status": "pending"}
@@ -159,7 +159,7 @@ class TodoStore:
         return result
 
     @staticmethod
-    def _sanitize_parents(items: List[Dict[str, str]]) -> None:
+    def _sanitize_parents(items: list[dict[str, str]]) -> None:
         """Drop dangling parent refs and break cycles in place (such items become roots)."""
         by_id = {item["id"]: item for item in items}
         for item in items:
@@ -175,16 +175,16 @@ class TodoStore:
                 node = by_id[node["parent"]]
 
     @staticmethod
-    def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _dedupe_by_id(todos: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Collapse duplicate ids, keeping the last occurrence in its position."""
-        last_index: Dict[str, int] = {}
+        last_index: dict[str, int] = {}
         for i, item in enumerate(todos):  # non-dicts get a synthetic key; _validate handles them
             key = str(item.get("id", "")).strip() if isinstance(item, dict) else f"__invalid_{i}"
             last_index[key or "?"] = i
         return [todos[i] for i in sorted(last_index.values())]
 
     @staticmethod
-    def _normalize_order(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _normalize_order(items: list[dict[str, str]]) -> list[dict[str, str]]:
         """Lift the in_progress step ahead of any earlier pending placeholder. Nested lists
         keep authored order — reordering would tear a subtask from its siblings."""
         statuses = [item["status"] for item in items]
@@ -198,7 +198,7 @@ class TodoStore:
         return normalized
 
 
-def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
+def todo_tool(todos: Optional[list[dict[str, Any]]] = None, merge: bool = False,
               store: Optional[TodoStore] = None) -> str:
     """Write ``todos`` (replace, or ``merge`` by id) or read when None -> list + summary JSON."""
     if store is None:

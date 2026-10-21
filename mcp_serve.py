@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -49,11 +50,43 @@ def _get_sessions_dir() -> Path:
     return _hermes_home() / "sessions"
 
 
-def _read_state_db_mtime() -> float:
-    try:
-        return (_hermes_home() / "state.db").stat().st_mtime
-    except OSError:  # missing file included
-        return 0.0
+class _StateDbVersion:
+    """``PRAGMA data_version`` of state.db on a private read-only connection.
+
+    The value changes whenever ANY other connection commits — WAL commits included, same mtime
+    tick included — and stays put otherwise, for about a microsecond per read. A stat signature
+    of state.db (+ WAL) misses same-tick commits unless every recent mtime forces a full poll,
+    which keeps a busy gateway's bridge in permanent full-poll mode. ``read`` returns None when
+    the database is absent or unreadable; the caller then polls unconditionally."""
+
+    def __init__(self):
+        self._path: Optional[Path] = None
+        self._conn: Optional[sqlite3.Connection] = None
+
+    def read(self) -> Optional[int]:
+        path = _hermes_home() / "state.db"
+        try:
+            conn = self._conn
+            if conn is None or self._path != path:
+                self.close()
+                if not path.exists():
+                    return None
+                # Polled from the bridge thread, baselined from the starter's. read_only_db_uri:
+                # a raw f"file:{path}" URI breaks on '#', '?' or '%xx' in HERMES_HOME.
+                from hermes_state_holders import read_only_db_uri
+                conn = sqlite3.connect(read_only_db_uri(path), uri=True, check_same_thread=False)
+                self._conn = conn
+                self._path = path
+            return conn.execute("PRAGMA data_version").fetchone()[0]
+        except sqlite3.Error:
+            self.close()
+            return None
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+        self._conn = None
+        self._path = None
 
 
 def _read_json(path: Path):
@@ -200,7 +233,7 @@ def _extract_message_content(msg: dict) -> str:
     return str(content) if content else ""
 
 
-def _extract_attachments(msg: dict) -> List[dict]:
+def _extract_attachments(msg: dict) -> list[dict]:
     """Non-text attachments: image/file content blocks plus MEDIA: tags in the text."""
     attachments = []
     content = msg.get("content", "")
@@ -267,15 +300,16 @@ class EventBridge:
     gateway bridge, polling SQLite instead)."""
 
     def __init__(self):
-        self._queue: List[QueueEvent] = []
+        self._queue: list[QueueEvent] = []
         self._cursor = 0
         self._lock = threading.Lock()
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        self._pending_approvals: Dict[str, dict] = {}  # populated from events
-        self._state_db_mtime: float = 0.0  # skip polling work when state.db is unchanged
+        self._last_poll_timestamps: dict[str, float] = {}  # session_key -> unix timestamp
+        self._pending_approvals: dict[str, dict] = {}  # populated from events
+        self._db_version = _StateDbVersion()
+        self._state_db_version: Optional[int] = None  # skip polling work when state.db is unchanged
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -299,9 +333,10 @@ class EventBridge:
         self._new_event.set()
         if self._thread:
             self._thread.join(timeout=5)
+        self._db_version.close()
         logger.debug("EventBridge stopped")
 
-    def _matching(self, after_cursor: int, session_key: Optional[str], limit: int) -> List[dict]:
+    def _matching(self, after_cursor: int, session_key: Optional[str], limit: int) -> list[dict]:
         with self._lock:
             return [e.as_dict() for e in self._queue
                     if e.cursor > after_cursor and (not session_key or e.session_key == session_key)][:limit]
@@ -325,7 +360,7 @@ class EventBridge:
             self._new_event.wait(timeout=min(remaining, POLL_INTERVAL))
         return None
 
-    def list_pending_approvals(self) -> List[dict]:
+    def list_pending_approvals(self) -> list[dict]:
         """List approval requests observed during this bridge session."""
         with self._lock:
             return sorted(self._pending_approvals.values(), key=lambda a: a.get("created_at", ""))
@@ -351,14 +386,14 @@ class EventBridge:
         self._new_event.set()
 
     def _establish_baseline(self) -> None:
-        """Record per-session latest timestamps and the state.db mtime WITHOUT
+        """Record per-session latest timestamps and the state.db signature WITHOUT
         emitting events. Only sessions existing now are baselined; later ones
         default to last_seen=0.0 in _poll_once, so their first message is delivered."""
         db = _get_session_db()
         if not db:
             return
         try:
-            self._state_db_mtime = _read_state_db_mtime()
+            self._state_db_version = self._db_version.read()
             try:
                 self._cached_sessions_index = _load_sessions_index()
             except Exception:
@@ -395,17 +430,17 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        One state.db mtime check gates all work, making 200ms polling nearly free.
-        The routing index lives in the same file as the messages, so a new
-        conversation and its first message land under a single mtime change (no
+        One state.db ``data_version`` read gates all work, making 200ms polling nearly free.
+        The routing index lives in the same database as the messages, so a new
+        conversation and its first message land in a single commit (no
         dual-file race that could drop brand-new conversations).
 
         See #8925, #9006.
         """
-        db_mtime = _read_state_db_mtime()
-        if db_mtime == self._state_db_mtime:
+        version = self._db_version.read()
+        if version is not None and version == self._state_db_version:
             return
-        self._state_db_mtime = db_mtime
+        self._state_db_version = version
         # Refresh the index on every change tick: one indexed query, never lags messages.
         self._cached_sessions_index = _load_sessions_index()
 
@@ -689,7 +724,7 @@ _TOOL_NAMES = (
 )
 
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
+def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> MCPServer:
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(f"MCP server requires the 'mcp' package. Install with: {sys.executable} -m pip install 'mcp'")

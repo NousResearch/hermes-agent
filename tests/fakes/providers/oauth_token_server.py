@@ -208,7 +208,7 @@ class OAuthTokenServer:
 
     # ---- lifecycle -------------------------------------------------------
 
-    def start(self) -> "OAuthTokenServer":
+    def start(self) -> OAuthTokenServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(self))
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05},
@@ -234,7 +234,7 @@ class OAuthTokenServer:
     def handler_class(self) -> type[BaseHTTPRequestHandler]:
         return _make_handler(self)
 
-    def __enter__(self) -> "OAuthTokenServer":
+    def __enter__(self) -> OAuthTokenServer:
         return self.start()
 
     def __exit__(self, *exc: object) -> None:
@@ -252,7 +252,7 @@ def _make_handler(server: OAuthTokenServer) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b""
             ctype = self.headers.get("Content-Type", "")
@@ -278,7 +278,7 @@ def _make_handler(server: OAuthTokenServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
             self.close_connection = True
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
     return Handler
@@ -298,15 +298,25 @@ class TestCA:
     leaf_key: Path
 
 
+def _san(host: str):
+    import ipaddress
+
+    from cryptography import x509
+    try:
+        return x509.IPAddress(ipaddress.ip_address(host))
+    except ValueError:
+        return x509.DNSName(host)
+
+
 def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
-    """Generate a CA and a leaf cert for ``hosts`` (SAN) under ``directory``."""
+    """Generate a CA and a leaf cert for ``hosts`` (DNS or IP SAN) under ``directory``."""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     directory.mkdir(parents=True, exist_ok=True)
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes e2e test CA")])
     ca_cert = (
@@ -328,7 +338,7 @@ def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hosts[0])]))
         .issuer_name(ca_name).public_key(leaf_key.public_key()).serial_number(x509.random_serial_number())
         .not_valid_before(now - _dt.timedelta(minutes=5)).not_valid_after(now + _dt.timedelta(days=1))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(h) for h in hosts]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([_san(h) for h in hosts]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
@@ -362,7 +372,7 @@ class TLSInterceptProxy:
         assert self._sock is not None, "proxy not started"
         return f"http://127.0.0.1:{self._sock.getsockname()[1]}"
 
-    def start(self) -> "TLSInterceptProxy":
+    def start(self) -> TLSInterceptProxy:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.bind(("127.0.0.1", 0))
         self._sock.listen(64)
@@ -416,7 +426,7 @@ class TLSInterceptProxy:
             except OSError:
                 pass
 
-    def __enter__(self) -> "TLSInterceptProxy":
+    def __enter__(self) -> TLSInterceptProxy:
         return self.start()
 
     def __exit__(self, *exc: object) -> None:

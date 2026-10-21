@@ -460,7 +460,6 @@ class TestSetupLogging:
 
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="WARNING")
 
-        root = logging.getLogger()
         agent_handlers = [
             h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
@@ -955,7 +954,7 @@ class TestSafeStderr:
         handler = logging.StreamHandler(result)
         handler.handle(logging.LogRecord("unicode", logging.INFO, "", 0, "Session — 日本", (), None))
         handler.flush()
-        assert fake.buffer.getvalue() == "Session — 日本\n".encode("utf-8")
+        assert fake.buffer.getvalue() == "Session — 日本\n".encode()
 
 
 
@@ -1034,3 +1033,149 @@ class TestRolloverPreservesLogOwnership:
         monkeypatch.setattr(os, "chown", _refuse)
         self._rolled_handler(log_path)
         assert log_path.exists()
+
+
+def test_profile_router_never_holds_its_lock_while_taking_the_logging_module_lock(hermes_home, monkeypatch):
+    """T23: uvicorn's ``dictConfig`` holds ``logging._lock`` and, in ``logging.shutdown``, waits on
+    every handler's lock. The QueueListener thread routing a record to a not-yet-opened profile
+    home built that home's file handler (``Handler.__init__`` takes ``logging._lock``) while
+    ``Handler.handle`` held the router's lock: a lock-order deadlock that hung
+    ``test_runtime_listener_supervision`` on CI. The router must take the module lock with no
+    lock of its own held."""
+    profile = hermes_home / "profiles" / "t23"
+    (profile / "logs").mkdir(parents=True)
+    hermes_home.joinpath("logs").mkdir(exist_ok=True)
+    existing = RotatingFileHandler(str(hermes_home / "logs" / "agent.log"), encoding="utf-8")
+    router = hermes_logging._ProfileRoutingFileHandler(existing, [profile])
+    existing.close()
+    building, real_new = threading.Event(), hermes_logging._new_file_handler
+
+    def new_file_handler(*args, **kwargs):
+        building.set()
+        return real_new(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_logging, "_new_file_handler", new_file_handler)
+    record = logging.LogRecord("t23", logging.ERROR, __file__, 1, "routed", None, None)
+    record.hermes_home = str(profile)
+    listener = threading.Thread(target=router.handle, args=(record,), daemon=True)
+    with logging._lock:  # dictConfig's configure() holds this across _clearExistingHandlers()
+        listener.start()
+        assert building.wait(5)
+        # logging.shutdown -> h.acquire(): must not wait on a listener blocked on our module lock.
+        acquired = router.lock.acquire(timeout=2)
+        if acquired:
+            router.lock.release()
+    listener.join(5)
+    try:
+        assert acquired, "router held its lock while waiting on logging._lock (dictConfig deadlock)"
+        assert not listener.is_alive()
+        assert "routed" in (profile / "logs" / "agent.log").read_text(encoding="utf-8")
+    finally:
+        router.close()
+
+
+@pytest.mark.parametrize("closed_at", ["after_pick", "before_publish"])
+def test_profile_router_close_is_never_undone_by_a_record_in_flight(hermes_home, monkeypatch, closed_at):
+    """T23 follow-up: with no router lock across ``emit``, ``logging.shutdown`` (uvicorn's
+    ``dictConfig``) can close the router and its per-home handler while a routed record is in
+    flight. ``after_pick``: the record picked the per-home handler, then it was closed; a
+    ``RotatingFileHandler`` in append mode reopens on emit, so the closed file came back (on
+    Windows its lock then stays held and the profile's logs/ cannot be removed). ``before_publish``:
+    the record built a new home's handler, and its ``setdefault`` landed in the closed router (a
+    leaked fd). Real handlers; only the interleaving is forced."""
+    profile = hermes_home / "profiles" / "t23b"
+    (profile / "logs").mkdir(parents=True)
+    hermes_home.joinpath("logs").mkdir(exist_ok=True)
+    existing = RotatingFileHandler(str(hermes_home / "logs" / "agent.log"), encoding="utf-8")
+    router = hermes_logging._ProfileRoutingFileHandler(existing, [profile])
+    existing.close()
+    profile_log = profile / "logs" / "agent.log"
+    built = []
+    if closed_at == "after_pick":
+        router._handler_for_home(profile)  # the home's handler is open before the record arrives
+        real_pick = router._handler_for_home
+
+        def pick_then_shutdown(home):
+            handler = real_pick(home)
+            router.close()  # logging.shutdown runs between the pick and the write
+            profile_log.unlink()
+            return handler
+
+        monkeypatch.setattr(router, "_handler_for_home", pick_then_shutdown)
+    else:
+        real_new = hermes_logging._new_file_handler
+
+        def build_then_shutdown(*args, **kwargs):
+            handler = real_new(*args, **kwargs)
+            built.append(handler)
+            if len(built) == 1:  # the routed home's build; a later default-home build is not raced
+                router.close()  # logging.shutdown runs between the build and the publish
+                profile_log.unlink()
+            return handler
+
+        monkeypatch.setattr(hermes_logging, "_new_file_handler", build_then_shutdown)
+    record = logging.LogRecord("t23", logging.ERROR, __file__, 1, "in flight", None, None)
+    record.hermes_home = str(profile)
+    router.handle(record)
+    assert not profile_log.exists(), "a closed per-home log file was reopened"
+    assert router._profile_handlers == {}
+    assert all(handler.stream is None for handler in built), "a handler built after close leaked its fd"
+
+
+def test_router_never_builds_a_child_handler_under_a_lock_logging_shutdown_takes(hermes_home, monkeypatch):
+    """CI run 39131422357 hung: the listener thread held the router's handler lock while building a
+    child handler (which takes ``logging._lock``), while dictConfig held ``logging._lock`` inside
+    ``logging.shutdown`` and waited on the router's lock. Both sides must finish."""
+    profile_home = (hermes_home / "profiles" / "lockorder").resolve()
+    (profile_home / "logs").mkdir(parents=True)
+    (hermes_home / "logs").mkdir(exist_ok=True)
+    existing = RotatingFileHandler(str(hermes_home / "logs" / "agent.log"), encoding="utf-8")
+    router = hermes_logging._ProfileRoutingFileHandler(existing, [profile_home])
+    existing.close()
+
+    building, go = threading.Event(), threading.Event()
+    real_new_file_handler = hermes_logging._new_file_handler
+
+    def paused_new_file_handler(*args, **kwargs):
+        building.set()
+        go.wait(5)
+        return real_new_file_handler(*args, **kwargs)  # Handler.__init__ takes logging._lock
+
+    monkeypatch.setattr(hermes_logging, "_new_file_handler", paused_new_file_handler)
+    record = logging.LogRecord("lockorder", logging.WARNING, __file__, 1, "routed", None, None)
+    record.hermes_home = str(profile_home)
+    holding_module_lock, emitter_released = threading.Event(), threading.Event()
+    shutdown_got_router_lock = []
+
+    def shutdown_like_dictconfig():
+        # dictConfig.configure holds logging._lock -> _clearExistingHandlers -> logging.shutdown,
+        # whose per-handler step is h.acquire(). Bounded here so a regression fails instead of
+        # wedging the process (a real shutdown would block forever while holding logging._lock).
+        with logging._lock:
+            holding_module_lock.set()
+            emitter_released.wait(5)
+            got = router.lock.acquire(timeout=5)
+            shutdown_got_router_lock.append(got)
+            if got:
+                try:
+                    router.flush()
+                    router.close()
+                finally:
+                    router.release()
+
+    emitter = threading.Thread(target=router.handle, args=(record,), daemon=True)
+    emitter.start()
+    assert building.wait(5)
+    clearer = threading.Thread(target=shutdown_like_dictconfig, daemon=True)
+    clearer.start()
+    assert holding_module_lock.wait(5)
+    go.set()  # the emitter now heads for logging._lock, which the clearer holds
+    emitter_released.set()
+    clearer.join(10)
+    emitter.join(10)
+    for child in list(router._profile_handlers.values()):
+        child.close()
+    assert not clearer.is_alive() and not emitter.is_alive()
+    assert shutdown_got_router_lock == [True], (
+        "lock-order inversion: logging.shutdown (under logging._lock) could not take the router's "
+        "lock while the router built a child handler (which needs logging._lock)")

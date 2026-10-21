@@ -97,7 +97,7 @@ def test_lazy_sync_never_creates_the_first_selection_for_a_foreign_interpreter(r
     that lacks whatever the foreign interpreter carried (the CI "anthropic/aiohttp vanished"
     class). Only an explicit install may create it. Exercised at the client seam every
     ensure_import caller goes through, in the in-process (is_runtime) shape."""
-    import pm.client as client
+    from pm import client
     import pm.install as ensure_mod
     from pm import paths
     from pm.package import InstallError

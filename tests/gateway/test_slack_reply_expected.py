@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tests.gateway.test_slack_ignore_other_user_mentions import (  # noqa: F401 - fixtures
+from tests.gateway.test_slack_ignore_other_user_mentions import (
     BOT_USER_ID, CHANNEL_ID, OTHER_USER_ID, _redirect_cache, adapter,
 )
 

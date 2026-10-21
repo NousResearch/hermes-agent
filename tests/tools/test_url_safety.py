@@ -572,7 +572,7 @@ class TestDeclaredFakeIpSentinelRanges:
             assert is_safe_url("http://example.com/") is False
         # ...and the sentinel block itself is blocked again once the declaration is gone.
         _reset_allow_private_cache()
-        with patch("hermes_cli.config.read_raw_config", lambda: {}), _resolves_to("198.18.0.23"):
+        with patch("hermes_cli.config.read_raw_config", dict), _resolves_to("198.18.0.23"):
             assert is_safe_url("https://example.com/file.jpg") is False
 
     @pytest.mark.parametrize(

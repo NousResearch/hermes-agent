@@ -42,7 +42,7 @@ from hermes_cli.dashboard_auth import (
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def rsa_keypair() -> Dict[str, Any]:
+def rsa_keypair() -> dict[str, Any]:
     """Generate an RS256 keypair + matching JWK for verify_session tests."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = key.private_bytes(
@@ -73,7 +73,7 @@ def rsa_keypair() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _mint_token(
-    rsa_keypair: Dict[str, Any],
+    rsa_keypair: dict[str, Any],
     *,
     iss: str = "https://portal.example.com",
     aud: str = "agent:inst123",
@@ -83,7 +83,7 @@ def _mint_token(
     org_id: str | None = "org_xyz",
     scope: str = "agent_dashboard:access",
     ttl_seconds: int = 900,
-    extra_claims: Dict[str, Any] | None = None,
+    extra_claims: dict[str, Any] | None = None,
 ) -> str:
     now = int(time.time())
     claims = {
@@ -199,7 +199,7 @@ class TestConfigYamlSource:
         with a stub returning the given dict. Tests pass the intended
         ``dashboard.oauth`` block; the stub returns the wrapping structure."""
 
-        def _set(oauth_block: Dict[str, Any] | None) -> None:
+        def _set(oauth_block: dict[str, Any] | None) -> None:
             cfg = {}
             if oauth_block is not None:
                 cfg = {"dashboard": {"oauth": oauth_block}}
@@ -354,7 +354,7 @@ class TestCompleteLogin:
                 "refresh_token": "rt_initial_value",
             },
         )
-        with patch("plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp):
+        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             session = provider.complete_login(
                 code="abc",
                 state="state-val",
@@ -374,7 +374,7 @@ class TestCompleteLogin:
 
     def test_400_raises_invalid_code(self, provider):
         mock_resp = self._mock_post(400, {"error": "invalid_grant"})
-        with patch("plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp):
+        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
                     code="bad", state="s", code_verifier="v",
@@ -384,7 +384,7 @@ class TestCompleteLogin:
     def test_500_raises_provider_error(self, provider):
         mock_resp = self._mock_post(500, "internal server error", ctype="text/plain")
         mock_resp.text = "internal server error"
-        with patch("plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp):
+        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(ProviderError, match="500"):
                 provider.complete_login(
                     code="x", state="s", code_verifier="v",
@@ -393,7 +393,7 @@ class TestCompleteLogin:
 
     def test_missing_access_token_raises(self, provider):
         mock_resp = self._mock_post(200, {"token_type": "Bearer"})
-        with patch("plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp):
+        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(ProviderError, match="access_token"):
                 provider.complete_login(
                     code="x", state="s", code_verifier="v",
@@ -405,7 +405,7 @@ class TestCompleteLogin:
         mock_resp = self._mock_post(
             200, {"access_token": access_token, "token_type": "DPoP"}
         )
-        with patch("plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp):
+        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(ProviderError, match="token_type"):
                 provider.complete_login(
                     code="x", state="s", code_verifier="v",
@@ -414,7 +414,7 @@ class TestCompleteLogin:
 
     def test_network_error_raises_provider_error(self, provider):
         with patch(
-            "plugins.dashboard_auth._shared._request_limited_response",
+            "plugins.dashboard_auth._shared.httpx.post",
             side_effect=httpx.ConnectError("conn refused"),
         ):
             with pytest.raises(ProviderError, match="unreachable"):
@@ -525,7 +525,7 @@ class TestRefreshAndRevoke:
             },
         )
         with patch(
-            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
+            "plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp
         ) as mock_post:
             session = provider.refresh_session(refresh_token="rt_old_value")
 

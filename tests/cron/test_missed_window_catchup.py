@@ -72,7 +72,7 @@ def slot_env(tmp_path, monkeypatch):
         """Process 1: its tick advances the schedule, then it dies before any fire claim."""
         env = dict(os.environ, HERMES_HOME=str(home))
         proc = subprocess.run([sys.executable, "-c", _CRASH_BEFORE_DISPATCH, str(REPO)],
-                              env=env, cwd=str(REPO), capture_output=True, text=True, timeout=120)
+                              env=env, cwd=str(REPO), capture_output=True, text=True, timeout=120, check=False)
         assert proc.returncode == 137, proc.stderr[-2000:]
 
     yield {"job_id": job["id"], "slot": slot, "fires": fires, "crash": crash_before_dispatch,

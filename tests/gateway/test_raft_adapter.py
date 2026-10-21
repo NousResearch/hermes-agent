@@ -96,6 +96,14 @@ class TestRaftWakeHttp:
         adapter.handle_message.assert_not_called()
 
 
+    @pytest.mark.parametrize("blank", [None, "   "])
+    def test_unset_bridge_token_is_unset_not_a_guessable_token(self, blank):
+        """A null/blank YAML token must reach connect()'s auto-generated one, never authorize "None"."""
+        adapter = _make_adapter(bridge_token=blank)
+        assert adapter._bridge_token == ""
+        assert not adapter._authorized(SimpleNamespace(headers={BRIDGE_TOKEN_HEADER: str(blank)}))
+
+
 class TestRaftActivityHttp:
     @pytest.mark.asyncio
     async def test_activity_endpoint_auth_validation_and_drain(self):

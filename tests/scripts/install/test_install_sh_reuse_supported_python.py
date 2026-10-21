@@ -25,7 +25,7 @@ pytestmark = pytest.mark.platforms("posix")
 @pytest.mark.parametrize("suffix", [[], ["--manifest"], [""]])
 def test_missing_value_fails_before_any_install_work(option: str, suffix: list[str]) -> None:
     result = subprocess.run(["bash", str(INSTALL_SH), option, *suffix],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 2
     assert result.stderr.strip() == f"{option} needs a value"
     assert not result.stdout
@@ -51,7 +51,7 @@ def test_browser_skip_becomes_the_pm_opt_out(tmp_path: Path, flags: list[str], e
               'printf "noninteractive=%s\\n" "$NON_INTERACTIVE"')
     result = subprocess.run([bash, "-c", script, "test", str(INSTALL_SH), str(tmp_path), str(boot), *flags],
                             env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert record.read_text(encoding="utf-8").splitlines() == expected
     assert "noninteractive=false" in result.stdout
@@ -98,7 +98,7 @@ def test_supported_base_python_is_reused_offline(tmp_path: Path, activated: bool
     script = ('source "$1" --manifest; INSTALL_DIR="$2"; UV_CMD="$3"; bootstrap_python; '
               '"$boot_py" -I -c "import sys; print(sys.prefix == sys.base_prefix)"')
     result = subprocess.run([bash, "-c", script, "test", str(INSTALL_SH), str(core), str(bin_dir / "uv")],
-                            env=env, cwd=core, capture_output=True, text=True, timeout=30)
+                            env=env, cwd=core, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "True", result.stdout + result.stderr
     assert not Path(env["UV_PYTHON_INSTALL_DIR"]).exists()
@@ -132,7 +132,7 @@ def test_bootstrap_failure_has_no_success_frame(tmp_path: Path, failure: str) ->
     uv.chmod(0o755)
     result = subprocess.run([bash, str(INSTALL_SH), "--dir", str(core),
                              "--stage", "venv", "--json", "--non-interactive"],
-                            env=env, cwd=core, capture_output=True, text=True, timeout=30)
+                            env=env, cwd=core, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode != 0, result.stdout + result.stderr
     frame = json.loads(result.stdout.splitlines()[-1])
     assert frame["stage"] == "venv" and frame["ok"] is False, frame

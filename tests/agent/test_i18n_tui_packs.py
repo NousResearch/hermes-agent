@@ -40,7 +40,7 @@ def home(tmp_path, monkeypatch):
 
 def test_tui_surface_serves_bundled_pack_under_overlay(home):
     bundled = i18n_layers.parse_locale_file(LOCALES_DIR / "de.tui.yaml")
-    key = sorted(bundled)[0]
+    key = min(bundled)
     served = i18n.surface_catalog("de", "tui")
     assert served[key] == bundled[key]
     assert set(served) >= set(bundled)

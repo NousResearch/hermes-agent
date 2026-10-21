@@ -700,7 +700,7 @@ def test_a_backup_copy_killed_before_its_rename_is_cleared_by_the_recovery(tmp_p
     (extracted / "a.py").write_text("new\n", encoding="utf-8")
     repo = os.path.realpath(Path(update_cmd.__file__).parent.parent)
     killed = subprocess.run([sys.executable, "-c", _KILLED_BACKUP_COPY, str(live), str(extracted)], cwd=repo,
-                            env={**os.environ, "PYTHONPATH": repo}, capture_output=True, text=True, timeout=120)
+                            env={**os.environ, "PYTHONPATH": repo}, capture_output=True, text=True, timeout=120, check=False)
     temps = list(live.glob("a.py.hermes-update-old.*.tmp"))
     assert killed.returncode == 9 and [p.read_bytes() for p in temps] == [b"ol"], (
         f"harness: not killed inside the backup copy: {killed.returncode} {killed.stderr[-2000:]}")

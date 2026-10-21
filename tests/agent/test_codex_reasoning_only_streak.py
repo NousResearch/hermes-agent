@@ -22,6 +22,7 @@ from tests.agent.test_run_agent_codex_responses import (
     _codex_message_response,
     _codex_reasoning_only_response,
 )
+import itertools
 
 
 def _spy_fallback(agent, monkeypatch):
@@ -134,4 +135,4 @@ def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeyp
     assert not any(_CODEX_INCOMPLETE_NUDGE in str(m.get("content") or "") for m in wire)
     assert not any(m.get("codex_reasoning_items") for m in wire)
     roles = [m["role"] for m in wire]
-    assert roles and all(a != b for a, b in zip(roles, roles[1:]))
+    assert roles and all(a != b for a, b in itertools.pairwise(roles))

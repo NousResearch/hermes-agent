@@ -27,7 +27,7 @@ import hashlib
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable
 
@@ -168,7 +168,7 @@ def _root_store(home: Path) -> Any:
 # ---- the rollup (pure) ---------------------------------------------------------------------------
 
 def _utc_day(now_ms: int) -> str:
-    return datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).date().isoformat()
+    return datetime.fromtimestamp(now_ms / 1000, tz=UTC).date().isoformat()
 
 
 def _fresh(day: str, resource: dict[str, str], owner: bool) -> dict[str, Any]:

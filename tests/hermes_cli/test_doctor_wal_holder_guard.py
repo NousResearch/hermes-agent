@@ -55,8 +55,8 @@ def test_doctor_names_retired_wal_holders_instead_of_healthy_state_db(tmp_path, 
     """After the deleted-WAL guard fires (#110054), doctor must name the PIDs holding the retired
     generation, must not print a healthy state.db line, and must not open the store itself (the
     health probe is another opener) nor checkpoint under --fix."""
-    import hermes_cli.doctor as doctor
-    import hermes_cli.doctor_state as doctor_state
+    from hermes_cli import doctor
+    from hermes_cli import doctor_state
     import hermes_state_dbfile
 
     db = tmp_path / "state.db"

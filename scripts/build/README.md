@@ -109,7 +109,7 @@ node scripts/build/desktop.mjs --source /work/source \
 
 | Builder | Required CLI arguments | Additional CLI arguments | Product contents |
 |---|---|---|---|
-| `tui.mjs` | `--source`, `--out` | None | `dist/entry.js` and `package.json` with `type: module` |
+| `tui.mjs` | `--source`, `--out` | None | `dist/entry.js`, gateway/clipboard Python helpers in `dist/scripts/`, and `package.json` with `type: module` |
 | `web.mjs` | `--source`, `--out`, `--icons` | None | `index.html`, Vite assets, and public assets |
 | `desktop.mjs` | `--source`, `--out`, `--icons`, `--stamp`, `--native-deps` | `--typecheck`, `--platform` | Renderer assets, `electron-main.mjs`, `electron-preload.js`, and native `node_modules` |
 
@@ -122,7 +122,7 @@ Each compiler publishes `hermes-build.json` inside its output (inside `dist/`
 for TUI). `freshness.mjs` owns this receipt and all source input selection.
 TUI inputs are its source tree, the Ink source alias, shared sources, their
 manifests and TypeScript configuration, dependency locks, and its compiler and
-shared compiler helpers. Tests, workspace documentation, dependency-provider
+shared compiler helpers, plus the shipped Python runtime helpers. Tests, workspace documentation, dependency-provider
 recipes, and other products' compiler recipes do not invalidate the TUI.
 It records product/host identity, content hashes of workspace/shared sources and
 build inputs, and the exact supplied icon directory, desktop install stamp, and
@@ -290,8 +290,8 @@ cache. `scripts.bundles.stage --cache PATH` (or `hermes pm bundle --cache PATH`)
 selects the persistent cache explicitly. Direct staging also accepts the
 provider's `UV_CACHE_DIR`; otherwise it uses the output parent's `.uv-cache`.
 The PM runtime and application dependency builds receive this same cache.
-General PM staging uses `setup-pm` and `save-pm-cache` to restore and save it
-after the build, including failures, under its v2 namespace. Desktop composition
+General PM staging uses `setup-pm`, which restores and saves it automatically on
+success. Desktop composition
 instead prepares the full dependency set before its single dependency snapshot
 save. The packaged `uv-cache/` is a copy, not the writable build cache.
 

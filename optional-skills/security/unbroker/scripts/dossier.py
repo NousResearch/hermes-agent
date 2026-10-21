@@ -16,7 +16,7 @@ VALID_CONSENT_METHODS = {"self", "written_authorization", "poa"}
 
 
 def now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def new_subject_id(full_name: str = "") -> str:

@@ -149,7 +149,7 @@ describe('useComposerVoice voice submission', () => {
     hook.rerender({ busy: false })
     await act(async () => retainedSubmit('change direction'))
 
-    expect(mocks.onSubmit).toHaveBeenCalledWith('change direction')
+    expect(mocks.onSubmit).toHaveBeenCalledWith('change direction', { voiceTurn: true })
     expect(mocks.clearDraft).toHaveBeenCalledTimes(1)
     expect(mocks.resetBrowseState).toHaveBeenCalledWith('session-1')
     expect(mocks.triggerHaptic).toHaveBeenCalledWith('submit')

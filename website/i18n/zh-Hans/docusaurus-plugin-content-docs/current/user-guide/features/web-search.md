@@ -21,14 +21,17 @@ Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商�
 
 | 提供商 | 环境变量 | 搜索 | 提取 | 免费层级 |
 |----------|---------|--------|---------|-----------|
-| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 积分/月 |
+| **Firecrawl**（默认） | `FIRECRAWL_API_KEY`（可选——选中时免密钥） | ✔ | ✔ | 500 积分/月 · 选中时免密钥云服务 |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ 免费（自托管） |
-| **Brave Search（免费层级）** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 次查询/月 |
+| **Brave Search** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 每月 $5 免费额度（约 1 000 次查询）· 需绑定信用卡 · 超出后 $5/1 000 次 |
 | **DDGS (DuckDuckGo)** | —（无需密钥） | ✔ | — | ✔ 免费 |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | 付费 |
-| **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth login xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
+| **Exa** | `EXA_API_KEY`（可选） | ✔ | ✔ | ✔ 无密钥环成员 · 有密钥时 1 000 次搜索/月 |
+| **Parallel** | `PARALLEL_API_KEY`（可选） | ✔ | ✔ | ✔ 无密钥环成员 · 有密钥时付费 |
+| **Tavily** | `TAVILY_API_KEY`（可选） | ✔ | ✔ | ✔ 选中时可免密钥使用 |
+| **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔（与查询相关的摘录） | 付费（按请求的 Search API 计价） |
+| **Keenable** | `KEENABLE_API_KEY`（可选） | ✔ | ✔ | ✔ 无密钥环成员 · 有密钥时付费 |
+| **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth add xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
+| **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | 需要 ChatGPT/Codex 订阅 |
 
 Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"`（或让 Hermes 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
 
@@ -271,7 +274,7 @@ XAI_API_KEY=sk-xai-your-key-here
 或对于 SuperGrok 订阅用户：
 
 ```bash
-hermes auth login xai-oauth
+hermes auth add xai-oauth
 ```
 
 然后选择 xAI 作为搜索后端：

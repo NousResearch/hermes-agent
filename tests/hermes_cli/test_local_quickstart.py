@@ -66,7 +66,7 @@ def test_quickstart_without_recommendation_requires_explicit_choice(client, monk
 
     calls: list[tuple] = []
 
-    def download(job, plan, label):
+    def download(job, plan, label, entry=None):
         calls.append(("download", label))
 
     class Server:
@@ -141,7 +141,7 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
     calls: list[str] = []
 
     # Supply the same supported backend to preflight and the stubbed install;
-    # host auto-detection may select CUDA without a published Linux archive.
+    # host auto-detection may select a GPU backend this test host cannot install.
     from hermes_cli.config import load_config, save_config
 
     config = load_config()
@@ -318,7 +318,7 @@ def test_quickstart_prices_after_installing_the_engine(client, monkeypatch):
     monkeypatch.setattr(lm, "_runtime_target", lambda backend=None: ("b1", "vulkan"))
     monkeypatch.setattr(lm.binaries, "installed_engine", lambda *a, **k: None)
     monkeypatch.setattr(lm.binaries, "ensure_engine", lambda backend, **kw: installed.append(backend))
-    monkeypatch.setattr(lm, "_run_download_plan", lambda job, plan, label: downloaded.append(label))
+    monkeypatch.setattr(lm, "_run_download_plan", lambda job, plan, label, entry=None: downloaded.append(label))
     monkeypatch.setattr(lm, "_ensure_server", lambda *a, **k: None)
     monkeypatch.setattr(lm, "_assign_default", lambda job, model_id: assigned.append(model_id))
 

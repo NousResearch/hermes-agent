@@ -13,7 +13,7 @@ import functools
 import json
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -61,12 +61,12 @@ def _log(message: str) -> None:
     with contextlib.suppress(OSError):
         log_file = _state_file("cleanup.log")
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
 
 
-def load_tracked() -> List[Dict[str, Any]]:
+def load_tracked() -> list[dict[str, Any]]:
     """Load tracked.json.  Restores from ``.bak`` on corruption."""
     tf = _state_file("tracked.json")
     tf.parent.mkdir(parents=True, exist_ok=True)
@@ -88,7 +88,7 @@ def load_tracked() -> List[Dict[str, Any]]:
         return []
 
 
-def save_tracked(tracked: List[Dict[str, Any]]) -> None:
+def save_tracked(tracked: list[dict[str, Any]]) -> None:
     """Atomic write: ``.tmp`` → backup old → rename."""
     tf = _state_file("tracked.json")
     tf.parent.mkdir(parents=True, exist_ok=True)
@@ -189,7 +189,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     tracked = load_tracked()
     if any(item["path"] == str(path) for item in tracked):
         return False
-    tracked.append({"path": str(path), "timestamp": datetime.now(timezone.utc).isoformat(),
+    tracked.append({"path": str(path), "timestamp": datetime.now(UTC).isoformat(),
                     "category": category, "size": size})
     save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
@@ -210,7 +210,7 @@ def forget(path_str: str) -> int:
     return removed
 
 
-def _live_items(tracked: List[Dict], now: datetime, *, log_stale: bool = False) -> Iterator[Tuple[Dict, Path, int]]:
+def _live_items(tracked: list[dict], now: datetime, *, log_stale: bool = False) -> Iterator[tuple[dict, Path, int]]:
     """Yield ``(item, path, age_days)`` for entries whose path still exists."""
     for item in tracked:
         p = Path(item["path"])
@@ -224,7 +224,7 @@ def _is_auto_delete(cat: str, age: int) -> bool:
     return cat == "test" or (cat == "temp" and age > 7) or (cat == "cron-output" and age > 14)
 
 
-def _prompt_group(item: Dict, age: int) -> Optional[str]:
+def _prompt_group(item: dict, age: int) -> Optional[str]:
     """Prompt-only bucket: ``research`` / ``chrome`` / ``large`` or None."""
     cat = item["category"]
     if cat == "research" and age > 30:
@@ -234,7 +234,7 @@ def _prompt_group(item: Dict, age: int) -> Optional[str]:
     return "large" if item["size"] > _LARGE_FILE_BYTES else None
 
 
-def _delete_item(item: Dict) -> Optional[str]:
+def _delete_item(item: dict) -> Optional[str]:
     """Delete a tracked file/dir and audit-log it. Returns an error string on OSError, else None."""
     p = Path(item["path"])
     try:
@@ -254,10 +254,10 @@ def _delete_item(item: Dict) -> Optional[str]:
 _STALE_SKIP_NOTE = {"cron-output": "", "test": " — under protected tree"}
 
 
-def dry_run() -> Tuple[List[Dict], List[Dict]]:
+def dry_run() -> tuple[list[dict], list[dict]]:
     """Return (auto_delete_list, needs_prompt_list) without touching files."""
     auto, prompt = [], []
-    for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
+    for item, p, age in _live_items(load_tracked(), datetime.now(UTC)):
         cat = item["category"]
         # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
         if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
@@ -269,12 +269,12 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     return auto, prompt
 
 
-def quick() -> Dict[str, Any]:
+def quick() -> dict[str, Any]:
     """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``."""
     deleted = freed = 0
-    new_tracked: List[Dict] = []
-    errors: List[str] = []
-    for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc), log_stale=True):
+    new_tracked: list[dict] = []
+    errors: list[str] = []
+    for item, p, age in _live_items(load_tracked(), datetime.now(UTC), log_stale=True):
         cat = item["category"]
         if cat in _STALE_SKIP_NOTE and (re_cat := guess_category(p)) != cat:
             # Misclassified stale entry — drop it rather than delete the file.
@@ -303,7 +303,7 @@ def quick() -> Dict[str, Any]:
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
 
 
-def _subdirs(dirpath: Path, exclude: frozenset) -> List[Path]:
+def _subdirs(dirpath: Path, exclude: frozenset) -> list[Path]:
     try:
         return [c for c in dirpath.iterdir() if c.is_dir() and not c.is_symlink() and c.name not in exclude]
     except OSError:
@@ -315,7 +315,7 @@ def _sweep_empty_dirs(hermes_home: Path) -> int:
     rglob over a checkout+venv under HERMES_HOME can stall the gateway loop for minutes).
     Iterative post-order so parents emptied by child removal are caught."""
     removed = 0
-    stack: List[Tuple[Path, bool]] = [
+    stack: list[tuple[Path, bool]] = [
         (top, False) for top in _subdirs(hermes_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
     while stack:
         dirpath, visited = stack.pop()
@@ -331,10 +331,10 @@ def _sweep_empty_dirs(hermes_home: Path) -> int:
     return removed
 
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Return per-category breakdown and top 10 largest tracked files."""
     tracked = load_tracked()
-    cats: Dict[str, Dict] = {}
+    cats: dict[str, dict] = {}
     for item in tracked:
         c = cats.setdefault(item["category"], {"count": 0, "size": 0})
         c["count"] += 1
@@ -344,7 +344,7 @@ def status() -> Dict[str, Any]:
     return {"categories": cats, "top10": existing[:10], "total_tracked": len(tracked)}
 
 
-def format_status(s: Dict[str, Any]) -> str:
+def format_status(s: dict[str, Any]) -> str:
     """Human-readable status string (for slash command output)."""
     lines = [f"{'Category':<20} {'Files':>6}  {'Size':>10}", "-" * 40]
     cats = s["categories"]
@@ -397,7 +397,7 @@ def _inside_git_worktree(path: Path) -> bool:
     """
     resolved = path.resolve()
     parents = list(resolved.parents)
-    above: List[Path] = []
+    above: list[Path] = []
     with contextlib.suppress(ValueError):
         i = parents.index(get_hermes_home())
         parents, above = parents[:i], parents[i:]

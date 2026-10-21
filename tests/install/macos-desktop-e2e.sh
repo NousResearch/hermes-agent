@@ -258,11 +258,12 @@ phase_install() {
       const app = apps.objectAtIndex(i);
       if (app.executableURL && ObjC.unwrap(app.executableURL.path) === args[0]) {
         if (!app.terminate) throw new Error("normal Quit refused");
-        // A historical app (v2026.7.1) that the bootstrap launched moments ago
-        // was seen not to finish quitting within 30s while its backend was
-        // still starting. Allow longer, but the quit must stay the normal one.
+        // AppKit updates `terminated` only from the run loop, and delay()
+        // does not run it, so poll by spinning the run loop instead.
         const deadline = Date.now() + 120000;
-        while (!app.terminated && Date.now() < deadline) delay(0.2);
+        while (!app.terminated && Date.now() < deadline) {
+          $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.2));
+        }
         if (!app.terminated) throw new Error("installed app did not quit normally");
       }
     }
@@ -291,6 +292,9 @@ phase_update() {
   # shellcheck disable=SC1090
   . "$STATE"
   arm_redirect
+  local pin_hermes
+  pin_hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed command to record the update channel"
+  source_build_env pin_source_main_channel "$pin_hermes" || fail "could not record the main update channel"
   # Snapshot every plugin tree BEFORE the upgrade moves anything: fixtures
   # seeded here must survive through the verify after the update lands.
   preserve_before_upgrade

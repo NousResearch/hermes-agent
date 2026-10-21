@@ -177,7 +177,8 @@ class TestTranscribeAudioE2E:
         # Plugin was never called
         assert provider.last_call is None
 
-    def test_oversized_plugin_file_is_rejected_before_dispatch(self, tmp_path):
+    def test_unsplittable_oversized_plugin_file_never_reaches_the_plugin(self, tmp_path):
+        """Over the upload cap with no way to fit it (ffmpeg missing) -> refused, plugin untouched."""
         from unittest.mock import patch
 
         provider = _FakeProvider(name="openrouter")
@@ -190,7 +191,8 @@ class TestTranscribeAudioE2E:
 
         with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openrouter"}), \
              patch("tools.transcription_tools.is_stt_enabled", return_value=True), \
-             patch("tools.transcription_tools._get_provider", return_value="openrouter"):
+             patch("tools.transcription_tools._get_provider", return_value="openrouter"), \
+             patch("tools.transcription_chunking._find_ffmpeg_binary", return_value=None):
             result = transcription_tools.transcribe_audio(str(audio_path))
 
         assert result["success"] is False

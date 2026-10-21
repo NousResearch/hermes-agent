@@ -172,4 +172,4 @@ def test_mcp_orphan_reaper_still_refuses_recycled_pid(monkeypatch):
 
     _kill_orphaned_mcp_children()
 
-    assert killpg_calls == []
+    assert [call for call in killpg_calls if call[1] != 0] == []  # signal 0 is the liveness probe

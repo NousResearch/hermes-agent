@@ -10,7 +10,12 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { _resetLegacyDiscardForTests } from '@/store/session'
+import {
+  _resetLegacyDiscardForTests,
+  _resetSessionOwnerHintsForTests,
+  getSessionOwnerHint,
+  setSessionOwnerHint
+} from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -79,6 +84,9 @@ describe('useDesktopIntegrations', () => {
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
     peerWindowMock.mockReturnValue(false)
+    // Isolated owner-hint state per test: persisted hints are global
+    // module state that would otherwise leak between restore cases.
+    _resetSessionOwnerHintsForTests({ storage: true })
 
     // Stub the desktop bridge so the hook's useEffect callbacks don't try to
     // reach real Electron IPC. The established desktop-test pattern assigns a
@@ -326,6 +334,40 @@ describe('useDesktopIntegrations', () => {
       expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
     })
 
+    // Pins the reachability contract of the by-id resolve branch: the
+    // `sessionBelongsToProfile(sessions, remembered, activeProfile)` gate
+    // above the repair uses the SAME `sessions` array and the SAME
+    // `sessionMatchesStoredId` predicate as `rowFor`, so whenever
+    // `repairOwnerHintsForRestore(remembered)` runs, `rowFor(remembered)`
+    // finds the row — an id absent from the list is cleared before the
+    // repair, it never reaches it (evidence for the #97809 review reply).
+    it('clears an unlisted remembered id instead of restoring it', async () => {
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'unlisted-session')
+      stubGetSession({ connection_id: 'ssh-proxmox', id: 'unlisted-session', profile: 'default' })
+      setSessionOwnerHint('unlisted-session', { connectionId: 'ssh-proxmox', profile: 'default' })
+
+      render({ profileReady: true, sessions: [session({ id: 'other-session', profile: 'default' })] })
+
+      await waitFor(() =>
+        expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+      )
+      expect(navigate).not.toHaveBeenCalledWith('/unlisted-session', { replace: true })
+    })
+
+    it('drops a legacy local owner hint when auto-restoring an untagged delegate parent (#97809)', async () => {
+      // The delegate child resolves to its parent, and the parent row (listed,
+      // untagged) is what the repair consults: an explicit `local` hint is
+      // stale, exactly as on the click path.
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'delegate-child')
+      stubGetSession({ id: 'delegate-child', parent_session_id: 'parent-session', source: 'subagent' })
+      setSessionOwnerHint('parent-session', { connectionId: 'local', profile: 'default' })
+
+      render({ profileReady: true, sessions: [session({ id: 'parent-session', profile: 'default' })] })
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/parent-session', { replace: true }))
+      expect(getSessionOwnerHint('parent-session')).toBeUndefined()
+    })
+
     it('remembers the parent, never the delegate child, when routed to one', () => {
       // A messaging slice can serve the child row, so list membership alone
       // must not make it rememberable.
@@ -422,6 +464,22 @@ describe('useDesktopIntegrations', () => {
 
       // The route and session match the active profile — should restore.
       expect(navigate).toHaveBeenCalledWith('/ai-session', { replace: true })
+    })
+
+    it('drops a legacy local owner hint when auto-restoring an untagged row (#97809)', () => {
+      // Older builds persisted a `local` hint for a session whose row carries
+      // no connection tag (the legacy primary-SSH path). At click time
+      // openStoredSession clears it; the boot auto-restore must too, or the
+      // pathname-driven resume routes a remote session to the Mac backend.
+      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ssh-session')
+      setSessionOwnerHint('ssh-session', { connectionId: 'local', profile: 'default' })
+
+      const sessions = [session({ id: 'ssh-session', profile: 'default' })]
+
+      render({ activeProfile: 'default', profileReady: true, sessions })
+
+      expect(navigate).toHaveBeenCalledWith('/ssh-session', { replace: true })
+      expect(getSessionOwnerHint('ssh-session')).toBeUndefined()
     })
   })
 

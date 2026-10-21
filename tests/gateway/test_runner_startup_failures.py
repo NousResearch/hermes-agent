@@ -107,6 +107,13 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self.session_store._db = self._session_db
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -118,7 +125,8 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
+            self._session_db.close()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
@@ -167,7 +175,7 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
     monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
+        "gateway.status_scoped_locks.release_all_scoped_locks",
         _mock_release_all_scoped_locks,
     )
     monkeypatch.setattr(
@@ -247,6 +255,13 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self.session_store._db = self._session_db
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -257,7 +272,8 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
+            self._session_db.close()
 
     _pid_state = {"alive": True}
     def _mock_get_running_pid():
@@ -284,7 +300,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
+        "gateway.status_scoped_locks.release_all_scoped_locks",
         lambda **kwargs: 0,
     )
     monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)
@@ -374,6 +390,8 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     # Simulate _create_adapter returning None for ALL platforms (missing library /
     # missing credentials — no connection attempt ever made).
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+    # ...because no plugin registered them, so the reconnect watcher may still heal them.
+    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
 
     import logging
     with caplog.at_level(logging.WARNING):
@@ -383,9 +401,14 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     assert ok is True
     assert runner.should_exit_cleanly is False
     assert runner.adapters == {}
-    # Runtime state must remain "running", not "startup_failed".
+    # Cron still runs; missing enabled platforms are flagged and queued for the reconnect watcher.
     state = read_runtime_status()
     assert state["gateway_state"] == "running"
+    assert set(runner._failed_platforms) == {Platform.TELEGRAM, Platform.DISCORD}
+    for platform in ("telegram", "discord"):
+        assert state["platforms"][platform]["state"] == "retrying"
+        assert state["platforms"][platform]["error_code"] == "adapter_unavailable"
+        assert state["platforms"][platform]["needs_attention"] is True
     # A warning must be emitted explaining why no platforms connected.
     assert any(
         "No adapter could be created" in record.message
@@ -455,6 +478,13 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
 
     class _FatalConfigRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_state import SessionDB
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self._session_db = SessionDB(get_hermes_home() / 'state.db')
+            self.session_store._db = self._session_db
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = "discord: Discord bot token already in use"
@@ -465,7 +495,8 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
+            self._session_db.close()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)

@@ -96,10 +96,23 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
 
   const existingRowIndices = new Map<number, number>()
   const existingIdIndices = new Map<string, number>()
+  // Part-level durable identity. Hydration folds a turn's tool rows and its
+  // final reply into one bubble addressed by its FIRST source row
+  // (message.rowId), while the final reply rides inside as a text part with
+  // its own sourceRowId. Message-level matching alone misses that shared
+  // final row and appends the fold next to the settled live bubble, so the
+  // same reply renders twice (#123801).
+  const existingPartRowIndices = new Map<number, number>()
 
   existing.forEach((message, index) => {
     if (message.rowId !== undefined) {
       existingRowIndices.set(message.rowId, index)
+    }
+
+    for (const part of message.parts) {
+      if (part.sourceRowId !== undefined) {
+        existingPartRowIndices.set(part.sourceRowId, index)
+      }
     }
 
     existingIdIndices.set(message.id, index)
@@ -113,10 +126,30 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   let pending: ChatMessage[] = []
   let lastAnchor = -1
 
+  const heldRowAnchor = (row: number) => existingRowIndices.get(row) ?? existingPartRowIndices.get(row)
+
+  // A fetched fold is only a duplicate when EVERY row it carries is already
+  // held; one unheld row (narration beside a tool call) means dropping it
+  // would lose that content, so it is appended as before.
+  const partRowAnchor = (message: ChatMessage): number | undefined => {
+    const anchors = transcriptRowIds(message).map(heldRowAnchor)
+
+    if (!anchors.length || anchors.includes(undefined)) {
+      return undefined
+    }
+
+    // With a rowId the fold is addressed by its FIRST source row, the same key
+    // hydration uses. Without one its part rows are the only identity, and the
+    // last of them is the turn's final reply — the row the settled live bubble
+    // holds (#123801) — so preceding pending rows land before that bubble.
+    return message.rowId !== undefined ? anchors[0] : anchors[anchors.length - 1]
+  }
+
   for (const message of olderPage) {
     const anchor =
       (message.rowId !== undefined ? existingRowIndices.get(message.rowId) : undefined) ??
-      existingIdIndices.get(message.id)
+      existingIdIndices.get(message.id) ??
+      partRowAnchor(message)
 
     if (anchor === undefined) {
       pending.push(message)
@@ -377,12 +410,11 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     // window's copy was hydrated from the same page, and the refreshed page
     // re-emits that row with the same id. Keeping both copies makes the graft
     // non-idempotent — the refreshed window comes back one row longer than the
-    // local window on every read, so `messagesIfTranscriptBehind` reports
-    // "behind" forever: the send is refused before `prompt.submit` runs and a
-    // duplicate accumulates per retry. Drop only the prefix copies the page
-    // already carries. Every durable prefix row keeps travelling in front of
-    // the refreshed tail, and so does an unstored row the page has no copy of
-    // (it can only have come from an older page).
+    // local window on every read, and a duplicate fold accumulates per refresh.
+    // Drop only the prefix copies the page already carries. Every durable
+    // prefix row keeps travelling in front of the refreshed tail, and so does
+    // an unstored row the page has no copy of (it can only have come from an
+    // older page).
     const refreshedIds = new Set(refreshedTail.map(message => message.id))
 
     const prefix = previous

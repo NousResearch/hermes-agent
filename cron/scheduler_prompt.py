@@ -190,10 +190,77 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     return prompt, injected
 
 
+def _bump_loaded_cron_skill_usage(
+    requested_name: str, loaded: dict, task_id: str | None, *, context: str = "Cron job",
+) -> str:
+    """Refresh usage for a successfully loaded cron skill, keyed by canonical loaded name.
+
+    Cron config may reference a skill by category path, absolute path, or another lookup alias. The
+    curator keys usage by the loaded skill's frontmatter name, so never bump the raw lookup string
+    after ``skill_view`` has resolved a canonical ``name``.
+    """
+    resolved_name = str(loaded.get("name") or requested_name).strip()
+    if not resolved_name:
+        return requested_name
+    try:
+        from tools.skill_usage import bump_use
+        bump_use(resolved_name, task_id=task_id)
+    except Exception:
+        logger.debug("%s: failed to bump skill usage for '%s'", context, resolved_name, exc_info=True)
+    return resolved_name
+
+
+def _bump_declared_cron_skill_usage(job: dict, skill_names: list[str]) -> None:
+    """Refresh usage for declared cron skills when a path skips prompt assembly.
+
+    Agent-backed jobs bump while building their prompt. no_agent script jobs never build that prompt,
+    but their declared ``skills`` are still real runtime dependencies and must keep curator telemetry
+    fresh. Missing skills are ignored so a typo cannot mint ghost usage records.
+    """
+    if not skill_names:
+        return
+    from tools.skills_tool import skill_view
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from agent.skill_commands import ambiguous_skill_label
+    from agent.skill_utils import normalize_skill_lookup_name
+    task_id = str(job.get("id") or "") or None
+    job_label = job.get("name", job.get("id"))
+    for skill_name in skill_names:
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            # Building the bundle uses the same loader as slash dispatch; member blocks bump their own
+            # canonical usage via agent.skill_commands._render_skill_block.
+            try:
+                bundle_payload = build_bundle_invocation_message(
+                    bundle_key, user_instruction="", task_id=task_id)
+            except Exception:
+                logger.debug(
+                    "Cron job '%s': failed to load bundle '%s' for usage telemetry",
+                    job_label, skill_name, exc_info=True)
+                continue
+            if not bundle_payload:
+                logger.warning(
+                    "Cron job '%s': bundle '%s' could not load any skills for usage telemetry",
+                    job_label, skill_name)
+            continue
+        try:
+            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "Cron job '%s': skill '%s' returned invalid JSON for usage telemetry",
+                job_label, skill_name)
+            continue
+        if ambiguous_skill_label(skill_name, loaded):
+            continue
+        if not loaded.get("success"):
+            continue
+        _bump_loaded_cron_skill_usage(
+            skill_name, loaded, task_id, context=f"Cron job '{job_label}'")
+
+
 def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice."""
     from tools.skills_tool import skill_view
-    from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
     from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
     from agent.skill_utils import normalize_skill_lookup_name
@@ -234,15 +301,13 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
                 loaded.get("error") or f"Failed to load skill '{skill_name}'")
             continue
 
-        try:
-            bump_use(skill_name, task_id=task_id)
-        except Exception:
-            logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
+        resolved_name = _bump_loaded_cron_skill_usage(
+            skill_name, loaded, task_id, context=f"Cron job '{job_label}'")
 
         if parts:
             parts.append("")
         parts.extend([
-            f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+            f'[IMPORTANT: The user has invoked the "{resolved_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
             "",
             str(loaded.get("content") or "").strip()])
         _inject_skill_config(loaded, parts)

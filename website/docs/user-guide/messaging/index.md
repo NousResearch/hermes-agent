@@ -534,6 +534,10 @@ display:
   tool_progress_grouping: accumulate   # accumulate | separate
 ```
 
+An unrecognised `tool_progress` value — a typo, or a mode copied from another tool — is not read as a
+request for more output: the gateway logs it once and keeps the platform's own default, so a Telegram
+chat whose tier is `off` stays quiet.
+
 ### `log` mode — audit file instead of chat messages
 
 Setting `display.tool_progress: log` sends **no** progress bubbles to chat. Instead, each tool call is appended as a line to `~/.hermes/logs/tool_calls.log` — a rotating audit file (5 MB × 3 backups) run through the same secret-redacting formatter as regular logs, so credentials never land on disk. Use it when you want a full tool-call trail without any chat noise.

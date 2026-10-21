@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -178,14 +178,14 @@ def parse_profile_routes(raw: Optional[list[dict[str, Any]]]) -> list[ProfileRou
     return routes
 
 
-def _route_list_slot(value: Any) -> Optional[List[Any]]:
+def _route_list_slot(value: Any) -> Optional[list[Any]]:
     """``None`` if the key is absent. A present non-list occupies the slot as ``[]``."""
     if value is None:
         return None
     return value if isinstance(value, list) else []
 
 
-def profile_routes_list_from_yaml(yaml_cfg: Any) -> Optional[List[Any]]:
+def profile_routes_list_from_yaml(yaml_cfg: Any) -> Optional[list[Any]]:
     """The ``profile_routes`` list the gateway loader bridges, or ``None`` if unset.
 
     Same precedence as ``config_loader`` mode ``"none"``: a present top-level key

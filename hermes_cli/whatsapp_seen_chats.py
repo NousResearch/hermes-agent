@@ -70,9 +70,10 @@ def _absorb(
             "last_seen": last_seen,
         }
         return
-    if name and not current.get("name"):
-        current["name"] = name
-    elif name and current.get("name") != name and _clean_name(current.get("name"), chat_id) is None:
+    if name and (
+        not current.get("name")
+        or (current.get("name") != name and _clean_name(current.get("name"), chat_id) is None)
+    ):
         current["name"] = name
     if last_seen is not None and (
         current.get("last_seen") is None or last_seen > current["last_seen"]

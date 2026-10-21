@@ -61,35 +61,45 @@ const noop = () => {}
 /** The catalog page for a capability that isn't a registry feed: the same
  *  headings, cards and developer banner, laid out as the board's feature row
  *  and small-banner lists. State and actions stay with the caller. */
-export function CatalogSurface({ sections, kind, actions }: { sections: CatalogSurfaceSection[]; kind: CatalogKind; actions?: ReactNode }) {
+export function CatalogSurface({
+  sections,
+  kind,
+  actions
+}: {
+  sections: CatalogSurfaceSection[]
+  kind: CatalogKind
+  actions?: ReactNode
+}) {
   return (
     <div className="capabilities-scroll">
       <div className="catalog-discovery">
-        {sections.filter(section => section.items.length).map(section => (
-          <section data-catalog-section={section.id} key={section.id}>
-            <header className="catalog-section-heading">
-              <div>
-                <h2>{section.label}</h2>
-                {section.blurb && <p>{section.blurb}</p>}
+        {sections
+          .filter(section => section.items.length)
+          .map(section => (
+            <section data-catalog-section={section.id} key={section.id}>
+              <header className="catalog-section-heading">
+                <div>
+                  <h2>{section.label}</h2>
+                  {section.blurb && <p>{section.blurb}</p>}
+                </div>
+              </header>
+              <div className={section.layout === 'feature' ? 'catalog-feature-row' : 'catalog-banner-list'}>
+                {section.items.map((item, index) => (
+                  <CatalogCard
+                    accentIndex={index}
+                    action={item.action}
+                    entry={entryFor(item, section.id)}
+                    key={item.id}
+                    onCategory={noop}
+                    onOpen={item.onOpen}
+                    onSearch={noop}
+                    onTag={noop}
+                    variant={VARIANT[section.layout]}
+                  />
+                ))}
               </div>
-            </header>
-            <div className={section.layout === 'feature' ? 'catalog-feature-row' : 'catalog-banner-list'}>
-              {section.items.map((item, index) => (
-                <CatalogCard
-                  accentIndex={index}
-                  action={item.action}
-                  entry={entryFor(item, section.id)}
-                  key={item.id}
-                  onCategory={noop}
-                  onOpen={item.onOpen}
-                  onSearch={noop}
-                  onTag={noop}
-                  variant={VARIANT[section.layout]}
-                />
-              ))}
-            </div>
-          </section>
-        ))}
+            </section>
+          ))}
         <CatalogDeveloper actions={actions} kind={kind} />
       </div>
     </div>

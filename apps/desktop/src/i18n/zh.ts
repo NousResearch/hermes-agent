@@ -17,7 +17,6 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
-
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',

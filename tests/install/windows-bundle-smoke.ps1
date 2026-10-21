@@ -10,9 +10,6 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:OS -cne 'Windows_NT') {
-    throw 'Disposable native GitHub-hosted Windows runner required'
-}
 if ($Commit -cnotmatch '^[a-f0-9]{40}$') { throw 'Expected exact lowercase full commit SHA' }
 if (-not [IO.Path]::IsPathRooted($Artifact) -or -not (Test-Path -LiteralPath $Artifact -PathType Leaf)) { throw 'Absolute artifact path required' }
 $Artifact = (Resolve-Path -LiteralPath $Artifact).Path

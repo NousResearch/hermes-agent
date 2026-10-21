@@ -3250,7 +3250,7 @@ _KNOWN_CONTAINER_TYPES = {
     # Omitted from DEFAULT_CONFIG on purpose (an empty default would clobber a user allow-list),
     # so without these rows `config set plugins.enabled foo` stored a string every reader ignored.
     "plugins.enabled": "list",
-    "plugins.disabled": "list",
+    "plugins.disabled": "list", "plugins.update_guards": "list",
     "model_catalog.excluded_providers": "list",
 }
 # List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.

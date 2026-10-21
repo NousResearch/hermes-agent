@@ -227,6 +227,37 @@ explicit supported subset, not a claim of full Agent Plugins conformance.
 
 ## Native plugin compatibility contract
 
+### Required source update checks
+
+An installed native plugin may declare a relative Python script in `plugin.yaml`:
+
+```yaml
+name: my-plugin
+post_update_check: checks/source_compat.py
+```
+
+Hermes runs a declared check when the plugin is installed and enabled. For a
+profile that must keep the plugin available, also list it under
+`plugins.update_guards` in that profile's `config.yaml`. The profile-owned
+list survives an updated checkout and makes a missing, disabled, or damaged
+checker an update refusal rather than silently dropping the requirement. A
+shared source update examines the default and every installed named profile,
+including standalone and parked profiles.
+
+During a Git source update Hermes runs each required script with
+`--hermes-root <pulled-checkout>` and `--profile <name>` after the checkout move
+but before dependency changes or gateway restart. Exit zero admits the update;
+any nonzero exit, missing script, or 30-second timeout refuses it. Hermes
+restores the previous source revision through its verified rollback path and
+resumes the paused gateway fleet on that revision. The script receives a
+temporary `HERMES_HOME`, no stdin, and no inherited credential environment.
+It should inspect the source contract with only the currently installed Python
+standard library and packages; it cannot rely on the target's new dependencies
+being installed yet. The script is trusted installed plugin code, not a sandbox
+for an adversarial plugin. On the ZIP update path, guarded installations refuse
+the update before download because that path cannot offer this rollback point.
+Normal plugins need no update check.
+
 Native `plugin.yaml` plus `register(ctx)` plugins are protected by behavior,
 not by one global plugin API number. Hermes does not expose a
 `PLUGIN_API_VERSION`, require a manifest-wide `api:` match, or attach an API

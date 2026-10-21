@@ -621,6 +621,20 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     A supplied commit keeps the archive on the target selected before Git failed.
     """
     from hermes_cli.update_cmd import _m, _complete_source_update
+    # ZIP replacement has no post-swap source rollback at the plugin admission point.
+    # Refuse guarded installs before download until that path can provide equivalent recovery.
+    from hermes_cli.update_plugin_guards import prepare_update_guards
+    try:
+        guarded = prepare_update_guards()
+    except (OSError, ValueError) as exc:
+        print(f"✗ Required plugin update check cannot be prepared: {exc}")
+        _record_stop("plugin_update_guard_invalid")
+        _m().sys.exit(1)
+    if guarded:
+        print("✗ ZIP update cannot verify required plugin update checks with rollback.")
+        print("  Resolve the Git update failure and retry; no ZIP update was applied.")
+        _record_stop("plugin_update_guard_zip_refused")
+        _m().sys.exit(1)
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)

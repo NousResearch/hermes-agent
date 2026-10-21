@@ -13,6 +13,8 @@ import {
   DATA_URL_READ_MIN_MAX_MB
 } from '../../shared/src/data-url-read-max'
 
+import { nativeWindowsDrivePath } from './native-windows-path'
+
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
@@ -398,28 +400,6 @@ function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') 
   }
 }
 
-/** Native Windows spelling for a path a renderer handed us.
- *
- * A delivered `MEDIA:` value becomes `#media:%2FC%3A%5CUsers%5Cme%5Creport.zip`,
- * i.e. the literal `/C:/Users/me/report.zip`. `path.resolve` reads that leading
- * slash as a root WITHOUT a drive and lands on `C:\C:\Users\me\...`, so the
- * preview and every `/api/fs/download` answering the card's Download button
- * 404 with "File not found" while the file sits exactly where the transcript
- * says. Drop the spurious root slash in front of a real drive and give the
- * rest Windows separators (`C:\Users\me\report.zip`). Only a drive form is
- * touched — `/home/me/x` and `/c/Users/me` (MSYS) keep their slashes — and
- * POSIX hosts get the raw value back, since `/C:/...` is legitimate there.
- */
-function nativeWindowsPathForIpc(filePath: string): string {
-  if (path.sep !== '\\' || /^file:/i.test(filePath)) {
-    return filePath
-  }
-
-  const asPosix = filePath.replace(/\\/g, '/')
-
-  return /^\/?[A-Za-z]:(\/|$)/.test(asPosix) ? asPosix.replace(/^\/+/, '').replace(/\//g, '\\') : filePath
-}
-
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
   const purpose = String(options.purpose || 'File read')
   let raw = rejectUnsafePathSyntax(filePath, purpose)
@@ -448,14 +428,14 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
 
     rejectUnsafePathSyntax(resolvedPath, purpose)
 
-    return path.resolve(nativeWindowsPathForIpc(resolvedPath))
+    return path.resolve(nativeWindowsDrivePath(resolvedPath, 'win32', path.sep === '\\'))
   }
 
   const baseInput = typeof options.baseDir === 'string' && options.baseDir.trim() ? options.baseDir : process.cwd()
   const safeBaseInput = rejectUnsafePathSyntax(baseInput, purpose)
   const resolvedBase = path.resolve(safeBaseInput)
   rejectUnsafePathSyntax(resolvedBase, purpose)
-  const resolvedPath = path.resolve(resolvedBase, nativeWindowsPathForIpc(raw))
+  const resolvedPath = path.resolve(resolvedBase, nativeWindowsDrivePath(raw, 'win32', path.sep === '\\'))
   rejectUnsafePathSyntax(resolvedPath, purpose)
 
   return resolvedPath

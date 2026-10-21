@@ -126,3 +126,20 @@ test('shellDriveToNativePath maps Git Bash/Cygwin/drvfs drive paths only when th
   assert.equal(shellDriveToNativePath('/mnt/data/x', exists), null)
   assert.equal(shellDriveToNativePath('C:\\Users\\alex', exists), null)
 })
+
+test('resolveLocalReadPath leaves a slash-prefixed Windows drive form alone', () => {
+  // A delivered `MEDIA:` value reaches the desktop as `/C:/Users/...`: the
+  // renderer percent-encodes the transcript's `C:\Users\...`, so the leading
+  // slash is part of the ENCODING, not a POSIX root. The WSL bridge used to
+  // read it as a POSIX path and rewrite it into
+  // `\\wsl.localhost\<distro>\C:\Users\...` — a UNC path that points nowhere,
+  // so the file the user asked to open was reported missing even though it
+  // sat exactly where the transcript said. It is a Windows path: leave it for
+  // the hardening resolver, which repairs the stray slash into `C:\Users\...`.
+  assert.equal(resolveLocalReadPath('/C:/Users/alex/notes.md'), '/C:/Users/alex/notes.md')
+  assert.equal(resolveLocalReadPath('/C:\\Users\\alex\\notes.md'), '/C:\\Users\\alex\\notes.md')
+  // A drive with no trailing separator is the same spelling.
+  assert.equal(resolveLocalReadPath('/C:'), '/C:')
+  // A genuine POSIX path is still bridged.
+  assert.equal(resolveLocalReadPath('/home/alex/proj'), '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj')
+})

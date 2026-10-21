@@ -10,6 +10,14 @@ import fs from 'node:fs'
 
 const IS_WINDOWS = process.platform === 'win32'
 const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
+// A drive form behind a leading slash — `/C:/Users/...`. A delivered `MEDIA:`
+// value reaches the desktop in exactly this spelling (the renderer percent-
+// encodes the path, so the transcript's `C:\Users\...` arrives as
+// `/C:/Users/...`). It is a WINDOWS path, not a POSIX one, so the WSL bridge
+// must leave it alone; `path.resolve` on the Windows host then reads the
+// stray slash as a drive-less root and lands on `C:\C:\Users\...`, which the
+// hardening resolver repairs into the native `C:\Users\...`.
+const SLASH_PREFIXED_WIN_DRIVE_RE = /^\/[A-Za-z]:[\\/]?/
 // `/mnt/c` and `/mnt/c/...` (drvfs default automount root).
 const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
@@ -221,7 +229,7 @@ export function resolveLocalReadPath(dirPath: string, distro?: string, profile?:
     return value
   }
 
-  return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value)
+  return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value) && !SLASH_PREFIXED_WIN_DRIVE_RE.test(value)
     ? wslPosixToWindowsAccessible(value, distro)
     : value
 }

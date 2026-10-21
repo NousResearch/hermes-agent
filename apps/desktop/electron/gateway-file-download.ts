@@ -16,6 +16,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 
+import { nativeWindowsDrivePath } from './native-windows-path'
+
 // Minimal shape of the response objects we consume. Both Node's
 // http.IncomingMessage and Electron net's IncomingMessage satisfy it.
 export interface ReadableLike {
@@ -384,17 +386,17 @@ export function gatewayFilePath(rawPath: unknown): string {
  * onto the native one for the client's OWN platform (both ends of a local
  * gateway run the same OS; a remote agent renders its own POSIX paths, which
  * this leaves untouched). URL/`file:` spellings and POSIX paths pass through.
+ *
+ * The mapping itself lives in `native-windows-path.ts`: the Electron main
+ * process resolves the same delivered spelling for the local preview, and the
+ * two copies of the rule drifted apart.
  */
 export function nativeGatewayPath(rawPath: string, platform: NodeJS.Platform = process.platform): string {
-  const raw = String(rawPath || '').trim()
-
-  if (platform !== 'win32' || !raw || /^file:/i.test(raw)) {
-    return raw
-  }
-
-  const asPosix = raw.replace(/\\/g, '/')
-
-  return /^\/?[A-Za-z]:(\/|$)/.test(asPosix) ? asPosix.replace(/^\/+/, '').replace(/\//g, '\\') : raw
+  // The gateway is a WINDOWS host whenever the target platform is 'win32', so
+  // the mapping applies on the target's terms — not the local host's. (A
+  // macOS/Linux desktop talking to a Windows gateway over SSH sends Windows
+  // paths, and the gateway must receive them in its own dialect.)
+  return nativeWindowsDrivePath(rawPath, platform, platform === 'win32')
 }
 
 export interface GatewayFileSaveContext {

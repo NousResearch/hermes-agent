@@ -466,8 +466,22 @@ class GatewayBusySessionMixin:
         # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
         # messages arrived in ``busy_input_mode: queue``.
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        prior = getattr(existing, "source", None)
+        incoming = event.source
+        principal_fields = ("platform", "profile", "scope_id", "chat_id", "thread_id",
+                            "user_id", "user_id_alt", "is_bot", "role_authorized",
+                            "delivered_via_upstream_relay")
+        same_principal = (isinstance(prior, SessionSource) and isinstance(incoming, SessionSource)
+                          and bool(prior.user_id) and all(getattr(prior, key) == getattr(incoming, key)
+                                                          for key in principal_fields))
+        if same_principal and getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            from gateway.session_identity import identity_of
+            previous_bot, current_bot = identity_of(prior), identity_of(incoming)
+            same_principal = (previous_bot is not None and current_bot is not None
+                              and not previous_bot.transport_inferred and not current_bot.transport_inferred
+                              and previous_bot.transport_profile == current_bot.transport_profile)
         same_security_context = existing is not None and (
-            getattr(existing, "internal", False) == getattr(event, "internal", False)
+            same_principal and getattr(existing, "internal", False) == getattr(event, "internal", False)
             and getattr(existing, "inherit_channel_pin", False) == getattr(event, "inherit_channel_pin", False)
             and getattr(existing, "allow_gateway_control", True)
             == getattr(event, "allow_gateway_control", True)

@@ -155,7 +155,8 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     assert executable.parent.parent == tmp_path / "native environment"
     assert not (tmp_path / "wrong-environment").exists()
     assert "root_app" not in sys.modules
-    assert (site / "_virtualenv.pth").exists() is not sealed
+    # uv 0.13 stopped writing the distutils shim (astral-sh/uv#22096), so neither arm has it.
+    assert not (site / "_virtualenv.pth").exists()
     assert (site / "construction_root.pth").is_file(), "load-bearing .pth must survive sealing"
     assert (source / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before

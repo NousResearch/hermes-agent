@@ -26,7 +26,7 @@ async function classifyLocalTarget(rawTarget: string, cwd?: string | null): Prom
   }
 
   try {
-    const resolved = await bridge.normalizePreviewTarget(rawTarget, cwd || undefined)
+    const resolved = await bridge.normalizePreviewTarget(rawTarget, cwd || undefined, { metadataOnly: true })
 
     if (!resolved || resolved.previewKind === 'missing') {
       return { type: 'missing' }

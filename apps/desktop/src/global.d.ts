@@ -364,7 +364,11 @@ declare global {
       savePastedText: (text: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
-      normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
+      normalizePreviewTarget: (
+        target: string,
+        baseDir?: string,
+        options?: { metadataOnly?: boolean }
+      ) => Promise<HermesPreviewTarget | null>
       /** Resolves to `HermesReadFileErrorResult` when the watched file was
        *  already gone at call time (a restored tab probing a deleted path) —
        *  structured data instead of a rejection, matching the read handlers. */

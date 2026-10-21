@@ -4,6 +4,7 @@ import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
+import { looksBinary, previewFileMetadata } from './preview-file-metadata'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
   async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
@@ -1763,57 +1764,6 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.yaml': 'yaml',
   '.yml': 'yaml',
   '.zsh': 'shell'
-}
-
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
-}
-
-function previewFileMetadata(filePath, mimeType) {
-  let byteSize = 0
-  let binary = false
-
-  try {
-    const stat = fs.statSync(filePath)
-    byteSize = stat.size
-
-    if (!mimeType.startsWith('image/')) {
-      const fd = fs.openSync(filePath, 'r')
-
-      try {
-        const sample = Buffer.alloc(Math.min(byteSize, 4096))
-        const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
-        binary = looksBinary(sample.subarray(0, bytesRead))
-      } finally {
-        fs.closeSync(fd)
-      }
-    }
-  } catch {
-    // Metadata is best-effort; the read handlers surface hard errors later.
-  }
-
-  return {
-    binary,
-    byteSize,
-    large: byteSize > TEXT_PREVIEW_MAX_BYTES
-  }
 }
 
 app.setName(APP_NAME)
@@ -5790,7 +5740,7 @@ function decodedPathIfMissing(resolvedPath) {
   return decoded !== resolvedPath ? decoded : null
 }
 
-async function previewFileTarget(rawTarget, baseDir) {
+async function previewFileTarget(rawTarget, baseDir, metadataOnly = false) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
 
@@ -5861,10 +5811,15 @@ async function previewFileTarget(rawTarget, baseDir) {
 
   const ext = path.extname(resolved).toLowerCase()
 
-  ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
-
   const mimeType = mimeTypeForPath(resolved)
-  const metadata = previewFileMetadata(resolved, mimeType)
+
+  const metadata = await previewFileMetadata(resolved, mimeType, {
+    metadataOnly,
+    maxPreviewBytes: TEXT_PREVIEW_MAX_BYTES
+  })
+
+  resolved = metadata.resolvedPath
+
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
   const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
@@ -5885,7 +5840,7 @@ async function previewFileTarget(rawTarget, baseDir) {
   }
 }
 
-async function normalizePreviewTarget(rawTarget, baseDir) {
+async function normalizePreviewTarget(rawTarget, baseDir, metadataOnly = false) {
   const raw = String(rawTarget || '').trim()
 
   if (!raw) {
@@ -5897,7 +5852,7 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
       return previewHttpUrlTarget(raw)
     }
 
-    return await previewFileTarget(raw, baseDir)
+    return await previewFileTarget(raw, baseDir, metadataOnly)
   } catch {
     return null
   }
@@ -16743,8 +16698,8 @@ ipcMain.handle('hermes:saveClipboardImage', async () => {
   return ''
 })
 
-ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
-  normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
+ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir, options) =>
+  normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '', options?.metadataOnly === true)
 )
 
 ipcMain.handle('hermes:watchPreviewFile', (event, url) => watchPreviewFile(event.sender, String(url || '')))

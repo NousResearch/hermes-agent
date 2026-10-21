@@ -74,6 +74,15 @@ describe('PreviewAttachment local target classification (#101683)', () => {
     window.hermesDesktop = previousDesktop
   })
 
+  it('classifies a mounted card without requesting document content', async () => {
+    mountDesktopStub(() => fileTarget('/work/report.md'))
+    render(<PreviewAttachment target="/work/report.md" />)
+    await screen.findByRole('button', { name: 'Open containing folder' })
+    expect(window.hermesDesktop?.normalizePreviewTarget).toHaveBeenCalledWith('/work/report.md', undefined, {
+      metadataOnly: true
+    })
+  })
+
   it('opens a Windows file:///C:/... directory link natively with no Download or preview action', async () => {
     const { openDir, revealPath } = mountDesktopStub(() => fileTarget('C:/Users/E/reports/historical', 'directory'))
 

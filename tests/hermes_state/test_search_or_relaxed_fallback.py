@@ -51,11 +51,25 @@ def db(tmp_path):
     ('"docker networking"', None),
     ("alpha OR beta", None),
     ("python NOT java", None),
+    ("red or blue", "red OR blue"),
+    ("red and blue", "red OR blue"),
+    ("red not blue", "red OR blue"),
 ])
 def test_or_relaxed_query_rewrite(query, expected):
     """Implicit-AND terms and explicit AND become an any-term OR query; a quoted phrase is one
-    unit; a single unit or explicit OR/NOT (exact semantics already expressed) does not relax."""
+    unit; a single unit or explicit upper-case OR/NOT (exact semantics already expressed) does
+    not relax. Lower-case "and"/"or"/"not" are ordinary words to FTS5, so they are dropped as
+    filler instead of disabling the relaxation."""
     assert SessionDB._or_relaxed_query(query) == expected
+
+
+def test_lower_case_or_keeps_the_or_retry(db):
+    """FTS5 operators are upper-case only, so a lower-case "or" in a natural question is an
+    ordinary word: the implicit-AND query misses (no stored row contains the literal word
+    "or"), and the OR-relaxed retry still fires and recovers the partially-matching rows."""
+    rows = db.search_messages("standup or daemon")
+    joined = " ".join(r["snippet"].lower() for r in rows)
+    assert "standup" in joined and "daemon" in joined
 
 
 def test_paraphrased_query_recovers_via_or_retry(db):

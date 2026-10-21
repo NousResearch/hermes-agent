@@ -89,6 +89,32 @@ _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {5_000_000}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 _PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
+_MEMORY_LIMIT_BYTES = os.environ.pop("HERMES_KERNEL_MEMORY_LIMIT_BYTES", "")
+
+
+def _apply_memory_limit():
+    """Cap this kernel's address space so a runaway cell dies alone (#136403).
+
+    Applied at import, before any cell executes and before the watchdogs start, so the budget is in
+    force for the process's whole life. Windows enforces the same budget from the host side (Job
+    Object); RLIMIT_AS is the POSIX twin. Failure is non-fatal — an uncapped kernel still runs.
+    """
+    if not _MEMORY_LIMIT_BYTES or sys.platform == "win32":
+        return
+    try:
+        import resource
+        cap = int(_MEMORY_LIMIT_BYTES)
+    except (ImportError, TypeError, ValueError):
+        return
+    if cap <= 0:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+    except (OSError, ValueError):
+        pass
+
+
+_apply_memory_limit()
 
 
 def _start_parent_death_pipe_watchdog():
@@ -302,6 +328,87 @@ class _BoundedBuffer:
         return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+class _KernelMemoryJob:
+    """Windows Job Object that caps a kernel child's memory and kills it with its host.
+
+    ``JOB_OBJECT_LIMIT_PROCESS_MEMORY`` makes a runaway cell fail its own allocation instead of
+    exhausting the host. ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` guarantees the child dies when the
+    host closes this handle — which also covers the case the parent-death watchdog cannot reach, a
+    thread that never gets scheduled because the process is wedged in allocation. See #136403.
+    """
+
+    def __init__(self, limit_bytes: int):
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimits),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        self._ctypes = ctypes
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        for name, args, result in (
+            ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+            ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int,
+                                         ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
+            ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+            ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
+        ):
+            fn = getattr(api, name)
+            fn.argtypes, fn.restype = args, result
+        self._api, self._handle = api, api.CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            limits = _ExtendedLimits()
+            # PROCESS_MEMORY (0x100) | JOB_MEMORY (0x200) | KILL_ON_JOB_CLOSE (0x2000).
+            # Neither BREAKAWAY_OK nor SILENT_BREAKAWAY_OK: descendants stay contained.
+            limits.BasicLimitInformation.LimitFlags = 0x100 | 0x200 | 0x2000
+            limits.ProcessMemoryLimit = limit_bytes
+            limits.JobMemoryLimit = limit_bytes
+            if not api.SetInformationJobObject(
+                    self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        except BaseException:
+            self.close()
+            raise
+
+    def assign(self, proc: subprocess.Popen) -> None:
+        # Popen retains the original process handle, avoiding a PID-reuse race.
+        if not self._api.AssignProcessToJobObject(self._handle, int(proc._handle)):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def close(self) -> None:
+        """Terminate the contained tree; repeated closes are harmless."""
+        if self._handle is not None:
+            self._api.CloseHandle(self._handle)
+            self._handle = None
+
+
 class SessionKernel:
     """One live kernel process plus its RPC server and reader threads."""
 
@@ -326,6 +433,8 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
+        # Windows: the Job Object that caps this child's memory and kills it with us (#136403).
+        self.job: Any = None
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -347,6 +456,14 @@ class SessionKernel:
         if self.alive():
             from tools.code_execution_tool import _kill_process_group
             _kill_process_group(self.proc, escalate=True)
+        # KILL_ON_JOB_CLOSE: closing the job terminates any descendant the tree kill missed —
+        # notably a child wedged in allocation, where taskkill itself can fail (#136403).
+        if self.job is not None:
+            try:
+                self.job.close()
+            except Exception:
+                logger.debug("kernel memory job close failed", exc_info=True)
+            self.job = None
         sock, self.server_sock = self.server_sock, None
         try:
             if sock is not None:
@@ -397,6 +514,12 @@ _KERNELS: dict[tuple, SessionKernel] = _REGISTRY.kernels
 DEFAULT_MAX_SESSION_KERNELS = 4
 DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
 
+# Address-space cap for one kernel child (config: code_execution.memory_limit_mb; 0 = unlimited).
+# A cell is otherwise bounded only by DEFAULT_TIMEOUT (300s), which is ample time to allocate
+# hundreds of GB: a single runaway cell took down the backend, the desktop renderer and unrelated
+# processes on the host. A cell that exceeds this budget must die ALONE. See #136403.
+DEFAULT_KERNEL_MEMORY_LIMIT_MB = 4096
+
 
 def _lifecycle_limits() -> tuple[int, int]:
     from tools.code_execution_tool import _load_config
@@ -407,6 +530,23 @@ def _lifecycle_limits() -> tuple[int, int]:
         except (TypeError, ValueError):
             return default
     return limit("max_session_kernels", DEFAULT_MAX_SESSION_KERNELS), limit("kernel_idle_timeout", DEFAULT_KERNEL_IDLE_TIMEOUT)
+
+
+def _kernel_memory_limit_bytes() -> Optional[int]:
+    """Address-space budget for one kernel child, in bytes. ``None`` = no cap.
+
+    The budget absorbs interpreter overhead and fragmentation so an honest cell that reaches the
+    limit fails on its own allocation rather than on unrelated bookkeeping.
+    """
+    from tools.code_execution_tool import _load_config
+    config = _load_config()
+    try:
+        mb = int(config.get("memory_limit_mb", DEFAULT_KERNEL_MEMORY_LIMIT_MB))
+    except (TypeError, ValueError):
+        mb = DEFAULT_KERNEL_MEMORY_LIMIT_MB
+    if mb <= 0:
+        return None
+    return mb * 1024 * 1024
 
 
 _CHILD_OWNER_QUALIFIER = "::child::"
@@ -626,6 +766,12 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     child_env["HERMES_KERNEL_SPILL_DIR"] = kernel.tmpdir
     # Generated client reconnects after the RPC server's 300s idle timeout between cells.
     child_env["HERMES_RPC_PERSISTENT"] = "1"
+    # Address-space budget for this child (#136403). Windows: enforced below by a Job Object.
+    # POSIX: handed to the runner, which caps its own RLIMIT_AS before executing any cell — this
+    # avoids preexec_fn, which is not thread-safe in the threaded backend that spawns kernels.
+    memory_limit = _kernel_memory_limit_bytes()
+    if memory_limit is not None and not _IS_WINDOWS:
+        child_env["HERMES_KERNEL_MEMORY_LIMIT_BYTES"] = str(memory_limit)
     # Parent-death watchdog plumbing: Windows inherits a SYNCHRONIZE handle to this process; POSIX
     # inherits the read end of a pipe whose only write end we hold (EOF == host gone, any cause).
     parent_handle, close_handle, startupinfo = _parent_process_handle(child_env) if _IS_WINDOWS else (None, None, None)
@@ -635,6 +781,13 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         death_r, kernel.death_pipe_w = os.pipe()
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
         pass_fds = (death_r,)
+    if memory_limit is not None and _IS_WINDOWS:
+        try:
+            kernel.job = _KernelMemoryJob(memory_limit)
+        except Exception:
+            # Best effort: a host that refuses nested job assignment must not lose execute_code.
+            logger.warning("kernel memory cap unavailable; this child runs uncapped", exc_info=True)
+            kernel.job = None
     try:
         kernel.proc = subprocess.Popen(
             [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
@@ -644,7 +797,18 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             close_fds=True, pass_fds=pass_fds, startupinfo=startupinfo,
         )
+        if kernel.job is not None:
+            try:
+                kernel.job.assign(kernel.proc)
+            except Exception:
+                logger.warning("kernel memory job assignment failed; this child runs uncapped",
+                               exc_info=True)
+                kernel.job.close()
+                kernel.job = None
     finally:
+        if kernel.proc is None and kernel.job is not None:
+            kernel.job.close()
+            kernel.job = None
         if parent_handle and close_handle is not None:
             close_handle(parent_handle)
         if death_r is not None:

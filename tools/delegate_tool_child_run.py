@@ -614,6 +614,9 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    _route_label = getattr(child, "_delegate_route_label", None)
+    if isinstance(_route_label, str) and _route_label:
+        entry["route"] = _route_label  # the delegation provider's label (profile name, model-map option)
     if status == "failed":
         entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
@@ -857,7 +860,10 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            from tools.delegate_tool_routes import delegated_profile_scope
+            # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
+            with delegated_profile_scope(getattr(child, "_delegate_profile_home", None)), \
+                    delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )

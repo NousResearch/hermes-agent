@@ -25,6 +25,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| A **delegation strategy** (pick a profile or a named model per subagent) | [Delegation Provider Plugins](../delegation-provider-plugin.md) — `ctx.register_delegation_provider()` |
 | A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |

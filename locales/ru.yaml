@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Проверка изменений файлов: {count} правок файлов в этом ходе НЕ УДАЛИСЬ, что бы ни говорилось в тексте выше. Запустите `git status` или `read_file`, чтобы проверить, что реально применилось."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "не удалось"
+    state_not_modified: "не изменён"
+    state_validation_failed: "изменён; проверка не пройдена"
+    state_partial: "изменён до сбоя патча"
   shared:
     and_more: "  • … и ещё {count}"
     the_model: "Модель"

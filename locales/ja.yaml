@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ ファイル変更検証: 上の文面がどう示していようと、このターンで {count} 件のファイル編集が失敗しました。`git status` または `read_file` を実行して、実際に反映された内容を確認してください。"
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "失敗"
+    state_not_modified: "変更なし"
+    state_validation_failed: "変更済み、検証に失敗"
+    state_partial: "パッチ失敗前に変更済み"
   shared:
     and_more: "  • … 他 {count} 件"
     the_model: "モデル"

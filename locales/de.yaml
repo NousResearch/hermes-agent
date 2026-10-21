@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Dateiänderungs-Prüfer: {count} Dateiänderung(en) sind in diesem Zug FEHLGESCHLAGEN, auch wenn die Formulierungen oben etwas anderes nahelegen. Führen Sie `git status` oder `read_file` aus, um zu prüfen, was tatsächlich angekommen ist."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "fehlgeschlagen"
+    state_not_modified: "nicht geändert"
+    state_validation_failed: "geändert; Validierung fehlgeschlagen"
+    state_partial: "geändert, bevor der Patch fehlschlug"
   shared:
     and_more: "  • … und {count} weitere"
     the_model: "Das Modell"

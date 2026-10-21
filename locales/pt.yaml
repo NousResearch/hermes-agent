@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Verificador de mutação de arquivos: {count} edição(ões) de arquivo FALHOU(ARAM) neste turno, apesar de qualquer redação acima que sugira o contrário. Execute `git status` ou `read_file` para confirmar o que realmente foi aplicado."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "falhou"
+    state_not_modified: "não modificado"
+    state_validation_failed: "modificado; a validação falhou"
+    state_partial: "modificado antes de o patch falhar"
   shared:
     and_more: "  • … e {count} mais"
     the_model: "O modelo"

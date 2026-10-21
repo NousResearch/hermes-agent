@@ -805,6 +805,17 @@ def _edit_warnings(paths: list[str], path_to_resolved: dict, task_id: str) -> li
     return warnings
 
 
+def _applied_patch_paths(result_dict: dict, paths: list[str], path_to_target: dict) -> list[str]:
+    """The requested ``paths`` whose (resolved) target a failed patch still reports as written
+    (``files_modified`` / ``files_created`` / ``files_deleted``; a V4A move lists ``a -> b``).
+    V4A can apply some operations before a later one fails, so untouched targets stay out."""
+    reported: set[str] = set()
+    for key in ("files_modified", "files_created", "files_deleted"):
+        for entry in result_dict.get(key) or ():
+            reported.update(part.strip() for part in str(entry).split(" -> ") if part.strip())
+    return [p for p in paths if p in reported or path_to_target.get(p) in reported]
+
+
 def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session_id: str | None) -> None:
     """Post-success bookkeeping: verification-stale marker, then per path refresh
     the read stamp (no false staleness on the next edit) and record the write."""
@@ -910,7 +921,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.
                 result_dict["resolved_path"] = _resolved
-            if result_dict.get("error"):
+            # ``applied`` covers a write that landed but failed validation: the file changed.
+            if result_dict.get("error") and result_dict.get("applied") is not True:
                 _update_read_timestamp(path, task_id)
             else:
                 if _resolved:
@@ -1026,6 +1038,18 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
+            elif result_dict.get("applied") is True:
+                # Failed, but some edits landed (validation failure, or a V4A patch that
+                # failed part-way): the changed files get the same bookkeeping as a success.
+                _path_to_target = {_p: _path_to_entry.get(_p) or _path_to_resolved.get(_p) or _p
+                                   for _p in _paths_to_check}
+                _applied = _applied_patch_paths(result_dict, _paths_to_check, _path_to_target)
+                result_dict["files_modified"] = [_path_to_target[_p] for _p in _applied]
+                if len(_applied) == 1:
+                    result_dict["resolved_path"] = _path_to_target[_applied[0]]
+                _note_edited(task_id, _applied, _path_to_resolved, session_id)
+                _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved)
+                _reset_patch_failures(task_id, [_r for _r in map(_path_to_resolved.get, _applied) if _r])
         # old_string-not-found hint. Failure escalation is tracked for replace
         # mode only (V4A misses are rare); the generic hint is suppressed when
         # patch_replace already attached a richer "Did you mean?" snippet.
@@ -1174,7 +1198,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). applied:true means the content changed on disk even if an error is returned; validated:false means it introduced a validation error that must be repaired. The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1204,6 +1228,8 @@ PATCH_SCHEMA = {
         "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
         "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
         "Returns a unified diff. Auto-runs syntax checks after editing. "
+        "applied:true means the edit changed disk even if an error is returned; "
+        "validated:false means it introduced a validation error that must be repaired. "
         "Finds a unique string and replaces it."
     ),
     "parameters": {

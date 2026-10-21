@@ -13,7 +13,8 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
 from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed, file_mutation_settled,
+    file_mutation_validation_failed,
 )
 
 # One text for "the model produced nothing after retries" on every surface (CLI explainer,
@@ -117,9 +118,11 @@ class TurnExplainersMixin:
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
-        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
-        failure time. A later success on the same identity (any spelling) removes the entry.
+        Failures store ``{path: {error_preview, tool, identity, stat, applied, validation_failed,
+        partial_failure}}`` keyed by the model's spelling; ``identity`` is the resolved on-disk
+        target and ``stat`` its signature at failure time. ``applied`` marks a failed call that
+        still changed the file (validation failure, or a V4A patch that failed part-way). A later
+        success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
@@ -131,6 +134,8 @@ class TurnExplainersMixin:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
+        validation_failed = file_mutation_validation_failed(tool_name, result)
+        landed_paths: list[str] = []
         if landed:
             landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
             changed = getattr(self, "_turn_file_mutation_paths", None)
@@ -145,15 +150,24 @@ class TurnExplainersMixin:
                     for _p in landed_paths:
                         with suppress(Exception):
                             mgr.record_agent_write(_p)
-        if is_error and not landed:
-            # Keep the FIRST error per path unless a later success replaces it.
+        # A V4A patch can land some operations and then fail; a clean landing is never a failure.
+        partial_failure = landed and not validation_failed and not file_mutation_settled(tool_name, result)
+        if validation_failed or (is_error and (not landed or partial_failure)):
+            applied_ids = {_file_mutation_identity(p, task_id) for p in landed_paths}
             preview = _extract_error_preview(result)
             for path in targets:
                 identity = _file_mutation_identity(path, task_id)
-                state.setdefault(path, {
+                path_applied = identity in applied_ids
+                # Keep the first ordinary failure unless a later failed call actually
+                # changed this path; that state is materially newer.
+                if path in state and not (validation_failed or (partial_failure and path_applied)):
+                    continue
+                state[path] = {
                     "tool": tool_name, "error_preview": preview,
                     "identity": identity, "stat": _file_stat_signature(identity),
-                })
+                    "applied": path_applied, "validation_failed": validation_failed,
+                    "partial_failure": partial_failure,
+                }
         else:
             cleared = {
                 _file_mutation_identity(p, task_id)
@@ -222,7 +236,13 @@ class TurnExplainersMixin:
         for path, info in shown:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
-            lines.append(t("explainer.file_mutation.entry", path=path, tool=tool,
+            if info.get("validation_failed"):
+                state = t("explainer.file_mutation.state_validation_failed")
+            elif info.get("partial_failure") and info.get("applied"):
+                state = t("explainer.file_mutation.state_partial")
+            else:
+                state = t("explainer.file_mutation.state_not_modified")
+            lines.append(t("explainer.file_mutation.entry", path=path, tool=f"{tool}; {state}",
                            preview=preview or t("explainer.file_mutation.failed")))
         remaining = len(failed) - len(shown)
         if remaining > 0:

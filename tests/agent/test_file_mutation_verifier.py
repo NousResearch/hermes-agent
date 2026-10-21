@@ -148,7 +148,7 @@ class TestRecordFileMutationResult:
 
         assert paths == ["/tmp/project/src/app.py"]
 
-    def test_write_file_with_lint_error_counts_as_landed(self):
+    def test_write_file_validation_failure_is_landed_but_remains_unresolved(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
             "write_file",
@@ -160,6 +160,9 @@ class TestRecordFileMutationResult:
 
         result = json.dumps({
             "bytes_written": 24,
+            "applied": True,
+            "validated": False,
+            "error": "VALIDATION FAILED AFTER EDIT",
             "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
         })
 
@@ -167,10 +170,48 @@ class TestRecordFileMutationResult:
             "write_file",
             {"path": "/tmp/a.py", "content": "def nope(:\n"},
             result,
-            is_error=True,
+            is_error=False,
         )
 
-        assert agent._turn_failed_file_mutations == {}
+        state = agent._turn_failed_file_mutations
+        assert state["/tmp/a.py"]["applied"] is True
+        assert state["/tmp/a.py"]["validation_failed"] is True
+        assert "modified; validation failed" in agent._format_file_mutation_failure_footer(state)
+
+    def test_partial_v4a_apply_failure_keeps_all_targets_unresolved(self):
+        agent = _bare_agent()
+        args = {
+            "mode": "patch",
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Add File: /tmp/first.py\n"
+                "+first = True\n"
+                "*** Add File: /tmp/second.py\n"
+                "+second = True\n"
+                "*** End Patch\n"
+            ),
+        }
+        result = json.dumps({
+            "success": False,
+            "files_created": ["/tmp/first.py"],
+            "applied": True,
+            "error": (
+                "Apply phase failed (state may be inconsistent — run `git diff` "
+                "to assess): Failed to add /tmp/second.py: file not found"
+            ),
+        })
+
+        agent._record_file_mutation_result("patch", args, result, is_error=True)
+
+        state = agent._turn_failed_file_mutations
+        assert set(state) == {"/tmp/first.py", "/tmp/second.py"}
+        assert state["/tmp/first.py"]["applied"] is True
+        assert state["/tmp/second.py"]["applied"] is False
+        assert agent._turn_file_mutation_paths == {"/tmp/first.py"}
+
+        footer = agent._format_file_mutation_failure_footer(state)
+        assert "modified before patch failed" in footer
+        assert "not modified" in footer
 
     def test_patch_with_lsp_diagnostics_counts_as_landed(self):
         agent = _bare_agent()

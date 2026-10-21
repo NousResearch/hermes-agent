@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Verifica modifiche ai file: {count} modifiche FALLITE in questo turno, nonostante quanto il testo sopra possa far pensare. Esegui `git status` o `read_file` per confermare cosa è stato davvero applicato."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "non riuscito"
+    state_not_modified: "non modificato"
+    state_validation_failed: "modificato; convalida non riuscita"
+    state_partial: "modificato prima che la patch non riuscisse"
   shared:
     and_more: "  • … e altri {count}"
     the_model: "Il modello"

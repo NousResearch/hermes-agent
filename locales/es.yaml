@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Verificador de modificación de archivos: {count} edición(es) de archivo FALLARON en este turno, aunque el texto de arriba sugiera lo contrario. Ejecuta `git status` o `read_file` para confirmar qué se aplicó realmente."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "falló"
+    state_not_modified: "no modificado"
+    state_validation_failed: "modificado; la validación falló"
+    state_partial: "modificado antes de que fallara el parche"
   shared:
     and_more: "  • … y {count} más"
     the_model: "El modelo"

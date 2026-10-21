@@ -3854,6 +3854,9 @@ explainer:
     header: "⚠️ Vérificateur de modifications de fichiers : {count} modification(s) de fichier ont ÉCHOUÉ ce tour, quoi qu'en dise le texte ci-dessus. Lancez `git status` ou `read_file` pour vérifier ce qui a réellement été appliqué."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "échec"
+    state_not_modified: "non modifié"
+    state_validation_failed: "modifié ; échec de la validation"
+    state_partial: "modifié avant l'échec du patch"
   shared:
     and_more: "  • … et {count} de plus"
     the_model: "Le modèle"

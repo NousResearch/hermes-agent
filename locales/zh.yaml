@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ 文件修改校验器：本回合有 {count} 处文件编辑失败，无论上方措辞如何暗示。请运行 `git status` 或 `read_file` 确认实际落地的内容。"
     entry: "  • `{path}`——[{tool}] {preview}"
     failed: "失败"
+    state_not_modified: "未修改"
+    state_validation_failed: "已修改；验证失败"
+    state_partial: "补丁失败前已修改"
   shared:
     and_more: "  • ……还有 {count} 项"
     the_model: "模型"

@@ -285,10 +285,23 @@ def _fail(error: str) -> ApplyResult:
 def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> ApplyResult:
     """Outcome of a write: its error, else success with LSP/lint propagated from the WriteResult
     and the ``(path, read_sha256, written_sha256)`` record of the bytes it replaced and wrote."""
-    if result.error:
-        return _fail(result.error)
     write = (path, read_sha256, getattr(result, "_content_sha256", None))
-    return ApplyResult(True, diff, getattr(result, "lsp_diagnostics", None), getattr(result, "lint", None), write)
+    lsp, lint = getattr(result, "lsp_diagnostics", None), getattr(result, "lint", None)
+    if result.error:
+        # Bytes that landed and then failed validation keep their write record, which
+        # tells the caller the file changed despite the error.
+        if getattr(result, "applied", None) and getattr(result, "validated", None) is False:
+            return ApplyResult(False, result.error, lsp, lint, write)
+        return _fail(result.error)
+    return ApplyResult(True, diff, lsp, lint, write)
+
+
+def _aggregate_validated(lint_results: dict[str, dict], validation_failed: bool) -> Optional[bool]:
+    """False when any landed file failed lint, True when at least one passed, None when all skipped."""
+    statuses = {r.get("status") for r in lint_results.values() if isinstance(r, dict)}
+    if validation_failed or "error" in statuses:
+        return False
+    return True if "ok" in statuses else None
 
 
 def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
@@ -317,8 +330,10 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
     lsp_blocks: list[str] = []
     lint_results: dict[str, dict] = {}
     writes: list[tuple] = []
+    validation_failed = False
     for op in operations:
         handler, verb, bucket = _APPLY_DISPATCH[op.operation]
+        lsp = lint = write = None
         try:
             ok, payload, lsp, lint, write, op_notes = handler(op, file_ops)
         except Exception as e:
@@ -326,6 +341,12 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
         if not ok:
             prefix = f"Failed to {verb}" if ok is False else "Error processing"
             errors.append(f"{prefix} {op.file_path}: {payload}")
+            if write:  # landed, then failed validation
+                validation_failed = True
+                files[bucket].append(op.file_path)
+                writes.append(write)
+                if lint:
+                    lint_results[op.file_path] = lint
             continue
         is_move = op.operation is OperationType.MOVE
         files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
@@ -345,6 +366,7 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
         diff='\n'.join(all_diffs),
         files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
         lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes,
+        applied=any(files.values()), validated=_aggregate_validated(lint_results, validation_failed),
         note="\n".join(dict.fromkeys(notes)) or None)
 
 

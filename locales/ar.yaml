@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ مدقّق تعديل الملفات: فشل {count} من تعديلات الملفات في هذا الدور رغم أي صياغة أعلاه قد توحي بخلاف ذلك. شغّل `git status` أو `read_file` للتأكد ممّا طُبّق فعلًا."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "فشل"
+    state_not_modified: "لم يُعدَّل"
+    state_validation_failed: "عُدِّل؛ فشل التحقق"
+    state_partial: "عُدِّل قبل فشل التصحيح"
   shared:
     and_more: "  • … و{count} أخرى"
     the_model: "النموذج"

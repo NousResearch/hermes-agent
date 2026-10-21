@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ 檔案變更驗證器：本輪有 {count} 個檔案編輯失敗，無論上方文字如何描述皆以此為準。請執行 `git status` 或 `read_file` 確認實際寫入的內容。"
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "失敗"
+    state_not_modified: "未修改"
+    state_validation_failed: "已修改；驗證失敗"
+    state_partial: "修補失敗前已修改"
   shared:
     and_more: "  • … 還有 {count} 個"
     the_model: "模型"

@@ -3640,6 +3640,9 @@ explainer:
     header: "⚠️ File-mutation verifier: {count} file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "failed"
+    state_not_modified: "not modified"
+    state_validation_failed: "modified; validation failed"
+    state_partial: "modified before patch failed"
   shared:
     and_more: "  • … and {count} more"
     the_model: "The model"

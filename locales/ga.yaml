@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Fíoraitheoir athruithe comhaid: THEIP ar {count} eagarthóireacht chomhaid sa seal seo, d'ainneoin aon fhoclaíochta thuas a d'fhéadfadh a mhalairt a thabhairt le tuiscint. Rith `git status` nó `read_file` chun a dhearbhú cad a cuireadh i bhfeidhm i ndáiríre."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "theip"
+    state_not_modified: "níor athraíodh"
+    state_validation_failed: "athraíodh; theip ar bhailíochtú"
+    state_partial: "athraíodh sular theip ar an bpaiste"
   shared:
     and_more: "  • … agus {count} eile"
     the_model: "An tsamhail"

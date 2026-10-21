@@ -3529,6 +3529,9 @@ explainer:
     header: "⚠️ Dosya değişikliği doğrulayıcısı: yukarıdaki ifadeler aksini düşündürse bile bu turda {count} dosya düzenlemesi BAŞARISIZ oldu. Gerçekte neyin uygulandığını doğrulamak için `git status` veya `read_file` çalıştırın."
     entry: "  • `{path}` — [{tool}] {preview}"
     failed: "başarısız"
+    state_not_modified: "değiştirilmedi"
+    state_validation_failed: "değiştirildi; doğrulama başarısız"
+    state_partial: "yama başarısız olmadan önce değiştirildi"
   shared:
     and_more: "  • … ve {count} tane daha"
     the_model: "Model"

@@ -96,6 +96,15 @@ def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _proxy_headers(proxy_key: str, session_id: str) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if proxy_key:
+        headers["Authorization"] = f"Bearer {proxy_key}"
+    if session_id:
+        headers["X-Hermes-Session-Id"] = session_id
+    return headers
+
+
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
     (#1630 skip) and the user-facing reply so the two can never disagree.
@@ -169,9 +178,10 @@ def hygiene_no_commit_reason(agent) -> str:
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from gateway.run_turn_tools import GatewayTurnToolsMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnToolsMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -454,31 +464,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 prompt, source, task_id, event_message_id, media_urls, media_types,
             )
 
-    def _resolve_enabled_toolsets_for_source(
-        self, user_config: dict, source: SessionSource, platform_key: str,
-    ) -> list:
-        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
-        from hermes_cli.tools_config import _get_platform_tools
-        try:
-            adapter = self._delivery_adapter_for(source)
-            override = adapter.toolsets_for_source(source) if adapter is not None else None
-        except Exception:
-            override = None
-        if override and isinstance(override, list):
-            pts = dict(user_config.get("platform_toolsets") or {})
-            pts[platform_key] = [str(x) for x in override]
-            user_config = {**user_config, "platform_toolsets": pts}
-        return sorted(_get_platform_tools(user_config, platform_key))
-
-    def _resolve_turn_toolsets(self, user_config: dict, source: SessionSource, platform_key: str):
-        """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""
-        from agent.skill_utils import parse_config_string_list
-        enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
-        disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
-        return enabled, disabled
-
     async def _run_background_task_inner(
         self, prompt: str, source: SessionSource, task_id: str,
         event_message_id: Optional[str] = None, media_urls: Optional[list[str]] = None,
@@ -507,6 +492,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
             platform_key = _platform_config_key(source.platform)
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
+            protected_tool_names = self._protected_channel_tool_names(source, disabled_toolsets)
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
@@ -555,6 +541,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent._protected_channel_tool_names = protected_tool_names
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:
@@ -829,6 +816,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         Lets a Docker container handle Matrix E2EE while the agent runs on the host with full
         access to local files, memory, skills, and a unified session store."""
+        if self._protected_channel_toolsets(source) is not None:
+            return self._proxy_error_result(
+                "This channel's tool policy cannot be enforced by the remote agent")
         from gateway.run import _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
@@ -869,11 +859,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         ]
         api_messages.append({"role": "user", "content": message})
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if proxy_key:
-            headers["Authorization"] = f"Bearer {proxy_key}"
-        if session_id:
-            headers["X-Hermes-Session-Id"] = session_id
+        headers = _proxy_headers(proxy_key, session_id)
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
         _thread_metadata: Optional[dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)

@@ -91,6 +91,8 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
     *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
+    # Let GatewayConfig reject malformed protection instead of ignoring it.
+    ("protected_channel_toolsets", "protected_channel_toolsets", "presence", None, None),
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
     ("streaming", "streaming", "dict", None, None),

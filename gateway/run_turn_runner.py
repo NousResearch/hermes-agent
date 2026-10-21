@@ -419,6 +419,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
+        # Rebind on every turn, including a cached agent and queued follow-up.
+        agent._protected_channel_tool_names = runner._protected_channel_tool_names(
+            ctx.source, ctx.disabled_toolsets)
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
@@ -1207,7 +1210,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         room = current_room_execution_policy()
         if room is not None:
             max_iterations = room.max_iterations
-            ctx.enabled_toolsets = list(room.enabled_toolsets)
+            # An exact receiving-channel selection must remain authoritative even
+            # when a hosted room supplies a broader per-turn tool catalog.
+            if runner._protected_channel_toolsets(ctx.source) is None:
+                ctx.enabled_toolsets = list(room.enabled_toolsets)
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,

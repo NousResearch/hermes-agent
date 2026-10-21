@@ -53,7 +53,7 @@ _POLICY_MARKERS = ("_ALLOWED_USERS", "_ALLOW_ALL_USERS", "_ALLOWED_CHATS", "_HOM
 
 # Multiplexer-owner settings: a clone of the default that inherits them and is then started
 # standalone tries to be a second multiplexer for every profile on the host.
-_GATEWAY_OWNER_KEYS = ("multiplex_profiles", "profile_routes")
+_GATEWAY_OWNER_KEYS = ("multiplex_profiles", "profile_routes", "protected_channel_toolsets")
 
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 

@@ -202,6 +202,7 @@ def capture_provenance(runner, event):
 
 def restore_provenance(runner, source, provenance):
     """Resolve current owned connector/home before installing in-process auth context."""
+    source._native_provenance_verified = False
     if not isinstance(provenance, dict):
         raise RuntimeStoreError('invalid_params')
     candidate = copy(source)
@@ -212,6 +213,7 @@ def restore_provenance(runner, source, provenance):
     source.delivered_via_upstream_relay = candidate.delivered_via_upstream_relay
     source._transport_adapter_ref = weakref.ref(adapter)
     source._authorization_profile_home = home
+    source._native_provenance_verified = True
     return runtime_home
 
 

@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 _IDENTITY_ATTR = "_identity"
 # Wire-invisible provenance copied alongside the identity when a source is duplicated.
-_PROVENANCE_ATTRS = ("_transport_adapter_ref", "_authorization_profile_home", _IDENTITY_ATTR)
+_PROVENANCE_ATTRS = ("_transport_adapter_ref", "_authorization_profile_home", "_native_provenance_verified",
+                     _IDENTITY_ATTR)
 
 
 class IdentityUnresolved(RuntimeError):
@@ -98,7 +99,8 @@ def clear_identity(source: Any) -> None:
     guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
     per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
     short-circuits the route and the new speaker runs as the old one."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home", "_rejected_route_profile"):
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home", "_rejected_route_profile",
+                 "_protected_channel_rejected", "_native_provenance_verified"):
         with suppress(AttributeError):
             delattr(source, attr)
     with suppress(AttributeError):
@@ -218,17 +220,34 @@ def resolve_identity(
     platform = getattr(source, "platform", None)
 
     owner_profile: Optional[str] = None
+    registered_owner = False
     if adapter is None:
         owner = runner._transport_owner(source)
         if owner is not None:
             adapter, owner_profile = owner
+            registered_owner = True
     else:
         if getattr(source, "_transport_adapter_ref", None) is None:
             source._transport_adapter_ref = weakref.ref(adapter)
-        _registered, owner_profile = runner._owning_profile(adapter, platform)
+        registered_owner, owner_profile = runner._owning_profile(adapter, platform)
     transport_name = _name(transport_profile) or _name(owner_profile) or primary_profile
     transport_inferred = adapter is None and _name(transport_profile) is None and _name(owner_profile) is None
     transport_ref = weakref.ref(adapter) if adapter is not None else None
+
+    from gateway.protected_channel_tools import ProtectedChannelRejected, policy_for_source
+    try:
+        # The handler's profile hint must agree with the registered receiving adapter.
+        # A protected channel with no live adapter cannot borrow the default bot.
+        owner_name = _name(owner_profile) or primary_profile
+        if _name(transport_profile) and _name(transport_profile) != owner_name:
+            policy_for_source(runner.config, source, transport_profile=owner_name, live_adapter=False)
+        else:
+            policy_for_source(runner.config, source, transport_profile=owner_name,
+                              live_adapter=registered_owner)
+    except ProtectedChannelRejected as exc:
+        source.profile_route_rejected = True
+        source._protected_channel_rejected = True
+        raise IdentityUnresolved("protected channel identity could not be verified") from exc
 
     if not multiplexed:
         home = Path(get_hermes_home())

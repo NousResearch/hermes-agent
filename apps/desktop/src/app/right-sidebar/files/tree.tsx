@@ -7,6 +7,7 @@ import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
@@ -15,6 +16,7 @@ import { $revealInTreeRequest } from '@/store/layout'
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
 
 import { getFileTreeDndManager } from './dnd-manager'
+import { sessionFileTouchedForPath } from './session-files-store'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
@@ -291,6 +293,9 @@ function ProjectTreeRow({
   const path = node.data?.id ?? ''
   const changeStore = useMemo(() => repoChangeKindForPath(path), [path])
   const changeKind: RepoChangeKind | undefined = useStore(changeStore)
+  const sessionStore = useMemo(() => sessionFileTouchedForPath(path), [path])
+  const touchedThisSession = useStore(sessionStore)
+  const { t } = useI18n()
 
   markRightPanePerf('project-tree-row-render', path)
 
@@ -382,6 +387,16 @@ function ProjectTreeRow({
         // wins over the row's hover/selected text color, so it persists.
         <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
       )}
+      {touchedThisSession && !isFolder && !isPlaceholder ? (
+        // Session marker (#133481): a dot, not a tint, so it never competes
+        // with the Git decoration colour on the same row.
+        <span
+          aria-label={t.rightSidebar.sessionFileTip}
+          className="mr-1 size-1.5 shrink-0 rounded-full bg-(--ui-accent)"
+          role="img"
+          title={t.rightSidebar.sessionFileTip}
+        />
+      ) : null}
     </div>
   )
 

@@ -681,8 +681,13 @@ class MCPServerTransportMixin:
         """Publish freshly discovered tools when none are registered (initial registration normally happens in
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
-        retained after a recoverable initial failure) never comes back with zero tools."""
+        retained after a recoverable initial failure) never comes back with zero tools.
+
+        A reconnect that kept its registrations (no parking) lands here with fresh ``self._tools``
+        from tools/list but a registry reflecting the pre-reconnect server: resync via the shared
+        list_changed path so removed tools drop, new tools appear, and schemas/cache update (#126978)."""
         if self._registered_tool_names:
+            self._sync_registry_with_discovered_tools()
             return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]

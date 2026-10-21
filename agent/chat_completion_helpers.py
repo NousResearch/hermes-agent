@@ -42,7 +42,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
@@ -499,18 +499,17 @@ def _prompt_cache_scope_for_agent(agent) -> str | None:
         return None
 
 
-def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
-    """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
-    The Nous profile is only consulted by the OpenAI-wire transport; ``session_id``
-    only — never ``provider_preferences`` (an OpenAI-wire routing object)."""
+def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict, api_messages: list) -> dict:
+    """The Nous profile body on the Messages wire, which the profile hook never reaches; never
+    ``provider_preferences`` (OpenAI-wire routing the Portal 400s on)."""
     if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
         return anthropic_kwargs
     try:
         from providers import get_provider_profile
         nous_profile = get_provider_profile("nous")
         if nous_profile is not None:
-            anthropic_kwargs.setdefault("extra_body", {}).update(
-                nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
+            anthropic_kwargs.setdefault("extra_body", {}).update(nous_profile.build_extra_body(
+                session_id=getattr(agent, "session_id", None), data_use=data_use_requirement(api_messages)))
     except Exception as exc:
         logger.debug("Nous Portal extra_body merge failed: %s", exc)
     return anthropic_kwargs
@@ -1390,7 +1389,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
     # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
     # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
-    return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+    return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs, api_messages)
 
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
@@ -2245,7 +2244,7 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
-        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
+        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw, api_messages)
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
@@ -2261,6 +2260,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
     sanitize_outbound_kwargs(agent, summary_kwargs)
+    from agent.conversation_loop import _moa_client_consumes_prepared_request
+    if agent.provider == "moa" and _moa_client_consumes_prepared_request(agent.client):  # transport strips data_use
+        summary_kwargs["_moa_prepared_request"] = agent.client.chat.completions.prepare(api_messages)
 
     def _attempt(retry_count: int) -> str:
         # Use the ordinary request-local lifecycle: a summary can be interrupted
@@ -2280,9 +2282,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (-Q, oneshot): keep diagnostics off stdout. quiet_mode is
-        # NOT the gate — the interactive CLI runs quiet_mode=True by default and must see this.
-        # Strict machine-readable mode (hermes chat -Q, oneshot, background review): keep diagnostics out of
-        # stdout so wrappers receive only the final assistant content (#93220 class).
+        # NOT the gate — the interactive CLI runs quiet_mode=True by default and must see this (#93220 class).
         logger.warning(warning)
     else:
         agent._safe_print(warning, diagnostic=True)

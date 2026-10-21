@@ -1063,7 +1063,7 @@ def _pytest_disk_temp_root(native: Path) -> Path:
 
     from scripts.run_tests_parallel import _scratch_root_candidates, _select_scratch_root
 
-    root = _select_scratch_root(_scratch_root_candidates(native.parent))
+    root = _select_scratch_root(_scratch_root_candidates(native))
     prune_idle_entries(root, 24, frozenset())
     return root
 

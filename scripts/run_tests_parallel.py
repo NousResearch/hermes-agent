@@ -87,21 +87,25 @@ def _rmtree_force(path: str) -> None:
             pass
     shutil.rmtree(path, onerror=_chmod_retry)
 
-def _scratch_root_candidates(native_parent: Path | None = None) -> list[Path]:
+def _scratch_root_candidates(native: Path | None = None) -> list[Path]:
     """Return ordered, per-user scratch roots with a distinct escape per base directory.
 
     ``tempfile.gettempdir()`` can resolve to ``/var/tmp``. Keep the fallback name even
     when that makes the preferred and system-temp candidates identical: a stale named
-    root can be unusable while its parent is still writable.
+    root can be unusable while its parent is still writable. When pytest supplies the
+    native Hermes home, do not choose a system-temp directory nested inside that home.
     """
     name = "hermes-pytest" + (f"-{os.getuid()}" if hasattr(os, "getuid") else "")
+    native_parent = native.parent if native is not None else None
     bases: list[tuple[Path, bool]] = []
     has_var_tmp = os.name != "nt" and os.path.isdir("/var/tmp")
     if has_var_tmp:  # no-tmp: ok — probing the disk-backed FHS root
         bases.append((Path("/var/tmp"), False))  # no-tmp: ok — disk-backed FHS root
     if native_parent is not None and (os.name == "nt" or not has_var_tmp):
         bases.append((native_parent, True))
-    bases.append((Path(tempfile.gettempdir()), False))
+    system_temp = Path(tempfile.gettempdir())
+    if native is None or not system_temp.resolve().is_relative_to(native.resolve()):
+        bases.append((system_temp, False))
     if native_parent is not None:
         bases.append((native_parent, True))
 
@@ -115,7 +119,7 @@ def _scratch_root_candidates(native_parent: Path | None = None) -> list[Path]:
 def _select_scratch_root(candidates: list[Path]) -> Path:
     """Choose the first candidate whose directory and private probe both work."""
     errors = []
-    for root in candidates:
+    for index, root in enumerate(candidates):
         probe = None
         try:
             os.makedirs(root, exist_ok=True)
@@ -126,6 +130,14 @@ def _select_scratch_root(candidates: list[Path]) -> Path:
                 shutil.rmtree(probe, ignore_errors=True)
             errors.append((root, exc))
         else:
+            if index:
+                first_root, first_error = errors[0]
+                print(
+                    f"warning: Hermes test scratch fallback selected: {root} "
+                    f"after {first_root} failed ({first_error})",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return root
     detail = "; ".join(f"{root}: {exc}" for root, exc in errors)
     raise OSError(f"could not create Hermes test scratch root ({detail})")

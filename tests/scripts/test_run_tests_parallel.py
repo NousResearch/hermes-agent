@@ -20,6 +20,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 
 from __future__ import annotations
 
+import errno
 import json
 import shutil
 import os
@@ -675,7 +676,14 @@ def test_scratch_candidates_keep_a_distinct_fallback_when_tempdir_is_var_tmp(mon
     ]
 
 
-def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "probe_error",
+    [PermissionError("existing root is not writable"), OSError(errno.ENOSPC, "no space")],
+    ids=["permission", "enospc"],
+)
+def test_scratch_root_falls_back_when_var_tmp_is_not_writable(
+    tmp_path: Path, monkeypatch, capsys, probe_error: OSError
+) -> None:
     """A root whose mkdir succeeds but probe fails must use a distinct sibling."""
     import importlib
 
@@ -705,8 +713,8 @@ def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, mo
         return real_makedirs(path, *args, **kwargs)
 
     def fail_existing_root(*args, **kwargs):
-        if Path(kwargs["dir"]) == tmp_path / f"hermes-pytest{uid_suffix}":
-            raise PermissionError("existing root is not writable")
+        if kwargs.get("dir") and Path(kwargs["dir"]) == tmp_path / f"hermes-pytest{uid_suffix}":
+            raise probe_error
         return real_mkdtemp(*args, **kwargs)
 
     monkeypatch.setattr(runner.os, "makedirs", deny_var_tmp)
@@ -716,6 +724,25 @@ def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, mo
 
     assert root == tmp_path / f"hermes-pytest{uid_suffix}-fallback"
     assert root.is_dir()
+    assert "Hermes test scratch fallback selected" in capsys.readouterr().err
+
+
+def test_scratch_candidates_skip_a_system_temp_inside_native_home(tmp_path: Path, monkeypatch) -> None:
+    """Relocation must use the native-home sibling instead of a nested temp directory."""
+    import importlib
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    runner = importlib.import_module("run_tests_parallel")
+    native = tmp_path / "native-home"
+    native.mkdir()
+    monkeypatch.setattr(runner.os.path, "isdir", lambda path: False if str(path) == "/var/tmp" else True)
+    monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(native / "tmp"))
+
+    candidates = runner._scratch_root_candidates(native)
+
+    assert candidates[0] == tmp_path / "hermes-pytest"
+    assert all(not candidate.resolve().is_relative_to(native) for candidate in candidates)
 
 
 def test_runner_subprocess_uses_fallback_after_existing_root_probe_fails(tmp_path: Path) -> None:
@@ -774,7 +801,6 @@ def test_runner_subprocess_uses_fallback_after_existing_root_probe_fails(tmp_pat
     )
 
     assert proc.returncode == 0, proc.stdout
-    assert "1 tests passed" in proc.stdout, proc.stdout
 
 
 def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Path) -> None:

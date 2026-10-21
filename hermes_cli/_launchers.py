@@ -313,6 +313,7 @@ def mint_launcher(
 # git or an absolute PATH entry (never one from the current directory) and verified the same way.
 # Stdlib plus that copy only, under the same claim and checkout lock (a live writer still refuses,
 # which exits 1 with the repair's own reason), then a relaunch from the restored tree.
+# Construct NUL separators at runtime: literal escapes in argv break echo-based process parsers.
 _CLOSURE_REPAIR = """\
 def _hermes_closure_repair():
     import contextlib, hashlib, io, shutil, subprocess
@@ -331,9 +332,10 @@ def _hermes_closure_repair():
         return
     closure = git / __CLOSURE_DIR__ / pre
     files = (*__CLOSURE__, __INIT__)
+    nul = bytes([0])
 
     def blob_id(data):
-        return hashlib.new('sha1' if len(pre) == 40 else 'sha256', b'blob %d\\0' % len(data) + data).hexdigest()
+        return hashlib.new('sha1' if len(pre) == 40 else 'sha256', b'blob %d' % len(data) + nul + data).hexdigest()
 
     def verified():
         try:
@@ -362,7 +364,7 @@ def _hermes_closure_repair():
         staging = closure.with_name('.%s.%d.launch' % (pre, os.getpid()))
         try:
             ids = {}
-            for entry in git_out('ls-tree', '-z', '--full-tree', pre, '--', *__CLOSURE__).split(b'\\0'):
+            for entry in git_out('ls-tree', '-z', '--full-tree', pre, '--', *__CLOSURE__).split(nul):
                 meta, _, rel = entry.decode('utf-8', 'replace').partition('\\t')
                 if meta.split()[1:2] == ['blob']:
                     ids[rel] = meta.split()[2]

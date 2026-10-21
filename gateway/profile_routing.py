@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +176,80 @@ def parse_profile_routes(raw: Optional[list[dict[str, Any]]]) -> list[ProfileRou
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))
     return routes
+
+
+def _route_list_slot(value: Any) -> Optional[list[Any]]:
+    """``None`` if the key is absent. A present non-list occupies the slot as ``[]``."""
+    if value is None:
+        return None
+    return value if isinstance(value, list) else []
+
+
+def profile_routes_list_from_yaml(yaml_cfg: Any) -> Optional[list[Any]]:
+    """The ``profile_routes`` list the gateway loader bridges, or ``None`` if unset.
+
+    Same precedence as ``config_loader`` mode ``"none"``: a present top-level key
+    wins even when the list is empty. ``gateway.profile_routes`` is used only when
+    the top-level key is absent or null. A present non-list occupies the slot as
+    ``[]`` so it cannot be hidden behind the nested list.
+    """
+    if not isinstance(yaml_cfg, dict):
+        return None
+    if "profile_routes" in yaml_cfg:
+        slotted = _route_list_slot(yaml_cfg.get("profile_routes"))
+        if slotted is not None:
+            return slotted
+    gateway = yaml_cfg.get("gateway")
+    if isinstance(gateway, dict) and "profile_routes" in gateway:
+        return _route_list_slot(gateway.get("profile_routes"))
+    return None
+
+
+def refresh_runner_profile_routes(runner: Any) -> None:
+    """Reload ``profile_routes`` from the process home when ``config.yaml`` changes.
+
+    Dashboard saves do not restart the gateway. Matching runs on every inbound
+    message, so a disk-loaded runner picks up the new table without a restart.
+    Injected configs (tests, ``GatewayRunner(config=...)``) are left alone.
+    The file is the process home, not the turn's profile home: a routed turn
+    scopes ``HERMES_HOME`` to the target profile, and that profile does not own
+    the shared route table. A file with no route list leaves the boot snapshot
+    in place so a legacy ``gateway.json`` table is not wiped.
+    """
+    # ``is True`` so a MagicMock runner (tests bind the real matcher) does not
+    # stat the process home and replace the routes under test.
+    if getattr(runner, "_profile_routes_from_disk", False) is not True:
+        return
+    config = getattr(runner, "config", None)
+    if config is None:
+        return
+    from hermes_constants import get_process_hermes_home
+
+    path = get_process_hermes_home() / "config.yaml"
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if (
+        getattr(runner, "_profile_routes_yaml_checked", False)
+        and getattr(runner, "_profile_routes_mtime_ns", None) == mtime
+    ):
+        return
+    runner._profile_routes_yaml_checked = True
+    runner._profile_routes_mtime_ns = mtime
+    if mtime is None:
+        return
+    try:
+        from gateway.config_loader import read_yaml_layers
+
+        yaml_cfg = read_yaml_layers(path.parent)
+    except Exception:
+        logger.warning("Could not reload profile_routes from %s", path, exc_info=True)
+        return
+    raw = profile_routes_list_from_yaml(yaml_cfg)
+    if raw is None:
+        return
+    config.profile_routes = parse_profile_routes(raw)
 
 
 def match_profile_route(

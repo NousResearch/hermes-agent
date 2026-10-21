@@ -9,6 +9,7 @@ import platform
 import re
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -908,10 +909,51 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] {bridge_exit}")
         return bool(bridge_exit)
 
+    _NEEDS_QR_MESSAGE = "WhatsApp logged this device out. Scan a new QR from Channels to link again."
+
+    def note_bridge_link_status(self, data: Optional[dict]) -> None:
+        """Publish a logged-out bridge as needs-QR, and a later link as connected.
+
+        The bridge stays up after logout (it deleted the session and is issuing
+        a QR). Marking the process exited would restart it into the unpaired
+        preflight and hide that QR.
+        """
+        status = str((data or {}).get("status") or "")
+        published = getattr(self, "_link_status_published", None)
+        if status == "needs_qr":
+            if published == "needs_qr":
+                return
+            self._link_status_published = "needs_qr"
+            self._write_runtime_status_safe(
+                "needs_qr",
+                platform_state="needs_qr",
+                error_code="whatsapp_logged_out",
+                error_message=self._NEEDS_QR_MESSAGE,
+                needs_attention=True,
+            )
+        elif status == "connected" and published == "needs_qr":
+            self._link_status_published = "connected"
+            self._mark_connected()
+
+    async def _refresh_bridge_link_state(self) -> None:
+        now = time.monotonic()
+        if now - getattr(self, "_link_state_checked_at", 0.0) < 5:
+            return
+        self._link_state_checked_at = now
+        if not self._http_session:
+            return
+        try:
+            async with self._bridge_req("get", "health", 2) as resp:
+                data = await resp.json() if resp.status == 200 else None
+        except Exception:
+            return
+        self.note_bridge_link_status(data if isinstance(data, dict) else None)
+
     async def _poll_messages(self) -> None:
         while self._running:
             if not self._http_session or await self._report_bridge_exit():
                 break
+            await self._refresh_bridge_link_state()
             try:
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:

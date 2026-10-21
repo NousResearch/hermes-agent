@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync, rmSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -39,6 +39,7 @@ import {
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
+  prepareLoggedOutSession,
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
@@ -377,6 +378,23 @@ function rememberSentId(id) {
 
 let sock = null;
 let connectionState = 'disconnected';
+let latestQr = null;
+let loggedOutRestarts = 0;
+const groupSubjects = new Map();
+
+async function rememberGroupSubject(chatId) {
+  if (!sock || !chatId || !String(chatId).endsWith('@g.us')) return '';
+  const cached = groupSubjects.get(chatId);
+  if (cached) return cached;
+  try {
+    const metadata = await sock.groupMetadata(chatId);
+    const subject = String(metadata?.subject || '').trim();
+    if (subject) groupSubjects.set(chatId, subject);
+    return subject;
+  } catch {
+    return '';
+  }
+}
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -415,6 +433,8 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      latestQr = qr;
+      if (connectionState !== 'connected') connectionState = 'needs_qr';
       if (PAIR_JSON) {
         emitPairEvent({ event: 'qr', qr });
       } else {
@@ -427,15 +447,31 @@ async function startSocket() {
 
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      connectionState = 'disconnected';
 
       if (reason === DisconnectReason.loggedOut) {
-        emitPairEvent({ event: 'error', error: 'logged_out', reason });
-        if (!PAIR_JSON) {
-          console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+        // Exiting here restarts the same dead creds and loops. Drop the
+        // session and open a fresh socket so a QR can be scanned.
+        latestQr = null;
+        connectionState = 'needs_qr';
+        try { sock?.ev?.removeAllListeners?.(); } catch {}
+        try { sock?.end?.(undefined); } catch {}
+        try {
+          prepareLoggedOutSession(SESSION_DIR, rmSync);
+        } catch (err) {
+          console.log(`⚠️  Could not delete logged-out WhatsApp session: ${err?.message || err}`);
         }
-        process.exit(1);
+        emitPairEvent({ event: 'logged_out', reason });
+        if (!PAIR_JSON) {
+          console.log('❌ Logged out. Session deleted. A new QR will be generated.');
+        }
+        if (loggedOutRestarts < 3) {
+          loggedOutRestarts += 1;
+          scheduleReconnect(1000);
+        } else if (!PAIR_JSON) {
+          console.log('⚠️  Logged out again after clearing the session. Waiting for a new QR.');
+        }
       } else {
+        connectionState = 'disconnected';
         // 515 = restart requested (common after pairing). Always reconnect.
         emitPairEvent({ event: 'disconnected', reason });
         if (!PAIR_JSON) {
@@ -448,6 +484,8 @@ async function startSocket() {
         scheduleReconnect(reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
+      loggedOutRestarts = 0;
+      latestQr = null;
       connectionState = 'connected';
       const connectedUser = sock?.user
         ? {
@@ -742,6 +780,10 @@ async function startSocket() {
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
       });
       event.fromOwner = fromOwner;
+      if (isGroup) {
+        const subject = await rememberGroupSubject(chatId);
+        if (subject) event.chatName = subject;
+      }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
@@ -1099,6 +1141,28 @@ app.post('/read', async (req, res) => {
   }
 });
 
+// Group titles for the dashboard route table. Subjects come from the live
+// socket; the numeric JID is not a name.
+app.get('/chats', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.json({ chats: [] });
+  }
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    const chats = [];
+    for (const group of Object.values(groups || {})) {
+      const chatId = group?.id;
+      const name = String(group?.subject || '').trim();
+      if (!chatId || !name) continue;
+      groupSubjects.set(chatId, name);
+      chats.push({ chat_id: chatId, name, kind: 'group' });
+    }
+    return res.json({ chats });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list WhatsApp chats', chats: [] });
+  }
+});
+
 // Chat info
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
@@ -1128,6 +1192,8 @@ app.get('/chat/:id', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: connectionState,
+    linked: connectionState === 'connected',
+    qr: connectionState === 'needs_qr' ? latestQr : null,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,

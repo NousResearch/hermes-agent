@@ -140,6 +140,44 @@ export interface Translations {
     sharedMetricsSaveFailed?: string;
   };
 
+  /** Channels page — optional; English literals used as fallback in components. */
+  channelsPage?: {
+    whatsappRoutes: {
+      title: string;
+      hostIntro: string;
+      hostProfileLabel: string;
+      multiplexOn: string;
+      multiplexOff?: string;
+      multiplexUnset?: string;
+      ingressOwnedByHost: string;
+      colChat: string;
+      colKind: string;
+      colProfile: string;
+      colLastSeen: string;
+      kindGroup: string;
+      kindPerson: string;
+      empty: string;
+      addRoute: string;
+      saveRoutes: string;
+      saving: string;
+      saved: string;
+      loadFailed: string;
+      edit: string;
+      remove: string;
+      modalAddTitle: string;
+      modalEditTitle: string;
+      fieldProfile: string;
+      fieldProfileCountHint: string;
+      fieldChat: string;
+      fieldChatEmpty: string;
+      fieldChatManual?: string;
+      refreshChats: string;
+      refreshingChats: string;
+      refreshChatsFailed: string;
+      modalApply: string;
+    };
+  };
+
   // ── Status page ──
   status: {
     actionFailed: string;

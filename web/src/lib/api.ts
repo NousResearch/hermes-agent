@@ -590,8 +590,16 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: (profile = getManagementProfile()) =>
-    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  getConfig: (
+    profile = getManagementProfile(),
+    options?: { includeDefaults?: boolean },
+  ) => {
+    const base =
+      options?.includeDefaults === false
+        ? "/api/config?include_defaults=false"
+        : "/api/config";
+    return fetchJSON<Record<string, unknown>>(appendProfileParam(base, profile));
+  },
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
@@ -1016,6 +1024,8 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getWhatsAppSeenChats: () =>
+    fetchJSON<WhatsAppSeenChatsResponse>("/api/messaging/whatsapp/seen-chats"),
   getWhatsAppOnboardingStatus: (pairingId: string) =>
     fetchJSON<WhatsAppOnboardingStatusResponse>(
       `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
@@ -1700,7 +1710,13 @@ export interface MessagingPlatform {
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;
+    /** empty | all | list. "all" means every sender is allowed; the wildcard is not a phone number. */
+    allowed_users_kind?: "empty" | "all" | "list" | string;
+    /** Comma-separated numbers when kind is list. Empty for allow-all. */
+    allowed_users_preview?: string;
     home_channel_set?: boolean;
+    /** linked only when the bridge reports a live connection, not when creds.json exists. */
+    link_state?: "linked" | "needs_qr" | "unlinked" | string;
   } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
@@ -2182,6 +2198,17 @@ export interface TelegramOnboardingApplyResponse {
   restart_action?: string;
   restart_pid?: number | null;
   restart_error?: string;
+}
+
+export interface WhatsAppSeenChat {
+  chat_id: string;
+  name: string | null;
+  kind: "group" | "dm" | string;
+  last_seen: number | null;
+}
+
+export interface WhatsAppSeenChatsResponse {
+  chats: WhatsAppSeenChat[];
 }
 
 export interface WhatsAppOnboardingStartResponse {

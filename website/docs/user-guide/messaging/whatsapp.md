@@ -205,6 +205,22 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---
 
+## One number, many profiles
+
+With [multiplexing](../multi-profile-gateways.md#alternative-one-gateway-for-all-profiles-multiplexing) on, **Channels → WhatsApp** edits the WhatsApp rows of `gateway.profile_routes` on the host (default) profile. The bridge stays on that profile. A secondary profile does not start a second bridge.
+
+- One group routes to one profile. A profile can own several groups.
+- A chat that matches no route stays on the default profile.
+- **Add route** lists chats the bridge has already received that are not routed yet. The count on the button is how many of those chats are waiting. **Refresh chats**, at the bottom of that dialog, reloads the list after a new message. If the bridge has not listed any chats, enter the group JID or phone number directly.
+- The table shows the WhatsApp group subject, or the contact name when one is known. The numeric id is a tooltip. The text of the last message is not used as the name.
+- Saving writes the route table. It does not restart the gateway. A running gateway re-reads `config.yaml` and applies the new route on the next inbound message.
+- If the WhatsApp card says the bridge is down, the gateway process can still be running. Chats are not answered until the bridge connects. The gateway retries the bridge on its own.
+- The target list shows how many WhatsApp chats already route to each profile, including rows you have not saved yet.
+
+The same rows can be written by hand. See [Routing shared-bot chats to profiles](../multi-profile-gateways.md#routing-shared-bot-chats-to-profiles-profile_routes).
+
+---
+
 ## Session Persistence
 
 The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:
@@ -217,16 +233,19 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 
 ## Re-pairing
 
-If the session breaks (phone reset, WhatsApp update, manually unlinked), you'll see connection
-errors in the gateway logs. To fix it:
+If the session breaks (phone reset, WhatsApp update, manually unlinked), the bridge deletes
+the saved session and reports **Needs QR**. The dashboard Channels page stops showing
+**Linked** — that badge follows the live bridge connection, not the presence of
+`creds.json`. Pair with QR from the dashboard, or run:
 
 ```bash
 hermes whatsapp
 ```
 
-This generates a fresh QR code. Scan it again and the session is re-established. The gateway
-handles **temporary** disconnections (network blips, phone going offline briefly) automatically
-with reconnection logic.
+Either path generates a fresh QR code. Scan it again and the session is re-established.
+A logged-out session is removed, not backed up. The gateway handles **temporary**
+disconnections (network blips, phone going offline briefly) automatically with
+reconnection logic and does not delete the session for those.
 
 ---
 
@@ -314,7 +333,7 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
 | **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
 | **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
-| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
+| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. The bridge deletes the dead session and the dashboard shows Needs QR. Pair with QR from Channels, or run `hermes whatsapp`. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |

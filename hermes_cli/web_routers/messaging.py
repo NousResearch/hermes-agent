@@ -27,6 +27,11 @@ from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
+from hermes_cli.whatsapp_link import (
+    discard_whatsapp_session,
+    fetch_whatsapp_bridge_health,
+    whatsapp_onboarding_link_decision,
+)
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
@@ -268,10 +273,27 @@ def _messaging_platform_payload(
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
+        allowed_raw = env_value("WHATSAPP_ALLOWED_USERS").strip()
+        if not allowed_raw:
+            allowed_kind, allowed_preview = "empty", ""
+        elif allowed_raw == "*":
+            # The wildcard is an allow-all flag, not a phone number. Do not echo it into the form.
+            allowed_kind, allowed_preview = "all", ""
+        else:
+            allowed_kind, allowed_preview = "list", allowed_raw
+        if state == "connected":
+            link_state = "linked"
+        elif state == "needs_qr":
+            link_state = "needs_qr"
+        else:
+            link_state = "unlinked"
         payload["whatsapp_setup"] = {
             "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
-            "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
+            "allowed_users_set": bool(allowed_raw),
+            "allowed_users_kind": allowed_kind,
+            "allowed_users_preview": allowed_preview,
             "home_channel_set": bool(home_channel),
+            "link_state": link_state,
         }
     return payload
 
@@ -464,6 +486,15 @@ def _apply_pairing_event(record, payload: dict) -> None:
             record.account_phone = _whatsapp_phone_from_identifier(account_id)
         record.status = "connected"
         record.error = None
+    elif event == "logged_out":
+        # The bridge deletes the dead session and follows with a QR. This is
+        # not a terminal failure — the next qr event fills the dashboard.
+        record.status = "waiting"
+        record.qr_payload = None
+        record.account_id = None
+        record.account_name = None
+        record.account_phone = None
+        record.error = None
     elif event == "error":
         record.status = "error"
         record.error = str(payload.get("error") or "WhatsApp pairing failed.")
@@ -555,6 +586,79 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
     return pairing_id
 
 
+def _whatsapp_route_chat_ids() -> list[str]:
+    """Group and contact ids already on the host route table.
+
+    Reads the raw file. ``load_config()`` merges ``gateway.profile_routes: []``
+    from defaults, which hides a top-level list the gateway loader prefers.
+    """
+    try:
+        from gateway.profile_routing import profile_routes_list_from_yaml
+        from hermes_cli.config import read_raw_config
+
+        routes = profile_routes_list_from_yaml(read_raw_config()) or []
+    except Exception:
+        return []
+    chat_ids: list[str] = []
+    for row in routes:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("platform") or "").strip().lower() != "whatsapp":
+            continue
+        chat_id = str(row.get("chat_id") or "").strip()
+        if chat_id:
+            chat_ids.append(chat_id)
+    return chat_ids
+
+
+@router.get("/api/messaging/whatsapp/seen-chats")
+def list_whatsapp_seen_chats():
+    """Chats the WhatsApp bridge has already seen, with display names when known.
+
+    Reads the channel directory and session rows on every installed profile.
+    Does not start the bridge or restart the gateway.
+    """
+    from hermes_cli.profiles import list_profiles
+    from hermes_cli.whatsapp_seen_chats import (
+        _fetch_bridge_chats,
+        _lookup_bridge_chat,
+        bridge_chats_for_editor,
+        collect_whatsapp_seen_chats,
+        remember_whatsapp_aliases,
+        whatsapp_chat_kind,
+    )
+
+    try:
+        infos = list_profiles(lazy_skill_count=True)
+        homes = [item.path for item in infos]
+        listed = _fetch_bridge_chats()
+        known_ids = _whatsapp_route_chat_ids()
+        if listed is None:
+            preliminary = collect_whatsapp_seen_chats(homes)
+            known_ids.extend(
+                str(chat.get("chat_id") or "")
+                for chat in preliminary
+                if whatsapp_chat_kind(str(chat.get("chat_id") or ""), chat.get("kind")) == "group"
+            )
+        chats = collect_whatsapp_seen_chats(
+            homes,
+            bridge_chats=bridge_chats_for_editor(known_ids, listed, _lookup_bridge_chat),
+        )
+        host = next((item.path for item in infos if getattr(item, "is_default", False)), None)
+        if host is not None:
+            try:
+                remember_whatsapp_aliases(
+                    host,
+                    {chat["chat_id"]: chat["name"] for chat in chats if chat.get("name")},
+                )
+            except OSError:
+                _log.warning("Could not store WhatsApp chat names", exc_info=True)
+    except Exception as exc:
+        _log.exception("GET /api/messaging/whatsapp/seen-chats failed")
+        raise HTTPException(status_code=500, detail="Could not list WhatsApp chats.") from exc
+    return {"chats": chats}
+
+
 @router.post("/api/messaging/whatsapp/onboarding/start")
 async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
@@ -568,16 +672,73 @@ async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
             expires_at=datetime.fromtimestamp(expires_at_ts, UTC).isoformat().replace("+00:00", "Z"),
             expires_at_ts=expires_at_ts, profile=body.profile,
         )
-        already_linked = (session_path / "creds.json").exists()
-        if already_linked:  # creds on disk: report connected without pairing
+        creds_exist = (session_path / "creds.json").exists()
+        health = fetch_whatsapp_bridge_health()
+        decision = whatsapp_onboarding_link_decision(creds_exist, health)
+        if decision == "linked":
             account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
             fields.update(status="connected", account_id=account_id, account_name=account_name, account_phone=account_phone)
+        elif decision == "watch":
+            qr = str((health or {}).get("qr") or "").strip() or None
+            fields.update(status="waiting", qr_payload=qr)
+        elif decision == "clear_and_pair":
+            discard_whatsapp_session(session_path)
+            fields.update(status="starting", qr_payload=None)
 
     record = _WhatsAppOnboardingSession(**fields)
     pairing_id = _register_whatsapp_session(session_path, record)
-    if not already_linked:
-        threading.Thread(target=_run_whatsapp_pairing, args=(pairing_id, session_path, mode), daemon=True).start()
+    _start_whatsapp_link_followup(decision, pairing_id, session_path, mode)
     return _whatsapp_onboarding_payload(pairing_id, record)
+
+
+def _start_whatsapp_link_followup(decision: str, pairing_id: str, session_path: Path, mode: str) -> None:
+    if decision in {"pair", "clear_and_pair"}:
+        threading.Thread(target=_run_whatsapp_pairing, args=(pairing_id, session_path, mode), daemon=True).start()
+    elif decision == "watch":
+        threading.Thread(target=_watch_whatsapp_bridge, args=(pairing_id,), daemon=True).start()
+
+
+def _watch_whatsapp_bridge(pairing_id: str) -> None:
+    """Follow the running bridge until it links or the setup expires.
+
+    A logged-out bridge stays up, deletes its session, and serves a QR on
+    ``/health``. Opening a second pairing process would fight that socket.
+    """
+    while True:
+        with _whatsapp_onboarding_lock:
+            record = _whatsapp_onboarding_sessions.get(pairing_id)
+            if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                return
+            if record.expires_at_ts <= time.time():
+                return
+            session_path = Path(record.session_path)
+        health = fetch_whatsapp_bridge_health()
+        status = str((health or {}).get("status") or "").strip().lower()
+        with _whatsapp_onboarding_lock:
+            record = _whatsapp_onboarding_sessions.get(pairing_id)
+            if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
+                return
+            if status == "connected":
+                account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
+                record.status = "connected"
+                record.account_id = account_id
+                record.account_name = account_name
+                record.account_phone = account_phone
+                record.qr_payload = None
+                record.error = None
+                return
+            if status == "needs_qr":
+                qr = str((health or {}).get("qr") or "").strip()
+                if qr:
+                    record.qr_payload = qr
+                record.status = "waiting"
+                record.error = None
+            elif status == "logged_out":
+                discard_whatsapp_session(session_path)
+                record.status = "waiting"
+                record.qr_payload = None
+                record.error = None
+        time.sleep(1)
 
 
 def _whatsapp_record_or_404(pairing_id: str):

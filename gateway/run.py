@@ -3448,6 +3448,9 @@ class GatewayRunner(
         # Injected configs keep their mode (including None), except the launching profile's
         # standalone opt-out: --config must not turn that profile into a host multiplexer.
         self.config = config if config is not None else load_gateway_config_for_runner()
+        # Route hot-reload reads the process home's config.yaml. An injected config is a
+        # test or embedder fixture and must not be replaced by whatever is on disk.
+        self._profile_routes_from_disk = config is None
         if config is not None:
             from hermes_cli.gateway_multiplex_mode import standalone_launcher_decision, log_multiplex_decision
             decision = standalone_launcher_decision(self.config)
@@ -4173,6 +4176,9 @@ class GatewayRunner(
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
+        from gateway.profile_routing import refresh_runner_profile_routes
+
+        refresh_runner_profile_routes(self)
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None

@@ -849,8 +849,10 @@ and adapter allowlists already use). You can put the phone number in
 a LID. Without a LID mapping yet, the number form still matches a JID (the
 suffix is stripped) but cannot resolve an unknown LID — that inbound falls
 through to the default profile until the mapping appears. Group chats
-(`…@g.us`) are not sender identities and still match exactly. Telegram numeric
-ids are unchanged.
+(`…@g.us`) are not sender identities and still match exactly. On the dashboard,
+**Channels → WhatsApp** edits these WhatsApp rows for the host profile. See
+[One number, many profiles](./messaging/whatsapp.md#one-number-many-profiles).
+Telegram numeric ids are unchanged.
 
 `profile_routes` requires `gateway.multiplex_profiles: true`; with
 multiplexing off the routes are ignored. If an explicit route matches but its

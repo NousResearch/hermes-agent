@@ -38,6 +38,7 @@ import { AllowlistInput } from "@/components/AllowlistInput";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { WhatsAppProfileRoutesPanel } from "@/components/WhatsAppProfileRoutesPanel";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -53,9 +54,22 @@ const STATE_BADGE: Record<
   not_configured: { tone: "outline", label: "Not configured" },
   disabled: { tone: "secondary", label: "Disabled" },
   fatal: { tone: "destructive", label: "Error" },
+  needs_qr: { tone: "warning", label: "Needs QR" },
 };
 
-function stateBadge(state: string) {
+function stateBadge(state: string, platformId?: string) {
+  if (platformId === "whatsapp" && state === "disconnected") {
+    return { tone: "warning" as const, label: "Bridge down" };
+  }
+  if (platformId === "whatsapp" && state === "retrying") {
+    return { tone: "warning" as const, label: "Retrying bridge" };
+  }
+  if (platformId === "whatsapp" && state === "pending_restart") {
+    return { tone: "warning" as const, label: "Bridge status unknown" };
+  }
+  if (platformId === "whatsapp" && state === "needs_qr") {
+    return { tone: "warning" as const, label: "Needs QR" };
+  }
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
 
@@ -569,7 +583,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = stateBadge(platform.state, platform.id);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -608,6 +622,21 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.id === "whatsapp" && platform.state === "needs_qr" && (
+                        <span className="text-xs text-muted-foreground">
+                          WhatsApp logged this device out. Pair with QR to link again.
+                        </span>
+                      )}
+                      {platform.id === "whatsapp" &&
+                        (platform.state === "disconnected" ||
+                          platform.state === "retrying" ||
+                          platform.state === "pending_restart") && (
+                          <span className="text-xs text-muted-foreground">
+                            The gateway process is up. The WhatsApp bridge is not
+                            connected, so chats are not answered. The gateway retries
+                            the bridge on its own.
+                          </span>
+                        )}
                       {platform.ingress_url && (
                         <span className="text-xs text-muted-foreground break-all">
                           Callback URL (shared listener):{" "}
@@ -667,13 +696,16 @@ export default function ChannelsPage() {
                   />
                 )}
                 {platform.id === "whatsapp" && (
-                  <WhatsAppOnboardingPanel
-                    onChanged={load}
-                    onRestartNeeded={() => setRestartNeeded(true)}
-                    platform={platform}
-                    setRestartNeeded={setRestartNeeded}
-                    showToast={showToast}
-                  />
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <WhatsAppOnboardingPanel
+                      onChanged={load}
+                      onRestartNeeded={() => setRestartNeeded(true)}
+                      platform={platform}
+                      setRestartNeeded={setRestartNeeded}
+                      showToast={showToast}
+                    />
+                    <WhatsAppProfileRoutesPanel showToast={showToast} />
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -937,6 +969,12 @@ function WhatsAppOnboardingPanel({
           >
             {phase === "starting" ? "Starting…" : "Pair with QR"}
           </Button>
+          {platform.whatsapp_setup?.link_state === "linked" && (
+            <Badge tone="success">Linked</Badge>
+          )}
+          {platform.whatsapp_setup?.link_state === "needs_qr" && (
+            <Badge tone="warning">Needs QR</Badge>
+          )}
           {platform.configured && (
             <span className="text-xs text-muted-foreground">
               Existing WhatsApp settings are configured.
@@ -977,6 +1015,16 @@ function WhatsAppOnboardingPanel({
               disabled={phase === "waiting" || phase === "applying"}
               placeholder="15551234567,15557654321"
             />
+            {hasSavedAllowedUsers && platform.whatsapp_setup?.allowed_users_kind === "list" && platform.whatsapp_setup.allowed_users_preview && (
+              <span className="text-xs text-muted-foreground">
+                Saved numbers: {platform.whatsapp_setup.allowed_users_preview}. Leave this blank to keep them.
+              </span>
+            )}
+            {hasSavedAllowedUsers && platform.whatsapp_setup?.allowed_users_kind !== "list" && (
+              <span className="text-xs text-muted-foreground">
+                Saved allowlist: all senders. There is no number list. Leave this blank to keep that.
+              </span>
+            )}
           </div>
         </div>
 

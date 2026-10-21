@@ -124,6 +124,50 @@ export const en: Translations = {
     sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
+  channelsPage: {
+    whatsappRoutes: {
+      title: "One number, many profiles",
+      hostIntro:
+        "WhatsApp bridge and multiplex routing live on the host (default) profile config, not the profile picker selection.",
+      hostProfileLabel: "Host profile",
+      multiplexOn: "Multiplex routing is on (gateway.multiplex_profiles).",
+      multiplexOff:
+        "Multiplex routing is off. Saved routes apply once gateway.multiplex_profiles is on.",
+      multiplexUnset:
+        "gateway.multiplex_profiles is not set in this config. The gateway decides at startup.",
+      ingressOwnedByHost:
+        "WhatsApp ingress is owned by the host profile; enabling WhatsApp on a secondary profile does not start a second bridge.",
+      colChat: "Chat",
+      colKind: "Kind",
+      colProfile: "Profile",
+      colLastSeen: "Last seen",
+      kindGroup: "Group",
+      kindPerson: "Person",
+      empty:
+        "No WhatsApp routes yet. Add a chat, or enter its id if the bridge has not listed it.",
+      addRoute: "Add route",
+      saveRoutes: "Save routes",
+      saving: "Saving…",
+      saved: "Routes saved. They apply on the next inbound message.",
+      loadFailed: "Could not load WhatsApp routes.",
+      edit: "Edit route",
+      remove: "Remove route",
+      modalAddTitle: "Add WhatsApp route",
+      modalEditTitle: "Edit WhatsApp route",
+      fieldProfile: "Target profile",
+      fieldProfileCountHint:
+        "The number is how many WhatsApp chats already route to that profile.",
+      fieldChat: "Chat",
+      fieldChatEmpty:
+        "No unassigned chats yet. After a new message arrives, use Refresh chats.",
+      fieldChatManual: "Group JID (…@g.us), phone number, or user JID",
+      refreshChats: "Refresh chats",
+      refreshingChats: "Refreshing…",
+      refreshChatsFailed: "Could not refresh WhatsApp chats.",
+      modalApply: "Apply",
+    },
+  },
+
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",

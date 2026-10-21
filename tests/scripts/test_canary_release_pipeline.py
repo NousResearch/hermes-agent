@@ -91,11 +91,14 @@ def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_p
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert emitted["policy"] == "canary"
     assert emitted["docker-tag"] == "v1.2.3-canary.20261021T064100Z"
-    assert lane_set.from_flags(json.loads(emitted["lanes"])) == frozenset(lane_set.NAMES)
+    assert lane_set.from_flags(json.loads(emitted["lanes"])) == lane_set.CANARY
     jobs = json.loads(emitted["jobs"])
-    assert jobs == lane_set.jobs_to_run(lane_set.NAMES, "canary")
+    assert jobs == lane_set.jobs_to_run(lane_set.CANARY, "canary")
     assert jobs["publish-canary"] and not jobs["publish-bundles"]
     assert jobs["candidates-termux"] and jobs["termux-checks"]
+    # Old stable -> this commit runs unbundled (install-e2e); no signed-package upgrade arm runs.
+    assert jobs["install-e2e"]
+    assert not any(jobs[job] for job in ("transitions-win32", "windows-packaged", "macos-packaged-arm64"))
     assert "## Canary candidate" in summary.read_text(encoding="utf-8")
     # A canary owns a prerelease; a non-prerelease would be stable's draft.
     monkeypatch.setattr(stable, "output", lambda _argv: json.dumps({**release, "isPrerelease": False}))

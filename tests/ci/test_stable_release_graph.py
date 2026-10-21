@@ -145,16 +145,21 @@ def test_every_lane_controlled_job_runs_exactly_when_the_lane_table_says(lanes, 
 
 def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publication():
     """canary-release.yml runs this same workflow: nothing to keep in sync. With the canary's lanes
-    (every lane, no opt-outs) the canary runs exactly the jobs a stable release with every lane
-    runs, except that each policy runs only its own publication job."""
+    (every lane but the signed-package upgrade arms) the canary runs exactly the jobs a stable
+    release with every lane runs, except those arms and the other policy's publication job."""
     jobs = workflow("stable-release.yml")["jobs"]
-    assert lane_set.CANARY == frozenset(lane_set.NAMES)
+    # The canary app cannot upgrade a stable install; install-e2e tests old stable -> this commit.
+    assert lane_set.CANARY == frozenset(lane_set.NAMES) - {"upgrade"}
     canary = lane_set.jobs_to_run(lane_set.CANARY, "canary")
     assert set(canary) <= set(jobs)
+    upgrade = {job for job, needs in lane_set.JOB_LANES.items() if "upgrade" in needs}
+    assert upgrade == {"transitions-darwin-arm64", "transitions-win32",
+                       "macos-packaged-arm64", "windows-packaged"}
     stable_all = lane_set.jobs_to_run(lane_set.NAMES, "stable")
-    assert {job for job in canary if canary[job] != stable_all[job]} == set(lane_set.POLICY_JOBS)
-    # Every build and test job runs: Termux included, which a default claim leaves out.
-    assert {job for job, runs in canary.items() if not runs} == {"publish-bundles"}
+    assert {job for job in canary if canary[job] != stable_all[job]} == set(lane_set.POLICY_JOBS) | upgrade
+    # Every other build and test job runs: Termux included, which a default claim
+    # leaves out, and install-e2e, which updates released stable tags to the canary commit.
+    assert {job for job, runs in canary.items() if not runs} == {"publish-bundles"} | upgrade
     for opted_out in ("candidates-termux", "termux-checks"):
         assert canary[opted_out] and not lane_set.jobs_to_run(lane_set.DEFAULT)[opted_out], opted_out
     with pytest.raises(ValueError, match="policy"):

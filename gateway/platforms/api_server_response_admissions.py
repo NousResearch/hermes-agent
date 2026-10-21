@@ -30,12 +30,10 @@ def find_admission(adapter, durable_key, request_id):
     The compact pointer survives response-cache eviction and transcript retirement. A process
     loss between the authority commit and pointer commit is repaired from that exact request id.
     """
-    from gateway.session_authorities import active_authority
+    from gateway.session_authorities import require_active_authority
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import get_session_admission, _row
-    authority = active_authority(adapter.gateway_runner)
-    if authority is None or adapter._ensure_session_db() is not authority.db:
-        raise RuntimeStoreError('profile_mismatch')
+    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
     store = adapter._current_response_store()
     admission_id = store.request_admission(durable_key[0])
     if admission_id:

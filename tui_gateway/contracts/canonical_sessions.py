@@ -4,8 +4,12 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 """
 from typing import Literal
 
+from pydantic import RootModel
+
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
+from .connectors_operation import ConnectionRequestPayload
+from .sessions import TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -113,6 +117,7 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     profile_id: str | None = None
     profile_name: str | None = None
     cwd: str | None = None
+    edit_approval_policy: Literal['ask', 'workspace_session', 'session'] | None = None
     launch_request: dict[str, JsonValue] | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
@@ -146,6 +151,10 @@ class CanonicalSnapshot(Result):
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
     info: CanonicalSnapshotInfo
+    # The open ``manage_connections`` card, so a resume restores it while the tool waits.
+    pending_connection: ConnectionRequestPayload | None = None
+    # The session's todo snapshot (its transcript's newest todo result); null when it has none.
+    todo_state: TodoState | None = None
 
 
 class CanonicalListParams(ProfileParams):
@@ -188,6 +197,9 @@ class CanonicalTurnAuthor(Params):
 class CanonicalModelOverride(Params):
     model: str
     provider: str | None = None
+    # ``/model B --once --reasoning X``: this admission alone runs level X. The owner refuses a level
+    # ``parse_reasoning_effort`` cannot read (``gateway/session_cli_turn.py``).
+    reasoning: str | None = None
 
 
 class CanonicalSubmitParams(CanonicalSessionParams):
@@ -218,6 +230,19 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     clarify_batch: bool = False
 
 
+class CanonicalVoiceStopped(Result):
+    """A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was
+    admitted (TUI-26)."""
+
+    voice_stopped: Literal[True]
+
+
+class CanonicalSubmitResult(RootModel):
+    """``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``."""
+
+    root: AdmissionStatus | CanonicalVoiceStopped
+
+
 class CanonicalSteerQueuedParams(CanonicalSessionParams):
     admission_id: str
 
@@ -241,11 +266,21 @@ class CanonicalCorrectionParams(CanonicalControlParams):
     text: str
 
 
-class CanonicalCorrectionResult(Result):
+class CanonicalCorrectionAck(Result):
     status: Literal['queued', 'redirected', 'rejected']
     text: str
     execution_generation: int
     authority_epoch: int
+    # Only on a 'rejected' no agent ever saw (none was live): safe to admit as the next prompt. A plain
+    # 'rejected' may follow delivery (a Codex steer whose ACK timed out), so clients never re-send it.
+    delivered: Literal[False] | None = None
+
+
+class CanonicalCorrectionResult(RootModel):
+    """``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``
+    when the busy-time text was a bare stop phrase that ended the LOCAL voice chat."""
+
+    root: CanonicalCorrectionAck | CanonicalVoiceStopped
 
 
 class CanonicalApprovalParams(CanonicalControlParams):
@@ -289,7 +324,7 @@ for _name, _params, _result in (
     ('session.steer', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.redirect', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.events.since', CanonicalEventsParams, CanonicalEventsResult),
-    ('prompt.submit', CanonicalSubmitParams, AdmissionStatus),
+    ('prompt.submit', CanonicalSubmitParams, CanonicalSubmitResult),
     ('approval.respond', CanonicalApprovalParams, PromptResponseResult),
 ):
     canonical_method(_name, params=_params, result=_result)

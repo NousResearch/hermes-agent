@@ -37,7 +37,8 @@ def verify_worker_identity(process, hello):
         if handle.ppid() != os.getpid() or handle.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         worker = psutil.Process(pid)
-        birth = worker.create_time()
+        from hermes_cli.process_identity import process_birth
+        birth = process_birth(worker)  # clock-step stable on macOS (#140580)
         if birth != hello['birth'] or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         # psutil's parent() already refuses a recycled ppid (parent born after child).

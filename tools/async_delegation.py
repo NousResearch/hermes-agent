@@ -174,7 +174,7 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", "skills", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -317,6 +317,9 @@ def recover_abandoned_delegations() -> int:
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                # Skill names the abandoned delegation was running with (parallel to ``goals``),
+                # so the parent can re-dispatch from the event alone.
+                **({"skills": task["skills"]} if task.get("skills") else {}),
                 "status": "unknown", "summary": None, "error": error, **diagnostics,
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -816,6 +819,7 @@ def _dispatch_admitted(
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[list[int]] = None,
     task_transcripts: Optional[dict[str, str]] = None,
+    skills: Optional[list] = None,
 ) -> dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -841,6 +845,9 @@ def _dispatch_admitted(
         **({"task_transcripts": dict(task_transcripts)} if task_transcripts else {}),
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
+        # Merged per-task skill NAMES (content is baked into each child's prompt pre-dispatch);
+        # indexed parallel to ``goals`` so a restart-recovered event can report them.
+        **({"skills": [list(s) if s is not None else None for s in skills]} if skills else {}),
         # The one stale-monitor thread serves every profile and starts with an empty Context;
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
         "_context": contextvars.copy_context(),
@@ -935,12 +942,16 @@ def dispatch_async_delegation_batch(
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[list[int]] = None,
     task_transcripts: Optional[dict[str, str]] = None,
+    skills: Optional[list] = None,
 ) -> dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
     "total_duration_seconds": N}`` dict. The unit occupies ONE async slot — or joins the slot named
     by ``slot_key`` (in-unit parallelism is bounded separately) — and produces a SINGLE completion
-    event carrying per-task ``results``."""
+    event carrying per-task ``results``.
+
+    ``skills`` is the call-wide merged per-task skill-name list (parallel to ``goals``): display/
+    recovery metadata only — each child's prompt already contains the loaded content."""
     delegation_id = delegation_id or _new_delegation_id()
     # ``goals`` is the whole call (result task_index indexes it); the unit's own goals label the record.
     unit_goals = [goals[i] for i in task_indexes] if task_indexes is not None else list(goals)
@@ -952,7 +963,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes, task_transcripts=task_transcripts,
+        task_indexes=task_indexes, task_transcripts=task_transcripts, skills=skills,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "

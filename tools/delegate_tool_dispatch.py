@@ -50,6 +50,11 @@ class _Batch:
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
     live_home: Any = None  # explicit profile home for transcripts/manifest (#91996); None = ambient resolve
+    # Merged per-task skill-name lists (``delegate_task`` skills param; entries may be None):
+    # call-wide and indexed by task_index, parallel to ``task_list``. Content is already baked into each
+    # child's prompt at build time; these NAMES ride the async dispatch record so an abandoned unit's
+    # recovery event can report (and re-dispatch with) the skills it was running with.
+    task_skills: Optional[list] = None
 
     def owner_kwargs(self) -> dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -408,6 +413,8 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
                           and unit.live_writers[i].path is not None},
+        # Skill NAMES for the ledger/recovery path (content is already in each child's prompt).
+        skills=unit.task_skills,
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 

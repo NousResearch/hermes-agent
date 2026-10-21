@@ -160,3 +160,53 @@ def _coerce_task_images(
             return [], err
         task_images.append(cleaned)
     return task_images, None
+
+
+def _normalize_skills_argument(raw: Any, label: str) -> tuple[Optional[list[str]], Optional[str]]:
+    """``(cleaned_list_or_None, None)`` for the top-level ``skills`` argument, else ``(None, error)``.
+    A bare string is wrapped into a one-entry list (small models emit scalars for arrays)."""
+    if raw is None:
+        return None, None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None, f"'{label}' must be an array of skill names."
+    cleaned: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return None, f"'{label}' entries must be non-empty strings (skill names)."
+        cleaned.append(item.strip())
+    return (cleaned or None), None
+
+
+def _normalize_task_skills(task: dict, i: int) -> tuple[Optional[list[str]], Optional[str]]:
+    """``(cleaned_list_or_None, None)`` for a task's optional ``skills`` (skill names to auto-load
+    into the child's prompt), else ``(None, error)``. A bare string is wrapped into a one-entry list."""
+    raw = task.get("skills")
+    if raw is None:
+        return None, None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None, f"Task {i} 'skills' must be an array of skill names."
+    cleaned: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return None, f"Task {i} 'skills' entries must be non-empty strings (skill names)."
+        cleaned.append(item.strip())
+    return (cleaned or None), None
+
+
+def _coerce_task_skills(
+    task_list: list[dict[str, Any]],
+) -> tuple[list[Optional[list[str]]], Optional[str]]:
+    """Per-task validated skills lists; a malformed list fails the whole call before any child
+    spawns (same fail-fast contract as ``output_schema``/``images``). The TOP-LEVEL ``skills``
+    list is merged separately in ``delegate_task`` (it applies to every task, not just one)."""
+    task_skills: list[Optional[list[str]]] = []
+    for i, task in enumerate(task_list):
+        cleaned, err = _normalize_task_skills(task, i)
+        if err:
+            return [], err
+        task_skills.append(cleaned)
+    return task_skills, None

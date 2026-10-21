@@ -127,6 +127,7 @@ import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
+import { registerClipboardTextIpc } from './clipboard-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
@@ -15168,6 +15169,7 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
 
 const pluginWsUrl = createPluginWsUrlHandler({ ensureBackend, ensureRegistryBackend, forgetLocalGatewayDescriptor,
   forgetRegistryLocalGatewayDescriptor, launchHome: HERMES_HOME, prepare: localGatewayDials.preparePlugin })
+
 ipcMain.handle('hermes:plugin:ws-url', (event, payload) => pluginWsUrl(payload ?? {}, event.sender.id))
 
 // Transactional update for a Desktop-managed SSH install. Unlike the generic
@@ -16511,27 +16513,14 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', async (_event, text) => {
-  // Electron 44: clipboard.writeText is async (W3C clipboard API); the old
-  // call was fire-and-forget, and the renderer only needs the ack.
-  await clipboard.writeText(String(text || ''))
-
-  return true
-})
+// Clipboard text read/write for the renderer (clipboard-ipc.ts).
+registerClipboardTextIpc(ipcMain, clipboard)
 
 // Save dialogs: the path picker (profile export) and /save's main-process write (save-text-file.ts).
 registerSaveDialogIpc(ipcMain, {
   defaultDir: () => app.getPath('documents'),
   showSaveDialog: options => dialog.showSaveDialog(mainWindow, options)
 })
-
-// Paired reader for the GUI terminal's paste chord: the renderer's
-// navigator.clipboard.readText() throws "Document is not focused" whenever a
-// portaled overlay has focus, and there's no way to route a read through the
-// canvas. The main process has no such gate.
-// Electron 44: readText returns a Promise now (W3C clipboard API); the
-// renderer already awaited the invoke round-trip either way.
-ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 

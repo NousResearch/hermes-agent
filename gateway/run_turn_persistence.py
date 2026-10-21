@@ -301,7 +301,7 @@ class GatewayTurnPersistenceMixin:
         # user turn so the conversation is preserved. (#7100)
         agent_failed_early = bool(agent_result.get("failed"))
         hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
-        from gateway.run_turn import is_context_overflow_failure_result
+        from gateway.run_turn_context_overflow import is_context_overflow_failure_result
         is_context_overflow_failure = is_context_overflow_failure_result(agent_result, len(history))
         if is_context_overflow_failure:
             logger.info(
@@ -584,7 +584,23 @@ class GatewayTurnPersistenceMixin:
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
         status_code = getattr(e, "status_code", None)
-        if status_code in {400, 500} and len(prepared.history) > 50:
+        approx_tokens = 0
+        context_length = 200_000
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
+
+            hs = await self._hmwa_hygiene_settings(source, session_key)
+            context_length = await get_model_context_length_async(
+                hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
+                config_context_length=hs.config_context_length, provider=hs.provider or "",
+            )
+            approx_tokens = session_entry.last_prompt_tokens or estimate_messages_tokens_rough(prepared.history)
+        except Exception:
+            logger.debug("Could not resolve session token context for provider exception", exc_info=True)
+        from gateway.run_turn_context_overflow import is_context_overflow_exception
+        if is_context_overflow_exception(
+            e, len(prepared.history), approx_tokens=approx_tokens, context_length=context_length,
+        ):
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _context_overflow_reply

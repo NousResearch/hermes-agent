@@ -2193,7 +2193,8 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
-from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
+from gateway.run_turn import GatewayTurnMixin
+from gateway.run_turn_context_overflow import is_context_overflow_failure_result
 from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
@@ -3090,8 +3091,7 @@ def _normalize_empty_agent_response(
     (api_calls > 0) but returned no text. Fix for #18765.
     Also surfaces a retry hint when the agent never ran at all (api_calls == 0) for a non-interrupted,
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
-    hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
-    (#31884)
+    hits a stale generation token and returns an empty result, leaving the platform with nothing to send. (#31884)
 
     A failed context-overflow turn whose ``final_response`` is only the raw provider envelope
     (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a

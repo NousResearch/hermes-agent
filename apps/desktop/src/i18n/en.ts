@@ -3,11 +3,14 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import { enAppTour } from './en_app_tour'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
+import { enCatalog } from './en_catalog'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
+import { enErrorLayers } from './en_error_layers'
+import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
@@ -23,16 +26,7 @@ import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
 
 export const en: Translations = {
-  externalOpenFailed: {
-    title: 'Couldn’t open this link',
-    message: 'No browser is registered to open this address. Copy the link and open it manually.',
-    copyUrl: 'Copy link',
-    close: 'Close',
-    missing: {
-      title: 'File not found',
-      message: 'This file does not exist — it may have been deleted or moved, or it lives on another machine.'
-    }
-  },
+  externalOpenFailed: enExternalOpenFailed,
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
   firstRun: enFirstRun,
@@ -40,6 +34,7 @@ export const en: Translations = {
   intro: { stock: {}, custom: () => [] },
   connectors: enConnectorCard,
 
+  catalog: enCatalog,
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
     title: 'Connectors',
@@ -772,6 +767,8 @@ export const en: Translations = {
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
+      enable: 'Enable',
+      disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       installModal: {
@@ -2149,11 +2146,6 @@ export const en: Translations = {
         unsupported_gpu: 'GPU not supported',
         unknown: 'status unknown'
       },
-      catalogTitle: 'Plugin catalog',
-      catalogBrowse: 'Browse',
-      catalogHide: 'Hide the catalog browser',
-      catalogHint:
-        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
       alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
       catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
@@ -2183,6 +2175,7 @@ export const en: Translations = {
         saved: (name: string) => `${name} settings saved.`,
         saveFailed: (name: string) => `Could not save ${name} settings`,
         required: 'Required',
+        optional: '(optional)',
         secretSet: '•••••••• (set)',
         secretStoredAs: (env: string) =>
           `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
@@ -3504,43 +3497,6 @@ export const en: Translations = {
     snippetsDesc: 'Pick a starter prompt to drop into the composer.',
     dropFiles: 'Drop files to attach',
     dropSession: 'Drop to link this chat',
-    mcpSuggestions: {
-      label: server => `Add ${server}`,
-      tip: keyword => `Suggested because you mentioned “${keyword}” — click to connect`,
-      connecting: server => `Connecting ${server}…`,
-      cancelTip: 'Click to cancel',
-      added: server => `Added ${server}`,
-      addedTip: 'Connected — its tools are ready in this chat',
-      connectFailed: server => `Could not connect ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Use skill: ${skill}`,
-      tip: skill => `You mentioned “${skill}” — click to lead with that skill`,
-      done: skill => `Added /${skill}`,
-      doneTip: 'The skill loads when you send'
-    },
-    githubSuggestions: {
-      label: 'Set up GitHub',
-      tip: 'GitHub works through the gh CLI skills here — click to connect your account',
-      done: 'Added /github-auth',
-      doneTip: 'Send the message and the agent walks you through GitHub sign-in'
-    },
-    repairSuggestions: {
-      label: server => `Reconnect ${server}`,
-      tip: server => `A ${server} call just failed with a connection error`,
-      working: server => `Reconnecting ${server}…`,
-      workingTip: 'Click to cancel',
-      done: server => `Reconnected ${server}`,
-      doneTip: 'Fresh credentials are live in this chat',
-      failed: server => `Could not reconnect ${server}`
-    },
-    cronSuggestions: {
-      label: 'Schedule this',
-      tip: phrase => `“${phrase}” sounds recurring — run it on a schedule instead`,
-      prefix: 'Set this up as a scheduled job:',
-      done: 'Marked for scheduling',
-      doneTip: 'Send it and the agent creates the job'
-    },
     snippets: {
       codeReview: {
         label: 'Code review',
@@ -4502,31 +4458,7 @@ export const en: Translations = {
       react: 'React',
       dismissError: 'Dismiss error',
       responseStopped: 'Response stopped',
-      errorLayers: {
-        auth: 'Sign-in problem',
-        billing: 'Out of credits',
-        disk: 'Disk full',
-        endpoint: "Can't reach your model server",
-        gateway: 'Hermes hit a problem',
-        generic: "Hermes couldn't finish this reply",
-        provider: 'The AI service returned an error',
-        runtime: 'Hermes hit a problem',
-        streaming: 'The reply was cut off'
-      },
-      errorLayerBodies: {
-        auth: 'The AI service rejected your sign-in. Check the credentials for this provider, then send your message again.',
-        billing: 'Your account has no credits left for this provider. Top up or switch provider, then send again.',
-        disk: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.',
-        endpoint:
-          "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
-        gateway:
-          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
-        provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
-        runtime:
-          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        streaming: 'The connection dropped before the reply finished. Retry to send it again.'
-      },
+      ...enErrorLayers,
       errorCodes: {
         auth: {
           title: provider => `${provider} rejected your sign-in`,
@@ -4627,6 +4559,10 @@ export const en: Translations = {
         SESSION_OWNER_BUSY: {
           title: 'Hermes is busy in this chat',
           body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+        },
+        cron_session_read_only: {
+          title: 'This chat belongs to a scheduled job',
+          body: 'It only runs that job, so your message was not run. Start a new chat to send it.'
         },
         SESSION_OWNER_UNCONFIRMED: {
           title: 'Your message may already be queued',

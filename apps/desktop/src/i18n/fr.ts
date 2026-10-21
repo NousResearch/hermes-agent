@@ -494,14 +494,6 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  billingBlock: {
-    titleNous: 'Plus de crédits Nous',
-    titleProvider: provider => `Plus de crédits — ${provider}`,
-    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
-    openBilling: 'Ouvrir la facturation',
-    addCredits: 'Ajouter des crédits',
-    dismiss: 'Fermer'
-  },
   sendDiagnostics: {
     title: 'Envoyer les diagnostics à Nous',
     privacyNotice:
@@ -2520,11 +2512,6 @@ export const frOverrides = {
         unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
-      catalogTitle: 'Catalogue de plugins',
-      catalogBrowse: 'Parcourir',
-      catalogHide: 'Masquer le catalogue',
-      catalogHint:
-        'Utilisez « + Ajouter à cet agent » sur un plugin : les entrées vérifiées sont installées depuis leur commit épinglé dans le profil sélectionné.',
       alreadyInstalled: (name: string) => `${name} est déjà installé dans ce profil.`,
       catalogProvenance: (sha: string) =>
         `Installé depuis le catalogue Hermes${sha ? ` au commit épinglé ${sha}` : ''}.`,
@@ -3950,43 +3937,6 @@ export const frOverrides = {
     snippetsDesc: 'Choisissez une invite de démarrage à insérer dans le compositeur.',
     dropFiles: 'Déposez des fichiers pour les attacher',
     dropSession: 'Déposez pour lier cette conversation',
-    mcpSuggestions: {
-      label: server => `Ajouter ${server}`,
-      tip: keyword => `Suggéré car vous avez mentionné « ${keyword} » — cliquez pour vous connecter`,
-      connecting: server => `Connexion à ${server}…`,
-      cancelTip: 'Cliquez pour annuler',
-      added: server => `${server} ajouté`,
-      addedTip: 'Connecté — ses outils sont prêts dans cette conversation',
-      connectFailed: server => `Impossible de se connecter à ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Utiliser le skill : ${skill}`,
-      tip: skill => `Vous avez mentionné « ${skill} » — cliquez pour commencer avec ce skill`,
-      done: skill => `/${skill} ajouté`,
-      doneTip: "Le skill se charge lors de l'envoi"
-    },
-    githubSuggestions: {
-      label: 'Configurer GitHub',
-      tip: 'GitHub fonctionne ici grâce aux skills de la CLI gh ; cliquez pour connecter votre compte',
-      done: 'Ajout de /github-auth',
-      doneTip: "Envoyez le message et l'agent vous guidera dans la connexion à GitHub"
-    },
-    repairSuggestions: {
-      label: server => `Reconnecter ${server}`,
-      tip: server => `Un appel à ${server} vient d'échouer à cause d'une erreur de connexion`,
-      working: server => `Reconnexion à ${server}…`,
-      workingTip: 'Cliquez pour annuler',
-      done: server => `${server} reconnecté`,
-      doneTip: 'Les nouveaux identifiants sont actifs dans cette conversation',
-      failed: server => `Impossible de reconnecter ${server}`
-    },
-    cronSuggestions: {
-      label: 'Planifier ceci',
-      tip: phrase => `« ${phrase} » semble récurrent — exécutez-le plutôt selon une planification`,
-      prefix: 'Configurer ceci comme tâche planifiée :',
-      done: 'Marqué pour planification',
-      doneTip: "Envoyez-le pour que l'agent crée la tâche"
-    },
     snippets: {
       codeReview: {
         label: 'Revue de code',
@@ -5063,6 +5013,10 @@ export const frOverrides = {
         loop_error: {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
+        },
+        cron_session_read_only: {
+          title: 'Cette conversation appartient à une tâche planifiée',
+          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
         },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',

@@ -31,10 +31,12 @@ from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
-from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id, _retire_agent
+from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
     _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
+from hermes_cli.cli_session_switch import (
+    _end_current_session, _sync_agent_to_session)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -118,7 +120,7 @@ _WORKTREE_SUBCOMMANDS = {
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
 _BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_content", "reasoning_details",
-                     "codex_reasoning_items", "codex_message_items", "timestamp")
+                     "codex_reasoning_items", "codex_message_items", "timestamp", "data_use")
 
 # /hatch progress event -> catalog key (``cli.commands.hatch.*``).
 _HATCH_PROGRESS = {"compose": "hatch.progress_compose", "save": "hatch.progress_save"}
@@ -175,52 +177,7 @@ def _cron_api(**kwargs) -> dict:
     return json.loads(cronjob_tool(**kwargs))
 
 
-# Session-switch plumbing shared by /resume and /branch.
-def _end_current_session(cli, reason: str) -> None:
-    """Flush un-persisted messages, then end the current session row with ``reason``.
-    Best-effort on both steps (the switch proceeds even if the DB write fails)."""
-    if cli.agent:
-        with suppress(Exception):
-            cli.agent._flush_messages_to_session_db(
-                cli.conversation_history, conversation_history=cli.conversation_history)
-    with suppress(Exception):
-        cli._session_db.end_session(cli.session_id, reason)
-
-
-def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:
-    """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
-    per-session state, re-anchor the DB flush index, and notify memory providers with
-    reset=False (their state stays valid and just targets the new id; parent keeps lineage)."""
-    if not cli.agent:
-        return
-    cli.agent.session_id = session_id
-    cli.agent.reset_session_state()
-    if hasattr(cli.agent, "_last_flushed_db_idx"):
-        cli.agent._last_flushed_db_idx = len(cli.conversation_history)
-    if hasattr(cli.agent, "_todo_store"):
-        with suppress(Exception):
-            from tools.todo_tool import TodoStore
-            cli.agent._todo_store = TodoStore()
-    if hasattr(cli.agent, "_invalidate_system_prompt"):
-        cli.agent._invalidate_system_prompt()
-    with suppress(Exception):
-        _mm = getattr(cli.agent, "_memory_manager", None)
-        # Notify memory providers that session_id rotated to a fresh conversation. reset=True signals
-        # providers to flush accumulated per-session state (_session_turns, _turn_counter, _document_id).
-        # Fires BEFORE the plugin on_session_reset hook (shell hooks only see the new id; Python providers
-        # see the transition). See #6672. When the old session has history, end-of-session extraction
-        # (LLM-bound, seconds) and this switch are queued as ONE task on the memory manager's serialized
-        # worker — end strictly before switch, without blocking /new (#16454). With no history there is
-        # nothing to extract; switch inline as before.
-        # Notify memory providers that session_id rotated to a resumed session. reset=False — the provider's
-        # accumulated state is still valid; it just needs to target the new session_id for subsequent
-        # writes. See #6672.
-        # Notify memory providers that session_id forked to a new branch. reset=False — the branched session
-        # carries the transcript forward, so provider state tracks the lineage. parent_session_id links the
-        # branch back to the original. See #6672.
-        if _mm is not None:
-            _mm.on_session_switch(
-                session_id, parent_session_id=parent_session_id or "", reset=False, reason=reason)
+# Session-switch plumbing (end, repoint) lives in ``hermes_cli/cli_session_switch.py``.
 
 
 def _without_session_meta(messages) -> list:
@@ -657,37 +614,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
               else f"  {_t('snapshot.nothing_to_snapshot')}")
 
     def _snapshot_restore(self, parts) -> None:
-        from hermes_cli.backup import list_quick_snapshots, restore_quick_snapshot
-        if len(parts) < 3:
-            print(f"  {_t('snapshot.usage_restore')}")
-            snaps = list_quick_snapshots(limit=1)
-            if snaps:
-                print(f"  {_t('snapshot.most_recent', snapshot_id=snaps[0]['id'])}")
-            return
-        snap_id = parts[2]
-        try:
-            idx = int(snap_id)  # restore by number (1-indexed)
-        except ValueError:
-            idx = None
-        if idx is not None:
-            snaps = list_quick_snapshots()
-            if not 1 <= idx <= len(snaps):
-                return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
-            snap_id = snaps[idx - 1]["id"]
-        # Close our own SessionDB first (restore contention); an open gateway session's store must stay.
-        local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None and not getattr(self, "_gateway_session_open", False):
-            with suppress(Exception):
-                local_session_db.close()
-                self._session_db = None
-        if restore_quick_snapshot(snap_id):
-            _pr(f"  {_t('snapshot.restored', snapshot_id=snap_id)}",
-                f"  {_t('snapshot.restart_recommended')}")
-        elif snap_id in {s.get("id") for s in list_quick_snapshots(limit=10**6)}:
-            # False also means the auth.json merge was refused; don't call an existing snapshot missing.
-            print(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}")
-        else:
-            print(f"  {_t('snapshot.not_found', snapshot_id=snap_id)}")
+        from hermes_cli.cli_snapshot import restore_snapshot_command
+        restore_snapshot_command(self, parts)
 
     def _snapshot_prune(self, parts) -> None:
         from hermes_cli.backup import prune_quick_snapshots
@@ -924,7 +852,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
         if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
             return _cp(f"  {kanban_refusal}")
-        read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
+        # One session.resume, before anything changes: it subscribes the target and names its receipt
+        # owner; a target the gateway refuses this viewer stops the switch, so the current session is
+        # neither ended nor swapped for one whose next prompt would be refused.
+        read_id, (target_id, refusal) = target_id, _gateway_open(self._session_db, target_id)
+        if refusal:
+            return _cp(f"  {_gt('resume.switch_failed')} {target_id} ({refusal})")
         if target_id == self.session_id:
             return _cp(f"  {_t('resume.already_on')}")
         old_session_id = self.session_id
@@ -1138,16 +1071,13 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         wt_info = _cli._setup_worktree(repo_root=repo_root, sync_base=sync_base, name=rest or None)
         if not wt_info:
             return  # _setup_worktree already printed the failure
-        # Retarget the session's terminal/file tools at the new tree (as `hermes -w` does).
-        try:
-            os.chdir(wt_info["path"])
-        except OSError as e:
-            print(f"  {_t('worktree.enter_failed', error=e)}")
-        os.environ["TERMINAL_CWD"] = wt_info["path"]
         # Same keep-if-unpushed cleanup as `hermes -w`. Only one tree is "active" per process;
         # an earlier one keeps its own atexit registration (explicit info arg).
-        _cli._active_worktree = wt_info
         atexit.register(_cli._cleanup_worktree, wt_info)
+        from hermes_cli.cli_commands_worktree import enter_new_worktree
+        if not enter_new_worktree(self, wt_info):
+            return
+        _cli._active_worktree = wt_info
         _pr(f"  {_t('worktree.ready', path=wt_info['path'])}",
             f"  {_t('worktree.branch', branch=wt_info['branch'])}", f"  {_t('worktree.tools_in_worktree')}")
 

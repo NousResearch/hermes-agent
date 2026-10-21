@@ -1497,6 +1497,17 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#       routes:
+#         slack-card:
+#           secret: "replace-with-your-shared-secret"
+#           deliver: slack
+#           deliver_only: true
+#           prompt: "{text}"  # Notification and accessibility text.
+#           deliver_extra:
+#             chat_id: "C0123456789"
+#             thread_id: "{thread_ts}"
+#             # An exact placeholder preserves the payload's Block Kit array.
+#             slack_blocks: "{blocks}"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

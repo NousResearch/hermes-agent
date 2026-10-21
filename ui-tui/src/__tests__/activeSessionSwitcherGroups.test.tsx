@@ -120,9 +120,16 @@ function mount({ tree = true }: { tree?: boolean } = {}) {
 
   const press = async (...keys: string[]) => {
     for (const key of keys) {
+      const painted = output.length
+
       stdin.send(key)
       // Keys must arrive as separate reads: under load two queued chunks would parse as one input.
       await eventually(() => expect(stdin.chunks).toHaveLength(0))
+      // A key's effect lands on the next paint; the next key must see that state (a hotkey
+      // pressed before the cursor moves is read as typing on the New row).
+      await vi
+        .waitFor(() => expect(output.length).toBeGreaterThan(painted), { interval: 5, timeout: 3000 })
+        .catch(() => undefined)
       await settle(key === ESC ? 120 : 20)
     }
   }

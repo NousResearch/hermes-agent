@@ -172,6 +172,7 @@ import {
   resolveResumeOwner
 } from './resume-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { evictTile, liveRuntimeIdFor, prepareArchivedRuntimeRelease } from './session-teardown'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -207,7 +208,7 @@ import {
   upsertUnlistedSessionOwner
 } from './utils'
 
-interface SessionActionsOptions {
+export interface SessionActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
@@ -3111,10 +3112,8 @@ export function useSessionActions({
       // used to skip this entirely, so its in-flight turn kept running and could
       // surface an approval/clarify prompt for a conversation that no longer
       // exists (#75587).
-      const closingRuntimeId =
-        (wasSelected ? activeSessionIdRef.current : null) ??
-        runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
-        null
+      const refs = { activeSessionIdRef, runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef }
+      const closingRuntimeId = liveRuntimeIdFor(storedSessionId, wasSelected, refs)
 
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
@@ -3223,14 +3222,7 @@ export function useSessionActions({
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
         // a deleted session.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
-
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
-        }
+        const tiledRuntimeId = evictTile(storedSessionId, refs)
 
         // Live per-session stores (the same four the stop paths clear) key on
         // the gateway event's session_id, i.e. the runtime id. When the deleted
@@ -3315,6 +3307,8 @@ export function useSessionActions({
       }
 
       const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+      const refs = { activeSessionIdRef, busyRef, runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef }
+      const releaseRuntime = prepareArchivedRuntimeRelease(storedSessionId, wasSelected, refs)
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -3336,16 +3330,7 @@ export function useSessionActions({
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
-        // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        closeSessionTile(storedSessionId)
-
-        if (tiledRuntimeId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
-          dropSessionState(tiledRuntimeId)
-        }
-
+        releaseRuntime(sessionOwnerRouteFromRow(archived) ?? profile, requestGateway)
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
@@ -3360,7 +3345,10 @@ export function useSessionActions({
       }
     },
     [
+      activeSessionIdRef,
+      busyRef,
       copy,
+      requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,

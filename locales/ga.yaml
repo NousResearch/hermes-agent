@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Chuaigh rud éigin amú agus níorbh fhéidir liom an freagra seo a chríochnú.{hint}\nÚsáid /retry le triail eile a bhaint as, nó /new chun comhrá úr a thosú. Tá na sonraí teicniúla i log an gateway (`hermes logs`)."
     history_unavailable: "⚠️ Níl stair an tseisiúin seo ar fáil go sealadach, mar sin níor próiseáladh an teachtaireacht seo. Iarr ar an oibreoir state.db a scrúdú, ansin seol arís í nuair a bheidh sé folláin. Ná húsáid /reset ach amháin más mian leat comhrá nua a thosú d'aon ghnó."
     no_credentials: "⚠️ Níorbh fhéidir liom ceangal le seirbhís na samhla AI, mar sin níor próiseáladh an teachtaireacht seo. Úsáid /login chun síniú isteach arís, nó /model chun samhail eile a roghnú. Má leanann sé ag teip, rith `hermes doctor` ar an óstach."
+    cron_session_read_only: "⚠️ Baineann an comhrá seo le jab sceidealaithe agus ní ritheann sé ach an jab sin, mar sin níor ritheadh do theachtaireacht. Tosaigh comhrá nua chun í a sheoladh."
   skills:
     disabled: "Tá an scil **{name}** suiteáilte ach díchumasaithe.\nCumasaigh í le: `hermes skills config`"
     not_installed: "Tá an scil **{name}** ar fáil ach níl sí suiteáilte.\nSuiteáil í le: `hermes skills install {install_name}`"
@@ -1689,6 +1690,21 @@ slash:
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
+  modern:
+    thought_for: "Smaoinigh ar feadh {seconds}s"
+    thought: "Smaoinigh"
+    working: "Ag obair…"
+    preparing: "{what} á ullmhú…"
+    hint_steer: "stiúir"
+    hint_queue: "cuir sa scuaine"
+    hint_interrupt: "cuir isteach air"
+    hint_stop: "stop"
+    hint_commands: "orduithe"
+    hint_files: "comhaid"
+    hint_shell: "blaosc"
+    placeholder_busy_steer: "clóscríobh chun an seal seo a stiúradh · cuireann Tab sa scuaine é"
+    placeholder_busy_interrupt: "clóscríobh chun an seal seo a atreorú · cuireann Tab sa scuaine é"
+    placeholder_busy_queue: "clóscríobh chun teachtaireacht a chur sa scuaine don tréimhse ina dhiaidh"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Níorbh fhéidir an bhilleáil a lódáil"
@@ -2232,6 +2248,7 @@ cli:
     queue_heading: "Scuaine · {count} i scuaine · /queue list{controls}"
     more_queued: "+{count} eile"
     transcript_unavailable: "Níl an traschríbhinn bheo ar fáil fós."
+    control_pending: "Á sheoladh…"
     steer_prompt: "Stiúir: "
     roster_empty: "Níl aon fho-ghníomhairí beo ná próisis chúlra ann. Tagann na torthaí isteach sa chomhrá."
     entry_gone: "Níl an iontráil seo beo a thuilleadh."
@@ -2370,6 +2387,14 @@ cli:
     move_out_of_range: "Bogadh scuaine as raon. Méid reatha: {size}"
     moved: "Bogadh mír scuaine {source} go {destination}."
     usage_add: "Úsáid: /queue add <prompt>"
+    gateway_refused: "Níor chuir an geata sa scuaine é: {error}. Níor cuireadh aon rud sa scuaine; seol arís é nuair a chríochnaíonn an seal."
+    submit_unknown: "Níor fhreagair an geata ({error}), mar sin seans go bhfuil an leid sa scuaine cheana. Seiceáil /queue list sula seolann tú arís í."
+    move_gateway_fifo: "Ritheann an geata leideanna sa scuaine san ord inar seoladh iad; cuir ceann in eagar nó bain é ina ionad."
+    remove_refused: "Níorbh fhéidir mír {index} a bhaint den scuaine: {error}"
+    edit_refused: "Níorbh fhéidir mír {index} den scuaine a chur in eagar: {error}"
+    already_started: "Tá mír {index} den scuaine tosaithe cheana; ritheann sí mar a seoladh í."
+    started_stopped: "Bhí mír {index} den scuaine tosaithe cheana; stop an geata í."
+    change_unknown: "Níor fhreagair an geata faoi mhír {index} den scuaine ({error}); seiceáil /queue list sula ndéanann tú iarracht arís."
   reload:
     env_reloaded: "Athlódáladh .env ({count} athróg nuashonraithe)"
   steer:

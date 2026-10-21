@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Algo salió mal y no pude terminar esta respuesta.{hint}\nUsa /retry para intentarlo de nuevo o /new para empezar una conversación nueva. Los detalles técnicos están en el registro del gateway (`hermes logs`)."
     history_unavailable: "⚠️ El historial de esta sesión no está disponible temporalmente, así que este mensaje no se procesó. Pide al operador que revise state.db y reenvíalo cuando esté en buen estado. Usa /reset solo si realmente quieres empezar una conversación nueva."
     no_credentials: "⚠️ No pude conectar con el servicio del modelo de IA, así que este mensaje no se procesó. Usa /login para iniciar sesión de nuevo, o /model para elegir otro modelo. Si sigue fallando, ejecuta `hermes doctor` en el host."
+    cron_session_read_only: "⚠️ Este chat pertenece a una tarea programada y solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo."
   skills:
     disabled: "La skill **{name}** está instalada pero desactivada.\nActívala con: `hermes skills config`"
     not_installed: "La skill **{name}** está disponible pero no instalada.\nInstálala con: `hermes skills install {install_name}`"
@@ -1689,6 +1690,21 @@ slash:
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
+  modern:
+    thought_for: "Pensó durante {seconds}s"
+    thought: "Pensó"
+    working: "Trabajando…"
+    preparing: "Preparando {what}…"
+    hint_steer: "guiar"
+    hint_queue: "encolar"
+    hint_interrupt: "interrumpir"
+    hint_stop: "detener"
+    hint_commands: "comandos"
+    hint_files: "archivos"
+    hint_shell: "shell"
+    placeholder_busy_steer: "escribe para guiar este turno · Tab lo encola para después"
+    placeholder_busy_interrupt: "escribe para redirigir este turno · Tab lo encola para después"
+    placeholder_busy_queue: "escribe para encolar un mensaje para después de este turno"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "No se pudo cargar la facturación"
@@ -2232,6 +2248,7 @@ cli:
     queue_heading: "Cola · {count} en cola · /queue list{controls}"
     more_queued: "+{count} más"
     transcript_unavailable: "La transcripción en vivo aún no está disponible."
+    control_pending: "Enviando…"
     steer_prompt: "Redirigir: "
     roster_empty: "No hay subagentes activos ni procesos en segundo plano. Los resultados llegan a la conversación."
     entry_gone: "Esta entrada ya no está activa."
@@ -2370,6 +2387,14 @@ cli:
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"
     moved: "Elemento {source} de la cola movido a {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "El gateway no lo encoló: {error}. No se encoló nada; envíalo de nuevo cuando termine el turno."
+    submit_unknown: "El gateway no respondió ({error}), así que el prompt puede estar ya en la cola. Revisa /queue list antes de enviarlo de nuevo."
+    move_gateway_fifo: "El gateway ejecuta los prompts en cola en el orden de envío; edita o elimina uno en su lugar."
+    remove_refused: "No se pudo quitar el elemento {index} de la cola: {error}"
+    edit_refused: "No se pudo editar el elemento {index} de la cola: {error}"
+    already_started: "El elemento {index} de la cola ya empezó; se ejecuta tal como se envió."
+    started_stopped: "El elemento {index} de la cola ya había empezado; el gateway lo detuvo."
+    change_unknown: "El gateway no respondió sobre el elemento {index} de la cola ({error}); revisa /queue list antes de reintentarlo."
   reload:
     env_reloaded: "Se recargó .env ({count} variable(s) actualizada(s))"
   steer:

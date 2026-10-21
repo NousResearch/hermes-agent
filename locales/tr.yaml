@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Bir sorun oluştu ve bu yanıtı tamamlayamadım.{hint}\nYeniden denemek için /retry, yeni bir konuşma başlatmak için /new kullanın. Teknik ayrıntılar gateway günlüğünde (`hermes logs`)."
     history_unavailable: "⚠️ Bu oturumun geçmişi geçici olarak kullanılamıyor; bu nedenle mesaj işlenmedi. Operatörden state.db dosyasını incelemesini isteyin, düzeldikten sonra yeniden gönderin. /reset komutunu yalnızca bilinçli olarak yeni bir konuşma başlatmak istiyorsanız kullanın."
     no_credentials: "⚠️ Yapay zekâ model servisine bağlanamadım; bu nedenle mesaj işlenmedi. Yeniden giriş yapmak için /login, farklı bir model seçmek için /model kullanın. Sorun sürerse ana makinede `hermes doctor` çalıştırın."
+    cron_session_read_only: "⚠️ Bu sohbet zamanlanmış bir göreve ait ve yalnızca o görevi çalıştırıyor, bu yüzden mesajın çalıştırılmadı. Göndermek için yeni bir sohbet başlat."
   skills:
     disabled: "**{name}** skill'i kurulu ancak devre dışı.\nEtkinleştirmek için: `hermes skills config`"
     not_installed: "**{name}** skill'i mevcut ancak kurulu değil.\nKurmak için: `hermes skills install {install_name}`"
@@ -1689,6 +1690,21 @@ slash:
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
+  modern:
+    thought_for: "{seconds} sn düşündü"
+    thought: "Düşündü"
+    working: "Çalışıyor…"
+    preparing: "{what} hazırlanıyor…"
+    hint_steer: "yönlendir"
+    hint_queue: "sıraya al"
+    hint_interrupt: "kes"
+    hint_stop: "durdur"
+    hint_commands: "komutlar"
+    hint_files: "dosyalar"
+    hint_shell: "kabuk"
+    placeholder_busy_steer: "bu turu yönlendirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_interrupt: "bu turu değiştirmek için yazın · Tab sonrası için sıraya alır"
+    placeholder_busy_queue: "bu turdan sonrası için mesaj sıraya almak üzere yazın"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Faturalandırma yüklenemedi"
@@ -2232,6 +2248,7 @@ cli:
     queue_heading: "Kuyruk · {count} sırada · /queue list{controls}"
     more_queued: "+{count} tane daha"
     transcript_unavailable: "Canlı transkript henüz kullanılamıyor."
+    control_pending: "Gönderiliyor…"
     steer_prompt: "Yönlendir: "
     roster_empty: "Canlı alt ajan veya arka plan süreci yok. Sonuçlar konuşmaya gelir."
     entry_gone: "Bu kayıt artık canlı değil."
@@ -2370,6 +2387,14 @@ cli:
     move_out_of_range: "Kuyruk taşıma aralık dışında. Geçerli boyut: {size}"
     moved: "Kuyruk öğesi {source}, {destination} konumuna taşındı."
     usage_add: "Kullanım: /queue add <prompt>"
+    gateway_refused: "Ağ geçidi bunu kuyruğa almadı: {error}. Hiçbir şey kuyruğa alınmadı; tur bitince yeniden gönderin."
+    submit_unknown: "Ağ geçidi yanıt vermedi ({error}); istem zaten kuyrukta olabilir. Yeniden göndermeden önce /queue list ile kontrol edin."
+    move_gateway_fifo: "Ağ geçidi kuyruktaki istemleri gönderilme sırasıyla çalıştırır; bunun yerine birini düzenleyin veya kaldırın."
+    remove_refused: "Kuyruk öğesi {index} kaldırılamadı: {error}"
+    edit_refused: "Kuyruk öğesi {index} düzenlenemedi: {error}"
+    already_started: "Kuyruk öğesi {index} zaten başladı; gönderildiği gibi çalışıyor."
+    started_stopped: "Kuyruk öğesi {index} zaten başlamıştı; ağ geçidi onu durdurdu."
+    change_unknown: "Ağ geçidi kuyruk öğesi {index} için yanıt vermedi ({error}); yeniden denemeden önce /queue list ile kontrol edin."
   reload:
     env_reloaded: ".env yeniden yüklendi ({count} değişken güncellendi)"
   steer:

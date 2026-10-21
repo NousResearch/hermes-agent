@@ -62,6 +62,21 @@ export interface MutationSnapshot {
   stored_messages?: Array<Record<string, unknown>>
   revision: number
   execution_generation: number
+  /** The viewer attachment the revision read made (`session.resume` attaches). */
+  subscription_id?: string
+  /** The id the owner resolved the read to and subscribed under; may differ from the one sent. */
+  session_id?: string
+}
+
+/** The CAS tuple read (`session.resume`, which attaches this client as a viewer). */
+async function readCasTuple(gw: MutationGateway, sid: string, onRead?: (snapshot: MutationSnapshot) => void) {
+  const snapshot = asRpcResult<MutationSnapshot>(await gw.request('session.resume', { session_id: sid }))
+
+  if (snapshot) {
+    onRead?.(snapshot)
+  }
+
+  return snapshot
 }
 
 /** One revision-fenced `session.mutate` (`gateway/session_mutations.py`). The CAS tuple comes from a
@@ -84,7 +99,8 @@ export async function mutateCanonical(
   sid: string,
   operation: CanonicalOperation,
   payload: Record<string, unknown> | ((snapshot: MutationSnapshot) => null | Record<string, unknown>),
-  stale: () => boolean = () => false
+  stale: () => boolean = () => false,
+  onRead?: (snapshot: MutationSnapshot) => void
 ) {
   let requests = pending.get(gw)
 
@@ -100,7 +116,7 @@ export async function mutateCanonical(
   let params = requests.get(key)
 
   if (!params) {
-    const snapshot = asRpcResult<MutationSnapshot>(await gw.request('session.resume', { session_id: sid }))
+    const snapshot = await readCasTuple(gw, sid, onRead)
 
     if (stale()) {
       return

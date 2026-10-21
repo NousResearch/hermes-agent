@@ -171,6 +171,7 @@ import {
   rememberResolvedResumeOwner,
   resolveResumeOwner
 } from './resume-owner'
+import { backgroundRuntimeOptions, runtimeOwner } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -819,7 +820,7 @@ export function useSessionActions({
         const runtimeStartedAt = Date.now()
         setSessionStartedAt(runtimeStartedAt)
         const yoloArmed = $yoloActive.get()
-        const runtimeInfo = applyRuntimeInfo(created.info)
+        const runtimeInfo = applyRuntimeInfo(created.info, { owner: runtimeOwner(capturedRoute, capturedProfile) })
 
         updateSessionState(
           created.session_id,
@@ -1175,7 +1176,7 @@ export function useSessionActions({
         // so the right rail kept showing the previous session's tree when a
         // Project "+" created a session while the main chat was occupied
         // (#76696). Split/side tiles deliberately stay isolated.
-        const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
+        const runtimeInfo = applyRuntimeInfo(created.info, backgroundRuntimeOptions(capturedRoute, requestedProfile))
         updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
 
         openSessionTile(stored, dir, options?.anchor, options?.before, workspaceScope)
@@ -1617,7 +1618,7 @@ export function useSessionActions({
                 ? Boolean(settlePendingClarifyToolCall(cachedViewState.messages, {}, false).streamId)
                 : false
 
-              const runtimeInfo = applyRuntimeInfo(activated.info)
+              const runtimeInfo = applyRuntimeInfo(activated.info, { owner: sessionOwner })
 
               // `omit_messages` means the response carries NO transcript, not
               // an empty one — the cache is the base and the live projection is
@@ -2321,7 +2322,7 @@ export function useSessionActions({
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
 
-        const runtimeInfo = applyRuntimeInfo(resumed.info)
+        const runtimeInfo = applyRuntimeInfo(resumed.info, { owner: sessionOwner })
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
@@ -2394,9 +2395,7 @@ export function useSessionActions({
                   streamId: resumedRunning ? inFlightRecovery.streamId : null,
                   turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
                 }
-              : {
-                  turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
-                }),
+              : { turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null }),
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {
@@ -2814,7 +2813,7 @@ export function useSessionActions({
           routedSessionId
         )
 
-        const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false })
+        const runtimeInfo = applyRuntimeInfo(branched.info, backgroundRuntimeOptions(ownerRoute, profile))
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {

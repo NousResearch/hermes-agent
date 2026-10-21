@@ -118,13 +118,25 @@ def _gateway_owned_id(session_db, session_id):
     ``stored_session_id``. A canonical local compression segment holds the transcript, but its creation
     receipt lives on the conversation's logical owner, which every turn and mutation must name (as Ink
     and ``session.resume`` do). Unchanged off the gateway store or when the resume is refused."""
+    return _gateway_open(session_db, session_id)[0]
+
+
+def _gateway_open(session_db, session_id):
+    """``(owner_id, refusal)`` from one ``session.resume`` of *session_id* on this viewer: the attach
+    subscribes it and names its receipt owner (:func:`_gateway_owned_id`). ``refusal`` is the reason
+    code when the owner answered that this viewer may not open it (``RESUME_GONE``), else ``None``:
+    off the gateway store, a transient refusal, or no answer, the caller proceeds on its local reads."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli.gateway_connection import RESUME_GONE
     from hermes_cli.gateway_session_store import GatewaySessionStore
     if not isinstance(session_db, GatewaySessionStore):
-        return session_id
+        return session_id, None
     try:
-        return session_db.attach(session_id).get("stored_session_id") or session_id
-    except Exception:  # health: allow BLE001 -- a refused attach leaves main's own resume path to report it
-        return session_id
+        return session_db.attach(session_id).get("stored_session_id") or session_id, None
+    except GatewayRPCError as exc:
+        return session_id, (str(exc) if str(exc) in RESUME_GONE else None)
+    except Exception:  # health: allow BLE001 -- no answer: the turn reports the lost connection itself
+        return session_id, None
 
 
 def _user_display_text(content) -> str:
@@ -704,6 +716,7 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
+                connection_update_callback=None if single_query_mode else self._connection_on_change,
                 # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
                 model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
                 # Another viewer answering the gateway's clarify/sudo/secret request closes this modal.
@@ -733,6 +746,7 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
+            self.agent.control_update_callback = self._mark_automation_stale
             # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
             # thread rendered, so the shared prompt path never re-reads config or skill files.
             _auto_result = getattr(self, "_auto_load_skills_result", None)

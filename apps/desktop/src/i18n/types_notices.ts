@@ -18,7 +18,6 @@ export interface NoticeTranslations {
     /** reload.mcp left the chat's servers as they were: a turn was running or waiting. */
     mcpReloadDeferred: string
     /** A reloaded MCP server the chat does not run (no_mcp, an explicit pick, a platform allowlist). */
-    mcpReloadNotInChat: (server: string) => string
     /** Configured MCP servers that did not connect on reload. */
     mcpReloadUnavailable: (servers: string) => string
     /** An edit/restore/regenerate whose target compaction archived: the owner refused the rewind. */
@@ -42,6 +41,10 @@ export interface SessionCommandNotices {
   undidOther: (count: string) => string
   retryNothing: string
   retryUnsupported: string
+  /** A rewind refused while a reply is running: main's stop-first guidance (tui_gateway busy_message). */
+  busy: (command: string) => string
+  /** The same refusal while another writer holds the compression lock: Stop does not end it, so wait. */
+  busyCompressing: (command: string) => string
   steerUsage: string
   steerQueued: (preview: string) => string
   steerNoActiveTurn: (preview: string) => string

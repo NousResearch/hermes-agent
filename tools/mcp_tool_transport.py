@@ -167,7 +167,7 @@ class MCPServerTransportMixin:
         return caps is None or getattr(caps, "tools", None) is not None
 
     def _session_kwargs(self) -> dict:
-        """ClientSession kwargs: sampling, elicitation, notification + logging callbacks."""
+        """ClientSession kwargs: client identity, sampling, elicitation, notification + logging callbacks."""
         kwargs = {}
         for handler in (self._sampling, self._elicitation):
             if handler:
@@ -176,6 +176,11 @@ class MCPServerTransportMixin:
             kwargs["message_handler"] = self._make_message_handler()
         if _core._MCP_LOGGING_CALLBACK_SUPPORTED:
             kwargs["logging_callback"] = self._make_logging_callback()
+        if _core._client_session_accepts("client_info"):
+            # Servers key logs/behaviour on clientInfo; the SDK default is "mcp"/"0.1.0".
+            from mcp.types import Implementation
+            from hermes_cli.version_info import get_version_info
+            kwargs["client_info"] = Implementation(name="hermes-agent", version=get_version_info().base_version)
         return kwargs
 
     async def _negotiate_session(self, session, connect_timeout: float):

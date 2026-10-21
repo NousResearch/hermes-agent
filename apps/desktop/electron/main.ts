@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
 const localGatewayDials = createLocalGatewayDials()
@@ -417,7 +417,14 @@ import {
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver } from './parent-process-identity'
-import { bundledPayload, installIdForRoot, type PayloadInfo, payloadPythonPath } from './payload-backend'
+import {
+  bundledPayload,
+  installIdForRoot,
+  type PayloadInfo,
+  payloadPythonPath,
+  payloadTicketRuntime,
+  requireBundledPayload
+} from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -572,7 +579,7 @@ import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
-  backgroundMaterialFor,
+  applyWindowsBackdrop,
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
@@ -1575,21 +1582,16 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
     // Backing swap + material are scoped to registered chat windows (see
     // translucencyBackedWindows above).
     if (translucencyBackedWindows.has(win)) {
-      if (changed.backing && typeof win.setBackgroundColor === 'function') {
-        win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
-      }
-
-      if (changed.material) {
-        // Glass frost level = the platform material. Animate the macOS hop so
-        // a deliberate frost switch feels continuous — which only works if we
-        // don't re-issue it on unrelated updates. Windows has no equivalent
-        // animation option; setBackgroundMaterial is instantaneous.
-        if (IS_MAC && typeof win.setVibrancy === 'function') {
-          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+      if (IS_WINDOWS && GLASS_SUPPORTED) {
+        applyWindowsBackdrop(win, translucencyState, changed, getWindowBackgroundColor())
+      } else {
+        if (changed.backing && typeof win.setBackgroundColor === 'function') {
+          win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
         }
 
-        if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
-          win.setBackgroundMaterial(backgroundMaterialFor(translucencyState))
+        // Animate deliberate macOS frost changes, not unrelated tint updates.
+        if (changed.material && IS_MAC && typeof win.setVibrancy === 'function') {
+          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
         }
       }
     }
@@ -3675,21 +3677,6 @@ function createNativePackagedStrategy(
 }
 
 /**
- * The bundled Python payload for a strategy whose update check runs inside
- * it. A stamp that names such a mechanism without a payload is a broken
- * install; say so instead of failing on `payload.storePython`.
- */
-function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): PayloadInfo {
-  const payload: PayloadInfo | null = bundledPayload(process.resourcesPath)
-
-  if (!payload) {
-    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
-  }
-
-  return payload
-}
-
-/**
  * The checkout updater strategy (windows-handoff / posix-handoff). The flow
  * lives in updater/checkout.ts; this is the composition root that hands it
  * the app shell's impure edges. The public checkUpdates/applyUpdates
@@ -5026,6 +5013,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
       command: payload.shim,
       args: [...backendArgs],
       env: { ...buildDesktopBackendEnv(), HERMES_RUNTIME_DIR: payload.toolsDir },
+      ...payloadTicketRuntime(payload),
       root: payload.repoDir,
       bootstrap: false,
       shell: false,
@@ -5209,6 +5197,8 @@ interface ResolvedHermesBackend {
   shell: boolean
   local?: string
   root?: string
+  ticketCommand?: string
+  ticketEnv?: NodeJS.ProcessEnv
   installStamp?: Readonly<InstallStamp> | null
   activeRoot?: string
   isPackaged?: boolean
@@ -11690,23 +11680,22 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
 // bounded so a wedged drain cannot hang Restart. The gateway's own drain is unaffected by the kill.
 const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 
-// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process):
-// the same resolver, spawn helper and Windows quoting as `gateway ensure`, against the profile
-// that owns the gateway process. A non-zero exit is logged, not thrown: the re-ensure that
-// follows reports what actually answers.
+// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process): the
+// `gateway ensure` resolver, spawn helper and quoting, against the profile owning the process, with
+// `--detach` (runGatewayOwnerRestart). A non-zero exit is logged, not thrown: the re-ensure reports
+// what answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
-  const backend = await ensureRuntime(
-    await resolveHermesBackend(['--profile', ownerProfile, 'gateway', 'restart']),
-    () => undefined
-  )
+  const result = await runGatewayOwnerRestart(async args => {
+    const backend = await ensureRuntime(await resolveHermesBackend(args), () => undefined)
 
-  const result = await runGatewayEnsure(
-    { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-    resolveHermesCwd(),
-    HERMES_HOME,
-    profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
-    { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
-  )
+    return runGatewayEnsure(
+      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
+      resolveHermesCwd(),
+      HERMES_HOME,
+      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
+      { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
+    )
+  }, ownerProfile)
 
   const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
   rememberLog(`[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code}${reason ? `: ${reason}` : ''}`)

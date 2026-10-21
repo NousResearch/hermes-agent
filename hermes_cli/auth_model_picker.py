@@ -20,7 +20,7 @@ _CURRENT_SUFFIX = "  ← currently in use"
 
 def _confirm_selection_guards(
     model_id: str, *, provider: str = "", base_url: str = "", api_key: str = "",
-    include_kinds: Optional[List[str]] = None,
+    include_kinds: Optional[list[str]] = None,
 ) -> bool:
     """Prompt before saving a model that trips any selection guard (cost, data-policy, ...).
 
@@ -56,8 +56,8 @@ class _ModelPickerRows:
     """
 
     def __init__(
-        self, all_models: List[str], pricing: Optional[Dict[str, Dict[str, str]]], *,
-        current_model: str, sale_chrome: bool, notes: Optional[Dict[str, str]] = None,
+        self, all_models: list[str], pricing: Optional[dict[str, dict[str, str]]], *,
+        current_model: str, sale_chrome: bool, notes: Optional[dict[str, str]] = None,
     ) -> None:
         from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
         self.current_model = current_model
@@ -151,11 +151,11 @@ class _ModelPickerRows:
 
 
 def _prompt_model_selection(
-    model_ids: List[str], current_model: str = "",
-    pricing: Optional[Dict[str, Dict[str, str]]] = None,
-    unavailable_models: Optional[List[str]] = None, portal_url: str = "",
+    model_ids: list[str], current_model: str = "",
+    pricing: Optional[dict[str, dict[str, str]]] = None,
+    unavailable_models: Optional[list[str]] = None, portal_url: str = "",
     unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
-    confirm_api_key: str = "", notes: Optional[Dict[str, str]] = None,
+    confirm_api_key: str = "", notes: Optional[dict[str, str]] = None,
 ) -> Optional[str]:
     """Interactive model picker; current_model listed first. Returns the chosen model ID or None.
 
@@ -282,9 +282,18 @@ def _prompt_model_selection(
             return None
 
 
+_model_choice_saves = 0  # bumped per saved pick; `hermes model` reads it to know a pick landed
+
+
+def model_choice_save_count() -> int:
+    return _model_choice_saves
+
+
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml only — NOT .env, which would stomp in multi-agent setups."""
+    global _model_choice_saves
     from hermes_cli.config import save_config, load_config
+    _model_choice_saves += 1
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
@@ -292,3 +301,6 @@ def _save_model_choice(model_id: str) -> None:
     else:
         config["model"] = {"default": model_id}
     save_config(config)
+    from hermes_cli.observability.shared_metrics_setup import note_provider_setup_saved
+
+    note_provider_setup_saved()

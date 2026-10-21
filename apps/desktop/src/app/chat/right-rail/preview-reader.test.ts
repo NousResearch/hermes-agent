@@ -4,10 +4,15 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup, noteHoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
 import { $previewTabs, closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
+import { $selectedStoredSessionId } from '@/store/session'
 
 import { watchPreviewTiles } from '../preview-tile'
 
+import { resolveActivePreviewTab } from './preview-active-tab'
+import { activePreviewInput, registerPreviewInput } from './preview-input'
+import { activePreviewNav, registerPreviewNav } from './preview-nav'
 import { PREVIEW_READ_MAX_CHARS, readActivePreview, registerPreviewPageReader } from './preview-reader'
+import { activePreviewScriptRunner, registerPreviewScriptRunner } from './preview-script-runner'
 
 function urlTarget(url: string): PreviewTarget {
   return { kind: 'url', label: 'Browser', source: url, url }
@@ -196,6 +201,58 @@ describe('readActivePreview (read_preview tool)', () => {
       url: 'https://example.com/tickets'
     })
     expect($previewTabs.get()).toHaveLength(2)
+  })
+})
+
+describe('agent preview reads stay inside the session (#73890)', () => {
+  beforeEach(() => {
+    closeRightRail()
+    window.localStorage.clear()
+    noteActiveTreeGroup(null)
+    noteHoveredTreeGroup(null)
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('never answers with, or lists, another session hidden tab', async () => {
+    $selectedStoredSessionId.set('sess-a')
+    openPreview(fileTarget('/work/secret-a.txt'))
+    const hidden = $previewTabs.get()[0]!.id
+    const navA = { back: () => {}, forward: () => {}, reload: () => {} }
+    const inputA = { focus: () => {}, send: () => {} }
+    const runA = async () => 'a'
+    const unbindNav = registerPreviewNav(hidden, navA)
+    const unbindInput = registerPreviewInput(hidden, inputA)
+    const unbindRun = registerPreviewScriptRunner(hidden, runA)
+
+    try {
+      $selectedStoredSessionId.set('sess-b')
+      openPreview(fileTarget('/work/b1.txt'))
+      openPreview(fileTarget('/work/b2.txt'))
+      // No visible selection: the fallback must stay in sess-b's drawer.
+      selectRightRailTab(null)
+
+      expect(resolveActivePreviewTab()?.target.path).toMatch(/^\/work\/b/)
+      expect(activePreviewNav()).toBeNull()
+      expect(activePreviewInput()).toBeNull()
+      expect(activePreviewScriptRunner()).toBeNull()
+
+      const read = await readActivePreview()
+
+      expect(read?.path).toMatch(/^\/work\/b/)
+      expect(JSON.stringify(read)).not.toContain('secret-a')
+
+      // sess-a's own agent, while sess-b holds focus, drives sess-a's page.
+      expect(activePreviewNav('sess-a')).toBe(navA)
+      expect(activePreviewInput('sess-a')).toBe(inputA)
+      expect(activePreviewScriptRunner('sess-a')).toBe(runA)
+      // A requester with no resolved session sees no session's tabs.
+      expect(activePreviewScriptRunner(null)).toBeNull()
+    } finally {
+      unbindNav()
+      unbindInput()
+      unbindRun()
+    }
   })
 })
 

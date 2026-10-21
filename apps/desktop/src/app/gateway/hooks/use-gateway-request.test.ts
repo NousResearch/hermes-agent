@@ -318,6 +318,143 @@ describe('useGatewayRequest', () => {
     expect(gateway.connect).toHaveBeenLastCalledWith(expect.stringContaining('ticket=fresh-2'))
   })
 
+  it('does not replay a delayed local failure onto a same-named profile on another source', async () => {
+    installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    let rejectRequest!: (error: Error) => void
+    primary.request.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRequest = reject
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+    const { result } = renderHook(() => useGatewayRequest())
+
+    const pending = result.current
+      .requestGateway('prompt.submit', { session_id: 'local-only', text: 'private' })
+      .catch(error => error)
+
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    const destination = $gateway.get() as unknown as TestGateway
+    destination.request.mockResolvedValue({ sent: true })
+    await act(async () => {
+      rejectRequest(failure)
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(destination.request).not.toHaveBeenCalled()
+  })
+
+  it('does not replay when the source changes while recovery is pending', async () => {
+    const desktop = installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(failure).mockResolvedValue({ sent: true })
+    let finishRecovery!: () => void
+    primary.connect.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishRecovery = resolve
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('closed')
+    const { result } = renderHook(() => useGatewayRequest())
+    const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+    await vi.waitFor(() => expect(primary.connect).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    const destination = $gateway.get() as unknown as TestGateway
+    await act(async () => {
+      finishRecovery()
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(destination.request).not.toHaveBeenCalled()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['resolves', 'rejects'] as const)(
+    'keeps the newer foreground descriptor when a stale primary recovery lookup %s',
+    async outcome => {
+      const desktop = installRemoteDesktop()
+      const primary = makePrimaryGateway()
+      const failure = new Error('connection closed')
+      primary.connectionState = 'closed'
+      primary.request.mockRejectedValueOnce(failure)
+      let settleLookup!: () => void
+      const localConnection = await desktop.getConnection()
+      desktop.getConnection.mockClear()
+      desktop.getConnection.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            settleLookup = () =>
+              outcome === 'resolves' ? resolve(localConnection) : reject(new Error('local backend unavailable'))
+          })
+      )
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('closed')
+      const { result } = renderHook(() => useGatewayRequest())
+      const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+      await vi.waitFor(() => expect(desktop.getConnection).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        await ensureGatewayForAgent('home', 'default')
+      })
+      const foreground = { ...localConnection, baseUrl: 'https://home.example.test', connectionId: 'home' }
+      $connection.set(foreground as never)
+      await act(async () => {
+        settleLookup()
+      })
+
+      expect(await pending).toBe(failure)
+      expect($connection.get()).toBe(foreground)
+      expect(result.current.connectionRef.current).toBeNull()
+      expect(primary.connect).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not dial the primary when the foreground moves while its ticket is minted', async () => {
+    const desktop = installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(failure)
+    let releaseMint!: () => void
+    desktop.getGatewayWsUrl.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          releaseMint = () => resolve({ ok: true as const, wsUrl: 'ws://127.0.0.1:5151/api/ws?token=fresh-local' })
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('closed')
+    const { result } = renderHook(() => useGatewayRequest())
+    const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+    await vi.waitFor(() => expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    await act(async () => {
+      releaseMint()
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.connect).not.toHaveBeenCalled()
+  })
+
   it('does not reconnect for a non-transport request failure', async () => {
     const { desktop, gateway } = await activateRemoteGateway()
     const failure = Object.assign(new Error('request rejected'), { code: 'EVALIDATION' })

@@ -21,6 +21,7 @@ export function CatalogInstallSwitch({ name, installed, installing, disabled, on
     <Tip label={label}>
       <span className="inline-flex items-center gap-2">
         {installing && <Loader2 className="size-3 animate-spin text-(--ui-text-tertiary)" />}
+        <span className="text-xs text-(--ui-text-secondary)">{installed ? t.catalog.added : t.catalog.add}</span>
         <Switch
           aria-busy={installing}
           aria-label={label}

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
+from agent.session_activity import AwakeIdleMeter
+
 
 @dataclass
 class TurnContext:
@@ -35,9 +37,11 @@ class TurnContext:
     repeat_count: list = field(default_factory=lambda: [0])
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
+    # Turn-scoped so the poll loop and stale-agent eviction both discount host sleep from idle.
+    awake_idle: AwakeIdleMeter = field(default_factory=AwakeIdleMeter)
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
-    _cleanup_msg_ids: List[str] = field(default_factory=list)
+    _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
@@ -55,6 +59,7 @@ class TurnContext:
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
     moa_config: Optional[dict] = None
+    title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None
     persist_user_timestamp: Optional[float] = None
     # display_kind of the persisted user row for a self-injected turn; DB-only, never sent.
@@ -63,6 +68,7 @@ class TurnContext:
     persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
     mute_notification_reply: bool = False
+    voice_turn: bool = False  # a voice-note turn: runs on auxiliary.voice_chat
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False

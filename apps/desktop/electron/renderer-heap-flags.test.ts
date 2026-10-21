@@ -89,4 +89,15 @@ describe('renderer heap flags', () => {
 
     warn.mockRestore()
   })
+
+  it('#103288: reads desktop.ssh_path as plain, single-quoted, and YAML double-quoted scalars', () => {
+    const read = (value: string) =>
+      readDesktopLaunchConfig(['desktop:', `  ssh_path: ${value}`, 'terminal:', '  ssh_path: nope'].join('\n')).sshPath
+
+    expect(read('C:\\Program Files\\Git\\usr\\bin\\ssh.exe')).toBe('C:\\Program Files\\Git\\usr\\bin\\ssh.exe')
+    expect(read("'C:\\Git\\usr\\bin\\ssh.exe'  # Git's client")).toBe('C:\\Git\\usr\\bin\\ssh.exe')
+    expect(read('"C:\\\\Git\\\\usr\\\\bin\\\\ssh.exe"')).toBe('C:\\Git\\usr\\bin\\ssh.exe')
+    expect(read('""')).toBeUndefined()
+    expect(readDesktopLaunchConfig('terminal:\n  ssh_path: C:\\x.exe').sshPath).toBeUndefined()
+  })
 })

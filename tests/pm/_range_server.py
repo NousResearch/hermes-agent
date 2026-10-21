@@ -25,7 +25,7 @@ class RangeHandler(BaseHTTPRequestHandler):
     etags: bool = True
     chunk: int = 1 << 20             # serve piece size
 
-    def log_message(self, *args):  # noqa: A002 - silence request logging
+    def log_message(self, *args):
         pass
 
     def end_headers(self):
@@ -34,7 +34,7 @@ class RangeHandler(BaseHTTPRequestHandler):
             self.send_header("ETag", '"' + hashlib.sha256(payload).hexdigest() + '"')
         super().end_headers()
 
-    def do_GET(self):  # noqa: N802 - http.server API
+    def do_GET(self):
         payload = self.payloads.get(self.path)
         if payload is None:
             self.send_error(404)

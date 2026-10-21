@@ -97,6 +97,8 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
+        from hermes_cli.observability.shared_metrics_events import record_slash_command
+        record_slash_command(command=cmd, surface="acp")
         mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
         if mutating:
             with state.runtime_lock:
@@ -149,7 +151,7 @@ class SlashCommandsMixin:
         try:
             from model_tools import get_tool_definitions
             from types import SimpleNamespace
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager_tools import inject_memory_provider_tools
 
             toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None))
             tools = get_tool_definitions(

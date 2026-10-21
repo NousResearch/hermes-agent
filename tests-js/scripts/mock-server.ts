@@ -269,7 +269,7 @@ const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = sidebarCrossScript()
 const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   {
     text: 'Starting a task that will keep this turn active.',
-    toolCalls: [{ name: 'clarify', args: { question: 'Keep working?', choices: ['Yes', 'No'] } }],
+    toolCalls: [{ name: 'clarify', args: { questions: [{ question: 'Keep working?', choices: ['Yes', 'No'] }] } }],
   },
   { text: 'The paused task completed.' },
 ]
@@ -379,7 +379,7 @@ const TOOL_THEN_FAILURE_TURN: ScriptedTurn = {
 
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
-  toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
+  toolCalls: [{ name: 'clarify', args: { questions: [{ question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] }] } }],
 }
 
 /**

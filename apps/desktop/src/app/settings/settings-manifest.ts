@@ -59,6 +59,7 @@ export const SETTINGS_MANIFEST = {
       copy: t => ({ label: t.language.label, description: t.language.description })
     },
     introSplash: appearanceSetting('general', ['splash', 'wordmark', 'empty chat', 'new chat'], 'introSplash'),
+    modelPricing: appearanceSetting('general', ['price', 'cost', 'tokens', 'model picker', 'cache'], 'modelPricing'),
     resumeLastSession: appearanceSetting(
       'general',
       ['resume', 'reopen', 'launch', 'startup', 'last chat', 'session'],
@@ -68,6 +69,7 @@ export const SETTINGS_MANIFEST = {
     tours: appearanceSetting('general', ['tour', 'walkthrough', 'guide', 'onboarding', 'help'], 'tours'),
     theme: appearanceSetting('theme', ['color mode', 'skin', 'light', 'dark'], 'theme'),
     uiScale: appearanceSetting('typography', ['zoom', 'size'], 'uiScale'),
+    chatTextScale: appearanceSetting('typography', ['chat', 'text', 'font', 'size', 'scale', 'zoom'], 'chatTextScale'),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',
@@ -152,23 +154,13 @@ export const SETTINGS_MANIFEST = {
   advanced: {
     keepAwake: {
       subpage: 'desktop',
-      keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power'],
+      keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power', 'while working', 'turn'],
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
     disableF12: {
       subpage: 'desktop',
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
-    },
-    warmBotBackends: {
-      subpage: 'desktop',
-      keywords: ['pool', 'backends', 'bots', 'warm', 'concurrency', 'limit'],
-      copy: t => ({ label: t.settings.poolLimits.warmBotBackendsTitle })
-    },
-    backendIdleTimeout: {
-      subpage: 'desktop',
-      keywords: ['pool', 'backends', 'idle', 'timeout', 'milliseconds'],
-      copy: t => ({ label: t.settings.poolLimits.backendIdleTimeoutTitle })
     },
     quickEntry: {
       subpage: 'desktop',

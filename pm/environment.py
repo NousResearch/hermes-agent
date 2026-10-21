@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import TextIO
 
+from pm.filesystem import native
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
 
@@ -48,6 +49,26 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
+# cannot date the file. uv words it as "no solution", but the index is at fault,
+# not the requested set, so it must never read as a dependency conflict (#135589).
+# A seeded lock says "has no publish time"; a cold one only warns the date is missing
+# and hints the version was filtered, so that case needs both lines.
+_UNDATED_PIN = "has no publish time"
+_UNDATED_FILE = ("is missing an upload date", "was filtered by `exclude-newer")
+UNDATED_INDEX_HINT = ("the package index did not report upload times, which locking Hermes's "
+                      "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
+                      "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
+
+# uv's own English diagnostic. A localized Windows tail (os error 1224) rides
+# along, but the marker that means "packages may be installed, only the
+# optional compile step failed" is this line. #124268
+_BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
+# Streamed uv output keeps only the last 2000 characters. Resolver markers are
+# stitched back if a later verbose flood evicts them; the bytecode marker has
+# to ride the same path or repair/bootstrap never sees the retry signal.
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER,)
+
 
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
@@ -55,6 +76,20 @@ class ResolutionConflict(InstallError):
 
 class BuildFailure(InstallError):
     """A package's build backend ran and failed."""
+
+
+def _is_bytecode_compile_failure(result: subprocess.CompletedProcess) -> bool:
+    """True when uv failed in the optional bytecode-compile step, not the install.
+
+    ``--compile-bytecode`` exists so the first user-facing import does not pay
+    compile cost (#100461). It is not required for a usable environment. Windows
+    real-time AV can lock uv's temporary compile script (os error 1224) after
+    the packages are already on disk (#124268).
+    """
+    if not result.returncode:
+        return False
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return _BYTECODE_COMPILE_MARKER in text
 
 
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
@@ -66,6 +101,8 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
+    if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
+        return InstallError("venv", cause, UNDATED_INDEX_HINT)
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):
@@ -142,7 +179,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextSink) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""
     deadline = time.monotonic() + timeout
-    proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(command, cwd=native(cwd), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=0)
     pipe = proc.stdout
     assert isinstance(pipe, io.TextIOWrapper)  # Popen was given stdout=PIPE and text=True.
@@ -171,7 +208,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                 # evicts it. Scan across read boundaries, never retain the full log.
                 if not conflict:
                     lowered = (tail + text).lower()
-                    conflict = next((marker for marker in _RESOLVER_MARKERS if marker in lowered), "")
+                    conflict = next((marker for marker in _STREAM_TAIL_MARKERS if marker in lowered), "")
                 tail = (tail + text)[-2000:]
                 output.write(text)
                 output.flush()
@@ -272,11 +309,25 @@ class PythonEnvironment:
         # Explicit index credentials survive, but cannot redirect the project,
         # interpreter or cache selected by the operation.
         env = _base_environment(self.env)
-        env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
-                   UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        if self.no_config:
+            # --no-config only removes config files; the pip-mirror bridge
+            # (pm.index_config) reaches uv as env vars. The pinned runtime
+            # builder asked to be isolated from ambient index configuration:
+            # re-resolving its official-index lockfile against a mirror trips
+            # `--locked` (#124418), and a fully-pinned graph never needs a
+            # mirror to resolve. Index-REDIRECT settings are dropped; transport
+            # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
+            # — corporate networks need them to reach the pinned URLs at all.
+            from pm.index_config import is_index_redirect
+
+            env = {key: value for key, value in env.items() if not is_index_redirect(key)}
+        # uv is a child: it gets the ordinary spelling of store paths (pm.filesystem.native),
+        # or the venv it writes would record the extended-length one in pyvenv.cfg.
+        env.update(UV_PYTHON=native(self.python), UV_PROJECT_ENVIRONMENT=native(self.destination),
+                   UV_CACHE_DIR=native(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
-            command = [str(self.uv), *args]
+            command = [native(self.uv), *map(native, args)]
             if self.no_config and "--no-config" not in command:
                 command.append("--no-config")
             if self.offline:
@@ -300,10 +351,15 @@ class PythonEnvironment:
                     except BaseException:
                         tail.close(False)
                         raise
-                    tail.close(result.returncode == 0)
+                    if "--compile-bytecode" in args and _is_bytecode_compile_failure(result):
+                        # Caller retries without the flag. A failure banner here
+                        # would report a recovered install as failed.
+                        tail.discard()
+                    else:
+                        tail.close(result.returncode == 0)
                     return result
-                return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
-                                      text=True, encoding="utf-8", errors="replace", timeout=timeout)
+                return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
+                                      text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
             except subprocess.TimeoutExpired as exc:
                 from pm.index_config import TIMEOUT_HINT
 
@@ -370,6 +426,17 @@ class PythonEnvironment:
         for group in sorted(set(groups)):
             command += ["--group", group]
         result = self._run(command, cwd=source, timeout=timeout)
+        if _is_bytecode_compile_failure(result):
+            # Compile is an optimization. Retry once without the flag so a
+            # locked temp script cannot fail pm repair/bootstrap. Imports
+            # compile lazily on first use.
+            if self.output is not None:
+                self.output.write(
+                    "Bytecode compile failed; retrying the install without it. "
+                    "Modules will compile on first import.\n"
+                )
+            fallback = [arg for arg in command if arg != "--compile-bytecode"]
+            result = self._run(fallback, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
 

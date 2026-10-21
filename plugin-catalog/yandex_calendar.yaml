@@ -1,0 +1,33 @@
+name: yandex_calendar
+repo: https://github.com/akinfold/hermes-yandex-calendar
+sha: cad2a6b8e1cad82753b9f57d4f388645210702a0
+subdir: hermes_yandex_calendar
+title: "Yandex Calendar"
+description: "List, create, update, RSVP to, move and delete Yandex Calendar events over CalDAV, with attendees, busy status and several calendars. Disclosure — sends every request to caldav.yandex.ru, or to the HTTPS URL in YANDEX_CALENDAR_BASE_URL if you set one, with your YANDEX_CALENDAR_LOGIN and YANDEX_CALENDAR_APP_PASSWORD read through Hermes; all seven tools, delete included, are offered unless YANDEX_CALENDAR_ACTIONS narrows them; the tools act as your Yandex account, so adding attendees makes Yandex email each of them an invitation from you, and changing, answering, moving or deleting a meeting may notify the people on it; delete removes the event from the server and the plugin keeps no copy; event text written by other people, such as whoever invites you, reaches the agent as tool output; no other endpoint, no telemetry, no file or shell access, no background process. Independent community plugin, not affiliated with Yandex."
+maintainer: akinfold
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.6.4"
+docs_url: https://github.com/akinfold/hermes-yandex-calendar#readme
+readme: true
+platforms: []
+known_issues:
+  - "Every tool is offered by default, yandex_calendar_delete_event included. Set YANDEX_CALENDAR_ACTIONS to register fewer (read, write, delete, all or single actions, comma-separated; read is the README's advice for a new setup), then restart Hermes"
+  - "The tools act as your Yandex account: adding attendees, to a new event or an existing one, makes Yandex email each of them an invitation from you, and changing, answering, moving or deleting a meeting may notify the people on it"
+  - "Recurring events are not expanded: a series is listed as stored, with the times of its first occurrence, and one with modified occurrences can be moved or deleted but not edited or answered. A listing over 2 MiB of XML is refused with a request for a shorter range, and a recurring series counts in full"
+  - "Read-only calendars such as holidays and birthdays accept a new event without storing it, and yandex_calendar_create_event still reports success: keep them out with YANDEX_CALENDAR_CALENDARS"
+capabilities:
+  provides_tools:
+    - yandex_calendar_list_calendars
+    - yandex_calendar_list_events
+    - yandex_calendar_create_event
+    - yandex_calendar_update_event
+    - yandex_calendar_respond_event
+    - yandex_calendar_move_event
+    - yandex_calendar_delete_event
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - YANDEX_CALENDAR_LOGIN
+    - YANDEX_CALENDAR_APP_PASSWORD

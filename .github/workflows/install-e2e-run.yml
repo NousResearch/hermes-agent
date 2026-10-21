@@ -37,6 +37,10 @@ name: Install & Update E2E (reusable)
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       install-method:
         description: 'How the starting version gets installed. Supported: installer-script (the real curl | install.sh one-liner) and installer-script+desktop (the same one-liner with --include-desktop).'
         required: true
@@ -68,7 +72,7 @@ on:
         description: 'Runner label.'
         required: false
         type: string
-        default: ubuntu-latest
+        default: blacksmith-2vcpu-ubuntu-2404
       timeout-minutes:
         description: 'Job timeout. A cold run installs real toolchains twice, and app-update legs add a full Electron build + launch.'
         required: false
@@ -97,9 +101,9 @@ jobs:
       # Full history: the driver bare-clones this checkout as the repo the
       # installer/updater talk to, and both OLD and HEAD must be reachable
       # in that clone. A shallow clone cannot serve either need.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
 
       # The checkout owns the chat driver, not OLD's installed Node/runtime.

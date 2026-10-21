@@ -294,7 +294,11 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
 
             timed_out = kbd.enforce_max_runtime(conn, signal_fn=_signal_fn)
             assert tid in timed_out
-            expected_pid = -os.getpid() if hasattr(os, "killpg") else os.getpid()
+            pid = os.getpid()
+            # Wrapped group leaders are signalled as a group; legacy workers retain
+            # PID delivery. Whether pytest leads its own group depends on its launcher.
+            leads_group = hasattr(os, "getpgid") and os.getpgid(pid) == pid
+            expected_pid = -pid if leads_group else pid
             assert killed and killed[0][0] == expected_pid
 
             task = kb.get_task(conn, tid)

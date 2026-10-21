@@ -21,6 +21,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -132,7 +133,11 @@ def normalize_origin(url_or_origin: str) -> str:
     ``https://example.com`` and ``https://example.com:443`` compare equal.
     Raises :class:`VaultError` for values without a scheme + host.
     """
-    value = (url_or_origin or "").strip()
+    # Trim only whitespace and known paste residue. Other edge format characters
+    # (notably bidi controls) can alter how an origin is displayed.
+    value = url_or_origin or ""
+    edge_chars = "\u200b\ufeff" + "".join(c for c in set(value) if c.isspace())
+    value = value.strip(edge_chars)
     if not value:
         raise VaultError("origin is required")
     if "://" not in value:
@@ -142,6 +147,8 @@ def normalize_origin(url_or_origin: str) -> str:
     host = (parts.hostname or "").lower()
     if not scheme or not host:
         raise VaultError(f"could not parse origin from {value!r}")
+    if any(unicodedata.category(c) == "Cf" for c in host):
+        raise VaultError(f"origin host contains an invisible character (got {host!r})")
     try:
         port = parts.port
     except ValueError as exc:

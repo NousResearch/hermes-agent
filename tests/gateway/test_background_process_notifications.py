@@ -349,6 +349,7 @@ async def test_post_turn_watch_drain_refused_event_backs_off_then_drops(monkeypa
 
     async def refused(self, synth_text, evt, **kwargs):
         attempt_times.append(clock.now)
+        evt["_refusal_permanent"] = True  # a proven-permanent refusal, as _inject marks it
         return False
 
     monkeypatch.setattr(run_notifications.GatewayNotificationsMixin, "_inject_watch_notification", refused)

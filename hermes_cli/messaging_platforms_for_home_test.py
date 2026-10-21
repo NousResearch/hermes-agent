@@ -12,7 +12,7 @@ class MessagingPlatformsForHomeTest(unittest.TestCase):
             "platforms": {
                 "whatsapp": {"state": "disconnected"},
                 "api_server": {"state": "connected"},
-                "cmp_market:relay": {"state": "disabled"},
+                "market:relay": {"state": "disabled"},
             }
         }
         shown = messaging_platforms_for_home(runtime, Path("/opt/data"))
@@ -23,10 +23,10 @@ class MessagingPlatformsForHomeTest(unittest.TestCase):
         runtime = {
             "platforms": {
                 "whatsapp": {"state": "disconnected"},
-                "cmp_market:relay": {"state": "connected"},
+                "market:relay": {"state": "connected"},
             }
         }
-        shown = messaging_platforms_for_home(runtime, Path("/opt/data/profiles/cmp_market"))
+        shown = messaging_platforms_for_home(runtime, Path("/opt/data/profiles/market"))
         self.assertEqual(set(shown), {"relay"})
         self.assertEqual(shown["relay"]["state"], "connected")
 

@@ -35,7 +35,7 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
                 encoding="utf-8",
             )
             (home / "channel_aliases.json").write_text(
-                json.dumps({"whatsapp": {"120363@g.us": "Job Quest"}}),
+                json.dumps({"whatsapp": {"120363@g.us": "Design"}}),
                 encoding="utf-8",
             )
             conn = sqlite3.connect(home / "state.db")
@@ -48,11 +48,11 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
                 (
                     "120363@g.us",
                     "group",
-                    "Job Quest",
+                    "Design",
                     None,
                     100.0,
                     250.0,
-                    "agent:jbq_orchestrator:whatsapp:group:120363@g.us",
+                    "agent:ops:whatsapp:group:120363@g.us",
                     None,
                 ),
             )
@@ -67,7 +67,7 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
 
         by_id = {chat["chat_id"]: chat for chat in chats}
         self.assertEqual(set(by_id), {"120363@g.us", "15551234567@s.whatsapp.net"})
-        self.assertEqual(by_id["120363@g.us"]["name"], "Job Quest")
+        self.assertEqual(by_id["120363@g.us"]["name"], "Design")
         self.assertEqual(by_id["120363@g.us"]["kind"], "group")
         self.assertEqual(by_id["120363@g.us"]["last_seen"], 250.0)
         self.assertEqual(by_id["15551234567@s.whatsapp.net"]["name"], "Ada")
@@ -85,13 +85,13 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
             conn.execute(
                 "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    "120363431353336060@g.us",
+                    "120363000000000001@g.us",
                     "group",
-                    "120363431353336060",
+                    "120363000000000001",
                     None,
                     10.0,
                     None,
-                    "agent:fpx_market:whatsapp:group:120363431353336060@g.us",
+                    "agent:market:whatsapp:group:120363000000000001@g.us",
                     None,
                 ),
             )
@@ -100,18 +100,18 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
             chats = collect_whatsapp_seen_chats(
                 [home],
                 bridge_chats=[{
-                    "chat_id": "120363431353336060@g.us",
-                    "name": "FPX Marketing",
+                    "chat_id": "120363000000000001@g.us",
+                    "name": "Marketing",
                     "kind": "group",
                 }],
             )
-        self.assertEqual(chats[0]["name"], "FPX Marketing")
+        self.assertEqual(chats[0]["name"], "Marketing")
 
     def test_session_title_is_not_shown_as_the_chat_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / "channel_aliases.json").write_text(
-                json.dumps({"whatsapp": {"120363@g.us": "Hermes?"}}),
+                json.dumps({"whatsapp": {"120363@g.us": "Inbox title"}}),
                 encoding="utf-8",
             )
             conn = sqlite3.connect(home / "state.db")
@@ -125,10 +125,10 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
                     "120363@g.us",
                     "group",
                     "120363",
-                    "Hermes?",
+                    "Inbox title",
                     10.0,
                     None,
-                    "agent:fpx_laureline:whatsapp:group:120363@g.us",
+                    "agent:desk:whatsapp:group:120363@g.us",
                     None,
                 ),
             )
@@ -142,25 +142,25 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
         self.assertEqual(saved["whatsapp"], {})
 
     def test_per_chat_lookup_keeps_a_subject_and_skips_the_numeric_placeholder(self):
-        group_id = "120363431353336060@g.us"
+        group_id = "120363000000000001@g.us"
 
         def lookup(chat_id):
             if chat_id == group_id:
-                return {"name": "FPX Marketing", "isGroup": True}
+                return {"name": "Marketing", "isGroup": True}
             return {"name": chat_id.split("@", 1)[0], "isGroup": True}
 
         subjects = bridge_subjects_for_chats(
-            [group_id, "120363428138939295@g.us", "15551234567"],
+            [group_id, "120363000000000002@g.us", "15551234567"],
             lookup,
         )
         self.assertEqual(subjects, [{
             "chat_id": group_id,
-            "name": "FPX Marketing",
+            "name": "Marketing",
             "kind": "group",
         }])
 
     def test_missing_chats_route_falls_back_to_per_chat_subjects(self):
-        group_id = "120363412396471379@g.us"
+        group_id = "120363000000000003@g.us"
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             conn = sqlite3.connect(home / "state.db")
@@ -170,18 +170,18 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
             )
             conn.execute(
                 "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (group_id, "group", group_id.split("@", 1)[0], "Hermes?", 10.0, None,
-                 f"agent:jbq:whatsapp:group:{group_id}", None),
+                (group_id, "group", group_id.split("@", 1)[0], "Inbox title", 10.0, None,
+                 f"agent:ops:whatsapp:group:{group_id}", None),
             )
             conn.commit()
             conn.close()
             bridge = bridge_chats_for_editor(
                 [group_id],
                 None,
-                lambda chat_id: {"name": "Job Quest", "isGroup": True},
+                lambda chat_id: {"name": "Design", "isGroup": True},
             )
             chats = collect_whatsapp_seen_chats([home], bridge_chats=bridge)
-        self.assertEqual(chats[0]["name"], "Job Quest")
+        self.assertEqual(chats[0]["name"], "Design")
 
     def test_empty_bridge_list_does_not_ask_each_chat(self):
         def lookup(_chat_id):
@@ -196,7 +196,7 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
                 json.dumps({
                     "platforms": {
                         "whatsapp": [
-                            {"id": "120363@g.us", "name": "Job Quest", "type": "group"},
+                            {"id": "120363@g.us", "name": "Design", "type": "group"},
                         ]
                     }
                 }),

@@ -137,7 +137,8 @@ def test_initialization_refuses_the_callers_account_home(tmp_path, monkeypatch):
     from hermes_cli import config_home
 
     account_root = tmp_path / "acct"
-    account_root.mkdir(mode=0o755)
+    account_root.mkdir()
+    account_root.chmod(0o755)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: account_root))
     monkeypatch.setattr(config, "is_managed", lambda: False)
     config._HERMES_HOME_ENSURED.discard(str(account_root))
@@ -157,7 +158,7 @@ def test_initialization_refuses_the_callers_account_home(tmp_path, monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX account-root layout")
 @pytest.mark.parametrize(
     "bad_home",
-    ("/", "/Users", "/Users/other-acct", "/home/other-acct", "/root", "/var/root"),
+    ("/", "/Users", "/home", "/Users/other-acct", "/home/other-acct", "/root", "/var/root"),
 )
 def test_other_account_home_roots_are_refused(bad_home):
     from hermes_cli.config_home import _is_account_home_root

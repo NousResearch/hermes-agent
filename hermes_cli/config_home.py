@@ -58,12 +58,18 @@ def _is_account_home_root(path: Path) -> bool:
     A Hermes home must be its own directory (``~/.hermes``, ``~/hermes-<tenant>``),
     never an account home: initialization writes the skeleton (``SOUL.md``,
     ``sessions/`` ...) into it and ``_secure_dir`` then chmods that root to 0700.
-    Pointed at ``~`` by one env typo (``HERMES_HOME=$HOME``, ``--home ~``), the
+    Pointed at ``~`` by one env typo (``HERMES_HOME=$HOME``, ``install.sh --hermes-home ~``), the
     chmod locks every other tool and account sharing the home's group out of the
     entire tree. The check covers the caller's own root (``Path.home()``), any
     ancestor of it (``/``, ``/Users``), and another account's root
     (``/Users/<name>``, ``/home/<name>``, ``/root``, ``/var/root``) for the
-    ``sudo HERMES_HOME=/Users/other ...`` misfire.
+    ``sudo HERMES_HOME=/Users/other ...`` misfire. The account containers
+    ``/Users`` and ``/home`` are refused too, on every platform.
+
+    The account layouts are POSIX spellings, so another account's root on Windows
+    (``C:\\Users\\other``) is not matched. A dedicated directory directly under
+    ``/home`` or ``/Users`` (``/home/hermes-data``) is refused as well, because
+    it cannot be told apart from an account root; nest it one level deeper.
     """
     try:
         resolved = path.resolve()
@@ -80,7 +86,8 @@ def _is_account_home_root(path: Path) -> bool:
     spellings = {resolved, Path(os.path.abspath(path))}
     if any(p.parent in (Path("/Users"), Path("/home")) for p in spellings):
         return True
-    return any(p in (Path("/root"), Path("/var/root")) for p in spellings)
+    account_dirs = (Path("/Users"), Path("/home"), Path("/root"), Path("/var/root"))
+    return any(p in account_dirs for p in spellings)
 
 
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
@@ -92,7 +99,7 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
             "user account root, not a dedicated data directory. Initializing it "
             "would create the Hermes skeleton (SOUL.md, sessions/, ...) at the "
             "account root and chmod it 0700, locking every other process out of "
-            "the home tree. Set HERMES_HOME (or --home) to a dedicated "
+            "the home tree. Set HERMES_HOME (or pass --hermes-home to install.sh) to a dedicated "
             "subdirectory such as ~/.hermes or ~/hermes-<tenant>."
         )
     managed = is_managed()

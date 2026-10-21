@@ -19,7 +19,10 @@ export function isCanaryTag(tag: string | null | undefined): boolean {
  * with its kind. */
 export function releaseTagVersion(tag: string | null | undefined): string | null {
   const match = /^(?:canary\.(20\d{6}T\d{6}Z)-)?v(\d+\.\d+\.\d+)$/.exec(tag || '')
-  if (!match) return null
+  if (!match) {
+    return null
+  }
+
   return match[1] ? `${match[2]}+canary.${match[1]}` : match[2]
 }
 

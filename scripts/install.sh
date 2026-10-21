@@ -577,6 +577,145 @@ chosen_channel() {
         }' "$config" | grep -E '^[a-z0-9]+(-[a-z0-9]+)*$' || :
 }
 
+# --- Local patch maintenance -------------------------------------------------
+# An update overwrites the working copy outright: the checkout below refuses a
+# conflicting tree, and the `reset --hard` after it discards whatever did not
+# fit. The guard has to name what is at stake BEFORE that happens, because
+# afterwards the operator has nothing left to inspect.
+#
+# Three kinds of local work, and `git status --porcelain` sees only two:
+# uncommitted edits and untracked files. A committed patch on a branch no
+# remote knows about is an empty porcelain -- so a guard that only reads
+# porcelain is blind to exactly the work an update would clobber, which is how
+# the compaction run-budget patch stayed invisible until it was already gone.
+
+# Print one "<kind> <path>" line per item of local work. Empty output: nothing
+# to lose, and every caller below continues untouched.
+local_patch_inventory() {
+    local line path kind branch ahead
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        kind="${line:0:2}"
+        path="${line:3}"
+        case "$kind" in
+            '??') kind=untracked ;;
+            *M*)  kind=modified  ;;
+            *A*)  kind=added     ;;
+            *D*)  kind=deleted   ;;
+            *)    kind=staged    ;;
+        esac
+        printf '%s %s\n' "$kind" "$path"
+    done <<EOF
+$(git -C "$INSTALL_DIR" status --porcelain 2>/dev/null)
+EOF
+    branch="$(git -C "$INSTALL_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+    if [ -n "$branch" ]; then
+        ahead="$(git -C "$INSTALL_DIR" rev-list --count HEAD --not --remotes --tags 2>/dev/null)"
+        case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
+        [ "$ahead" -eq 0 ] || printf 'branch: %s (%s local commit(s))\n' "$branch" "$ahead"
+    fi
+}
+
+# The disposition in the install log -- the same audit trail every run_logged
+# step writes, so next morning "was the patch rebased, parked or dropped" is
+# answerable from $INSTALL_LOG alone.
+log_local_patch_disposition() {
+    local detail="$1"
+    mkdir -p "${INSTALL_LOG%/*}" 2>/dev/null
+    printf '==> Local patch maintenance: %s (%s)\n' "$detail" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$INSTALL_LOG" 2>/dev/null
+    log "Local patch maintenance: $detail"
+}
+
+# Park the working tree on its own branch so the checkout/reset below leaves
+# it alone. Returns 1 when the tree cannot be parked; the caller stops rather
+# than overwriting.
+local_patch_commit_local_branch() {
+    local stamp="$1" branch="$2"
+    if [ -n "$(git -C "$INSTALL_DIR" status --porcelain)" ]; then
+        git -C "$INSTALL_DIR" checkout -q -b "local/$branch" \
+            || git -C "$INSTALL_DIR" checkout -q "local/$branch" || return 1
+        git -C "$INSTALL_DIR" add -A >/dev/null 2>&1 || return 1
+        git -C "$INSTALL_DIR" commit -q -m "hermes install: park local work before update ($stamp)" >/dev/null 2>&1 || return 1
+    else
+        # Nothing uncommitted: the local commits already exist, they just need a
+        # branch name the update's branch switch will not carry them off.
+        git -C "$INSTALL_DIR" branch "local/$branch" HEAD >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
+# Name the local work, then act on the operator's call: (a) stash and continue,
+# (b) abort, (c) commit onto local/<branch> and continue. Without a terminal
+# (curl | bash has no one to answer, and --non-interactive means the caller
+# already decided) there is no call to make: keep today's autostash, but say so
+# out loud instead of doing it silently.
+local_patch_guard() {
+    local stamp="$1" inventory reply choice branch
+    inventory="$(local_patch_inventory)"
+    [ -n "$inventory" ] || return 0
+
+    log_warn "$INSTALL_DIR carries local work that this update would overwrite:"
+    while IFS= read -r reply; do
+        [ -n "$reply" ] && printf '    %s\n' "$reply"
+    done <<EOF
+$inventory
+EOF
+
+    branch="$(git -C "$INSTALL_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+    [ -n "$branch" ] || branch="hermes"
+    choice=stash
+    if [ "$NON_INTERACTIVE" != true ] && has_terminal; then
+        printf '\n  [s] stash and continue\n'
+        printf '  [a] abort; leave the working copy for you to handle\n'
+        printf '  [c] commit onto local/%s and continue\n' "$branch"
+        printf '  choice [s]: '
+        reply=""
+        read -r reply < /dev/tty || reply=""
+        case "$reply" in
+            a|A) choice=abort ;;
+            c|C) choice=commit ;;
+            *)    choice=stash ;;
+        esac
+        printf '\n'
+    fi
+
+    case "$choice" in
+        abort)
+            log_local_patch_disposition "aborted; working copy left untouched"
+            fail "aborted at your request: $INSTALL_DIR still carries local work (see the list above). Re-run once it is committed, stashed or moved aside." local_patch_abort
+            ;;
+        commit)
+            if local_patch_commit_local_branch "$stamp" "$branch"; then
+                log_local_patch_disposition "committed onto local/$branch; continuing"
+            else
+                log_local_patch_disposition "commit onto local/$branch failed; stopping"
+                fail "could not commit local work onto local/$branch in $INSTALL_DIR; commit or move it aside, then rerun" local_changes_blocked
+            fi
+            return 0
+            ;;
+    esac
+
+    # stash: the pre-existing fallback. An interrupted update can leave unmerged
+    # index entries, where stash aborts ("could not write index"). Dropping only
+    # the index-level conflict state keeps the working-tree changes for the stash
+    # (#4735).
+    if [ -z "$(git -C "$INSTALL_DIR" status --porcelain)" ]; then
+        # Nothing uncommitted -- the only local work is committed on its branch.
+        # `git stash push` would be a no-op that still logs as if it had parked
+        # something, which is the misreading this step exists to prevent.
+        log_local_patch_disposition "no uncommitted changes; local commit(s) stay on branch '$branch'"
+        return 0
+    fi
+    if [ -n "$(git -C "$INSTALL_DIR" ls-files --unmerged)" ]; then
+        log_warn "clearing unmerged index entries from a previous conflict"
+        git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR" local_changes_blocked
+    fi
+    run_logged "Stashing local changes" \
+        git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
+        || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun" local_changes_blocked
+    log_local_patch_disposition "stashed as hermes-install-autostash-$stamp"
+}
+
 stage_repository() {
     local pinned=false channel=""
     # An interrupted clone from an older installer can leave a .git with no
@@ -644,27 +783,15 @@ stage_repository() {
             log "Keeping its checkout: \`hermes update\` moves it (\`hermes update --set-channel main\` follows main)"
             return 0
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
-            || fail "git fetch failed$(native_detail)" git_fetch_failed
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
-        # Park local work BEFORE switching branches: checkout refuses a dirty
-        # tree that conflicts, and the reset below would discard it. Work
-        # that cannot be parked stops the install -- never overwrite it.
-        if [ -n "$(git -C "$INSTALL_DIR" status --porcelain)" ]; then
-            # An interrupted update can leave unmerged index entries, where
-            # stash aborts ("could not write index"). Dropping only the
-            # index-level conflict state keeps the working-tree changes for
-            # the stash below (#4735).
-            if [ -n "$(git -C "$INSTALL_DIR" ls-files --unmerged)" ]; then
-                log_warn "clearing unmerged index entries from a previous conflict"
-                git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR" local_changes_blocked
-            fi
-            run_logged "Stashing local changes" \
-                git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
-                || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun" local_changes_blocked
-            log_warn "local changes stashed as hermes-install-autostash-$stamp"
-        fi
+        # Maintenance step, before the fetch and the tree move that follow it:
+        # name the local work and act on the operator's call. Park it AFTER this
+        # only when they chose to -- the stash below is the fallback, not the
+        # announcement.
+        local_patch_guard "$stamp"
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+            || fail "git fetch failed$(native_detail)" git_fetch_failed
         # checkout's branch guess only sees remote refs the refspec maps, so a
         # narrow checkout (detached at its tag, no local branch) gets the branch
         # created at the fetched tip.

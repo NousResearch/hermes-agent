@@ -327,7 +327,11 @@ def admission_display(payload):
 
 
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    # Origins retain old titles/topics and auto-thread creation flags; later native messages do not.
+    # Compare routing/provenance, not display metadata or the cleared reply anchor.
+    return {key: value for key, value in source.to_dict().items()
+            if key not in ('message_id', 'chat_name', 'chat_topic',
+                           'auto_thread_created', 'auto_thread_initial_name')}
 
 
 def committed_route_envelope(authority, entry):

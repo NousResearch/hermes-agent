@@ -157,7 +157,7 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
 _SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
 
 
-async def _native_owner(tmp_path, monkeypatch, human_message_id):
+async def _native_owner(tmp_path, monkeypatch, human_message_id, source_fields=None):
     from gateway.session_ingress_context import native_callback, register_transport_home
     from plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
@@ -166,9 +166,10 @@ async def _native_owner(tmp_path, monkeypatch, human_message_id):
     runner._wire_adapter_handlers(adapter)
     register_transport_home(runner, None, tmp_path)
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
-    source = adapter.build_source(**_SOURCE)
+    fields = {**_SOURCE, **(source_fields or {})}
+    source = adapter.build_source(**fields)
     # The committed human turn keeps its platform reply anchor on the source.
-    human = MessageEvent(text='human', source=adapter.build_source(**_SOURCE, message_id=human_message_id),
+    human = MessageEvent(text='human', source=adapter.build_source(**fields, message_id=human_message_id),
                          message_id=human_message_id)
     with native_callback(runner, human, tmp_path):
         await authority.admit_native(human)
@@ -223,6 +224,76 @@ async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypa
         event = MessageEvent(text='notice', source=source, internal=True, metadata=dict(metadata))
         with pytest.raises(RuntimeStoreError, match='admission_conflict'):
             await authority.admit_automation(stranger, event, 'notice')
+    finally:
+        authority.db.close()
+
+
+_THREAD_SOURCE = dict(chat_id='100', chat_type='thread', thread_id='100',
+                      parent_chat_id='90', scope_id='80')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['completion', 'async_delegation'])
+@pytest.mark.parametrize('origin_fields,current_fields', [
+    ({}, {}),
+    ({'chat_name': 'old title'}, {'chat_name': 'new title'}),
+    ({}, {'chat_topic': 'new topic'}),
+    ({'chat_topic': 'old topic'}, {}),
+    ({'chat_topic': 'old topic'}, {'chat_topic': 'new topic'}),
+    ({'auto_thread_created': True, 'auto_thread_initial_name': 'initial title'}, {}),
+    ({'chat_name': 'old title', 'chat_topic': 'old topic', 'auto_thread_created': True,
+      'auto_thread_initial_name': 'initial title'},
+     {'chat_name': 'new title', 'chat_topic': 'new topic'}),
+], ids=['unchanged', 'title', 'topic-added', 'topic-removed', 'topic-renamed', 'auto-thread', 'combined'])
+async def test_thread_wake_ignores_display_drift(tmp_path, monkeypatch, kind, origin_fields, current_fields):
+    """Origin-derived wakes survive display changes, preserving the committed route and proof."""
+    from gateway.session_automation import committed_route_envelope
+    from gateway.session_identity import replace_source
+    runner, authority, _adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', {**_THREAD_SOURCE, **current_fields})
+    try:
+        route, sid = metadata['gateway_session_key'], metadata['gateway_session_id']
+        entry = runner.session_store._entries[route]
+        committed = committed_route_envelope(authority, entry)
+        assert committed is not None
+        entry.origin = replace_source(source, chat_name=None, chat_topic=None)
+        entry.origin = replace_source(entry.origin, **origin_fields)
+        evt = dict(type=kind, session_id='proc_fixture', delegation_id='delegate_fixture',
+                   session_key=route, platform='discord', chat_id='100', chat_type='thread',
+                   parent_session_id=sid, started_at=1.0, exit_code=0, output='done')
+        assert await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True) is True
+        assert await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(sid), pending_only=False)
+        notices = [row['payload']['native_text_v1'] for row in rows
+                   if row['payload'].get('native_text_v1', {}).get('automation')]
+        assert len(notices) == 1
+        envelope = notices[0]
+        assert envelope['source'] == {k: v for k, v in committed['source'].items() if k != 'message_id'}
+        assert envelope['provenance'] == committed['provenance']
+        assert envelope['route'] == route
+        assert envelope['automation']['owner'] == authority.logical_owner(sid)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['user_id', 'chat_id', 'thread_id', 'scope_id', 'parent_chat_id', 'profile'])
+async def test_thread_wake_display_exclusion_preserves_identity_checks(tmp_path, monkeypatch, field):
+    from gateway.session_identity import replace_source
+    runner, authority, adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', _THREAD_SOURCE)
+    try:
+        drifted = replace_source(source, chat_name='old title', chat_topic='old topic',
+                                 auto_thread_created=True, auto_thread_initial_name='initial', **{field: '7'})
+        if field == 'user_id':
+            # Shared threads have the same route for different speakers; key equality is NOT authorization.
+            assert runner.session_store._generate_session_key(drifted) == metadata['gateway_session_key']
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await authority.admit_automation(adapter, event, 'notice')
+        rows = list_session_admissions(authority.db,
+            session_id=authority.logical_owner(metadata['gateway_session_id']), pending_only=False)
+        assert not any(row['payload'].get('native_text_v1', {}).get('automation') for row in rows)
     finally:
         authority.db.close()
 

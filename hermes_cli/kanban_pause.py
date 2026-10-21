@@ -46,6 +46,38 @@ def is_paused(board: Optional[str] = None) -> bool:
         return True
 
 
+def board_of_connection(conn: Any) -> Optional[str]:
+    """Slug of the board a live connection serves, or ``None`` when it isn't a board DB.
+
+    Read from the file the connection actually opened, not from the argument the caller
+    happened to pass: ``connect()`` resolves ``board=None`` to the *current* board, while
+    ``board_dir(None)`` answers for ``default``. Keying the sentinel off the argument
+    therefore watched a different board than the tick wrote to.
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall() or ()
+    except (sqlite3.Error, AttributeError):  # pragma: no cover - closed/odd connection
+        return None
+    path = next((Path(row[2]) for row in rows if row[1] == "main" and row[2]), None)
+    if path is None:
+        return None
+    kb = _kb()
+    try:
+        parts = path.resolve().parent.resolve().relative_to(kb.boards_root().resolve()).parts
+    except (ValueError, OSError):
+        return kb.DEFAULT_BOARD
+    return parts[0] if len(parts) == 1 else kb.DEFAULT_BOARD
+
+
+def is_paused_for(conn: Any) -> bool:
+    """Is the board this *connection* serves paused?
+
+    The dispatcher's guard. Callers pass ``board=None`` (the CLI and the daemon both do),
+    so the sentinel has to be resolved the way the connection resolved it.
+    """
+    return is_paused(board_of_connection(conn))
+
+
 def get_state(board: Optional[str] = None) -> Optional[dict[str, Any]]:
     """``{"board", "reason", "paused_at"}`` when paused, else ``None``.
 

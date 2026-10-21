@@ -248,6 +248,14 @@ _MEMORY_CEILING_ERROR_CODES = frozenset({
     "prefill_memory_exceeded", "prefill_memory_aborted", "omlx_prefill_memory_exceeded",
 })
 
+# Account-pool gateways (WorkBuddy2API) when every pooled account is breaker-
+# tripped, cooling down or parked by a daily quota: "no usable account for realm
+# …: all are disabled, cooling down, expired or parked by the daily token limit".
+# The pool heals on its own, so this is an overload; its "token limit" tail would
+# otherwise read as a context overflow, and compressing a session that is not
+# too large ends in a gateway session reset. Checked before overflow.
+_ACCOUNT_POOL_EXHAUSTED_PATTERNS = ("no usable account",)
+
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
 # generic; vLLM; Ollama; llama.cpp; Chinese; Z.AI (1210); Bedrock; Together.
@@ -622,10 +630,11 @@ _IMAGE_TOOL_RULES = (
 )
 
 # Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /
-# model-load OOM as 503). Empty-response advisories must not enter compression.
+# model-load OOM as 503). Empty-response advisories and an exhausted account
+# pool must not enter compression.
 _OVERFLOW_AS_5XX_RULES = (
     (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
-    (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
+    (_ACCOUNT_POOL_EXHAUSTED_PATTERNS, _V_OVERLOADED), (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
 
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
@@ -648,6 +657,7 @@ _STREAM_RENDER_ERROR_PATTERNS = ("error rendering", "rendering prompt", "jinja t
 
 # Status-less message path, head (before usage-limit disambiguation).
 _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
+                       (_ACCOUNT_POOL_EXHAUSTED_PATTERNS, _V_OVERLOADED),
                        (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),
                        (_ROLE_ALTERNATION_PATTERNS, _V_ROLE_ALTERNATION),
                        (_STREAM_RENDER_ERROR_PATTERNS, _V_FORMAT_ERROR)) + _IMAGE_TOOL_RULES

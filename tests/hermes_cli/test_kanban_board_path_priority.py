@@ -243,6 +243,69 @@ def test_pin_first_board_resolution_without_pin_keeps_explicit_board(monkeypatch
         assert "sycode-trading" in str(kb.kanban_db_path(board="sycode-trading"))
 
 
+# ---------------------------------------------------------------------------
+# #136799: a hand-set legacy-global pin must not strand cards off a named
+# active board. HERMES_KANBAN_DB left pointing at <root>/kanban.db (an
+# exported shell / systemd leftover) used to win over the current board for
+# board=None callers, so kanban_create wrote cards into the legacy global file
+# that no board-scoped consumer — the dispatcher only watches the boards a
+# user can see — ever picked up. Machine flows keep the pin: they always
+# resolve inside a fence (see the fenced-caller block above).
+# ---------------------------------------------------------------------------
+
+def _named_current_board_env(monkeypatch, tmp_path, slug):
+    """A kanban home whose current board is a real named *slug*."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    kb.init_db()
+    kb.create_board(slug)
+    kb.set_current_board(slug)
+    return home
+
+
+def test_legacy_global_pin_routes_to_named_current_board(monkeypatch, tmp_path):
+    """HERMES_KANBAN_DB=<root>/kanban.db with a named active board routes
+    board=None resolution to that board's DB instead of the legacy global
+    file (#136799)."""
+    home = _named_current_board_env(monkeypatch, tmp_path, "wsl-master")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    path = kb.kanban_db_path(board=None)
+    assert path == kb.board_dir("wsl-master") / "kanban.db", (
+        f"a legacy-global pin must not strand cards off the active board, got {path}"
+    )
+
+
+def test_legacy_global_pin_keeps_global_file_when_current_is_default(monkeypatch, tmp_path):
+    """The reroute only fires for a named active board: with `default` current
+    the legacy global file IS that board's DB (back-compat), pin or no pin."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    kb.init_db()  # no named board, no current file -> active board is default
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    assert kb.kanban_db_path(board=None) == home / "kanban.db"
+
+
+def test_non_legacy_pin_stays_exact_with_named_current_board(monkeypatch, tmp_path):
+    """A pin to any other file is the caller's deliberate override — a named
+    active board must not hijack it."""
+    _named_current_board_env(monkeypatch, tmp_path, "wsl-master")
+    pinned = tmp_path / "pinned.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    assert kb.kanban_db_path(board=None) == pinned
+
+
+def test_worker_fence_keeps_legacy_global_pin_after_board_switch(monkeypatch, tmp_path):
+    """The dispatcher injects the resolved DB path of the spawn-time board; for
+    `default` that IS the legacy global file. A dispatched worker
+    (HERMES_KANBAN_TASK) must keep resolving through it even once the current
+    board has since been switched — that pin is the worker's isolation, so the
+    #136799 reroute must not fire under the fence."""
+    home = _named_current_board_env(monkeypatch, tmp_path, "wsl-master")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_136799")
+    assert kb.kanban_db_path(board=None) == home / "kanban.db"
+
+
 def test_notifier_seam_connect_lands_on_pinned_db(monkeypatch, tmp_path):
     """Integration seam (the screen's repro shape): with HERMES_KANBAN_DB
     pinned, the notifier's per-slug connect(board=slug) inside the machine-flow

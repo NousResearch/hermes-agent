@@ -3,7 +3,8 @@
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
 back-compat), other boards at ``<root>/kanban/boards/<slug>/``; a worker on one board never sees
 another. Board resolution: ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` (pins the
-file path) > ``<root>/kanban/current`` > ``default`` — but only for unfenced callers; the dispatcher
+file path; an unfenced pin to the legacy global location reroutes to the named active board, #136799)
+> ``<root>/kanban/current`` > ``default`` — but only for unfenced callers; the dispatcher
 injects these into workers, and dispatched workers (``HERMES_KANBAN_TASK``), delegated children and
 board-enumerating machine flows (gateway notifier/watcher/dispatcher, ``pin_first_board_resolution``)
 always resolve through the pin, so workers physically cannot see other boards.
@@ -463,24 +464,6 @@ def get_current_board() -> str:
     return DEFAULT_BOARD
 
 
-def set_current_board(slug: str) -> Path:
-    """Persist ``slug`` as the active board; returns the file written. Does NOT
-    check the board exists — callers do (so ``boards switch <typo>`` errors)."""
-    _assert_not_delegated_child_mutation()
-    normed = _require_slug(slug)
-    path = current_board_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(normed + "\n", encoding="utf-8")
-    return path
-
-
-def clear_current_board() -> None:
-    """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
-    _assert_not_delegated_child_mutation()
-    with contextlib.suppress(FileNotFoundError):
-        current_board_path().unlink()
-
-
 def board_dir(board: Optional[str] = None) -> Path:
     """``<root>/kanban/boards/<slug>/``. For ``default`` this holds metadata
     only (board.json, workspaces/, logs/) — its DB stays at ``<root>/kanban.db``
@@ -546,12 +529,22 @@ def _board_path(
     is honored, but machine flows that enumerate boards (gateway notifier /
     watcher / dispatcher ticks) and dispatched or delegated workers keep
     resolving through the pin. Without explicit intent the ``env_var`` override
-    pins the file, else legacy ``<root>/<default_parts>`` for the ``default``
+    pins the file — except that an unfenced pin to the legacy global
+    ``<root>/<default_parts>`` location reroutes to the named active board
+    (#136799) — else legacy ``<root>/<default_parts>`` for the ``default``
     board, else ``board_dir(slug)/leaf``."""
     pin = os.environ.get(env_var, "").strip() if env_var else ""
     slug = _explicit_board_slug(board)
     if pin and (slug is None or _explicit_board_intent_pinned()):
-        return Path(pin).expanduser()
+        pinned = Path(pin).expanduser()
+        # An unfenced legacy-global pin would strand cards off a named active
+        # board (#136799); every machine flow resolves inside a fence where
+        # the pin is the worker isolation and keeps winning.
+        if slug is None and not _explicit_board_intent_pinned():
+            routed = reroute_legacy_global_pin(env_var, pinned, default_parts, leaf)
+            if routed is not None:
+                return routed
+        return pinned
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -4209,10 +4202,13 @@ from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,
     board_metadata_path,
+    clear_current_board,
     create_board,
     list_boards,
     read_board_metadata,
     remove_board,
+    reroute_legacy_global_pin,
+    set_current_board,
     write_board_metadata,
 )
 from hermes_cli.kanban_db_connect import (

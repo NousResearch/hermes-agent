@@ -9,11 +9,15 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import time
 from typing import Any
 from typing import Optional
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 
 def _dir_holds_board(d: Path) -> bool:
@@ -193,6 +197,53 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     import shutil
     shutil.rmtree(d)
     return {"slug": normed, "action": "deleted", "new_path": ""}
+
+
+def set_current_board(slug: str) -> Path:
+    """Persist ``slug`` as the active board; returns the file written. Does NOT
+    check the board exists — callers do (so ``boards switch <typo>`` errors)."""
+    _kb._assert_not_delegated_child_mutation()
+    normed = _kb._require_slug(slug)
+    path = _kb.current_board_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normed + "\n", encoding="utf-8")
+    return path
+
+
+def clear_current_board() -> None:
+    """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
+    _kb._assert_not_delegated_child_mutation()
+    with contextlib.suppress(FileNotFoundError):
+        _kb.current_board_path().unlink()
+
+
+def reroute_legacy_global_pin(
+    env_var: str, pinned: Path, default_parts: tuple[str, ...], leaf: str,
+) -> Optional[Path]:
+    """Where an unfenced ``env_var`` pin (``HERMES_KANBAN_DB`` & friends) left
+    pointing at this resolver's legacy global location should really write.
+
+    A hand-set pin to ``<root>/<default_parts>`` (an exported shell/systemd
+    leftover) strands writes off a named active board: board-scoped consumers —
+    the dispatcher watches the boards root only — never see them (#136799).
+    Returns the active board's own path to use instead, or ``None`` when the
+    pin is anything else (a deliberate override, or the ``default`` active
+    board, whose file IS the legacy global location). Callers on the machine
+    side of a fence never get here: for them the pin is the worker isolation
+    and the dispatcher's injected path (for ``default``, the global file
+    itself) must keep winning."""
+    current = _kb.get_current_board()
+    if current == _kb.DEFAULT_BOARD:
+        return None
+    if pinned.resolve(strict=False) != _kb.kanban_home().joinpath(*default_parts).resolve(strict=False):
+        return None
+    routed = _kb.board_dir(current) / leaf
+    _log.warning(
+        "%s pins the legacy global %s while the active board is '%s'; "
+        "routing to %s so board-scoped consumers see it (pass board='%s' to silence)",
+        env_var, pinned, current, routed, current,
+    )
+    return routed
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

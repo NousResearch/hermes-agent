@@ -10,12 +10,17 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 // Keep config hooks, settings scope, switch hook and API routing real; stub
 // only the transport and unrelated shell surfaces. No live backend is used.
-vi.mock('@/store/profile', () => ({
-  $activeGatewayProfile: atom('default'),
-  $profiles: atom([{ name: 'default', is_default: true }]),
-  $showAllProfiles: atom(false),
-  normalizeProfileKey: (value?: string | null) => value?.trim() || 'default'
-}))
+vi.mock('@/store/profile', () => {
+  const activeProfile = atom('default')
+
+  return {
+    $activeGatewayProfile: activeProfile,
+    $activeProfile: activeProfile,
+    $profiles: atom([{ name: 'default', is_default: true }]),
+    $showAllProfiles: atom(false),
+    normalizeProfileKey: (value?: string | null) => value?.trim() || 'default'
+  }
+})
 vi.mock('@/store/projects', () => ({
   $worktreeRefreshToken: atom(0),
   repoDiscoveryPolicyFromConfig: () => ({}),
@@ -38,6 +43,19 @@ import { hermesConfigKey } from '../hooks/use-config-record'
 import { ConfigSettings } from './config-settings'
 
 function modelResponse(path: string) {
+  if (path === '/api/delegation/routing') {
+    return {
+      configured: 'default',
+      blocked_reason: null,
+      backends: [
+        { name: 'default', label: 'Default', description: '', available: true, reason: '', builtin: true }
+      ],
+      model_map: { options: [], default: null },
+      profile_routes: { profiles: [], default: null },
+      profiles: ['default']
+    }
+  }
+
   if (path === '/api/model/info') {
     return { provider: 'fixture', model: 'fixture-model' }
   }

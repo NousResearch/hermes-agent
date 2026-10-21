@@ -535,7 +535,7 @@ function ConfigSettingsInner({
       {/* Routing picks the strategy and owns its routes; the subagent model row below is the
           Default strategy's route and goes inert while another strategy decides. */}
       <DelegationRoutingSlot
-        readScope={scopeProfile}
+        readScope={scopeProfile.profile}
         sectionId={activeSectionId}
         subpage={subpage}
         writeScope={writeScope}

@@ -1,0 +1,156 @@
+{
+  "fixtureVersion": 1,
+  "name": "tenant-section-lock-freezes-inherited",
+  "description": "Proves rule-3, rule-4: A tenant lock on a section freezes the resolved value from levels at or above it and refuses lower writes under it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "terminal": {
+          "backend": "local",
+          "timeout": 60
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "terminal": {
+          "timeout": 180
+        }
+      },
+      "locks": [
+        "terminal"
+      ]
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {
+        "display": {
+          "personality": "concise"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "terminal": {
+          "timeout": 5
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "terminal": "docker"
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "model": {
+          "default": "hermes-4-70b"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "backend": "local",
+        "timeout": 180
+      },
+      "display": {
+        "personality": "concise"
+      },
+      "model": {
+        "default": "hermes-4-70b"
+      }
+    },
+    "provenance": {
+      "terminal.backend": "global",
+      "terminal.timeout": "tenant",
+      "display.personality": "group",
+      "model.default": "profile"
+    },
+    "locks": [
+      {
+        "path": "terminal",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal.timeout",
+      "value": 30,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "model.default",
+      "value": "hermes-4-405b",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "unset",
+      "path": "terminal.timeout",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "lock",
+      "path": "terminal.backend",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal",
+        "lockedBy": "tenant"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "terminal": {
+        "backend": "local",
+        "timeout": 60,
+        "persistent": false
+      },
+      "display": {
+        "personality": ""
+      }
+    },
+    "expect": {
+      "terminal": {
+        "backend": "local",
+        "timeout": 180,
+        "persistent": false
+      },
+      "display": {
+        "personality": "concise"
+      },
+      "model": {
+        "default": "hermes-4-70b"
+      }
+    }
+  }
+}

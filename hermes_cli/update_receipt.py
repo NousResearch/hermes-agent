@@ -807,7 +807,7 @@ def _bare_collection_enabled() -> Optional[bool]:
     from hermes_constants import get_hermes_home
 
     try:
-        (get_hermes_home() / "config.yaml").stat()
+        (get_hermes_home() / "config.yaml").stat()  # config-reader: ok — a pre-swap interpreter; no backend import here
     except FileNotFoundError:
         return False
     except OSError:

@@ -1,0 +1,73 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-no-groups",
+  "description": "Proves d5-no-groups: A principal in no group has no group level; groupProvenance is empty and no lock names a group.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": "g"
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "b": "t"
+      },
+      "locks": [
+        "b"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "c": "p"
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": "g",
+      "b": "t",
+      "c": "p"
+    },
+    "provenance": {
+      "a": "global",
+      "b": "tenant",
+      "c": "principal"
+    },
+    "groupProvenance": {},
+    "locks": [
+      {
+        "path": "b",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "b",
+      "value": "p",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "b",
+        "lockedBy": "tenant"
+      }
+    }
+  ]
+}

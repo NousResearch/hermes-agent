@@ -300,8 +300,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
-from gateway.platforms.api_server_request_options import (
-    _request_reasoning_config, _request_service_tier)
+from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
 
 
 def _apply_runtime_agent_overrides(
@@ -4463,9 +4462,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 retryable=False)
             return False
         try:
-            mws = [mw for mw in (
-                self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
-                security_headers_middleware) if mw is not None]
+            from gateway.platforms.api_server_config_guard import config_unavailable_middleware
+            mws = [mw for mw in (  # the config guard outermost: entering a profile scope reads config
+                config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
+                body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and

@@ -267,6 +267,7 @@ def claw_command(args):
 
 def _cmd_migrate(args):
     """Run the OpenClaw → Hermes migration: preflight, preview, confirm, back up, apply."""
+    from hermes_cli.config_backend import config_exists
     opts = SimpleNamespace(**{k: getattr(args, k, d) for k, d in _MIGRATE_ARG_DEFAULTS})
     # Explicit --source, else first existing of current + legacy names; default to ~/.openclaw.
     opts.source_dir = (Path(opts.source) if opts.source
@@ -297,7 +298,7 @@ def _cmd_migrate(args):
     _warn_if_openclaw_running(opts.yes)
     _warn_if_gateway_running(opts.yes)
     # Ensure config.yaml exists before migration tries to read it
-    if not get_config_path().exists():
+    if not config_exists(get_config_path()):
         save_config(load_config())
     run_migrator = _load_migrator(script_path, opts)
     if run_migrator is None or not _preview_migration(run_migrator, opts):

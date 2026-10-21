@@ -31,7 +31,7 @@ When you authenticate with a **service-account token**, that token is itself the
    chmod 600 ~/.hermes/.op.env
    ```
 
-   Hermes auto-loads `.op.env` at startup, **after** `.env`, and **never** overrides a token already present in the environment. `.op.env` is gitignored so the token never enters a committed file.
+   Hermes auto-loads `.op.env` at startup, **after** `.env`, and **never** overrides a token already present in the environment. `.op.env` is gitignored so the token never enters a committed file. It is protected like `.env`: the agent's file tools cannot read or write it, chat file delivery never sends it, the dashboard Files tab does not list it, and a terminal command that writes to it needs approval.
 
 3. **Via systemd `EnvironmentFile` (Linux gateway).** If you run the gateway under systemd, you can inject the token directly into the service environment:
 
@@ -152,6 +152,8 @@ Successful, complete pulls are cached in-process and on disk under `<hermes_home
 - is invalidated when the token, account, `OP_SESSION_*` variables, or the set of references change;
 - is **not** written when a pull had any per-reference error, so a transient auth failure isn't frozen in for the TTL;
 - is fully disabled — reads *and* writes — when `cache_ttl_seconds: 0`.
+
+The file holds secret values in plain text, so the agent's file tools cannot read or write it, chat file delivery never sends it, and the dashboard Files tab does not list it. The `terminal` tool runs as your OS user and can still read it; see [Security](../security.md).
 
 ## Security notes
 

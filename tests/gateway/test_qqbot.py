@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-from types import SimpleNamespace
 from unittest import mock
 
 import httpx
@@ -100,21 +99,112 @@ class TestVoiceAttachmentSSRFProtection:
 
 
     def test_connect_uses_redirect_guard_hook(self):
-        from gateway.platforms.base import ssrf_redirect_guard
         from plugins.platforms.qqbot.adapter import QQAdapter
 
         client = mock.AsyncMock()
-        with mock.patch("plugins.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
+        api = mock.Mock()
+        api.setup = mock.Mock()
+        api.get_gateway_url = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
+        with mock.patch(
+            "plugins.platforms.qqbot.adapter.platform_http_client", return_value=client,
+        ) as http_client, mock.patch("qqbot_agent_sdk.QQApiClient", return_value=api):
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
-            adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
-
             connected = asyncio.run(adapter.connect())
 
         assert connected is False
-        assert async_client_cls.call_count == 1
-        kwargs = async_client_cls.call_args.kwargs
-        assert kwargs.get("follow_redirects") is True
-        assert kwargs.get("event_hooks", {}).get("response") == [ssrf_redirect_guard]
+        http_client.assert_called_once_with()
+        api.setup.assert_called_once_with(client)
+
+    def test_connect_failure_logs_the_error_without_a_traceback(self, caplog):
+        import logging
+
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        client = mock.AsyncMock()
+        api = mock.Mock()
+        api.setup = mock.Mock()
+        api.get_gateway_url = mock.AsyncMock(
+            side_effect=RuntimeError(
+                "QQ Bot token response missing access_token: "
+                "{'code': 100016, 'message': 'invalid appid or secret'}"
+            )
+        )
+        with mock.patch(
+            "plugins.platforms.qqbot.adapter.platform_http_client", return_value=client,
+        ), mock.patch("qqbot_agent_sdk.QQApiClient", return_value=api), caplog.at_level(
+            logging.ERROR, logger="plugins.platforms.qqbot.adapter",
+        ):
+            adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+            connected = asyncio.run(adapter.connect())
+
+        assert connected is False
+        assert "invalid appid or secret" in caplog.text
+        assert "Traceback" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_connect_stays_unconfirmed_until_sdk_ready(self):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        client = mock.AsyncMock()
+        api = mock.Mock()
+        api.setup = mock.Mock()
+        api.get_gateway_url = mock.AsyncMock(return_value="wss://example.test/websocket")
+
+        class _WS:
+            def __init__(self, callbacks, log_tag=None):
+                self.callbacks = callbacks
+
+            def start(self, gateway_url, main_loop):
+                self.started = (gateway_url, main_loop)
+
+        with mock.patch(
+            "plugins.platforms.qqbot.adapter.platform_http_client", return_value=client,
+        ), mock.patch("qqbot_agent_sdk.QQApiClient", return_value=api), mock.patch(
+            "plugins.platforms.qqbot.sdk_bridge.scoped_websocket_class", return_value=_WS,
+        ):
+            adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+            connected = await adapter.connect()
+
+        assert connected is True
+        assert adapter._sdk_connected is False
+        assert adapter.is_connected is False
+        assert adapter.send_path_degraded is True
+        adapter._sdk_callbacks().on_connected()
+        assert adapter._sdk_connected is True
+        assert adapter.is_connected is True
+        assert adapter.send_path_degraded is False
+
+    def test_open_failure_before_listen_is_retryable_fatal(self):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._running = True
+        adapter._qq_ws = object()
+        adapter._qq_api = mock.Mock()
+        adapter._sdk_connected = True
+        callbacks = adapter._sdk_callbacks()
+        callbacks.on_disconnected()
+        callbacks.on_fatal_error(
+            "qq_gateway_open_failed",
+            "QQ gateway socket exited before the listen loop started",
+        )
+
+        assert adapter._sdk_connected is False
+        assert adapter.is_connected is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is True
+        assert adapter.fatal_error_code == "qq_gateway_open_failed"
+
+    def test_media_download_headers_carry_hermes_user_agent(self):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._qq_api = mock.Mock(access_token="tok")
+        headers = adapter._qq_media_headers()
+
+        assert headers["Authorization"] == "QQBot tok"
+        assert "Hermes/" in headers["User-Agent"]
+        assert headers["User-Agent"].startswith("QQBotAdapter/")
 
 
 # ---------------------------------------------------------------------------
@@ -159,49 +249,6 @@ class TestVoiceAttachmentTempCleanup:
         assert "wav_path" in seen
         assert not os.path.exists(seen["wav_path"])
 
-
-# ---------------------------------------------------------------------------
-# WebSocket proxy handling
-# ---------------------------------------------------------------------------
-
-class TestQQWebSocketProxy:
-    @pytest.mark.asyncio
-    async def test_open_ws_honors_proxy_env(self, monkeypatch):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-
-        for key in (
-            "WSS_PROXY",
-            "wss_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-        ):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
-
-        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
-
-        seen_session_kwargs = {}
-        seen_ws_kwargs = {}
-
-        class FakeSession:
-            def __init__(self, **kwargs):
-                seen_session_kwargs.update(kwargs)
-                self.closed = False
-
-            async def close(self):
-                self.closed = True
-
-            async def ws_connect(self, *args, **kwargs):
-                seen_ws_kwargs.update(kwargs)
-                return mock.AsyncMock(closed=False)
-
-        with mock.patch("plugins.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
-            await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
-
-        assert seen_session_kwargs.get("trust_env") is True
-        assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
 # ---------------------------------------------------------------------------
 # _strip_at_mention
@@ -298,99 +345,29 @@ class TestResolveSTTConfig:
 # ---------------------------------------------------------------------------
 # _detect_message_type
 # ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# QQCloseError
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# _dispatch_payload
-# ---------------------------------------------------------------------------
-
-class TestDispatchPayload:
-    def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        adapter = QQAdapter(_make_config(**extra))
-        return adapter
-
-    def test_unknown_op(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        # Should not raise
-        adapter._dispatch_payload({"op": 99, "d": {}})
-        # last_seq should remain None
-        assert adapter._last_seq is None
-
-
-    def test_seq_increments(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._dispatch_payload({"op": 0, "t": "READY", "s": 5, "d": {}})
-        adapter._dispatch_payload({"op": 0, "t": "SOME_EVENT", "s": 10, "d": {}})
-        assert adapter._last_seq == 10
-
-
-# ---------------------------------------------------------------------------
-# READY / RESUMED handling
-# ---------------------------------------------------------------------------
-
-class TestReadyHandling:
-    def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter(_make_config(**extra))
-
-    def test_ready_stores_session(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._dispatch_payload({
-            "op": 0, "t": "READY",
-            "s": 1,
-            "d": {"session_id": "sess_abc123"},
-        })
-        assert adapter._session_id == "sess_abc123"
-
-
-# ---------------------------------------------------------------------------
-# _parse_json
-# ---------------------------------------------------------------------------
-
-class TestParseJson:
-    def _fn(self, raw):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter._parse_json(raw)
-
-
-    def test_invalid_json(self):
-        result = self._fn("not json")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _build_text_body
-# ---------------------------------------------------------------------------
-
-class TestBuildTextBody:
-    def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter(_make_config(**extra))
-
-    def test_plain_text(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=False)
-        body = adapter._build_text_body("hello world")
-        assert body["msg_type"] == 0  # MSG_TYPE_TEXT
-        assert body["content"] == "hello world"
-
-    def test_markdown_text(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=True)
-        body = adapter._build_text_body("**bold** text")
-        assert body["msg_type"] == 2  # MSG_TYPE_MARKDOWN
-        assert body["markdown"]["content"] == "**bold** text"
-
-
-# ---------------------------------------------------------------------------
 # _wait_for_reconnection / send reconnection wait
 # ---------------------------------------------------------------------------
+
+
+class TestSdkTextSend:
+    """Outbound text goes through QQApiClient.send_text, including the markdown flag."""
+
+    def _make_adapter(self, **extra):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    @pytest.mark.asyncio
+    async def test_markdown_flag_reaches_sdk(self):
+        adapter = self._make_adapter(markdown_support=True)
+        adapter._qq_api = mock.Mock()
+        adapter._qq_api.send_text = mock.AsyncMock(return_value={"id": "m1"})
+
+        result = await adapter._send_text_to("c2c", "openid", "hello")
+
+        assert result.success
+        adapter._qq_api.send_text.assert_awaited_once()
+        assert adapter._qq_api.send_text.await_args.kwargs["markdown"] is True
+
 
 class TestWaitForReconnection:
     """Test that send() waits for reconnection instead of silently dropping."""
@@ -405,14 +382,8 @@ class TestWaitForReconnection:
         adapter = self._make_adapter(app_id="a", client_secret="b")
         # Initially disconnected
         adapter._running = False
-        adapter._http_client = mock.MagicMock()
-
-        # Simulate reconnection after 0.3s (faster than real interval)
-        async def fake_api_request(*args, **kwargs):
-            return {"id": "msg_123"}
-
-        adapter._api_request = fake_api_request
-        adapter._ensure_token = mock.AsyncMock()
+        adapter._qq_api = mock.Mock()
+        adapter._qq_api.send_text = mock.AsyncMock(return_value={"id": "msg_123"})
         adapter._RECONNECT_POLL_INTERVAL = 0.1
         adapter._RECONNECT_WAIT_SECONDS = 5.0
 
@@ -420,7 +391,8 @@ class TestWaitForReconnection:
         async def reconnect_after_delay():
             await asyncio.sleep(0.2)
             adapter._running = True
-            adapter._ws = SimpleNamespace(closed=False)
+            adapter._qq_ws = object()
+            adapter._sdk_connected = True
 
         asyncio.get_event_loop().create_task(reconnect_after_delay())
 
@@ -465,162 +437,6 @@ class TestQQTimeoutErrorNormalization:
             f"_is_timeout_error must recognise {result.error!r}"
         )
 
-
-
-# ---------------------------------------------------------------------------
-# ChunkedUploader
-# ---------------------------------------------------------------------------
-
-
-
-
-
-class TestChunkedUploadHelpers:
-
-    def test_read_chunk_short_read_raises(self, tmp_path):
-        from plugins.platforms.qqbot.chunked_upload import _read_file_chunk
-        f = tmp_path / "x.bin"
-        f.write_bytes(b"hi")
-        with pytest.raises(IOError):
-            _read_file_chunk(str(f), 0, 100)
-
-
-    def test_parse_prepare_response_wrapped_in_data(self):
-        from plugins.platforms.qqbot.chunked_upload import _parse_prepare_response
-        raw = {
-            "data": {
-                "upload_id": "uid-42",
-                "block_size": 4096,
-                "parts": [
-                    {"part_index": 1, "presigned_url": "https://cos/1", "block_size": 4096},
-                    {"index": 2, "url": "https://cos/2"},
-                ],
-                "concurrency": 3,
-                "retry_timeout": 90,
-            }
-        }
-        r = _parse_prepare_response(raw)
-        assert r.upload_id == "uid-42"
-        assert r.block_size == 4096
-        assert len(r.parts) == 2
-        assert r.parts[0].presigned_url == "https://cos/1"
-        assert r.parts[1].index == 2
-        assert r.concurrency == 3
-        assert r.retry_timeout == 90.0
-
-
-class TestChunkedUploaderFlow:
-    """End-to-end prepare / PUT / part_finish / complete flow with mocked HTTP.
-
-    Verifies the state machine matches the QQ v2 contract without hitting the network.
-    """
-
-    @pytest.mark.asyncio
-    async def test_full_upload_two_parts_success(self, tmp_path):
-        from plugins.platforms.qqbot.chunked_upload import ChunkedUploader
-
-        # Two-part file.
-        f = tmp_path / "vid.mp4"
-        f.write_bytes(b"A" * 5_000_000 + b"B" * 3_000_000)
-
-        # Mock api_request — handles prepare, part_finish, complete based on URL.
-        api_calls = []
-
-        async def fake_api_request(method, path, *, body=None, timeout=None):
-            api_calls.append((method, path, body))
-            if path.endswith("/upload_prepare"):
-                return {
-                    "upload_id": "uid-xyz",
-                    "block_size": 5_000_000,
-                    "parts": [
-                        {"part_index": 1, "presigned_url": "https://cos.example/p1"},
-                        {"part_index": 2, "presigned_url": "https://cos.example/p2"},
-                    ],
-                    "concurrency": 1,
-                }
-            if path.endswith("/upload_part_finish"):
-                return {}
-            # complete
-            return {"file_info": "FILEINFO_TOKEN", "file_uuid": "u-1"}
-
-        # Mock http_put — always returns 200.
-        put_calls = []
-
-        class _FakeResp:
-            status_code = 200
-            text = ""
-
-        async def fake_put(url, data=None, headers=None):
-            put_calls.append((url, len(data), headers))
-            return _FakeResp()
-
-        uploader = ChunkedUploader(
-            api_request=fake_api_request,
-            http_put=fake_put,
-            log_tag="QQBot:TEST",
-        )
-        result = await uploader.upload(
-            chat_type="c2c",
-            target_id="user-openid-1",
-            file_path=str(f),
-            file_type=2,  # MEDIA_TYPE_VIDEO
-            file_name="vid.mp4",
-        )
-
-        assert result["file_info"] == "FILEINFO_TOKEN"
-        # Two PUTs, one per part.
-        assert len(put_calls) == 2
-        assert put_calls[0][0] == "https://cos.example/p1"
-        assert put_calls[1][0] == "https://cos.example/p2"
-        # Prepare + 2 part_finish + complete = 4 api calls.
-        assert len(api_calls) == 4
-        assert api_calls[0][1].endswith("/upload_prepare")
-        assert api_calls[1][1].endswith("/upload_part_finish")
-        assert api_calls[2][1].endswith("/upload_part_finish")
-        # complete path reuses /files.
-        assert api_calls[3][1].endswith("/files")
-        assert api_calls[3][2] == {"upload_id": "uid-xyz"}
-
-    @pytest.mark.asyncio
-    async def test_group_paths(self, tmp_path):
-        """Group uploads hit /v2/groups/... instead of /v2/users/..."""
-        from plugins.platforms.qqbot.chunked_upload import ChunkedUploader
-
-        f = tmp_path / "a.bin"
-        f.write_bytes(b"x" * 100)
-
-        seen_paths = []
-
-        async def fake_api_request(method, path, *, body=None, timeout=None):
-            seen_paths.append(path)
-            if path.endswith("/upload_prepare"):
-                return {
-                    "upload_id": "gid-1",
-                    "block_size": 100,
-                    "parts": [{"part_index": 1, "presigned_url": "https://cos/g1"}],
-                }
-            if path.endswith("/upload_part_finish"):
-                return {}
-            return {"file_info": "GFILE"}
-
-        class _R:
-            status_code = 200
-            text = ""
-
-        async def fake_put(url, data=None, headers=None):
-            return _R()
-
-        u = ChunkedUploader(fake_api_request, fake_put, "QQBot:T")
-        await u.upload(
-            chat_type="group",
-            target_id="grp-openid-1",
-            file_path=str(f),
-            file_type=4,
-            file_name="a.bin",
-        )
-        assert all("/v2/groups/" in p for p in seen_paths)
-        assert any(p.endswith("/upload_prepare") for p in seen_paths)
-        assert any(p.endswith("/files") for p in seen_paths)
 
 
 # ---------------------------------------------------------------------------
@@ -1091,47 +907,6 @@ class TestSendUpdatePrompt:
         datas = [b["action"]["data"] for b in dd["content"]["rows"][0]["buttons"]]
         assert datas == ["update_prompt:y", "update_prompt:n"]
 
-
-# ---------------------------------------------------------------------------
-# _send_identify includes INTERACTION intent
-# ---------------------------------------------------------------------------
-
-class TestIdentifyIntents:
-    """Verify the WebSocket identify payload includes the INTERACTION intent bit."""
-
-    def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter(_make_config(app_id="a", client_secret="b"))
-
-    @pytest.mark.asyncio
-    async def test_intents_include_interaction_bit(self):
-        adapter = self._make_adapter()
-
-        # Mock token retrieval and WebSocket
-        adapter._access_token = "fake_token"
-        adapter._token_expires_at = 9999999999.0
-
-        sent_payloads = []
-
-        class FakeWS:
-            closed = False
-
-            async def send_json(self, payload):
-                sent_payloads.append(payload)
-
-        adapter._ws = FakeWS()
-        await adapter._send_identify()
-
-        assert len(sent_payloads) == 1
-        intents = sent_payloads[0]["d"]["intents"]
-
-        # Verify all expected intent bits are present
-        assert intents & (1 << 25), "GROUP_MESSAGES (1<<25) missing"
-        assert intents & (1 << 30), "GUILD_AT_MESSAGE (1<<30) missing"
-        assert intents & (1 << 12), "DIRECT_MESSAGES (1<<12) missing"
-        assert intents & (1 << 26), "INTERACTION (1<<26) missing"
-
-
 # ---------------------------------------------------------------------------
 # _process_attachments: video/file path exposure
 # ---------------------------------------------------------------------------
@@ -1170,87 +945,4 @@ class TestProcessAttachmentsPathExposure:
 
 
 
-
-# ---------------------------------------------------------------------------
-# WebSocket op 7 (Server Reconnect) and op 9 (Invalid Session)
-# ---------------------------------------------------------------------------
-
-class TestOp7ServerReconnect:
-    """Verify op 7 triggers WS close (which triggers reconnect in outer loop)."""
-
-    def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter(_make_config(app_id="a", client_secret="b"))
-
-    def test_op7_closes_websocket(self):
-        adapter = self._make_adapter()
-        adapter._session_id = "sess_keep"
-        adapter._last_seq = 42
-
-        close_called = []
-
-        class FakeWS:
-            closed = False
-
-            async def close(self):
-                close_called.append(True)
-
-        adapter._ws = FakeWS()
-        adapter._dispatch_payload({"op": 7, "d": None})
-
-        # Session should be preserved for Resume
-        assert adapter._session_id == "sess_keep"
-        assert adapter._last_seq == 42
-
-
-class TestOp9InvalidSession:
-    """Verify op 9 handles resumable vs non-resumable sessions."""
-
-    def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter(_make_config(app_id="a", client_secret="b"))
-
-
-    @pytest.mark.asyncio
-    async def test_op9_non_resumable_triggers_ws_close(self):
-        adapter = self._make_adapter()
-        adapter._session_id = "s"
-        adapter._last_seq = 1
-        close_called = []
-
-        class FakeWS:
-            closed = False
-
-            async def close(self):
-                close_called.append(True)
-                self.closed = True
-
-        adapter._ws = FakeWS()
-        adapter._dispatch_payload({"op": 9, "d": False})
-        await asyncio.sleep(0)
-
-        assert close_called == [True]
-
-
-# ---------------------------------------------------------------------------
-# Close code classification
-# ---------------------------------------------------------------------------
-
-
-
-class TestReadEventsClosedWsGuard:
-    """Regression: a closed-but-non-None ws must raise on entry, not return
-    normally, so _listen_loop goes through reconnect/backoff instead of
-    busy-looping at 100% CPU (issues #31193 / #31771)."""
-
-    def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
-        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
-
-    def test_read_events_raises_when_ws_closed_on_entry(self):
-        adapter = self._make_adapter()
-        adapter._running = True
-        adapter._ws = SimpleNamespace(closed=True)
-        with pytest.raises(RuntimeError):
-            asyncio.run(adapter._read_events())
 

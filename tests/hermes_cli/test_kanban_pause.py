@@ -150,6 +150,32 @@ def test_paused_board_does_not_block_other_boards(fresh_home):
     assert row["status"] == "ready"
 
 
+def test_dispatch_reads_the_sentinel_of_the_board_it_dispatches(fresh_home, monkeypatch):
+    """`--board beta dispatch` passes board=None: the guard must follow the connection.
+
+    `board_dir(None)` answers for the *default* board while `connect()` resolves None to the
+    *current* board, so a tick opened on beta used to read `boards/default/PAUSED` — pausing
+    beta stopped nothing, and a paused default froze every board the CLI ticked.
+    """
+    kb.create_board("beta", name="Beta")
+    ready_beta = _ready_task("beta")
+    pause.pause("beta", reason="swapping provider")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+
+    with kbc.connect_closing() as conn:
+        held = kbd.dispatch_once(conn, spawn_fn=_fake_spawn)
+    assert held.paused is True, "a paused current board must hold its own tick"
+    assert held.spawned == []
+
+    # The mirror image: beta resumed, default paused — beta must dispatch.
+    pause.resume("beta")
+    pause.pause("default", reason="hold")
+    with kbc.connect_closing() as conn:
+        beta_res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn)
+    assert beta_res.paused is False, "the default board's sentinel must not freeze beta"
+    assert [s[0] for s in beta_res.spawned] == [ready_beta]
+
+
 def test_dispatch_result_reports_pause_in_telemetry(fresh_home):
     pause.pause()
     with kbc.connect_closing() as conn:

@@ -135,3 +135,17 @@ def refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
         "  removes the legacy unit so the canonical one can own the gateway.)",
     )
     sys.exit(1)
+
+
+def start_restart_replacement(args, *, force: bool) -> None:
+    """Start the manual fallback's replacement once the old owner is gone.
+
+    ``--detach`` (Desktop's bounded, piped client; the updater's recovery call) starts it the way
+    ``gateway ensure`` starts an absent owner. In the foreground that caller became the long-lived
+    gateway it only meant to restart: a child its own timeout killed, holding the app's quit open.
+    """
+    from hermes_cli import gateway as gw
+    if getattr(args, "detach", False):
+        from hermes_cli.gateway_runtime_start import start_detached_replacement
+        sys.exit(start_detached_replacement(gw.get_hermes_home(), force=force))
+    gw.run_gateway(verbose=0, force=force)

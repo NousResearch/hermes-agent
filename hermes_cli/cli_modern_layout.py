@@ -166,20 +166,22 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
 
 def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
-    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed."""
-    from agent.display import get_tool_row_parts
+    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
+    ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
+    from agent.display import get_tool_row_parts, is_neutral_failure
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
+    neutral = is_neutral_failure(function_name, result)
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
-        mark = f"{_RED}✗{_RST}" if suffix is not None else (emoji or "●")
+        mark = f"{_RED}✗{_RST}" if suffix is not None and not neutral else (emoji or "●")
         line = f"{mark} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
         if detail:
             line += f" {detail}"
         if index == len(rows) - 1 and duration >= 0.1:
             line += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
-            line += f"{_RED}{suffix}{_RST}"
+            line += f"{_DIM if neutral else _RED}{suffix}{_RST}"
         out.append(line)
     return "\n".join(out)
 

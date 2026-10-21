@@ -6,7 +6,7 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 
 # Gateway 内部机制
 
-消息 gateway 是一个长期运行的进程，通过统一架构将 Hermes 连接到 20 余个外部消息平台。
+gateway 是一个长期运行的进程，通过统一架构将 Hermes 连接到 20 余个外部消息平台。
 
 ## 规范群组元数据与 profile 发现
 
@@ -30,7 +30,7 @@ Desktop 和 Ink 使用已认证的 `session.control.read`、`process.list`、`su
 
 队列 admission、claim、cancellation 和 settlement 也向附加的 viewer 发布 `session.info`。其 `pending` 行使用与 resume 相同的投射。settlement 在 `message.complete` 之前发布该状态，把终止事件保留为该回合的最后一个事件。Desktop 把两条路径都翻译到它现有的 `pending_submissions` 队列存储。
 
-一个在 owning gateway 死亡时处于 `started` 的回合，会被下一个 owner 恢复为 `unknown`：Hermes 无法证明哪些副作用发生过，因此它既不重放输入，也不让其后的排队回合运行。`prompt.resolve_unknown`（`session:control`，参数 `session_id`、`admission_id`、`execution_generation`）确认这次丢失：该行 settle 为 `interrupted`，session FIFO 恢复，follower 恰好运行一次。generation 必须是 stamp 在那个 unknown 行上的那个（在 resume/`session.info` 投射中可见），因此一个过期或已解决的行会被以 `stale_generation` 拒绝。Desktop 在队列面板中把这种行显示为「Turn lost during restart」并带一个 **Discard** 按钮；gateway CLI 把它暴露为 `/discard <admission_id>`。丢失的输入留在 transcript 中供用户重发；discard 用一条 Hermes 通知（像一个 failed turn 那样）关闭它，因此它绝不会被合并进 follower 的模型请求。
+一个在 owning gateway 死亡时处于 `started` 的回合，会被下一个 owner 恢复为 `unknown`：Hermes 无法证明哪些 side effect 发生过，因此它既不重放输入，也不让其后的排队回合运行。`prompt.resolve_unknown`（`session:control`，参数 `session_id`、`admission_id`、`execution_generation`）确认这次丢失：该行 settle 为 `interrupted`，session FIFO 恢复，follower 恰好运行一次。generation 必须是 stamp 在那个 unknown 行上的那个（在 resume/`session.info` 投射中可见），因此一个过期或已解决的行会被以 `stale_generation` 拒绝。Desktop 在队列面板中把这种行显示为「Turn lost during restart」并带一个 **Discard** 按钮；gateway CLI 把它暴露为 `/discard <admission_id>`。丢失的输入留在 transcript 中供用户重发；discard 用一条 Hermes 通知（像一个 failed turn 那样）关闭它，因此它绝不会被合并进 follower 的模型请求。
 
 一个被这样暂停的消息用户（Telegram、Discord、...）会在每次暂停事件期间通过适配器的普通回复路径被告知一次：对话已暂停，`/reset` 会开启一个全新对话；之后发到同一暂停上的消息会被静默接纳并保持排队。它们的投递等待者会带着暂停原因被释放，而不是让适配器循环停住。`/reset` 把路由轮换到一个新 session（丢失的回合及其 follower 留在旧 session 上）；operator 也可以从 Desktop 或 CLI 解决那个 unknown 行。
 
@@ -363,9 +363,9 @@ Gateway hook 是响应生命周期事件的 Python 模块。
 
 Hook 从 `gateway/builtin_hooks/`（扩展点 —— 当前发行版中为空；`_register_builtin_hooks()` 是一个空操作存根）和 `<profile home>/hooks/`（用户安装；默认 profile 为 `~/.hermes/hooks/`，多路复用下每个 served profile 一个目录——路径在调用时解析，绝不在导入时）中发现。每个 hook 是一个包含 `HOOK.yaml` 清单和 `handler.py` 的目录。
 
-## 内存提供者集成
+## Memory Provider 集成
 
-当内存提供者插件（如 Honcho）启用时：
+当 Memory Provider 插件（如 Honcho）启用时：
 
 1. Gateway 为每条消息创建一个带会话 ID 的 `AIAgent`
 2. `MemoryManager` 使用会话上下文初始化提供者
@@ -379,11 +379,11 @@ AIAgent._invoke_tool()
 
 4. 会话结束/重置时，`on_session_end()` 触发以进行清理和最终数据刷写
 
-### 内存刷写生命周期
+### Memory 刷写生命周期
 
 显式对话边界（例如 `/new`、`/reset` 或 `/resume`）会刷新并结束原会话。空闲时间和每日时间边界不会结束会话。
 
-TTL、LRU 和内存压力触发的资源缓存淘汰会先在释放 agent client 之前，把缓存的对话记录提交给已配置的内存提供者。它不会关闭持久化对话：下一轮会重新加载相同的对话记录和会话标识。
+TTL、LRU 和内存压力触发的资源缓存淘汰会先在释放 agent client 之前，把缓存的对话记录提交给已配置的 Memory Provider。它不会关闭持久化对话：下一轮会重新加载相同的对话记录和会话标识。
 
 ## 后台维护
 
@@ -391,7 +391,7 @@ Gateway 在处理消息的同时运行周期性维护任务：
 
 - **Cron 计时** —— 检查任务计划并触发到期任务
 - **会话维护** —— 回收缓存资源，但不结束会话记录
-- **内存刷写** —— 在软释放缓存前提交记忆
+- **Memory 刷写** —— 在软释放缓存前提交记忆
 - **缓存刷新** —— 刷新模型列表和提供者状态
 
 ## 进程管理

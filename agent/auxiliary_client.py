@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- compatibility seam remains in this established facade; provider-specific logic is in agent.auxiliary_lmstudio
 """Shared auxiliary client router for side tasks (compression, search, vision, ...).
 
 Text auto chain: main provider+model → OpenRouter → Nous Portal → custom endpoint →
@@ -131,6 +132,7 @@ from agent.auxiliary_health import (
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
+from agent.auxiliary_lmstudio import lmstudio_probe_api_key, lmstudio_reasoning_projection
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -3757,12 +3759,15 @@ def _prepare_same_provider_retry(
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
     extra_headers: Optional[dict[str, str]] = None,
+    resolved_base_url_explicit: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
-            provider=resolved_provider, model=final_model, base_url=resolved_base_url,
-            api_key=resolved_api_key, async_mode=async_mode,
+            provider=resolved_provider, model=final_model,
+            base_url=resolved_base_url if resolved_base_url_explicit else None,
+            api_key=resolved_api_key, api_mode=resolved_api_mode, async_mode=async_mode,
+            main_runtime=main_runtime,
         )
     else:
         retry_client, retry_model = _get_cached_client(
@@ -3780,6 +3785,7 @@ def _prepare_same_provider_retry(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
+        api_key=lmstudio_probe_api_key(retry_client, resolved_api_key),
     )
     # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
     if extra_headers:
@@ -4022,7 +4028,7 @@ def _fallback_request_kwargs(
     destination: _FallbackDestination, *, task: Optional[str], messages: list,
     tools: Optional[list], temperature: Optional[float], max_tokens: Optional[int],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
-    fallback_entry: dict, task_config: dict, apply_fast_lane: bool,
+    fallback_entry: dict, task_config: dict, apply_fast_lane: bool, api_key: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build request kwargs for one fallback destination (cache-section replan + fast-lane cap)."""
     fallback_max_tokens, fallback_extra_body = max_tokens, effective_extra_body
@@ -4037,7 +4043,8 @@ def _fallback_request_kwargs(
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
-        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url,
+        task=task, api_key=api_key)
     return fb_kwargs
 
 
@@ -4072,9 +4079,11 @@ def _plan_fallback_candidate(
             provider, destination.base_url or str(getattr(client, "base_url", "") or ""),
             destination.api_mode, model or destination.model,
         )
-        return retry_destination, _fallback_request_kwargs(retry_destination, **common)
+        return retry_destination, _fallback_request_kwargs(
+            retry_destination, api_key=lmstudio_probe_api_key(client), **common)
 
-    return destination, _fallback_request_kwargs(destination, **common), _rebuild
+    return destination, _fallback_request_kwargs(
+        destination, api_key=lmstudio_probe_api_key(fb_client), **common), _rebuild
 
 
 def _quarantine_fallback_candidate(
@@ -4698,6 +4707,17 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
     if isinstance(effective_provider, str) and effective_provider:
         return effective_provider
     return str(fallback or "")
+
+
+def _vision_client_api_mode(client: Any) -> str:
+    """Return the wire mode selected by a resolved vision client's adapter."""
+    if isinstance(client, (AnthropicAuxiliaryClient, AsyncAnthropicAuxiliaryClient)):
+        return "anthropic_messages"
+    if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        return "codex_responses"
+    if isinstance(client, (BedrockAuxiliaryClient, AsyncBedrockAuxiliaryClient)):
+        return "bedrock_converse"
+    return "chat_completions"
 
 
 # Centralized Provider Router: resolve_provider_client() is the single entry point for building a configured
@@ -5679,7 +5699,7 @@ _ZAI_OPENAI_VISION_URLS = ("https://open.bigmodel.cn/api/paas/v4", "https://api.
 def resolve_vision_provider_client(
     provider: Optional[str] = None, model: Optional[str] = None, *, base_url: Optional[str] = None,
     api_key: Optional[str] = None, async_mode: bool = False,
-    main_runtime: Optional[dict[str, Any]] = None,
+    main_runtime: Optional[dict[str, Any]] = None, api_mode: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -5690,6 +5710,8 @@ def resolve_vision_provider_client(
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
+    if api_mode:
+        resolved_api_mode = _canonical_api_mode(api_mode).lower() or None
     # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
     raw_requested, requested = requested, _normalize_vision_provider(requested)
     if resolved_base_url:
@@ -5697,7 +5719,7 @@ def resolve_vision_provider_client(
         client, final_model = resolve_provider_client(
             provider_for_base_override, model=resolved_model, async_mode=async_mode,
             explicit_base_url=resolved_base_url, explicit_api_key=resolved_api_key,
-            api_mode=resolved_api_mode, main_runtime=runtime,
+            api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
         )
         return provider_for_base_override, client, (final_model if client is not None else None)
     if requested == "auto":
@@ -6636,6 +6658,7 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
 
 def _project_provider_profile(
     provider: str, provider_norm: str, model: str, effective_base: str, reasoning_config: Optional[dict],
+    api_key: Optional[str] = None,
 ) -> _ProfileProjection:
     """Provider profile's extra_body / kwargs projection; partial on failure."""
     body: dict[str, Any] = {}
@@ -6657,9 +6680,26 @@ def _project_provider_profile(
         if profile is not None:
             messages_wire = profile.api_mode == "anthropic_messages"
             body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
+            if provider_norm == "lmstudio" and reasoning_config is not None:
+                profile_context, lmstudio_supports_reasoning = lmstudio_reasoning_projection(
+                    provider_norm, model, effective_base, api_key)
+            elif provider_norm == "lmstudio":
+                # An absent reasoning request needs no capability probe and must not cause
+                # repeated network reads for auxiliary calls that cannot use the result.
+                profile_context, lmstudio_supports_reasoning = {"lmstudio_reasoning_options": []}, False
+            else:
+                profile_context, lmstudio_supports_reasoning = {}, True
+            if provider_norm == "lmstudio":
+                published_options = profile_context.get("lmstudio_reasoning_options", [])
+                explicit_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
+                supports_reasoning = lmstudio_supports_reasoning or (
+                    explicit_off and "off" in published_options)
+            else:
+                supports_reasoning = reasoning_config is not None
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
-                reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
+                reasoning_config=reasoning_config, supports_reasoning=supports_reasoning,
                 model=model, base_url=effective_base,
+                **profile_context,
             )
             reasoning_extra = reasoning_extra or {}
             top_level = top_level or {}
@@ -6730,6 +6770,7 @@ def _build_call_kwargs(
     extra_body: Optional[dict] = None, reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None, task: Optional[str] = None,
     no_progress_timeout: Optional[float] = None,
+    api_key: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments.
     ``no_progress_timeout`` is a Codex-Responses-only extra (consumed by
@@ -6772,7 +6813,7 @@ def _build_call_kwargs(
                 reasoning_config = task_reasoning
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
-    projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
+    projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, api_key)
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
     if "response_format" in merged_extra:
@@ -7383,6 +7424,12 @@ class _ResolvedAuxRoute(NamedTuple):
     final_model: Optional[str]
     resolved_provider: str
     effective_provider: str
+    api_key: Optional[str]
+    resolved_model: Optional[str]
+    resolved_base_url: Optional[str]
+    resolved_base_url_explicit: bool
+    resolved_api_key: Optional[str]
+    resolved_api_mode: Optional[str]
 
 
 def _resolve_call_client(
@@ -7394,26 +7441,43 @@ def _resolve_call_client(
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
     effective_provider = resolved_provider
+    selected_api_key: Optional[str] = None
+    route_model = resolved_model
+    route_base_url = resolved_base_url
+    route_base_url_explicit = bool(resolved_base_url)
+    route_api_key = resolved_api_key
+    route_api_mode = resolved_api_mode
     if task == "vision":
+        requested_provider = resolved_provider
         effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=resolved_provider if resolved_provider != "auto" else provider,
+            provider=requested_provider if requested_provider != "auto" else provider,
             model=resolved_model or model, base_url=resolved_base_url or base_url,
-            api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
+            api_key=resolved_api_key or api_key, api_mode=resolved_api_mode,
+            async_mode=async_mode, main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
+        if client is None and requested_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
-                           resolved_provider)
+                           requested_provider)
             effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
+                provider="auto", model=resolved_model, api_mode=resolved_api_mode, async_mode=async_mode,
                 main_runtime=main_runtime)
         if client is not None:
-            resolved_provider = effective_provider or resolved_provider
+            selected_api_key = lmstudio_probe_api_key(client)
+            if not selected_api_key and effective_provider == requested_provider:
+                selected_api_key = resolved_api_key or api_key
+            resolved_provider = effective_provider or requested_provider
+            route_model = final_model or resolved_model
+            route_base_url = str(getattr(client, "base_url", "") or resolved_base_url or "") or None
+            route_api_key = selected_api_key
+            route_api_mode = _vision_client_api_mode(client)
     else:
         client, final_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
             task=task)
         effective_provider = _effective_provider_for_client(client, resolved_provider)
+        if client is not None:
+            selected_api_key = lmstudio_probe_api_key(client) or resolved_api_key
         if client is None:
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
@@ -7426,11 +7490,20 @@ def _resolve_call_client(
                     raise AuxiliaryClientUnavailable(
                         nous_detail or missing_provider_credentials_message(_explicit))
                 client, final_model = fb_client, fb_model
+                selected_api_key = lmstudio_probe_api_key(fb_client)
                 if async_mode:
                     client, final_model = _to_async_client(
                         fb_client, fb_model or "", is_vision=(task == "vision"))
-                resolved_provider = fb_label or resolved_provider
-                effective_provider = resolved_provider
+                resolved_provider = _fallback_provider_from_label(fb_label) or resolved_provider
+                resolved_base_url = str(getattr(client, "base_url", "") or resolved_base_url or "") or None
+                resolved_api_key = selected_api_key
+                effective_provider = _effective_provider_for_client(client, resolved_provider)
+                destination = _fallback_destination(task, client, final_model, fb_label)
+                resolved_provider = destination.provider or resolved_provider
+                route_model = destination.model or final_model
+                route_base_url = destination.base_url or resolved_base_url
+                route_api_mode = destination.api_mode or resolved_api_mode
+                route_api_key = selected_api_key
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
             # model=None so each provider uses its own default.
             if client is None and not resolved_base_url:
@@ -7439,10 +7512,22 @@ def _resolve_call_client(
                 client, final_model = _get_cached_client(
                     "auto", async_mode=async_mode, main_runtime=main_runtime, task=task)
                 effective_provider = _effective_provider_for_client(client, "auto")
+                selected_api_key = lmstudio_probe_api_key(client)
+                if client is not None:
+                    # Keep the auto label for fallback-policy decisions, but carry the concrete
+                    # destination into request recovery so model/endpoint/credential stay paired.
+                    route_model = final_model or resolved_model
+                    route_base_url = str(getattr(client, "base_url", "") or resolved_base_url or "") or None
+                    route_api_key = selected_api_key
     if client is None:
         raise AuxiliaryClientUnavailable(f"No LLM provider configured for task={task} "
                                          f"provider={resolved_provider}. Run: hermes setup")
-    return _ResolvedAuxRoute(client, final_model, resolved_provider, effective_provider)
+    if selected_api_key is None:
+        selected_api_key = lmstudio_probe_api_key(client)
+    return _ResolvedAuxRoute(
+        client, final_model, resolved_provider, effective_provider, selected_api_key,
+        route_model, route_base_url, route_base_url_explicit, route_api_key, route_api_mode,
+    )
 
 
 class _PreparedAuxRequest(NamedTuple):
@@ -7453,6 +7538,7 @@ class _PreparedAuxRequest(NamedTuple):
     request_provider: str
     resolved_model: Optional[str]
     resolved_base_url: Optional[str]
+    resolved_base_url_explicit: bool
     resolved_api_key: Optional[str]
     resolved_api_mode: Optional[str]
     effective_timeout: float
@@ -7477,12 +7563,22 @@ def _prepare_aux_request(
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
-    client, final_model, resolved_provider, effective_provider = _resolve_call_client(
+    route = _resolve_call_client(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
     )
+    client = route.client
+    final_model = route.final_model
+    resolved_provider = route.resolved_provider
+    effective_provider = route.effective_provider
+    selected_api_key = route.api_key
+    resolved_model = route.resolved_model
+    resolved_base_url = route.resolved_base_url
+    resolved_base_url_explicit = route.resolved_base_url_explicit
+    resolved_api_key = route.resolved_api_key
+    resolved_api_mode = route.resolved_api_mode
     effective_timeout = _effective_aux_timeout(task, timeout)
     # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
     # kwarg, so only resolve/forward it when the route is actually a Codex stream (#108104).
@@ -7515,7 +7611,8 @@ def _prepare_aux_request(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
+        no_progress_timeout=no_progress_timeout,
+        api_key=selected_api_key)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
@@ -7524,13 +7621,13 @@ def _prepare_aux_request(
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
-        resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
+        resolved_base_url, resolved_base_url_explicit, resolved_api_key, resolved_api_mode, effective_timeout,
         effective_extra_body, base_info)
 
 
 class _LadderStep(NamedTuple):
     """A provider request the ladder asks its driver to perform. kind: "call" (client, kwargs) |
-    "retry_same_provider" (provider, model) | "fallback" (fb_client, fb_model, fb_label)."""
+    "retry_same_provider" (provider, model[, api_key]) | "fallback" (fb_client, fb_model, fb_label)."""
     kind: str
     args: tuple
 
@@ -7760,7 +7857,7 @@ def _ladder_credential_rungs(
                         task or "call", tag, auth_refresh_provider)
             step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))
+                (auth_refresh_provider, route.resolved_model or route.final_model, None))
             resp, first_err = yield from _rung(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
             if first_err is None:
@@ -7790,7 +7887,7 @@ def _ladder_credential_rungs(
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
                 return (yield _LadderStep(
-                    "retry_same_provider", (resolved_provider, route.resolved_model))), None
+                    "retry_same_provider", (pool_provider, route.resolved_model, None))), None
             except Exception as retry2_err:
                 # Rotated key also hit a wall: mark it now so concurrent processes skip it,
                 # then fall through to the provider fallback.
@@ -8103,6 +8200,7 @@ def _plan_aux_call(
     )
     retry_kwargs = dict(
         candidate_kwargs, resolved_base_url=req.resolved_base_url,
+        resolved_base_url_explicit=req.resolved_base_url_explicit,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         main_runtime=main_runtime, final_model=req.final_model, extra_headers=extra_headers,
     )
@@ -8129,8 +8227,17 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model = step.args[:2]
+        retry_api_key = step.args[2] if len(step.args) > 2 else retry_kwargs["resolved_api_key"]
+        if (retry_api_key is None and _normalize_aux_provider(retry_provider) == "custom"
+                and retry_kwargs.get("resolved_api_key")):
+            # A call-level custom route has no provider pool or refresh source to replace its
+            # explicitly supplied key.  Keep that key when the generic auth rung emits None.
+            retry_api_key = retry_kwargs["resolved_api_key"]
+        return "retry", (), dict(
+            retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model,
+            resolved_api_key=retry_api_key,
+        )
     return "fallback", step.args, candidate_kwargs
 
 

@@ -1811,3 +1811,67 @@ def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
     assert status.retained_gateway_state({**watchdog, "desired_state": "stopped"}) == "stopped"
     assert status.retained_gateway_state({"gateway_state": "degraded", "exit_reason": None}) == "stopped"
     assert status.retained_gateway_state({"gateway_state": "startup_failed", "exit_reason": "x"}) == "startup_failed"
+
+
+class TestRuntimeStatusIdentityOwnership:
+    """The merged snapshot must name THIS process's home, not an inherited one.
+
+    ``_prepare_runtime_status_update`` reloads the persisted snapshot from disk
+    (load_existing=True) and then re-stamps the identity fields from
+    ``_build_pid_record()`` — the same way pid/argv/start_time are re-stamped —
+    so a record left behind by a gateway that lived under a DIFFERENT home
+    cannot be inherited verbatim.  ``hermes_home`` belongs in that set: it is
+    the field the cross-profile ownership checks
+    (``_pid_record_belongs_to_current_profile``) read, so a stale value makes
+    the default gateway claim another profile's identity.
+    """
+
+    def test_hermes_home_is_recomputed_not_inherited_from_disk(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_file = tmp_path / "gateway_state.json"
+
+        # A snapshot persisted by a gateway under a different home.
+        state_file.write_text(
+            json.dumps({
+                "kind": "hermes-gateway",
+                "pid": 999999,
+                "argv": ["/somewhere/else/hermes", "gateway", "run"],
+                "start_time": 1,
+                "hermes_home": "/home/somebody-else/.hermes",
+                "gateway_state": "running",
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(reload_existing=True)
+
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        assert payload["hermes_home"] == str(
+            status._canonical_hermes_home(status._get_process_hermes_home())
+        )
+        assert payload["hermes_home"] != "/home/somebody-else/.hermes"
+
+    def test_hermes_home_tracks_a_changed_home(
+        self, tmp_path, monkeypatch
+    ):
+        """A gateway that outlived an env change re-stamps its own home."""
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+        first_home.mkdir()
+        second_home.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(first_home))
+        status.write_runtime_status(reload_existing=True)
+        first_payload = json.loads(
+            (first_home / "gateway_state.json").read_text(encoding="utf-8")
+        )
+        assert first_payload["hermes_home"] == str(first_home.resolve())
+
+        monkeypatch.setenv("HERMES_HOME", str(second_home))
+        status.write_runtime_status(reload_existing=True)
+        second_payload = json.loads(
+            (second_home / "gateway_state.json").read_text(encoding="utf-8")
+        )
+        assert second_payload["hermes_home"] == str(second_home.resolve())

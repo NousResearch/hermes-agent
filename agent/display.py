@@ -1020,6 +1020,17 @@ def _degraded_suffix(data: dict) -> str:
 # agent. Renderers show these rows neutrally; the failure still reaches the model and the loop
 # guardrail unchanged (display-only).
 NEUTRAL_FAILURE_TOOLS = frozenset({"skill_manage"})
+# Except a batch whose rollback failed (tools/skill_manager_batch.py::_rollback): partial changes
+# are left on disk, which the user does have to see.
+_UNSAFE_FAILURE_MARKER = "ROLLBACK FAILED"
+
+
+def is_neutral_failure(tool_name: str, result: Any) -> bool:
+    """True when a failed call of ``tool_name`` should render neutrally (see NEUTRAL_FAILURE_TOOLS)."""
+    if tool_name not in NEUTRAL_FAILURE_TOOLS:
+        return False
+    text = result if isinstance(result, str) else repr(result)
+    return _UNSAFE_FAILURE_MARKER not in text
 
 
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:

@@ -135,6 +135,9 @@ def test_tool_progress_off_does_not_surface_a_refused_skill_write(monkeypatch):
     server._on_tool_complete("tools-off-skill", "tool-skill", "skill_manage", {"operations": []}, refused)
 
     assert _lifecycle(events, "tool-skill") == []
+    broken = json.dumps({"success": False, "error": "batch aborted, ROLLBACK FAILED for 'demo' (EACCES)"})
+    server._on_tool_complete("tools-off-skill", "tool-broken", "skill_manage", {"operations": []}, broken)
+    assert _lifecycle(events, "tool-broken") == ["tool.complete"]
 
 
 def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):

@@ -107,8 +107,19 @@ export function parseMaybeObject(value: unknown): Record<string, unknown> {
 
 /** Tools whose refused calls are the agent's own retry loop (a skill write
  *  refused by the size cap or a stale old_string), not something the user must
- *  act on. Mirrors agent/display.py::NEUTRAL_FAILURE_TOOLS. */
-export const NEUTRAL_FAILURE_TOOLS: ReadonlySet<string> = new Set(['skill_manage'])
+ *  act on — except a batch whose rollback failed, which left partial changes.
+ *  Mirrors agent/display.py::is_neutral_failure. */
+const NEUTRAL_FAILURE_TOOLS: ReadonlySet<string> = new Set(['skill_manage'])
+
+export function isNeutralFailure(toolName: string | undefined, result: unknown): boolean {
+  if (!NEUTRAL_FAILURE_TOOLS.has(toolName ?? '')) {
+    return false
+  }
+
+  const text = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+
+  return !text.includes('ROLLBACK FAILED')
+}
 
 /** A call that reported failure, from the part's flag or its result body.
  *  Explicit success beats stale envelope errors, as in individual rows. */
@@ -116,7 +127,7 @@ export function toolCallFailed(part: { isError?: boolean; result?: unknown; tool
   const result = parseMaybeObject(part.result)
 
   return (
-    !NEUTRAL_FAILURE_TOOLS.has(part.toolName ?? '') &&
+    !isNeutralFailure(part.toolName, part.result) &&
     result.success !== true &&
     result.ok !== true &&
     Boolean(part.isError || result.success === false || result.ok === false || extractToolErrorMessage(part.result))

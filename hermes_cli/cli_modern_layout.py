@@ -168,9 +168,9 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
     the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
     ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
-    from agent.display import NEUTRAL_FAILURE_TOOLS, get_tool_row_parts
+    from agent.display import get_tool_row_parts, is_neutral_failure
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
-    neutral = function_name in NEUTRAL_FAILURE_TOOLS
+    neutral = is_neutral_failure(function_name, result)
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()

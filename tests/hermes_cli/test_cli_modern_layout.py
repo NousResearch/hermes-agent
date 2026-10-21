@@ -220,6 +220,9 @@ def test_refused_skill_write_reads_neutral_not_failed():
     row = tool_row("skill_manage", {"operations": [{"action": "patch", "name": "hermes-agent-dev"}]}, 1.1, refused)
     assert _plain(row).startswith(get_tool_emoji("skill_manage") + " "), row
     assert "[operations[0]" in _plain(row) and _RED not in row, row
+    # A failed rollback left partial changes on disk: that one stays a red failure.
+    broken = refused.replace('(limit: 100,000)."', '(limit: 100,000). — batch aborted, ROLLBACK FAILED for demo."')
+    assert _plain(tool_row("skill_manage", {"operations": []}, 1.1, broken)).startswith("✗ ")
 
 
 def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):

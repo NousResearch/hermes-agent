@@ -16,8 +16,8 @@ import {
   compactPreview,
   contextValue,
   formatDurationSeconds,
+  isNeutralFailure,
   isRecord,
-  NEUTRAL_FAILURE_TOOLS,
   numberValue,
   parseMaybeObject,
   unwrapToolPayload
@@ -736,7 +736,7 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'notice'
   }
 
-  if (NEUTRAL_FAILURE_TOOLS.has(part.toolName)) {
+  if (isNeutralFailure(part.toolName, part.result)) {
     return 'notice'
   }
 

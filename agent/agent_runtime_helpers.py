@@ -2594,9 +2594,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Repair a mismatched tool name (case, separators, CamelCase, ``_tool`` suffixes twice so
-    ``TodoTool_tool`` reduces fully, then fuzzy match) before aborting. Returns the repaired
-    name if in valid_tool_names, else None."""
-    from difflib import get_close_matches
+    ``TodoTool_tool`` reduces fully) before aborting. Returns the repaired name if in
+    valid_tool_names, else None. Only spellings of the SAME name are repaired; a merely
+    similar name is never run on the model's behalf (it can be a different, even opposite,
+    operation) -- ``_invalid_tool_name_error_content`` offers it as a "Did you mean" hint."""
     if not tool_name:
         return None
     # VolcEngine api/plan leaks XML attribute fragments into tool_use.name (`terminal"
@@ -2604,7 +2605,7 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     # "write file" must reach ``_norm`` -> ``write_file``.
     # `terminal" parameter="command" string="true` `execute_code" parameter="code" string="true`
     # `session_search" parameter="session_id" string="true` We trim at the first unambiguous XML/quote
-    # character so the rest of the repair pipeline (lowercase / snake_case / fuzzy match) can resolve the
+    # character so the rest of the repair pipeline (lowercase / snake_case / suffix strip) can resolve the
     # cleaned name to a real tool. Crucially we DO NOT split on whitespace: legitimate inputs like "write
     # file" must keep flowing through ``_norm`` -> ``write_file`` (covered by test_space_to_underscore in
     # tests/agent/test_repair_tool_call_name.py). See #33007.
@@ -2638,8 +2639,7 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     for c in cands:
         if c and c in agent.valid_tool_names:
             return c
-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
-    return matches[0] if matches else None
+    return None
 
 
 # Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via

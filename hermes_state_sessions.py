@@ -118,10 +118,9 @@ def _session_filter_where(
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
     workspace_key: str | None = None, source_sql: str = "s.source",
 ) -> tuple[list[str], list[Any]]:
-    """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
-    hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is fixed; ``source_sql`` selects the source expression."""
+    """Shared ``sessions s`` WHERE builder aligns counts and listing; clause order is fixed.
+    ``exclude_children`` hides sub-agents/compression continuations, keeps branch/reset children (``_LISTABLE_CHILD_SQL``).
+    ``include_subagents`` re-admits sub-agents (``sessions.show_subagents``); ``source_sql`` selects the source expression."""
     where: list[str] = []
     params: list[Any] = []
     if exclude_children and include_subagents:
@@ -1318,9 +1317,8 @@ class SessionSessionsMixin:
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other
-        filters except archived: a pin is an explicit keep, so a pinned row stamped
-        archived must still return. ``local_created_sources`` restricts ``source='local'``
+        ``include_pinned`` back-fills pins the page missed, obeying all filters except archived:
+        a pin is an explicit keep. ``local_created_sources`` restricts ``source='local'``
         rows to those surfaces before LIMIT/OFFSET. ``workspace_key``: the ``hermes -c`` folder rule.
 
         Storage interface: port as ``list_sessions_rich`` (``workspace_key`` is ``session.list``'s
@@ -1442,8 +1440,7 @@ class SessionSessionsMixin:
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
-                workspace_key=workspace_key,
-                source_sql=source_sql,
+                workspace_key=workspace_key, source_sql=source_sql,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
@@ -1618,14 +1615,13 @@ class SessionSessionsMixin:
         if exclude_children:
             from hermes_state_local import exclude_superseded_segments
             exclude_superseded_segments(self, where_clauses, params)
-        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         source_sql = _projected_tip_source_sql("s") if exclude_children else "COALESCE(NULLIF(s.source, ''), 'cli')"
         with self._read_ctx() as conn:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")
             rows = conn.execute(
                 "SELECT projected_source AS source, COUNT(*) AS count FROM ("
-                f"SELECT {source_sql} AS projected_source FROM sessions s{where_sql}"
+                f"SELECT {source_sql} AS projected_source FROM sessions s{_where_sql(where_clauses, ' ')}"
                 ") GROUP BY projected_source ORDER BY count DESC, projected_source ASC", params,
             ).fetchall()
         return {str(row["source"]): int(row["count"] or 0) for row in rows}

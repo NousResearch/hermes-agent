@@ -490,6 +490,39 @@ class TestSafeRestore:
         assert corpus.read_bytes().startswith(b"agent appended")
         assert "corpus.jsonl" in result.get("skipped_oversize", [])
 
+    def test_safe_restore_does_not_delete_a_file_matched_by_an_oversize_glob_name(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """An oversize name must reach `git rm --cached` as a literal pathspec (#135605).
+
+        `a[12].bin` oversize + `a1.bin` small: a bare name is also a glob, so
+        the rm unstaged the sibling too, the checkpoint held only main.py, and
+        safe restore deleted `a1.bin` as an agent-created file.
+        """
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        small = work_dir / "a1.bin"
+        small.write_text("original small file\n")
+        (work_dir / "a[12].bin").write_bytes(b"x" * (2 * 1024 * 1024))
+        base = self._checkpoint(m, work_dir)
+
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(work_dir)))],
+            _store_path(checkpoint_base), str(work_dir),
+        )
+        assert ok
+        names = set(files.splitlines())
+        assert "a1.bin" in names, "sibling matched by the oversize name's glob was dropped"
+        assert "a[12].bin" not in names
+
+        small.write_text("edited by the agent\n")
+        m.record_agent_write(str(small))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert small.read_text() == "original small file\n"
+        assert "a1.bin" in result["restored_files"]
+
     def test_safe_restore_does_not_report_a_kept_file_as_restored(
         self, work_dir, checkpoint_base, monkeypatch,
     ):

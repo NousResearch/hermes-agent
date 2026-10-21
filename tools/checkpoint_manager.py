@@ -1615,7 +1615,13 @@ class CheckpointManager:
         for i in range(0, len(oversize), BATCH):
             chunk = oversize[i:i + BATCH]
             _run_git(
-                ["rm", "--cached", "--quiet", "--"] + chunk,
+                # The names come from `ls-files -z` and must be matched
+                # literally: `git rm` reads bare names as pathspecs, so an
+                # oversize `a[12].bin` also unstaged a sibling `a1.bin`, and
+                # safe restore then deleted it as agent-created (#135605).
+                # -f is index-only with --cached; it clears the "staged content
+                # differs" refusal when `git add -A` re-reads the file mid-run.
+                ["rm", "--cached", "-f", "--quiet", "--"] + [f":(literal){rel}" for rel in chunk],
                 store, working_dir, index_file=index_file,
                 allowed_returncodes={128},
             )

@@ -158,8 +158,11 @@ metadata:
 通过 CLI 管理 skill 配置：
 
 ```bash
-# 对特定 skill 进行交互式配置
-hermes skills config gif-search
+# 逐一提示输入已启用 skill 声明但尚未设置的配置项
+hermes config migrate
+
+# 直接设置单个值
+hermes config set skills.config.tenor.api_key <your-key>
 
 # 查看所有 skill 配置
 hermes config get skills.config

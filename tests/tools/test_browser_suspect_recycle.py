@@ -325,3 +325,25 @@ class TestBackendLevelFailureRecycles:
         assert len(spawns) == 1  # no retry
         assert bt._active_sessions[TASK] is session_info  # cache untouched
         assert bt._suspect_browser_sessions == {}
+
+    def test_wedged_daemon_json_error_recycles_and_retries_once(self, monkeypatch, tmp_path):
+        """Windows wedge: the CLI answers with parsed JSON (success=false, no returncode)
+        reporting a dead daemon-side engine ("...daemon may be busy or unresponsive"). The
+        session is poisoned; only a recycle + respawn recovers, so it must retry once like
+        the rc!=0 case above."""
+        stale = {"session_name": "wedged-session", "bb_session_id": None, "cdp_url": None,
+                 "features": {"local": True}}
+        bt._active_sessions[TASK] = stale
+        wedged = json.dumps({"success": False, "error": "Invalid response: EOF while parsing a value "
+                             "at line 1 column 0 (after 5 retries - daemon may be busy or unresponsive)"}).encode()
+        ok = json.dumps({"success": True, "data": {"snapshot": "ok"}}).encode()
+        spawns = self._popen_sequence(monkeypatch, tmp_path, [(0, wedged), (0, ok)])
+
+        result = bt_session._run_browser_command(TASK, "eval", ["1+1"], timeout=5)
+
+        assert result["success"] is True and result["data"]["snapshot"] == "ok"
+        assert len(spawns) == 2
+        assert "wedged-session" in spawns[0] and "wedged-session" not in spawns[1]
+        fresh = bt._active_sessions[TASK]
+        assert fresh is not stale and fresh["session_name"] == spawns[1][spawns[1].index("--session") + 1]
+

@@ -79,7 +79,10 @@ def _list_interrupts_paragraph(text: str) -> str:
     for line in text.split("\n"):
         opener = _MD_FENCE.match(line)
         if fence:
-            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence):
+            # A closing fence is the same character, at least as long, and nothing but
+            # whitespace after it (CommonMark); "```python" inside a block is content.
+            if (opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence)
+                    and not line[opener.end():].strip()):
                 fence = None
             out.append(line)
             continue

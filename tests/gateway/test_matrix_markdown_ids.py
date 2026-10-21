@@ -52,6 +52,15 @@ def test_list_interrupt_leaves_code_fences_and_existing_lists_alone():
     assert _list_interrupts_paragraph("Total 2\n2. not a list start") == "Total 2\n2. not a list start"
 
 
+def test_fence_like_line_inside_a_fence_does_not_close_it():
+    # "```python" inside a block is content (a closer carries only whitespace after the run),
+    # so the list inside stays untouched and the rule still applies after the real closer.
+    text = "Run:\n```\n```python\nx\n- y\n```\nAfter:\n- z"
+    assert _list_interrupts_paragraph(text) == "Run:\n```\n```python\nx\n- y\n```\nAfter:\n\n- z"
+    # A closer may carry trailing whitespace.
+    assert _list_interrupts_paragraph("```\n- a\n```  \nLabel\n- b") == "```\n- a\n```  \nLabel\n\n- b"
+
+
 def test_standalone_payloads_share_the_rules():
     (payload,) = _standalone_payloads("**Today**\n- #252 Review\n\n#310 is a test.")
     html = payload["formatted_body"]

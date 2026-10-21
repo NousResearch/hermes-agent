@@ -156,18 +156,25 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
     assert asyncio.run(_run()) == ("terminal", "deliver")
 
 
-def test_completion_preflight_resolves_raw_api_server_session_owner(mux):
-    """A served profile's api_server (WebUI) session carries no profile on its completion event:
-    the pre-flight must classify it against the store that owns the raw session id, not drop it."""
+def _served_session_db(mux, profile, sid):
+    """Create api_server session *sid* in served *profile*'s own store; unpin the runner's DB handles."""
     from gateway import run as run_module
     from hermes_state import SessionDB
 
-    SessionDB(db_path=mux.home / "profiles" / "team_b" / "state.db").create_session(
-        session_id="webui-b", source="api_server", profile_name="team_b")
+    db = SessionDB(db_path=mux.home / "profiles" / profile / "state.db")
+    db.create_session(session_id=sid, source="api_server", profile_name=profile)
     runner = mux.runner
     runner._session_db_pinned = run_module._SESSION_DB_UNPINNED
     runner._session_db_handles, runner._session_db_handles_lock = {}, threading.Lock()
     runner.session_store, runner._session_sources = None, {}
+    return db
+
+
+def test_completion_preflight_resolves_raw_api_server_session_owner(mux):
+    """A served profile's api_server (WebUI) session carries no profile on its completion event:
+    the pre-flight must classify it against the store that owns the raw session id, not drop it."""
+    _served_session_db(mux, "team_b", "webui-b")
+    runner = mux.runner
     evt = {"type": "async_delegation", "session_key": "webui-b", "parent_session_id": "webui-b"}
     unknown = {"type": "async_delegation", "session_key": "gone", "parent_session_id": "gone"}
 
@@ -187,20 +194,12 @@ def test_served_profile_structured_api_server_completion_ready_and_defers_while_
     shared API_SERVER adapter, and an active turn lease on the parent session must defer (not
     burn a delivery attempt via release)."""
     from typing import cast
-    from gateway import run as run_module
-    from hermes_state import SessionDB
 
-    db = SessionDB(db_path=mux.home / "profiles" / "ops" / "state.db")
-    db.create_session(session_id="24f923cff3f1", source="api_server", profile_name="ops")
+    db = _served_session_db(mux, "ops", "24f923cff3f1")
     runner = mux.runner
-    runner._session_db_pinned = run_module._SESSION_DB_UNPINNED
-    runner._session_db_handles, runner._session_db_handles_lock = {}, threading.Lock()
     runner.session_store = SimpleNamespace(_ensure_loaded=lambda: None, _entries={}, _db=db)
-    runner._session_sources = {}
-    runner._completion_deliveries_inflight = set()
-    runner._completion_deliveries_delivered = {}
-    runner._completion_delivery_retention = 100
-    runner._completion_delivery_lock = threading.Lock()
+    runner._completion_deliveries_inflight, runner._completion_deliveries_delivered = set(), {}
+    runner._completion_delivery_retention, runner._completion_delivery_lock = 100, threading.Lock()
     runner.adapters[Platform.API_SERVER] = cast(BasePlatformAdapter, SimpleNamespace(
         supports_async_delivery=False, _ensure_session_db=lambda: db))
     evt = {

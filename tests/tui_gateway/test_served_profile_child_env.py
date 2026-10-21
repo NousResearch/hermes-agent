@@ -130,3 +130,22 @@ def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     seen = _child_view(browser_env)
     _assert_is_b_env(seen, b, with_secrets=False)  # provider tier stays scrubbed for the browser
     assert seen["FIRECRAWL_API_KEY"] == "b-fc"  # the passthrough key is B's, not the launch profile's
+
+
+def test_served_child_drops_launch_aux_routes_and_keeps_its_own(mux_homes, monkeypatch):
+    """The gateway bridges the launch profile's ``auxiliary.<task>`` routes into os.environ. A
+    relay/worker child for B (``served_profile_child_env``, as ``bot_relay`` builds it) must not
+    inherit them — B's vision_analyze would pair A's model with B's own provider — while a route B's
+    own ``.env`` declares still reaches the child."""
+    from tools.environments.local import served_profile_child_env
+
+    a, b = mux_homes
+    monkeypatch.setenv("AUXILIARY_VISION_MODEL", "a-vision-model")
+    monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "a-vision-provider")
+    with (b / ".env").open("a", encoding="utf-8") as fh:
+        fh.write("AUXILIARY_APPROVAL_MODEL=b-approval-model\n")
+    monkeypatch.setenv("AUXILIARY_APPROVAL_MODEL", "a-approval-model")
+    env = served_profile_child_env(base=os.environ, target_home=b, inherit_credentials=True)
+    assert "AUXILIARY_VISION_MODEL" not in env
+    assert "AUXILIARY_VISION_PROVIDER" not in env
+    assert env["AUXILIARY_APPROVAL_MODEL"] == "b-approval-model"

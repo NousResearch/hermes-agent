@@ -90,7 +90,9 @@ class AgentPluginPackage:
     diagnostics: tuple[AgentPluginDiagnostic, ...]
 
 
-_SERVER_DECLARATION_KEYS = frozenset({"app", "requires", "liveness", "trust", "timeout"})
+_SERVER_DECLARATION_KEYS = frozenset({"app", "requires", "liveness", "trust", "timeout", "costs", "spend_limit", "cost_unit"})
+# Hermes call-policy keys: alone they configure a server, they do not declare an application.
+_SERVER_POLICY_KEYS = frozenset({"trust", "timeout", "costs", "spend_limit", "cost_unit"})
 
 
 def _server_declarations(
@@ -120,8 +122,8 @@ def _server_declarations(
                 continue
         if "liveness" in raw and "app" not in raw and "requires" not in raw:
             raise AgentPluginError(f"server declaration '{name}' has liveness without app or requires")
-        if raw and set(raw) <= {"trust", "timeout"}:
-            continue  # transport settings alone do not declare an application
+        if raw and set(raw) <= _SERVER_POLICY_KEYS:
+            continue  # transport/policy settings alone do not declare an application
         try:
             declaration = parse_declaration(
                 name, raw.get("app"), raw.get("requires"),
@@ -172,6 +174,30 @@ def _server_timeouts(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict
             raise AgentPluginError(f"server declaration '{name}' timeout must be positive seconds within the platform wait limit")
         timeouts[name] = float(value)
     return timeouts
+
+
+def _server_costs(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Translate ``costs``/``spend_limit``/``cost_unit`` into the native ``tool_costs``/``spend_limit``/``cost_unit``
+    keys (``tools.mcp_tool_costs``). A malformed table disables the package: a budget the author declared must
+    never be dropped while the server still spends."""
+    from tools.mcp_tool_costs import parse_cost_policy
+    raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
+    translated: dict[str, dict[str, Any]] = {}
+    for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):
+        if not isinstance(raw, dict) or name not in mcp_servers:
+            continue
+        declared = {key: raw[key] for key in ("costs", "spend_limit", "cost_unit") if key in raw}
+        if not declared:
+            continue
+        try:
+            parse_cost_policy(declared.get("costs"), declared.get("spend_limit"), declared.get("cost_unit"),
+                              where=f"server declaration '{name}'")
+        except ValueError as exc:
+            raise AgentPluginError(str(exc)) from exc
+        if "costs" in declared:
+            declared["tool_costs"] = declared.pop("costs")
+        translated[name] = declared
+    return translated
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -480,6 +506,8 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         mcp_servers[name] = {**mcp_servers[name], "trust": tier}
     for name, timeout in _server_timeouts(manifest, mcp_servers).items():
         mcp_servers[name] = {**mcp_servers[name], "timeout": timeout}
+    for name, costs in _server_costs(manifest, mcp_servers).items():
+        mcp_servers[name] = {**mcp_servers[name], **costs}
     server_declarations = _server_declarations(manifest, mcp_servers, diagnostics)
     return AgentPluginPackage(
         name=manifest["name"], version=manifest.get("version", ""),

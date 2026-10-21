@@ -22,11 +22,11 @@ git config --global credential.helper 2>/dev/null || echo "no git credential hel
 **Decision tree:**
 1. If `gh auth status` shows authenticated → you're good, use `gh` for everything
 2. If `gh` is installed but not authenticated → use "gh auth" method below
-3. If `gh` is not installed → use "git-only" method below (no sudo needed)
+3. If `gh` is not installed → use "git-only" method below (no administrator access needed)
 
 ---
 
-## Method 1: Git-Only Authentication (No gh, No sudo)
+## Method 1: Git-Only Authentication (No gh, No Administrator Access)
 
 This works on any machine with `git` installed. No root access needed.
 
@@ -101,18 +101,22 @@ Good for users who prefer SSH or already have keys set up.
 
 **Step 1: Check for existing SSH keys**
 
+Set `KEY_FILE` to the absolute path of `id_ed25519` in your home directory's `.ssh` folder, the default key location SSH discovers automatically. Replace the placeholder below with that path and reuse it in the following commands.
+
 ```bash
-ls -la ~/.ssh/id_*.pub 2>/dev/null || echo "No SSH keys found"
+KEY_FILE="/absolute/path/to/your/id_ed25519"
+ls -la "$(dirname "$KEY_FILE")"/id_*.pub 2>/dev/null || echo "No SSH keys found"
 ```
 
 **Step 2: Generate a key if needed**
 
 ```bash
 # Generate an ed25519 key (modern, secure, fast)
-ssh-keygen -t ed25519 -C "their-email@example.com" -f ~/.ssh/id_ed25519 -N ""
+mkdir -p "$(dirname "$KEY_FILE")"
+ssh-keygen -t ed25519 -C "their-email@example.com" -f "$KEY_FILE" -N ""
 
 # Display the public key for them to add to GitHub
-cat ~/.ssh/id_ed25519.pub
+cat "${KEY_FILE}.pub"
 ```
 
 Tell the user to add the public key at: **https://github.com/settings/keys**
@@ -210,7 +214,8 @@ Note: on Windows winget installs, gh lands at `/c/Program Files/GitHub CLI` — 
 > ```bash
 > # $TOKEN = the access token from the device flow above (never echo it)
 > mkdir -p ~/.config/gh
-> LOGIN=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/user \
+> GH_AUTH="Authorization: token $TOKEN"
+> LOGIN=$(curl -s -H "$GH_AUTH" https://api.github.com/user \
 >   | sed 's/.*"login": *"\([^"]*\)".*/\1/')
 > printf 'github.com:\n    users:\n        %s:\n            oauth_token: %s\n    git_protocol: https\n    oauth_token: %s\n    user: %s\n' \
 >   "$LOGIN" "$TOKEN" "$TOKEN" "$LOGIN" > ~/.config/gh/hosts.yml
@@ -253,7 +258,8 @@ When `gh` is not available, you can still access the full GitHub API using `curl
 export GITHUB_TOKEN="<token>"
 
 # Then use in curl calls:
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
+GH_AUTH="Authorization: token $GITHUB_TOKEN"
+curl -s -H "$GH_AUTH" \
   https://api.github.com/user
 ```
 
@@ -297,7 +303,7 @@ fi
 | `git push` asks for password | GitHub disabled password auth. Use a personal access token as the password, or switch to SSH |
 | `remote: Permission to X denied` | Token may lack `repo` scope — regenerate with correct scopes |
 | `fatal: Authentication failed` | Cached credentials may be stale — run `git credential reject` then re-authenticate |
-| `ssh: connect to host github.com port 22: Connection refused` | Try SSH over HTTPS port: add `Host github.com` with `Port 443` and `Hostname ssh.github.com` to `~/.ssh/config` |
+| `ssh: connect to host github.com port 22: Connection refused` | Try SSH over HTTPS port: add `Host github.com` with `Port 443` and `Hostname ssh.github.com` to the `config` file in your home directory's `.ssh` folder |
 | Credentials not persisting | Check `git config --global credential.helper` — must be `store` or `cache` |
-| Multiple GitHub accounts | Use SSH with different keys per host alias in `~/.ssh/config`, or per-repo credential URLs |
-| `gh: command not found` + no sudo | Use git-only Method 1 above — no installation needed |
+| Multiple GitHub accounts | Use SSH with different keys per host alias in the `config` file in your home directory's `.ssh` folder, or per-repo credential URLs |
+| `gh: command not found` + no administrator access | Use git-only Method 1 above — no installation needed |

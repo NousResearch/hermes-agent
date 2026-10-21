@@ -657,11 +657,28 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             f"`hermes -p {requested} gateway install --force` starts a separate one anyway.")
 
 
+def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:
+    """Refusal text when the gateway ``verb`` would act on has live sessions, else None. Asked before
+    spawning: the child refuses the same way, but into an action log the UI never reads."""
+    from hermes_cli.gateway_lifecycle_guards import refusal_lines
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    homes = [_resolve_profile_dir(_own_profile_selector(profile) or "default")]
+    from gateway.host_attach import host_gateway
+    owner = host_gateway()
+    if owner is not None:
+        homes.append(Path(owner.home))
+    lines = refusal_lines(verb, homes, flag_hint=f"POST /api/gateway/{verb}?interrupt=true")
+    return "\n".join(lines) or None
+
+
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:
     """Best-effort gateway restart after a config change. The save stays authoritative: a failed
     spawn is reported (``restart_started: False`` + ``restart_error``) so the UI can fall back to
-    its manual restart banner instead of failing the request."""
+    its manual restart banner instead of failing the request. Live sessions refuse it the same way."""
     from hermes_cli.web_server import _spawn_gateway_restart
+    refusal = live_session_refusal(profile, "restart")
+    if refusal:
+        return {"restart_started": False, "restart_error": refusal}
     try:
         proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:

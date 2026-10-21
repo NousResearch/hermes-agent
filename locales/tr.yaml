@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Bir sorun oluştu ve bu yanıtı tamamlayamadım.{hint}\nYeniden denemek için /retry, yeni bir konuşma başlatmak için /new kullanın. Teknik ayrıntılar gateway günlüğünde (`hermes logs`)."
     history_unavailable: "⚠️ Bu oturumun geçmişi geçici olarak kullanılamıyor; bu nedenle mesaj işlenmedi. Operatörden state.db dosyasını incelemesini isteyin, düzeldikten sonra yeniden gönderin. /reset komutunu yalnızca bilinçli olarak yeni bir konuşma başlatmak istiyorsanız kullanın."
     no_credentials: "⚠️ Yapay zekâ model servisine bağlanamadım; bu nedenle mesaj işlenmedi. Yeniden giriş yapmak için /login, farklı bir model seçmek için /model kullanın. Sorun sürerse ana makinede `hermes doctor` çalıştırın."
+    cron_session_read_only: "⚠️ Bu sohbet zamanlanmış bir göreve ait ve yalnızca o görevi çalıştırıyor, bu yüzden mesajın çalıştırılmadı. Göndermek için yeni bir sohbet başlat."
   skills:
     disabled: "**{name}** skill'i kurulu ancak devre dışı.\nEtkinleştirmek için: `hermes skills config`"
     not_installed: "**{name}** skill'i mevcut ancak kurulu değil.\nKurmak için: `hermes skills install {install_name}`"

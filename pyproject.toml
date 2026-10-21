@@ -54,6 +54,10 @@ dependencies = [
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",
+  # 0.18.16 only pulls in its C parser below 3.14, so every 3.14 install parsed YAML
+  # (plugin manifests, config) in pure Python: ~5 s of gateway startup on 1 vCPU.
+  # Declared where clib ships a cp314 wheel; elsewhere hermes_yaml falls back to pure.
+  "ruamel.yaml.clib==0.2.15; python_version >= '3.14' and platform_python_implementation == 'CPython' and (sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine in 'x86_64 aarch64 i686') or (sys_platform == 'win32' and platform_machine in 'AMD64 x86'))",
   "requests==2.33.0; python_version >= '3.14'",  # CVE-2026-25645
   "jinja2==3.1.6; python_version >= '3.14'",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,

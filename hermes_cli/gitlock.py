@@ -652,6 +652,13 @@ def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
     return _shallow_file_path(repo_root) is not None and fetch_full_commit_graph(repo_root, branch, **run_kwargs)
 
 
+# A tags-only refresh is a ref listing plus a few small tag objects; when GitHub is slow it can
+# stall for minutes, and a miss only leaves the version label stale until the next update. Filling
+# shallow history really transfers the commit graph, so it keeps the long budget.
+_TAG_REFRESH_TIMEOUT_SECONDS = 30
+_HISTORY_FETCH_TIMEOUT_SECONDS = 900
+
+
 def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
@@ -684,7 +691,8 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
              *([f"--filter={fetch_filter}"] if fetch_filter else []),
              "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
             cwd=str(repo_root), check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+            encoding="utf-8", errors="replace",
+            timeout=_HISTORY_FETCH_TIMEOUT_SECONDS if shallow else _TAG_REFRESH_TIMEOUT_SECONDS, **run_kwargs,
         )
     finally:
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.

@@ -772,3 +772,41 @@ def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
     with pytest.raises(GatewayClientError, match="--provider differs .* use /model after resuming"):
         check_resume_policy(argparse.Namespace(provider="anthropic"),
                             {"info": {"launch_request": {"provider": "openrouter"}}})
+
+
+def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store, monkeypatch):
+    """#134889 CLI-22: `/clear` inside the running CLI redraws the banner from the new gateway
+    session's snapshot (its MCP tools, main's 8-character label), as the startup banner does; this
+    process's own tool registry has no MCP servers and is never walked."""
+    import cli as cli_mod
+    from cli import HermesCLI
+    db, client = store
+    canonical = "local-ab12cd34" + "e" * 56
+    info = {**INFO, "tools": {"file": ["read_file"], "mcp-zeta": ["mcp__zeta__ro_probe"]}}
+    created = {**snapshot(canonical), "info": info}
+
+    async def rpc(method, *, _timeout=None, **params):
+        client.calls.append((method, params))
+        return created if method == "session.create" else {}
+    client.rpc = rpc
+    banners = []
+    monkeypatch.setattr("hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
+    monkeypatch.setattr(cli_mod, "get_tool_definitions", lambda **_kw: pytest.fail("walked the CLI's registry"))
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a: None)
+    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: types.SimpleNamespace(columns=200, lines=50))
+    shell = HermesCLI.__new__(HermesCLI)
+    shell.__dict__.update(
+        _session_db=db, session_id="local-old", compact=False, model="fake-model", provider="custom",
+        enabled_toolsets=["hermes-cli"], disabled_toolsets=[], agent=None,
+        _app=types.SimpleNamespace(output=types.SimpleNamespace(
+            erase_screen=lambda: None, cursor_goto=lambda *_a: None, flush=lambda: None)))
+    shell._confirm_destructive_slash = lambda *_a, **_k: "once"
+    shell._print_random_tip = lambda: None
+    shell.new_session = lambda silent=False: setattr(shell, "session_id", db.create({}))
+
+    shell._cmd_clear("/clear")
+
+    (banner,) = banners
+    assert banner["session_id"] == "ab12cd34"
+    assert sorted(t["function"]["name"] for t in banner["tools"]) == ["mcp__zeta__ro_probe", "read_file"]
+    assert banner["get_toolset_for_tool"]("mcp__zeta__ro_probe") == "mcp-zeta"

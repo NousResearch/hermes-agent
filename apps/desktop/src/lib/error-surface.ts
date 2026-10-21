@@ -51,6 +51,8 @@ export const ERROR_CODE_KEYS = [
   'SESSION_NOT_OWNED',
   // The gateway that owns the chat is mid-turn and could not queue this send: transient.
   'SESSION_OWNER_BUSY',
+  // The chat is a scheduled job's session: it only runs that job, so a typed message never runs there.
+  'cron_session_read_only',
   // The owner did not confirm a forwarded send in time; it may already be queued: no Retry.
   'SESSION_OWNER_UNCONFIRMED',
   'disk_full',
@@ -273,6 +275,7 @@ const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
   SESSION_NOT_OWNED: { retry: false, startNewSession: true },
   SESSION_OWNER_BUSY: { retry: true, startNewSession: false },
   SESSION_OWNER_UNCONFIRMED: { retry: false, startNewSession: false },
+  cron_session_read_only: { retry: false, startNewSession: true },
   content_policy_blocked: { editMessage: true, retry: false },
   context_overflow: { compress: true, retry: false, startNewSession: true },
   disk_full: { openHermesFolder: true, retry: true },
@@ -311,6 +314,8 @@ export function errorRecoveryPlan(surface: ErrorSurface | null | undefined): Err
 export function formatErrorDiagnostics(input: {
   appVersion?: string
   errorText: string
+  /** Epoch seconds the failure was recorded (the bubble's own time), never the copy time. */
+  failedAt?: number
   model?: string
   provider?: string
   surface?: ErrorSurface | null
@@ -322,7 +327,7 @@ export function formatErrorDiagnostics(input: {
 
   const lines = [
     '── Hermes error details ──',
-    `time: ${new Date().toISOString()}`,
+    input.failedAt ? `time: ${new Date(input.failedAt * 1000).toISOString()}` : null,
     input.surface ? `layer: ${input.surface.layer}` : null,
     input.surface ? `code: ${input.surface.code}` : null,
     input.surface ? `retryable: ${input.surface.retryable}` : null,

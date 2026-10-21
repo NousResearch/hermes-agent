@@ -448,6 +448,8 @@ def recover_session_inputs(db, *, epoch: int) -> int:
     """Never replay started work. Live worker adoption is a separate explicit operation."""
     def write(conn):
         _epoch(conn, epoch)
+        from hermes_state_runtime_workers import retire_stale_children
+        retire_stale_children(conn, epoch)
         conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
         # A steer handed to a lost claim may or may not have reached its agent: never replayed.
         conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
@@ -864,9 +866,15 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    source = None
     if not auxiliary:
-        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
-        # session row was minted with its real surface at admission, so nothing to repair here.
+        # ``source`` is the worker platform (turn_usage._agent_session_source). A Desktop
+        # managed worker passes ``gui``; created_surface maps that to ``desktop``. The row
+        # is usually stamped at admission. A compression child can still be NULL (or an
+        # auxiliary-usage ``unknown``), and this worker never create_session's it, so fill
+        # only an unset column, as the creator upsert does.
+        raw = payload.get('source')
+        source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
     if set(payload) - allowed:
@@ -888,6 +896,17 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
     else:
         db._update_token_counts_in_transaction(conn, session_id, **payload)
+        # The managed worker's platform is the policy label (gui), not the in-process
+        # agent surface (desktop). Stamp the same created_surface the insert uses.
+        from gateway.session_policy import created_surface
+        from hermes_state_compression import _UNSET_CREATED_SQL, stamp_compression_ancestors
+        surfaced = created_surface(source)
+        if surfaced:
+            conn.execute(
+                "UPDATE sessions SET created_source=? WHERE id=? AND "
+                + _UNSET_CREATED_SQL.format(col="created_source"),
+                (surfaced, session_id))
+            stamp_compression_ancestors(conn, session_id)
     return {'value': None}
 
 

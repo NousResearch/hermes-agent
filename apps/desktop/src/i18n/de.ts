@@ -10,6 +10,7 @@ import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
+import { dePluginUpdate } from './de_plugin_update'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
@@ -493,14 +494,6 @@ export const deOverrides = {
     }
   },
   ...deNotices,
-  billingBlock: {
-    titleNous: 'Keine Nous-Credits mehr',
-    titleProvider: provider => `Keine Credits mehr — ${provider}`,
-    fallbackMessage: 'Auf Ihrem Konto sind keine Credits mehr übrig. Fügen Sie Credits hinzu, um fortzufahren.',
-    openBilling: 'Billing öffnen',
-    addCredits: 'Credits hinzufügen',
-    dismiss: 'Schließen'
-  },
   sendDiagnostics: {
     title: 'Diagnosedaten an Nous senden',
     privacyNotice:
@@ -2513,24 +2506,12 @@ export const deOverrides = {
         unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
-      catalogTitle: 'Plugin-Katalog',
-      catalogBrowse: 'Durchsuchen',
-      catalogHide: 'Katalog-Browser ausblenden',
-      catalogHint:
-        'Klicken Sie bei einem Plugin auf „+ Zu diesem Agenten hinzufügen“ – geprüfte Einträge werden an ihrem gepinnten Commit in das gewählte Profil installiert. Gebündelte Agent+Desktop-Plugins bieten beide Hälften an.',
       alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
       catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
-      updateToPin: sha => `Auf ${sha} aktualisieren`,
-      updateFailed: name => `${name} konnte nicht aktualisiert werden`,
-      updated: name =>
-        `${name} wurde auf den aktuellen Katalog-Pin aktualisiert. Starten Sie das Gateway neu, damit es wirksam wird.`,
-      updateConsentTitle: (name: string) => `${name} fordert mehr an`,
-      updateConsentBody: (name: string, sha: string) =>
-        `Der neue Katalog-Pin von ${name} (${sha}) fügt Oberflächen hinzu, die die installierte Version nicht hat. Wenden Sie ihn nur an, wenn Sie ihnen vertrauen:`,
-      updateConsentConfirm: 'Update anwenden',
+      ...dePluginUpdate,
       uninstall: 'Deinstallieren',
       uninstallTip: (name: string, profile: string) => `${name} aus ${profile} deinstallieren`,
       uninstallConfirmTitle: (name: string) => `${name} deinstallieren?`,
@@ -5063,6 +5044,10 @@ export const deOverrides = {
         loop_error: {
           title: 'Hermes ist in einer Schleife hängen geblieben',
           body: 'Die Antwort hat dieselben Schritte wiederholt, daher hat Hermes sie gestoppt. Versuchen Sie es erneut oder starten Sie einen neuen Chat, wenn es wieder passiert.'
+        },
+        cron_session_read_only: {
+          title: 'Dieser Chat gehört zu einer geplanten Aufgabe',
+          body: 'Er führt nur diese Aufgabe aus, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
         },
         SESSION_NOT_OWNED: {
           title: 'Dieser Chat ist woanders offen',

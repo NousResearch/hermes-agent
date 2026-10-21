@@ -119,7 +119,7 @@ A worker that is blocked on `t_parent` and creates a support card for the missin
 
 **Use Kanban when** work crosses agent boundaries, needs to survive restarts, might need human input, might be picked up by a different role, or needs to be discoverable after the fact.
 
-They coexist, but not inside one run: a kanban task executes in an isolated managed worker under the profile's gateway, and that worker is not offered `delegate_task` (a delegated child would need its own owner-registered execution, which the single-turn worker cannot reserve). Split work that needs fan-out into child cards instead (`kanban_create` with `parents`).
+They also coexist inside one run. A kanban task executes in an isolated managed worker under the profile's gateway, and its `delegate_task` children are reserved by that gateway under the worker's execution: each child gets its own session (listed as a subagent of the card's session), counts against `delegation.max_concurrent_children` and `delegation.max_spawn_depth`, returns its result inside the card's turn, and ends with the worker. If the gateway goes down mid-child, the child is retired, never resumed. Work that must outlive the gateway, or needs its own reviewer, still belongs in child cards (`kanban_create` with `parents`).
 
 ## Core concepts
 

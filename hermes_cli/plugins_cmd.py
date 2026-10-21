@@ -1067,8 +1067,10 @@ def _action_update(args):
     if args.name:
         if getattr(args, "yes", False):
             _fail(_console(), "[red]Error:[/red] --yes only applies to `hermes plugins update` with no name.")
-        cmd_update(args.name)
+        cmd_update(args.name, force=getattr(args, "force", False))
         return
+    if getattr(args, "force", False):
+        _fail(_console(), "[red]Error:[/red] --force applies to one named plugin: `hermes plugins update <name> --force`.")
     from hermes_cli.plugins_cmd_update_all import cmd_update_all
     cmd_update_all(yes=getattr(args, "yes", False))
 

@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Iets het verkeerd geloop en ek kon hierdie antwoord nie voltooi nie.{hint}\nGebruik /retry om weer te probeer, of /new om 'n vars gesprek te begin. Tegniese besonderhede is in die gateway-log (`hermes logs`)."
     history_unavailable: "⚠️ Hierdie sessie se geskiedenis is tydelik onbeskikbaar, so hierdie boodskap is nie verwerk nie. Vra die operateur om state.db na te gaan en stuur dit weer sodra dit gesond is. Gebruik /reset slegs as jy doelbewus 'n nuwe gesprek wil begin."
     no_credentials: "⚠️ Ek kon nie met die KI-modeldiens verbind nie, so hierdie boodskap is nie verwerk nie. Gebruik /login om weer aan te meld, of /model om 'n ander model te kies. As dit aanhou misluk, voer `hermes doctor` op die gasheer uit."
+    cron_session_read_only: "⚠️ Hierdie klets behoort aan 'n geskeduleerde taak en voer net daardie taak uit, so jou boodskap is nie uitgevoer nie. Begin 'n nuwe klets om dit te stuur."
   skills:
     disabled: "Die **{name}**-vaardigheid is geïnstalleer, maar gedeaktiveer.\nAktiveer dit met: `hermes skills config`"
     not_installed: "Die **{name}**-vaardigheid is beskikbaar, maar nie geïnstalleer nie.\nInstalleer dit met: `hermes skills install {install_name}`"

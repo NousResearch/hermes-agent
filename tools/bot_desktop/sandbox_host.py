@@ -52,6 +52,16 @@ _RELAY = (
 )
 
 
+def plugin_image_advice(backend: Optional[str]) -> Optional[str]:
+    """How to get the desktop stack into a plugin backend's sandbox, or None for a built-in backend: a plugin
+    picks its image through its own settings, so there is no ``terminal.<plugin>_image`` key to name."""
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    if not backend or backend in _BUILTIN_BACKENDS:
+        return None
+    return (f"give the {backend} plugin's sandbox the desktop stack through the plugin's own image setting "
+            f"({SANDBOX_IMAGE_HINT} has it)")
+
+
 def _marker() -> Path:
     return get_hermes_home() / "bot-desktop" / "sandbox.json"
 
@@ -100,7 +110,7 @@ def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
 
 
 def _remote_dir(env: Any, profile: str) -> str:
-    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/{profile}"
+    return f"{streams.sandbox_temp_dir(env).rstrip('/')}/hermes-bot-desktop/{profile}"
 
 
 def desktop_home(env: Any) -> str:
@@ -223,10 +233,12 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     stop(env, profile)  # a dead launcher may have left Xvnc holding :20; the relaunch needs it gone
     missing = missing_binaries(env)
     if missing:
+        advice = plugin_image_advice(getattr(env, "_hermes_backend_name", None)) or (
+            f"use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
+            f"terminal.docker_image / modal_image / singularity_image")
         raise RuntimeError(
             f"Bot Desktop needs {', '.join(missing)} inside the terminal backend's sandbox. The configured image "
-            f"does not have them; use {SANDBOX_IMAGE_HINT} (the default sandbox base plus the desktop stack) as "
-            f"terminal.docker_image / modal_image / singularity_image, or set bot_desktop.placement: gateway.")
+            f"does not have them; {advice}, or set bot_desktop.placement: gateway.")
     user = _user_for(env)
     launcher = (Path(__file__).with_name("launcher.sh").read_bytes())
     wallpaper = Path(__file__).with_name("wallpaper.png").read_bytes()

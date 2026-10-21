@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _CATEGORY = "Plugin commands"  # tui_gateway/command_discovery.py
 GONE = object()  # run(): the gateway no longer has the command; the caller dispatches the name again
+STOPPED = object()  # call_unbounded(): Ctrl+C stopped the wait (the stopped line is printed)
 _GONE_LINE = "  /{}: the gateway no longer has this plugin command; nothing was run."
 _STOPPED_LINE = "  /{}: stopped waiting. The command keeps running in the gateway and its reply will not be shown."
 
@@ -212,6 +213,24 @@ def lookup(cli, name):
         raise CatalogUnavailable(name) from exc
 
 
+def call_unbounded(cli, connection, name, command):
+    """``slash.exec`` of *command* with no answer deadline, on a socket of its own so the session's prompts
+    and interrupts never queue behind it (GatewayConnection.call_until). Ctrl+C stops waiting: the stopped
+    line is printed and :data:`STOPPED` returned (a KeyboardInterrupt still propagates after it)."""
+    from cli import _cprint
+    from hermes_cli.gateway_connection import CallStopped
+    wake = cli._gateway_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
+    try:
+        return connection.call_until("slash.exec", wake, session_id=cli.session_id, command=command)
+    except (CallStopped, KeyboardInterrupt) as exc:
+        _cprint(_STOPPED_LINE.format(name))
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        return STOPPED
+    finally:
+        cli._gateway_command_wait = None
+
+
 def run(cli, name, arg):
     """True when the gateway answered ``/name arg`` (the local handler must not run); :data:`GONE`
     when it no longer has that plugin command and a fresh catalog read agrees (a plugin reload, e.g.
@@ -223,18 +242,9 @@ def run(cli, name, arg):
         return False
     from cli import _cprint
     from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.gateway_connection import CallStopped
-    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp). On
-    # a socket of its own, so the session's prompts and interrupts never queue behind it.
-    wake = cli._plugin_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
+    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp).
     try:
-        reply = connection.call_until("slash.exec", wake, session_id=cli.session_id,
-                                      command=name + (" " + arg if arg else ""))
-    except (CallStopped, KeyboardInterrupt) as exc:
-        _cprint(_STOPPED_LINE.format(name))
-        if isinstance(exc, KeyboardInterrupt):
-            raise
-        return True
+        reply = call_unbounded(cli, connection, name, name + (" " + arg if arg else ""))
     except GatewayRPCError as exc:
         if str(exc) != "unsupported_command":
             _cprint(f"  /{name}: {exc}")
@@ -243,8 +253,8 @@ def run(cli, name, arg):
     except GatewayClientError as exc:
         _cprint(f"  /{name}: {exc}")
         return True
-    finally:
-        cli._plugin_command_wait = None
+    if reply is STOPPED:
+        return True
     reply = reply or {}
     if reply.get("type", "exec") != "exec":  # it lost the plugin since lookup: a refusal or skill reply
         if _dropped(cli, connection, name):

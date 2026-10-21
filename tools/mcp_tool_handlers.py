@@ -379,7 +379,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -393,7 +393,10 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
+    # ``notifications/progress``; without one the server must stay silent.
+    extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -582,12 +585,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
+        # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
+        from agent.tool_progress_relay import current_tool_progress
+        report = current_tool_progress()
+
+        async def _on_progress(progress, total, message):
+            if report is not None:
+                report(progress, total, message)
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(
+                        server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy

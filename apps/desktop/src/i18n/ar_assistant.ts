@@ -56,6 +56,12 @@ export const arAssistant = {
         runtime: 'خطأ في بيئة التشغيل المحلية',
         streaming: 'خطأ في اتصال البث'
       },
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'هذه المحادثة تابعة لمهمة مجدولة',
+          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+        }
+      },
       errorRetry: 'إعادة المحاولة',
       errorLimitResets: time => `يُعاد ضبط الحد عند ${time}`,
       errorRetryAtReset: time => `إعادة المحاولة عند إعادة ضبط الحد (${time})`,

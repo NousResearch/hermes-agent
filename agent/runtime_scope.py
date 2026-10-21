@@ -81,9 +81,9 @@ def bind_state(
 
     A hosted scope binds the scope with no home, secrets or terminal policy: its state lives
     behind the storage ports, not in a directory. For a local scope: the home override names the
-    agent's home; the secret scope is *secrets*, or a build of the profile's ``.env`` plus
-    external sources (hydrated first unless ``hydrate_secrets=False``), stamped with the home
-    unless ``stamp_home=False`` (unstamped marks the process's own profile); the terminal policy
+    agent's home; the secret scope is *secrets*, or ``owner_secret_scope`` (the launch home's
+    frozen env plus ``.env``, any other home's own files) with external sources hydrated first
+    unless ``hydrate_secrets=False``, stamped with the home unless ``stamp_home=False`` (unstamped marks the process's own profile); the terminal policy
     is built from the profile's config over *env_overlay* (the refusal scope if it cannot be
     read). ``home_override=False`` / ``terminal=False`` keep that piece as currently bound, for the
     one host that deliberately binds less (a single-profile launch turn keeps a routed request's
@@ -97,14 +97,14 @@ def bind_state(
     home = scope.home()
     if home is None:
         return push_state(scope=scope, home=None, secrets=None, terminal=None)
-    from agent.secret_scope import build_profile_secret_scope
     from tools.terminal_scope import profile_terminal_policy
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     if secrets is None:
         if hydrate_secrets:
             from hermes_cli.env_loader import hydrate_profile_secret_sources
             hydrate_profile_secret_sources(Path(home))
-        secrets = build_profile_secret_scope(Path(home))
+        secrets = owner_secret_scope(Path(home))
     kept = current_state()
     policy = profile_terminal_policy(Path(home), env_overlay=env_overlay) if terminal else kept.terminal
     return push_state(scope=scope, home=home if home_override else kept.home,

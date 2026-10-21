@@ -90,6 +90,23 @@ def test_copilot_acp_still_gets_its_acp_client_via_its_profile():
     assert isinstance(_build("", "acp://copilot"), CopilotACPClient)
 
 
+def test_profile_managed_client_accepts_empty_credentials_and_endpoint(registered):
+    """Regression for #138802: a native profile bypasses HTTP-only URL validation."""
+    from agent.agent_init import _init_openai_client
+
+    registered(_SeamProfile(name="session-native", requires_api_key=False))
+    assert isinstance(_build("session-native", ""), _FakeClient)
+
+    agent = SimpleNamespace(
+        provider="session-native", model="native-model", base_url="", quiet_mode=True,
+        _create_openai_client=lambda kwargs, **_kw: _FakeClient(**kwargs),
+        _apply_user_default_headers=lambda: None,
+    )
+    _init_openai_client(agent, "", "", [], None)
+    assert isinstance(agent.client, _FakeClient)
+    assert agent.client.kwargs == {"api_key": "", "base_url": ""}
+
+
 def test_skip_flags_replace_the_isinstance_checks_for_in_and_out_of_tree_clients():
     from agent.auxiliary_client import _maybe_wrap_anthropic, _to_async_client
     from agent.copilot_acp_client import CopilotACPClient

@@ -1,6 +1,47 @@
 """LM Studio capability-aware reasoning projection for auxiliary requests."""
 
+import asyncio
+import json
+import urllib.error
+
 import pytest
+
+
+MODEL = "qwen/qwen3.8-27b"
+BASE_URL = "http://127.0.0.1:1234/v1"
+
+
+class _JsonResponse:
+    def __init__(self, payload):
+        self._body = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def _prepare_real_lmstudio_request(async_mode, reasoning_config):
+    import agent.auxiliary_client as aux
+
+    request_args = dict(
+        task="test", provider="lmstudio", model=MODEL, base_url=BASE_URL, api_key="lm-key",
+        main_runtime={}, messages=[{"role": "user", "content": "hello"}], temperature=None,
+        max_tokens=None, tools=None, timeout=None, extra_body=None,
+        reasoning_config=reasoning_config, extra_headers=None, api_mode=None,
+        route_info=None, async_mode=async_mode,
+    )
+    if not async_mode:
+        return aux._prepare_aux_request(**request_args)
+
+    async def prepare():
+        return aux._prepare_aux_request(**request_args)
+
+    return asyncio.run(prepare())
 
 
 @pytest.fixture(autouse=True)
@@ -143,27 +184,56 @@ def test_disabled_reasoning_omits_off_when_catalog_does_not_allow_it(monkeypatch
     assert "reasoning" not in kwargs.get("extra_body", {})
 
 
-def test_transient_lmstudio_capability_failure_is_not_cached(monkeypatch):
-    import agent.auxiliary_client as aux
+@pytest.mark.parametrize("failure", ["unavailable", "auth"])
+@pytest.mark.parametrize("async_mode", [False, True])
+def test_real_lmstudio_probe_failure_is_not_cached_and_restores_reasoning(
+    monkeypatch, failure, async_mode,
+):
+    """Transport and auth failures must not turn into a cached, false empty capability result."""
+    from hermes_cli import models
 
     calls = []
-    responses = iter([None, ["off", "low"]])
 
-    def fake_options(*_args, **_kwargs):
-        calls.append(True)
-        return next(responses)
+    def fake_open(request, *, timeout):
+        calls.append((request, timeout))
+        if len(calls) == 1:
+            if failure == "unavailable":
+                raise urllib.error.URLError("LM Studio is unavailable")
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+        return _JsonResponse({
+            "models": [{
+                "key": MODEL,
+                "capabilities": {"reasoning": {"allowed_options": ["off", "low"]}},
+            }],
+        })
 
-    monkeypatch.setattr("hermes_cli.models_local.lmstudio_model_reasoning_options", fake_options)
-    for _ in range(2):
-        kwargs = aux._build_call_kwargs(
-            provider="lmstudio", model="qwen/qwen3.8-27b",
-            messages=[{"role": "user", "content": "hello"}],
-            base_url="http://127.0.0.1:1234/v1",
-            reasoning_config={"enabled": True, "effort": "low"},
-        )
+    monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_open)
+    first = _prepare_real_lmstudio_request(async_mode, {"enabled": False})
+    second = _prepare_real_lmstudio_request(async_mode, {"enabled": False})
 
+    assert "reasoning_effort" not in first.kwargs
+    assert second.kwargs["reasoning_effort"] == "none"
     assert len(calls) == 2
-    assert kwargs["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+def test_real_lmstudio_empty_reasoning_options_are_cached(monkeypatch, async_mode):
+    """A valid catalog without reasoning remains cacheable, preventing needless HTTP probes."""
+    from hermes_cli import models
+
+    calls = []
+
+    def fake_open(request, *, timeout):
+        calls.append((request, timeout))
+        return _JsonResponse({"models": [{"key": MODEL, "capabilities": {}}]})
+
+    monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_open)
+    first = _prepare_real_lmstudio_request(async_mode, {"enabled": True, "effort": "low"})
+    second = _prepare_real_lmstudio_request(async_mode, {"enabled": True, "effort": "low"})
+
+    assert "reasoning_effort" not in first.kwargs
+    assert "reasoning_effort" not in second.kwargs
+    assert len(calls) == 1
 
 
 def test_enabled_reasoning_probe_is_bounded_cached(monkeypatch):

@@ -567,12 +567,15 @@ def lmstudio_model_reasoning_options(
     base_url: Optional[str],
     api_key: Optional[str] = None,
     timeout: float = 5.0,
-) -> list[str]:
+) -> Optional[list[str]]:
     """Reasoning ``allowed_options`` LM Studio publishes for ``model`` under
-    ``capabilities.reasoning`` in ``/api/v1/models``; ``[]`` when unknown, unreachable, or absent."""
-    raw = _lmstudio_entry_for(_lmstudio_raw_models_or_none(api_key, base_url, timeout) or [], model)
+    ``capabilities.reasoning`` in ``/api/v1/models``; ``None`` when the catalog probe fails and
+    ``[]`` when the catalog is valid but the model is unknown or publishes no options. Raises
+    ``AuthError`` for HTTP 401/403 so callers can distinguish rejected credentials."""
+    raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
+    raw = _lmstudio_entry_for(raw_models, model) if raw_models is not None else None
     if raw is None:
-        return []
+        return None if raw_models is None else []
     caps = raw.get("capabilities")
     reasoning = caps.get("reasoning") if isinstance(caps, dict) else None
     opts = reasoning.get("allowed_options") if isinstance(reasoning, dict) else None

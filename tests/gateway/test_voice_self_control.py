@@ -194,7 +194,6 @@ def test_leave_from_dm_finds_connected_guild(runner):
     assert runner._voice_mode[f"discord:{TEXT}"] == "off"
 
 
-
 def test_join_from_dm_uses_profile_scoped_home_channel(runner, monkeypatch):
     """The DM fallback reads DISCORD_HOME_CHANNEL from the turn's profile secret scope, not the
     launch process env, and binds the voice channel to that home channel's guild."""
@@ -216,6 +215,7 @@ def test_join_from_dm_uses_profile_scoped_home_channel(runner, monkeypatch):
     assert out["success"] is True and out["text_channel_id"] == home
     adapter._client.get_channel.assert_called_once_with(int(home))
     assert adapter._voice_text_channels[GUILD] == int(home)
+
 
 def _vc(connected=True):
     vc = MagicMock()

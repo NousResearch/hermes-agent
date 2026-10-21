@@ -874,7 +874,8 @@ class HostedRoomRuntime:
         try:
             self._publish(
                 binding,
-                state.settle_task(self.db_path, attempt, **asdict(terminal), clock=self.clock))
+                state.settle_task(
+                    self.db_path, attempt, **asdict(terminal), clock=self.clock, allow_expired_lease=True))
         except (state.StaleLeaseError, state.StaleTaskError):
             # Cancellation, disband, or authority transfer can win the durable race, and then the
             # model result is discarded; an exact attempt in recovery still takes its reply.
@@ -909,6 +910,9 @@ class HostedRoomRuntime:
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
         observation_failed_at = None
+        # Sleep at most a quarter lease ttl: `_renew_lease_if_needed` must get a chance to act
+        # inside its ttl/2 renewal window however the configured cadence compares to the ttl.
+        wait_cap = min(self.active_poll_interval_seconds, self.lease_ttl_seconds / 4)
         while not self._stop.is_set():
             task = state.get_task(self.db_path, attempt.identity)
             if task["status"] in state.TERMINAL_STATUSES:
@@ -928,7 +932,7 @@ class HostedRoomRuntime:
                         return None  # the room's scan keeps this Stop going, without the profile lock
                 if self._defer_unconfirmed_stop(binding, task, lease):
                     return None
-                self._wake.wait(self.active_poll_interval_seconds)
+                self._wake.wait(wait_cap)
                 self._wake.clear()
                 continue
             if time.monotonic() >= deadline_monotonic:
@@ -955,7 +959,7 @@ class HostedRoomRuntime:
             else:
                 observation_failed_at = None
             remaining = max(0.0, deadline_monotonic - time.monotonic())
-            self._wake.wait(min(self.active_poll_interval_seconds, remaining))
+            self._wake.wait(min(wait_cap, remaining))
             self._wake.clear()
         return None
 

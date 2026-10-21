@@ -21388,6 +21388,135 @@
         "title": "InterruptStatus",
         "type": "string"
       },
+      "Issue22AdmitParams": {
+        "additionalProperties": false,
+        "properties": {
+          "issue_number": {
+            "title": "Issue Number",
+            "type": "integer"
+          },
+          "comment_id": {
+            "title": "Comment Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "issue_number",
+          "comment_id"
+        ],
+        "title": "Issue22AdmitParams",
+        "type": "object"
+      },
+      "Issue22IngressResult": {
+        "additionalProperties": false,
+        "properties": {
+          "verdict": {
+            "enum": [
+              "ACK",
+              "REJECT",
+              "BUSY",
+              "NOOP",
+              "BLOCKED"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          },
+          "issue_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issue Number"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PING",
+                  "STATUS",
+                  "TASK"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "awaiting_binding",
+                  "running",
+                  "result_published"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "comment_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Comment Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "verdict"
+        ],
+        "title": "Issue22IngressResult",
+        "type": "object"
+      },
+      "Issue22PollParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "Issue22PollParams",
+        "type": "object"
+      },
       "KanbanRunParams": {
         "additionalProperties": false,
         "properties": {
@@ -47578,6 +47707,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalAttachedImageResult"
+        }
+      }
+    },
+    {
+      "name": "issue22-admit",
+      "summary": "Admit one pinned GitHub Issue 22 comment through the native profile owner.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Issue22AdmitParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Issue22IngressResult"
+        }
+      }
+    },
+    {
+      "name": "issue22-poll",
+      "summary": "Poll the explicitly enabled GitHub Issue 22 source once through the owner.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Issue22PollParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Issue22IngressResult"
         }
       }
     },

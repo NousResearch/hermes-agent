@@ -2669,6 +2669,12 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    # GitHub ingress tasks have a stricter completion contract than ordinary
+    # Kanban cards. Validate owner admission, runtime provenance and the exact
+    # workspace artifact set before preparing or committing completion.
+    from hermes_cli.issue_delivery import completion_evidence
+    metadata = completion_evidence(conn, task_id, expected_run_id, metadata)
+    completion_proof = metadata.get("github_delivery") if isinstance(metadata, dict) else None
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
@@ -2685,6 +2691,13 @@ def complete_task(
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        # Recheck against the task row protected by this write transaction; the
+        # evidence helper fails closed for stale runs or changed task bindings.
+        checked_metadata = completion_evidence(conn, task_id, expected_run_id, metadata)
+        checked_proof = checked_metadata.get("github_delivery") if isinstance(checked_metadata, dict) else None
+        if checked_proof != completion_proof:
+            raise ValueError("GitHub completion evidence changed before commit")
+        metadata = checked_metadata
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
@@ -2711,6 +2724,11 @@ def complete_task(
             return False
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
+            if isinstance(metadata.get("github_delivery"), dict):
+                from hermes_cli.issue_delivery import _binding, _verify_persisted_artifacts
+                _verify_persisted_artifacts(
+                    conn, task_id, _binding(conn, task_id), metadata["github_delivery"],
+                )
         run_id = _end_run(
             conn, task_id, outcome="completed", status="done", summary=handoff_summary,
             metadata=metadata,

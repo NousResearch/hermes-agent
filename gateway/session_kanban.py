@@ -1,14 +1,79 @@
 """Trusted dispatcher claims enter the ordinary owner's durable admission queue."""
 import asyncio
 import contextlib
+import hashlib
+import json
+import re
+import sqlite3
+import threading
 from contextlib import closing
 from dataclasses import asdict, replace
-import threading
-import json
 from pathlib import Path
-import sqlite3
 
 from hermes_state_runtime import RuntimeStoreError
+
+
+_GITHUB_TASK_RE = re.compile(r"github:ISVGitHub/autonomous-entity#(?P<issue>22|27)\Z")
+_GITHUB_RESULT_FILE_RE = re.compile(r"[A-Za-z0-9_-]+\.(?:md|json|mmd)\Z")
+
+
+def _github_delivery_binding(conn, task):
+    """Return the authenticated, task-level GitHub result contract.
+
+    The dispatcher may submit only a claim tuple. The owner recovers delivery
+    policy from the ingress binding stored with the task, never from caller
+    params or an inherited session id.
+    """
+    match = _GITHUB_TASK_RE.fullmatch(task.created_by or "")
+    if not match:
+        return None
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND run_id IS NULL "
+        "AND kind='github_task_binding' ORDER BY id",
+        (task.id,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise RuntimeStoreError('github_task_binding_invalid')
+    try:
+        binding = json.loads(rows[0]['payload'])
+        files = binding['result_files']
+        comment_id = binding['comment_id']
+        task_sha256 = binding['task_sha256']
+        issue_number = int(match.group('issue'))
+        if (not isinstance(files, list) or not 1 <= len(files) <= 8
+                or any(not isinstance(name, str) or not _GITHUB_RESULT_FILE_RE.fullmatch(name)
+                       for name in files)
+                or len(set(files)) != len(files)
+                or type(comment_id) is not int or comment_id <= 0
+                or not isinstance(task_sha256, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', task_sha256)
+                or binding.get('repository') != 'ISVGitHub/autonomous-entity'
+                or binding.get('issue_number') != issue_number
+                or any(type(binding.get(key)) is not int or binding[key] <= 0
+                       for key in ('repository_id', 'app_id', 'installation_id', 'actor_id'))
+                or not isinstance(binding.get('nonce'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]{16,64}', binding['nonce'])
+                or type(binding.get('recorded_at')) is not int
+                or hashlib.sha256((task.body or '').encode('utf-8')).hexdigest() != task_sha256):
+            raise ValueError('invalid binding fields')
+        return {
+            key: binding[key]
+            for key in ('repository', 'repository_id', 'issue_number', 'comment_id',
+                        'app_id', 'installation_id', 'actor_id', 'nonce', 'task_sha256',
+                        'result_files', 'recorded_at')
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeStoreError('github_task_binding_invalid') from exc
+
+
+def _github_admission_payload(binding, *, task_id, run_id, claim_lock, session_id, request_id):
+    if binding is None:
+        return None
+    return {
+        'task_id': task_id, 'run_id': run_id, 'claim_lock': claim_lock,
+        'session_id': session_id, 'request_id': request_id,
+        **binding,
+    }
 
 
 def build_kanban_policy(connection, params, config):
@@ -42,6 +107,7 @@ def build_kanban_policy(connection, params, config):
             if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
                 raise RuntimeStoreError('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
+            github_binding = _github_delivery_binding(conn, task)
             skills = list(task.skills or ())
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
@@ -58,11 +124,14 @@ def build_kanban_policy(connection, params, config):
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
-    context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
+    request_id = 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':'))
+    context = dict(params, request_id=request_id, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
         max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
+    if github_binding is not None:
+        context['github_delivery'] = github_binding
     context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
@@ -120,14 +189,52 @@ async def run_task(connection, params):
             if marker:
                 if json.loads(marker[0])['session_id'] != ref.session_id:
                     raise RuntimeStoreError('stale_kanban_claim')
+                task = kb.get_task(conn, params['task_id'])
+                if task is None:
+                    raise RuntimeStoreError('stale_kanban_claim')
+                github_binding = _github_delivery_binding(conn, task)
+                if github_binding != context.get('github_delivery'):
+                    raise RuntimeStoreError('github_task_binding_changed')
+                if context.get('github_delivery') is not None:
+                    admitted_rows = conn.execute(
+                        "SELECT payload FROM task_events WHERE task_id=? AND run_id=? "
+                        "AND kind='github_task_admitted' ORDER BY id",
+                        (params['task_id'], params['run_id']),
+                    ).fetchall()
+                    expected = _github_admission_payload(context['github_delivery'],
+                        task_id=params['task_id'], run_id=params['run_id'],
+                        claim_lock=params['claim_lock'], session_id=ref.session_id,
+                        request_id=request_id)
+                    if len(admitted_rows) != 1 or json.loads(admitted_rows[0][0]) != expected:
+                        raise RuntimeStoreError('github_task_admission_mismatch')
             else:
                 task = kb.get_task(conn, params['task_id'])
                 if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
                     raise RuntimeStoreError('stale_kanban_claim')
+                # Re-read immutable GitHub ingress evidence inside the same transaction that
+                # stamps owner_admitted. This binds the contract to this exact run and the
+                # owner-derived session, while callers continue to submit only the claim tuple.
+                github_binding = _github_delivery_binding(conn, task)
+                expected_context_binding = context.get('github_delivery')
+                if github_binding != expected_context_binding:
+                    raise RuntimeStoreError('github_task_binding_changed')
+                prior_admissions = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id=? AND run_id=? "
+                    "AND kind='github_task_admitted' LIMIT 1",
+                    (task.id, task.current_run_id),
+                ).fetchone()
+                if prior_admissions:
+                    raise RuntimeStoreError('github_task_admission_mismatch')
                 kb._append_event(conn, task.id, 'owner_admitted',
                     {'db': owner_db, 'session_id': ref.session_id,
                      'request_id': request_id, 'pid': os.getpid(), 'birth': process_birth(psutil.Process())},
                     run_id=task.current_run_id)
+                admitted = _github_admission_payload(github_binding, task_id=task.id,
+                    run_id=task.current_run_id, claim_lock=task.claim_lock,
+                    session_id=ref.session_id, request_id=request_id)
+                if admitted is not None:
+                    kb._append_event(conn, task.id, 'github_task_admitted', admitted,
+                                     run_id=task.current_run_id)
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
@@ -353,7 +460,26 @@ def _run_task_turns(agent, frame, history, context):
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
-    prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
+    result_files = (context.get('github_delivery') or {}).get('result_files') or ()
+    delivery_contract = (f"Required deliverable files: {', '.join(result_files)}. "
+                         "Write each file in the task workspace and include every required file in the completion artifacts.") if result_files else ''
+    prompt = '\n\n'.join(p for p in (skills, context['context'], delivery_contract, frame['text']) if p)
+    if context.get('github_delivery') is not None:
+        # This executes in the managed worker after the Gateway frame has bound
+        # the canonical session/claim, immediately before its first model turn.
+        # It records no running evidence if task policy, admission, or runtime
+        # identity cannot be proven.
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli.issue_delivery import record_worker_delivery
+        from hermes_cli.version_info import _resolve_repo_dir, get_code_identity
+        runtime_root = _resolve_repo_dir()
+        runtime_commit = get_code_identity().get('sha')
+        if runtime_root is None or not runtime_commit:
+            raise RuntimeStoreError('github_runtime_identity_unavailable')
+        with connect_closing(Path(context['db'])) as conn:
+            record_worker_delivery(conn, context['task_id'], context=context,
+                session_id=agent.session_id,
+                runtime_identity={'runtime_root': str(runtime_root), 'runtime_commit': runtime_commit})
     result = agent.run_conversation(prompt, conversation_history=history)
 
     def recover(nudge):

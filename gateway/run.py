@@ -4507,6 +4507,7 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from gateway.session_issue22 import poll_enabled_source
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4542,6 +4543,11 @@ def _start_gateway_housekeeping(
         # Per served profile: plugins dir, last-run marker and plugins.auto_apply are all the
         # profile's own (get_hermes_home()/load_config_readonly() bind to the scope).
         (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
+        # Issue ingress is disabled unless the bridge config explicitly opts in. Its poller
+        # checks the executor profile before contacting GitHub and runs on the normal five-minute
+        # housekeeping cadence, keeping the one-profile owner outside the realtime request loop.
+        (5, "GitHub Issue ingress", profile_scoped_chore(
+            runner, poll_enabled_source)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

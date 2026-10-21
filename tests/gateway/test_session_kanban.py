@@ -1,9 +1,94 @@
 """Task claims, not caller-supplied launch policy, authorize Kanban execution."""
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+def test_github_delivery_binding_is_owner_loaded_and_body_pinned():
+    from gateway.session_kanban import _github_delivery_binding
+    from hermes_state_runtime import RuntimeStoreError
+
+    task = SimpleNamespace(
+        id='task-22', created_by='github:ISVGitHub/autonomous-entity#22',
+        body='Build the ARCH-001 reuse index.',
+    )
+    binding = {
+        'repository': 'ISVGitHub/autonomous-entity', 'repository_id': 123,
+        'issue_number': 22, 'comment_id': 456, 'app_id': 7,
+        'installation_id': 8, 'actor_id': 9, 'nonce': '0123456789abcdef',
+        'task_sha256': hashlib.sha256(task.body.encode()).hexdigest(),
+        'result_files': ['ARCH001_H1_REUSE_INDEX.json'], 'recorded_at': 100,
+    }
+    conn = sqlite3.connect(':memory:')
+    conn.row_factory = sqlite3.Row
+    conn.execute('CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, run_id INTEGER, kind TEXT, payload TEXT)')
+    conn.execute('INSERT INTO task_events (task_id,run_id,kind,payload) VALUES (?, NULL, ?, ?)',
+                 (task.id, 'github_task_binding', json.dumps(binding)))
+
+    assert _github_delivery_binding(conn, task) == binding
+    # Delivery artifacts are frozen in the authenticated task event, never
+    # accepted as caller-supplied kanban.run parameters.
+    assert _github_delivery_binding(conn, SimpleNamespace(
+        id='ordinary-task', created_by='operator', body=task.body)) is None
+
+    conn.execute('UPDATE task_events SET payload=?',
+                 (json.dumps(binding | {'task_sha256': '0' * 64}),))
+    with pytest.raises(RuntimeStoreError, match='github_task_binding_invalid'):
+        _github_delivery_binding(conn, task)
+    conn.execute('UPDATE task_events SET payload=?', (json.dumps(binding),))
+    conn.execute('INSERT INTO task_events (task_id,run_id,kind,payload) VALUES (?, NULL, ?, ?)',
+                 (task.id, 'github_task_binding', json.dumps(binding)))
+    with pytest.raises(RuntimeStoreError, match='github_task_binding_invalid'):
+        _github_delivery_binding(conn, task)
+    conn.close()
+
+
+def test_github_running_evidence_is_recorded_before_the_first_managed_turn(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from hermes_cli import issue_delivery, version_info
+    from gateway import session_kanban
+
+    events = []
+
+    @contextmanager
+    def connection(_path):
+        yield object()
+
+    monkeypatch.setattr('hermes_cli.kanban_db_connect.connect_closing', connection)
+    monkeypatch.setattr(version_info, '_resolve_repo_dir', lambda: tmp_path)
+    monkeypatch.setattr(version_info, 'get_code_identity', lambda: {'sha': 'a' * 40})
+    monkeypatch.setattr(issue_delivery, 'record_worker_delivery',
+        lambda conn, task_id, **kwargs: events.append(('running', task_id, kwargs)))
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt',
+        lambda skills, task_id: ('', [], []))
+
+    class Agent:
+        session_id = 'owner-created-session'
+
+        def run_conversation(self, prompt, **kwargs):
+            events.append(('turn', prompt))
+            return {'final_response': 'done'}
+
+    context = {
+        'skills': [], 'context': 'trusted task context', 'db': str(tmp_path / 'kanban.db'),
+        'task_id': 'task-22', 'run_id': 11, 'claim_lock': 'claim-lock',
+        'request_id': 'kanban:["missions","task-22",11]',
+        'goal_mode': False, 'goal_max_turns': None,
+        'github_delivery': {'result_files': ['ARCH001_H1_REUSE_INDEX.json']},
+    }
+    frame = {'text': 'Do the work.'}
+    session_kanban._run_task_turns(Agent(), frame, [], context)
+
+    assert events[0][0] == 'running'
+    assert events[0][1] == 'task-22'
+    assert events[0][2]['session_id'] == 'owner-created-session'
+    assert events[0][2]['runtime_identity'] == {'runtime_root': str(tmp_path), 'runtime_commit': 'a' * 40}
+    assert events[1][0] == 'turn'
+    assert 'ARCH001_H1_REUSE_INDEX.json' in events[1][1]
 
 
 def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
@@ -43,7 +128,8 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     assert context['board'] == 'owned' and context['claim_lock'] == task.claim_lock
     assert context['skills'] == ['owned-skill'] and context['goal_mode'] and context['goal_max_turns'] == 3
     assert context['accept_hooks'] is True and 'Goal criteria' in context['goal_text']
-    for changed in ({'run_id': task.current_run_id + 1}, {'board': 'foreign'}, {'claim_lock': 'forged'}, {'cwd': '/tmp'}):
+    for changed in ({'run_id': task.current_run_id + 1}, {'board': 'foreign'}, {'claim_lock': 'forged'},
+                    {'cwd': '/tmp'}, {'result_files': ['caller.json']}, {'session_id': 'caller-session'}):
         with pytest.raises(RuntimeStoreError):
             build_kanban_policy(connection, params | changed, config)
     connection.native_owner = False

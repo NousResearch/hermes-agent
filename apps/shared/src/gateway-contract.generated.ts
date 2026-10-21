@@ -4797,6 +4797,20 @@ export interface KanbanRunResult {
   session_id: string
   receipt: AdmissionStatus
 }
+export interface Issue22AdmitParams {
+  issue_number: number
+  comment_id: number
+}
+export interface Issue22IngressResult {
+  verdict: 'ACK' | 'REJECT' | 'BUSY' | 'NOOP' | 'BLOCKED'
+  issue_number?: number | null
+  kind?: 'PING' | 'STATUS' | 'TASK' | null
+  state?: 'queued' | 'awaiting_binding' | 'running' | 'result_published' | null
+  task_id?: string | null
+  comment_id?: number | null
+  reason?: string | null
+}
+export type Issue22PollParams = Record<string, never>
 export interface A2aForwardParams {
   agent: string
   tenant: string
@@ -6788,6 +6802,10 @@ export interface CanonicalRpcMethods {
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
+  /** Admit one pinned GitHub Issue 22 comment through the native profile owner. */
+  'issue22-admit': { params: Issue22AdmitParams; result: Issue22IngressResult }
+  /** Poll the explicitly enabled GitHub Issue 22 source once through the owner. */
+  'issue22-poll': { params: Issue22PollParams; result: Issue22IngressResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
@@ -6858,6 +6876,8 @@ export const CANONICAL_RPC_METHODS = [
   'groups.discard',
   'groups.retry',
   'image.attach_bytes',
+  'issue22-admit',
+  'issue22-poll',
   'kanban.run',
   'profiles.list',
   'prompt.cancel',

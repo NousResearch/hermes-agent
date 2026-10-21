@@ -440,6 +440,31 @@ canonical_method("kanban.run", params=KanbanRunParams, result=KanbanRunResult,
                  doc="Native-owner only: admit the dispatcher's current claim on a kanban task.")
 
 
+class Issue22AdmitParams(Params):
+    issue_number: int
+    comment_id: int
+
+
+class Issue22PollParams(Params):
+    pass
+
+
+class Issue22IngressResult(Result):
+    verdict: Literal["ACK", "REJECT", "BUSY", "NOOP", "BLOCKED"]
+    issue_number: int | None = None
+    kind: Literal["PING", "STATUS", "TASK"] | None = None
+    state: Literal["queued", "awaiting_binding", "running", "result_published"] | None = None
+    task_id: str | None = None
+    comment_id: int | None = None
+    reason: str | None = None
+
+
+canonical_method("issue22-admit", params=Issue22AdmitParams, result=Issue22IngressResult,
+                 doc="Admit one pinned GitHub Issue 22 comment through the native profile owner.")
+canonical_method("issue22-poll", params=Issue22PollParams, result=Issue22IngressResult,
+                 doc="Poll the explicitly enabled GitHub Issue 22 source once through the owner.")
+
+
 class A2aForwardParams(Params):
     agent: str
     tenant: str

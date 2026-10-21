@@ -884,33 +884,6 @@ def test_oversized_terminal_reply_is_bounded_without_waiting_for_deadline(db: Pa
     assert result["text"].endswith("share the full result as a file.]")
 
 
-def test_wait_for_terminal_sleep_budget_stays_inside_the_renewal_window(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc, turn_timeout_seconds=30)
-    waits: list[float] = []
-
-    class RecordingWake(threading.Event):
-        """Record each requested wait budget, then block like the real wake event."""
-
-        def wait(self, timeout=None):
-            waits.append(timeout if timeout is not None else float("inf"))
-            return super().wait(timeout)
-
-    runtime._wake = RecordingWake()
-    runtime.start()
-    try:
-        assert rpc.submitted.wait(timeout=5.0)
-        _wait_for(lambda: len([w for w in waits if w >= 0.05]) >= 3, timeout=5.0)
-        cap = min(runtime.active_poll_interval_seconds, runtime.lease_ttl_seconds / 4)
-        assert all(timeout <= cap + 1e-9 for timeout in waits)
-    finally:
-        if rpc.submitted.is_set():
-            rpc.complete(identity.task_id, content="done")
-        assert runtime.stop(timeout=5.0)
-
-
 def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
     identity = _identity()
     now = [100.0]

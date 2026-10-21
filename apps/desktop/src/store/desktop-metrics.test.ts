@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
+import { resetOptionalIpcLatchesForTests } from '@/lib/optional-ipc'
 
 import {
   bindDesktopMetrics,
@@ -72,6 +73,7 @@ let bridge: {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(DAY1)
+  resetOptionalIpcLatchesForTests()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
   $workspaceMode.set('sessions')
@@ -537,5 +539,50 @@ describe('per profile, per window', () => {
     setDesktopMetricsGate('on')
     await flush()
     expect(later.calls).toEqual([])
+  })
+})
+
+describe('drainRendererCrashes against an older main process', () => {
+  it('a No handler registered rejection latches the channel for the session', async () => {
+    const { request } = requester()
+
+    bridge.takeRendererCrashes.mockRejectedValue(
+      new Error(
+        "Error occurred in handler for 'hermes:desktop-metrics:crash:take': Error: No handler registered for 'hermes:desktop-metrics:crash:take'"
+      )
+    )
+
+    setDesktopMetricsGate('on')
+    bindDesktopMetrics(request)
+    await flush()
+
+    bindDesktopMetrics(request)
+    await flush()
+
+    bindDesktopMetrics(request)
+    await flush()
+
+    expect(bridge.takeRendererCrashes).toHaveBeenCalledTimes(1)
+    expect(bridge.ackRendererCrashes).not.toHaveBeenCalled()
+  })
+
+  it('a latched channel is skipped even when it would now answer', async () => {
+    const { request } = requester()
+
+    bridge.takeRendererCrashes.mockRejectedValueOnce(
+      new Error("No handler registered for 'hermes:desktop-metrics:crash:take'")
+    )
+
+    setDesktopMetricsGate('on')
+    bindDesktopMetrics(request)
+    await flush()
+
+    bridge.takeRendererCrashes.mockResolvedValue({ reasons: ['oom'] })
+    bridge.takeRendererCrashes.mockClear()
+
+    bindDesktopMetrics(request)
+    await flush()
+
+    expect(bridge.takeRendererCrashes).not.toHaveBeenCalled()
   })
 })

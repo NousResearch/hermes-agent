@@ -1,0 +1,10 @@
+name: wordpress-beverage-inventory
+version: 0.1.0
+description: "Read the latest DanceOffice beverage inventory from its authenticated WordPress REST endpoint."
+author: Local Hermes profile
+kind: integration
+provides_tools:
+  - wordpress_beverage_inventory_latest
+requires_env:
+  - HERMES_WP_API_USER
+  - HERMES_WP_API_PASSWORD

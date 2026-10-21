@@ -3,6 +3,9 @@
 import asyncio
 import json
 import os
+import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 from subprocess import Popen
@@ -24,7 +27,7 @@ def pairing(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(status, "_get_lock_dir", lambda: tmp_path / "locks")
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     messaging._whatsapp_onboarding_sessions.clear()
     session = home / "platforms" / "whatsapp" / "session"
     session.mkdir(parents=True)
@@ -32,20 +35,59 @@ def pairing(tmp_path, monkeypatch):
     (session / "creds.json").write_text(creds, encoding="utf-8")
     (session / "app-state.json").write_text("preserve", encoding="utf-8")
     starts = []
+    workers = []
+    timers = []
+    real_thread = messaging.threading.Thread
+
+    class Timer:
+        def __init__(self, interval, function, args):
+            self.function, self.args = function, args
+            self.cancelled = False
+
+        def start(self):
+            timers.append(self)
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            if not self.cancelled:
+                self.function(*self.args)
 
     class Thread:
-        def __init__(self, *, target, args, daemon):
+        def __init__(self, *, target, args, daemon, kwargs=None, name=None):
             self.args = args
+            self.target = target
 
         def start(self):
             starts.append(self.args)
+            workers.append(self)
 
     monkeypatch.setattr(messaging.threading, "Thread", Thread)
+    monkeypatch.setattr(messaging.threading, "Timer", Timer)
 
     def start(**kwargs):
         return asyncio.run(messaging.start_whatsapp_onboarding(web_models.WhatsAppOnboardingStart(**kwargs)))
 
-    yield SimpleNamespace(home=home, session=session, creds=creds, starts=starts, start=start)
+    def gateway_can_acquire():
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        output = tmp_path / "lock-probe.txt"
+        code = "from gateway.status import acquire_scoped_lock; import sys; print(acquire_scoped_lock('whatsapp-session', sys.argv[1])[0])"
+        with output.open("w", encoding="utf-8") as stream:
+            subprocess.run([sys.executable, "-c", code, str(session)], stdout=stream, stderr=subprocess.STDOUT,
+                           timeout=20, check=True, creationflags=windows_hide_flags())
+        return output.read_text(encoding="utf-8").strip() == "True"
+
+    yield SimpleNamespace(home=home, session=session, creds=creds, starts=starts, workers=workers, timers=timers,
+                          start=start, gateway_can_acquire=gateway_can_acquire, real_thread=real_thread)
+    from gateway.status_scoped_locks import release_scoped_lock
+
+    for record in messaging._whatsapp_onboarding_sessions.values():
+        timer = record.expiry_timer
+        if timer is not None:
+            timer.cancel()
+        release_scoped_lock("whatsapp-session", record.session_path)
     messaging._whatsapp_onboarding_sessions.clear()
 
 
@@ -62,6 +104,178 @@ def test_repair_preserves_credentials_and_starts_fresh_pairing(pairing):
     assert len(backups) == 1
     assert (backups[0] / "creds.json").read_text(encoding="utf-8") == pairing.creds
     assert (backups[0] / "app-state.json").read_text(encoding="utf-8") == "preserve"
+    assert re.fullmatch(r"session-backup-\d{8}T\d{6}Z-.+", backups[0].parent.name)
+
+
+def test_reservation_blocks_gateway_until_cancel_before_worker_start(pairing):
+    result = pairing.start(reset_session=True)
+    assert pairing.gateway_can_acquire() is False
+    asyncio.run(messaging.cancel_whatsapp_onboarding(result["pairing_id"]))
+    assert pairing.gateway_can_acquire() is True
+    assert pairing.timers[0].cancelled is True
+
+
+def test_unattended_setup_expires_and_releases_reservation(pairing):
+    result = pairing.start(reset_session=True)
+    assert pairing.gateway_can_acquire() is False
+    pairing.timers[0].fire()
+    assert messaging._whatsapp_onboarding_sessions[result["pairing_id"]].status == "expired"
+    assert pairing.gateway_can_acquire() is True
+
+
+def test_failed_process_start_releases_reservation(pairing, monkeypatch):
+    result = pairing.start(reset_session=True)
+
+    def fail_spawn(*args):
+        assert pairing.gateway_can_acquire() is False
+        raise OSError("cannot start bridge")
+
+    monkeypatch.setattr(messaging, "_spawn_whatsapp_pairing_process", fail_spawn)
+    messaging._run_whatsapp_pairing(*pairing.starts[0])
+    assert messaging._whatsapp_onboarding_sessions[result["pairing_id"]].status == "error"
+    assert pairing.gateway_can_acquire() is True
+
+
+def test_recycled_pid_does_not_block_repair(pairing):
+    from gateway.status import get_process_start_time
+
+    started = get_process_start_time(os.getpid())
+    assert started is not None
+    (pairing.session / "bridge.pid").write_text(f"{os.getpid()}\n{started - 1}\n19877", encoding="utf-8")
+    assert pairing.start(reset_session=True)["status"] == "starting"
+
+
+def test_matching_pid_fingerprint_refuses_repair(pairing):
+    from gateway.status import get_process_start_time
+
+    (pairing.session / "bridge.pid").write_text(f"{os.getpid()}\n{get_process_start_time(os.getpid())}", encoding="utf-8")
+    with pytest.raises(HTTPException) as refused:
+        pairing.start(reset_session=True)
+    assert refused.value.status_code == 409
+    assert (pairing.session / "creds.json").exists()
+
+
+class _Bridge:
+    def __init__(self, lines=()):
+        self.stdout = lines
+        self.returncode: int | None = None
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.returncode = 0 if self.returncode is None else self.returncode
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.returncode = -9
+
+
+def test_reservation_covers_connected_event_and_credential_flush(pairing, monkeypatch):
+    result = pairing.start(reset_session=True)
+    record = messaging._whatsapp_onboarding_sessions[result["pairing_id"]]
+
+    def events():
+        yield '{"event":"connected","user":{"id":"15550001111"}}'
+        assert record.status == "connected"
+        assert pairing.gateway_can_acquire() is False
+        # A status poll must not release the lock before the process exits.
+        asyncio.run(messaging.get_whatsapp_onboarding_status(result["pairing_id"]))
+        assert pairing.gateway_can_acquire() is False
+
+    proc = _Bridge(events())
+    monkeypatch.setattr(messaging, "_spawn_whatsapp_pairing_process", lambda *args: proc)
+    messaging._run_whatsapp_pairing(*pairing.starts[0])
+    assert record.status == "connected"
+    assert record.session_reserved is False
+    assert pairing.gateway_can_acquire() is True
+    assert pairing.timers[0].cancelled
+
+
+def test_expiry_stops_active_writer_and_releases_reservation(pairing, monkeypatch):
+    result = pairing.start(reset_session=True)
+    proc = _Bridge()
+
+    def events():
+        yield '{"event":"qr","qr":"test"}'
+        assert pairing.gateway_can_acquire() is False
+        pairing.timers[0].fire()
+        assert proc.poll() is not None
+        yield '{"event":"connected"}'  # Late events cannot undo expiry.
+
+    proc.stdout = events()
+    monkeypatch.setattr(messaging, "_spawn_whatsapp_pairing_process", lambda *args: proc)
+    messaging._run_whatsapp_pairing(*pairing.starts[0])
+    assert messaging._whatsapp_onboarding_sessions[result["pairing_id"]].status == "expired"
+    assert pairing.gateway_can_acquire() is True
+
+
+def test_expiry_during_spawn_keeps_reservation_until_late_process_stops(pairing, monkeypatch):
+    result = pairing.start(reset_session=True)
+    proc = _Bridge()
+
+    def spawn(*args):
+        pairing.timers[0].fire()
+        assert pairing.gateway_can_acquire() is False
+        return proc
+
+    monkeypatch.setattr(messaging, "_spawn_whatsapp_pairing_process", spawn)
+    messaging._run_whatsapp_pairing(*pairing.starts[0])
+    assert proc.poll() is not None
+    assert messaging._whatsapp_onboarding_sessions[result["pairing_id"]].status == "expired"
+    assert pairing.gateway_can_acquire() is True
+
+
+def test_thread_start_failure_releases_reservation(pairing, monkeypatch):
+    def fail_thread(*args, **kwargs):
+        raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(messaging.threading, "Thread", fail_thread)
+    with pytest.raises(RuntimeError, match="cannot start thread"):
+        pairing.start(reset_session=True)
+    assert pairing.gateway_can_acquire() is True
+    assert pairing.timers[0].cancelled
+
+
+def test_apply_waits_for_flush_before_restarting_gateway(pairing, monkeypatch):
+    from hermes_cli import config
+
+    result = pairing.start(reset_session=True)
+    record = messaging._whatsapp_onboarding_sessions[result["pairing_id"]]
+    record.status = "connected"
+    proc = _Bridge()
+    record.proc = cast(Popen, proc)
+    monkeypatch.setattr(messaging.threading, "Thread", pairing.real_thread)
+    monkeypatch.setattr(config, "save_env_value", lambda *args: None)
+    monkeypatch.setattr(web_server_messaging, "_write_platform_enabled", lambda *args: None)
+
+    def wait(timeout=None):
+        assert pairing.gateway_can_acquire() is False
+        proc.returncode = 0
+        return 0
+
+    def restart(profile=None):
+        assert proc.poll() == 0
+        assert pairing.gateway_can_acquire() is True
+        return {"restart_started": True}
+
+    monkeypatch.setattr(proc, "wait", wait)
+    monkeypatch.setattr(web_server_messaging, "_restart_gateway_after_whatsapp_onboarding", restart)
+    assert asyncio.run(messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply()))["ok"]
+
+
+def test_unverifiable_live_pid_stays_blocked(pairing, monkeypatch):
+    from gateway import status
+
+    (pairing.session / "bridge.pid").write_text(f"{os.getpid()}\n123", encoding="utf-8")
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
+    with pytest.raises(HTTPException) as refused:
+        pairing.start(reset_session=True)
+    assert refused.value.status_code == 409
+    assert pairing.gateway_can_acquire() is True
 
 
 def test_regular_start_keeps_existing_link(pairing):
@@ -189,6 +403,17 @@ def test_repair_selected_profile_leaves_default_session_untouched(pairing, monke
     assert pairing.starts[0][1] == session
     assert not (session / "creds.json").exists()
     assert (pairing.session / "creds.json").read_text(encoding="utf-8") == pairing.creds
+    observed = []
+
+    def spawn(*args):
+        from hermes_constants import get_hermes_home
+
+        observed.append(get_hermes_home())
+        raise OSError("stop after checking the worker profile")
+
+    monkeypatch.setattr(messaging, "_spawn_whatsapp_pairing_process", spawn)
+    pairing.workers[0].target(*pairing.starts[0])
+    assert observed == [other]
 
 
 def test_query_profile_is_honored_for_repair(pairing, monkeypatch):

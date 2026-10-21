@@ -1,0 +1,24 @@
+name: token-rate
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: 8da7df4ad6c71399770f9500b13b16bb9ba74fdb
+subdir: plugins/token-rate
+version: "2.0.0"
+title: Token Rate Monitor
+description: 'Live tokens/sec of a local llama.cpp server as a Hermes Desktop status bar chip. Hermes
+  reads the rate itself from the local llama-server.log (the "tg = X t/s" generation lines and the
+  prompt-eval lines), so there is no sidecar process, no extra port, no watchdog and no API key. The
+  counter starts off: click the chip, or run the palette command "Token Rate: attiva/ferma il contatore
+  tok/s", to start it, and click again to stop. It also registers the get_token_rate agent tool, so
+  the model can read its own speed. Desktop chip plus a FastAPI dashboard backend that reads one local
+  log file; no network calls, no hooks, no middleware, no environment variables.'
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/token-rate
+platforms: []
+capabilities:
+  provides_tools: [get_token_rate]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

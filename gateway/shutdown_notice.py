@@ -79,12 +79,18 @@ def clear_shutdown_notice_marker(home: Path) -> None:
 def record_shutdown_notice(home: Path, notified: Any, restart_source: Any) -> None:
     """Record the chats just told the gateway is going down, for the startup return notice.
 
-    ``notified`` holds ``(platform, chat_id, thread_id)`` keys. An in-chat ``/restart`` owns its
-    own marker (``.restart_notify.json``), so it records nothing here.
+    ``notified`` maps each delivery key ``(platform, chat_id, thread_id)`` to the profile whose bot
+    delivered it. The key's platform may be ``<profile>:telegram`` (see ``delivery_target_key``), so
+    the entry stores the bare platform plus the profile: the startup half needs both to resolve a
+    ``Platform`` and the right bot. An in-chat ``/restart`` owns its own marker
+    (``.restart_notify.json``), so it records nothing here.
     """
     if not notified or restart_source is not None:
         return
-    mark_shutdown_notified(home, [
-        {"platform": target[0], "chat_id": target[1], "thread_id": target[2]}
-        for target in notified
-    ])
+    entries = []
+    for (platform, chat_id, thread_id), profile in notified.items():
+        entry = {"platform": platform.rpartition(":")[2], "chat_id": chat_id, "thread_id": thread_id}
+        if profile and profile != "default":
+            entry["profile"] = profile
+        entries.append(entry)
+    mark_shutdown_notified(home, entries)

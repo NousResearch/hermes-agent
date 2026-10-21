@@ -1019,7 +1019,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 restart_key = _notice_target_key(
                     restart_source.platform.value, restart_source.chat_id, restart_source.thread_id
                 )
-        notified: set[tuple[str, str, Optional[str]]] = set()
+        notified: dict[tuple[str, str, Optional[str]], Optional[str]] = {}  # delivery key -> profile
         for session_key in self._snapshot_running_agents():
             target = await self._shutdown_notification_target(session_key)
             if target is None:
@@ -1058,7 +1058,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 if await self._send_shutdown_notice(
                     adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
                 ):
-                    notified.add(dedup_key)
+                    notified[dedup_key] = profile
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
@@ -1066,7 +1066,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             async with scope:
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:
-                notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
+                notified[dedup_key] = profile  # suppressed: latch so the home-channel pass does not re-target it
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
@@ -1107,7 +1107,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 if await self._send_shutdown_notice(
                     adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
                 ):
-                    notified.add(dedup_key)
+                    notified[dedup_key] = profile
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             # present_notification reads the ACTIVE profile's display settings: bind the served one's.

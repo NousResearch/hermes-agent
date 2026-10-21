@@ -9,6 +9,8 @@ engine works on sqlite3.Row objects as well as dataclasses.
 
 from __future__ import annotations
 
+import argparse
+import shlex
 import time
 from pathlib import Path
 
@@ -17,6 +19,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli.kanban_parser import build_parser
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +93,7 @@ def test_running_with_open_parents_fires_only_while_running():
     assert [d.kind for d in diags] == ["running_with_open_parents"]
     assert diags[0].data["open_parents"] == [{"id": "t_parent", "status": "todo"}]
     assert "hermes kanban unlink t_parent t_demo00" in diags[0].actions[0].payload["command"]
+    _assert_command_resolves(diags[0].actions[0].payload["command"])
     assert kd.compute_task_diagnostics(_task(status="todo"), [], [], graph=graph) == []
     done_graph = {"parents": [{"id": "t_parent", "title": "p", "status": "done"}], "children": []}
     assert kd.compute_task_diagnostics(_task(status="running"), [], [], graph=done_graph) == []
@@ -115,6 +119,89 @@ def test_stuck_in_blocked_fires_past_threshold():
 
 
 
+
+
+def _assert_command_resolves(command: str) -> None:
+    """Fail if a printed operator-hint command does not resolve against the real
+    kanban parser tree. Drop the leading ``hermes`` program token — build_parser()
+    wires up the ``kanban`` subtree only, and the entry point consumes that token."""
+    tokens = shlex.split(command)[1:]
+    parent = argparse.ArgumentParser()
+    build_parser(parent.add_subparsers())
+    parent.parse_args(tokens)
+
+
+def test_block_unblock_cycling_hint_resolves_to_real_subcommand():
+    """The cycling rule's suggested CLI hint must name a real ``hermes kanban``
+    subcommand — pasting the printed command should resolve, not error with
+    'invalid choice'. Regression: it used to suggest ``hermes kanban events``,
+    which is not a subcommand (event history lives under ``show``)."""
+    now = int(time.time())
+    task = _task(status="blocked")
+    # 3 block→unblock cycles (4 blocked events: the first opens the cycle
+    # counter, each subsequent blocked-after-unblocked is one cycle) inside
+    # the default 24h window.
+    events = []
+    for i in range(4):
+        events.append(_event("blocked", ts=now - (20 - 2 * i) * 60, reason=f"wall {i}"))
+        events.append(_event("unblocked", ts=now - (19 - 2 * i) * 60))
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    cycling = [d for d in diags if d.kind == "block_unblock_cycling"]
+    assert len(cycling) == 1
+    d = cycling[0]
+    hints = [a for a in d.actions if a.kind == "cli_hint"]
+    assert hints, "cycling diagnostic must carry a suggested CLI hint"
+    for hint in hints:
+        command = hint.payload.get("command", "")
+        assert command.startswith("hermes kanban "), f"unexpected hint: {command!r}"
+        _assert_command_resolves(command)
+
+
+def _hint_states(now):
+    """States that fire every rule carrying a suggested CLI hint, so a scan over
+    their output sees the same hint sites an operator can hit in the field."""
+    cycling_events = []
+    for i in range(4):
+        cycling_events.append(_event("blocked", ts=now - (20 - 2 * i) * 60, reason=f"wall {i}"))
+        cycling_events.append(_event("unblocked", ts=now - (19 - 2 * i) * 60))
+    return [
+        # stranded_in_ready -> `hermes kanban diagnostics`
+        (_task(status="ready"), [_event("created", ts=now - 45 * 60)], [], None),
+        # block_unblock_cycling -> `hermes kanban show <id>`
+        (_task(status="blocked"), cycling_events, [], None),
+        # running_with_open_parents -> `hermes kanban unlink <parent> <id>`
+        (_task(status="running", started_at=now - 600), [], [],
+         {"parents": [{"id": "t_parent", "title": "p", "status": "todo"}], "children": []}),
+        # review_dependency_deadlock -> `hermes kanban complete <id>` / `unlink`
+        (_task(status="blocked"),
+         [_event("blocked", ts=now - 120, reason="review-required: awaiting reviewer")], [],
+         {"parents": [], "children": [{"id": "t_child1", "title": "c", "status": "todo"}]}),
+        # repeated_failures -> `hermes kanban log <id>`
+        (_task(status="ready", consecutive_failures=3, last_failure_error="worker crashed"), [],
+         [_run(outcome="crashed", error="boom")], None),
+    ]
+
+
+def test_all_diagnostics_hint_verbs_resolve_in_parser():
+    """Every ``hermes kanban <verb>`` hint the engine emits must be a verb the
+    parser accepts — a hint is worthless if pasting it errors with
+    'invalid choice'. Regression: the cycling rule suggested ``kanban events``,
+    which is not a subcommand."""
+    now = int(time.time())
+    verbs: set[str] = set()
+    for task, events, runs, graph in _hint_states(now):
+        for diag in kd.compute_task_diagnostics(task, events, runs, graph=graph, now=now):
+            for action in diag.actions:
+                if action.kind != "cli_hint":
+                    continue
+                command = action.payload.get("command", "")
+                if not command.startswith("hermes kanban "):
+                    continue
+                verbs.add(command.split()[2])
+                _assert_command_resolves(command)
+    # A scan that fires nothing proves nothing: the fixtures above must reach
+    # all five hint-bearing rules.
+    assert {"show", "unlink", "complete", "log", "diagnostics"} <= verbs, verbs
 
 
 # ---------------------------------------------------------------------------

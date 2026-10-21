@@ -137,6 +137,9 @@ _EMOTION_SDK = {recall: (f"Robot{v}EmotionRequestTextEmotion", f"Robot{v}Emotion
 _NUMBERED_RE = re.compile(r"^\d+\.\s")
 _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. Only markdown/text replies are supported without OpenAPI %s."
 _MEDIA_DOWNLOAD_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"}
+# Content types that say nothing about the payload: DingTalk's file endpoint answers
+# ``application/octet-stream`` for many plain photos, so they carry no routing information.
+_GENERIC_CONTENT_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream"})
 
 
 async def _fetch_media_bytes(url: str) -> tuple[bytes, str]:
@@ -164,25 +167,39 @@ async def _fetch_media_bytes(url: str) -> tuple[bytes, str]:
     return b"".join(chunks), content_type
 
 
-async def _cache_dingtalk_media(url: str, kind: str) -> str:
+async def _cache_dingtalk_media(url: str, kind: str, filename: str = "") -> str:
     """Download one resolved DingTalk media URL into the local media cache; return the path.
 
     Inbound ``media_urls`` must hold local regular files — gateway ingress rejects anything
     else with ``RuntimeStoreError: invalid_params`` and drops the whole message (#141932) —
-    so the remote URL itself must never reach ``MessageEvent``."""
+    so the remote URL itself must never reach ``MessageEvent``.
+    """
     if kind == "image":
         return await cache_image_from_url(url)
     if kind == "audio":
         return await cache_audio_from_url(url)
     data, content_type = await _fetch_media_bytes(url)
-    if content_type.startswith("image/"):
+    # A generic type would route a photo into the document cache and hide it from the vision
+    # tools, so fall back to the extension of the name the sender used (``photo.jpg`` sent as
+    # a file message) and then to the declared kind.
+    if content_type in _GENERIC_CONTENT_TYPES:
+        content_type = (mimetypes.guess_type(filename)[0] or "") if filename else ""
+    if content_type.startswith("image/") or (not content_type and kind == "image"):
         return await cache_image_from_bytes_async(data)
-    if content_type.startswith("audio/"):
+    if content_type.startswith("audio/") or (not content_type and kind == "audio"):
         return await cache_audio_from_bytes_async(data)
     if kind == "video" or content_type.startswith("video/"):
         return await asyncio.to_thread(cache_video_from_bytes, data, mimetypes.guess_extension(content_type) or ".mp4")
-    name = f"dingtalk_{uuid.uuid4().hex[:8]}{mimetypes.guess_extension(content_type) or ''}"
+    ext = mimetypes.guess_extension(content_type) or (f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else "")
+    name = f"dingtalk_{uuid.uuid4().hex[:8]}{ext}"
     return await cache_document_from_bytes_async(data, name)
+
+
+def _media_filename(obj: Any) -> str:
+    """Original sender-side file name for one download code, when the payload carries one."""
+    if isinstance(obj, dict):
+        return str(obj.get("fileName") or obj.get("file_name") or "")
+    return str(getattr(obj, "file_name", "") or getattr(obj, "fileName", "") or "")
 
 
 def _csv_set(raw: Any) -> set[str]:
@@ -762,7 +779,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             url = getattr(body, "download_url", None) if body else None
             if not url:
                 return logger.warning("[%s] Failed to download media: empty response for code %s", self.name, code)
-            cached_path = await _cache_dingtalk_media(url, kind)
+            cached_path = await _cache_dingtalk_media(url, kind, _media_filename(obj))
             logger.info("[%s] Cached inbound %s media at %s", self.name, kind, cached_path)
             self._write_media_ref(obj, key, cached_path)
         except Exception as e:

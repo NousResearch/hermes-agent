@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.a2a_auth import A2AAuthentication
 from gateway.config import Platform
 from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
 
@@ -215,9 +216,13 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
-        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
+        sec = adapter._security_context
+        auth_header, client_ip = self.headers.get("Authorization"), self._client_ip()
+        identity = sec.authenticate(auth_header, client_ip)
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        # Optional observation must not change acceptance, trust, rate limits or audit identity.
+        authentication = sec.authenticate_request(auth_header, client_ip)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:
@@ -249,9 +254,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
         if handler_name == "_rpc_message_send":
-            self._json(200, adapter._rpc_message_send(req_id, params, identity, agent=agent, v1_response=is_v1))
+            self._json(200, adapter._rpc_message_send(req_id, params, identity, agent=agent, v1_response=is_v1, authentication=authentication))
         elif handler_name == "_rpc_message_stream":
-            adapter._rpc_message_stream(self, req_id, params, identity, agent=agent)
+            adapter._rpc_message_stream(self, req_id, params, identity, agent=agent, authentication=authentication)
         elif handler_name == "_rpc_tasks_subscribe":
             adapter._rpc_tasks_subscribe(self, req_id, params, agent=agent)
         else:  # plain JSON task / push-config queries
@@ -542,7 +547,7 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
-    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
+    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None, *, authentication: Optional[A2AAuthentication] = None) -> tuple[Optional[dict], Optional[dict]]:
         """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
@@ -593,7 +598,7 @@ class A2AAdapter(BasePlatformAdapter):
         if self._loop is None or self._message_handler is None:
             return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
         fut = self._add_pending(task_id, context_id)
-        event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
+        event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id, a2a_auth=authentication,
                              source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
         try:
             asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
@@ -682,8 +687,8 @@ class A2AAdapter(BasePlatformAdapter):
         return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
-    def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
-        task, pending = self._prepare_task(params, peer, agent=agent)
+    def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False, *, authentication: Optional[A2AAuthentication] = None) -> dict:
+        task, pending = self._prepare_task(params, peer, agent=agent, authentication=authentication)
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
@@ -716,13 +721,13 @@ class A2AAdapter(BasePlatformAdapter):
             self._sse_write(handler, protocol.sse_data(ev, req_id))
         self._sse_write(handler, protocol.sse_done())
 
-    def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None) -> None:
+    def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, *, authentication: Optional[A2AAuthentication] = None) -> None:
         """message/stream as an SSE response of JSON-RPC-wrapped StreamResponse events (§9.4)."""
         protocol.metrics.streams_started += 1
         self._sse_headers(handler)
         pending = None
         try:
-            terminal, pending = self._prepare_task(params, peer, agent=agent)
+            terminal, pending = self._prepare_task(params, peer, agent=agent, authentication=authentication)
             if terminal is not None:
                 return self._emit_terminal(handler, terminal["id"], terminal["contextId"], terminal["status"]["state"],
                                            protocol.extract_text(terminal.get("status", {}).get("message", {}) or {}), req_id=req_id)

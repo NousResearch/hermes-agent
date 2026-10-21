@@ -214,6 +214,9 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
                 'route': runner.session_store._generate_session_key(event.source),
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
                 'timestamp': event.timestamp.isoformat()}
+    from gateway.a2a_auth import capture_auth_reference
+    if auth_ref := capture_auth_reference(event):
+        envelope['a2a_auth_ref'] = auth_ref
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
@@ -288,6 +291,8 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    from gateway.a2a_auth import restore_auth_reference
+    event.a2a_auth = restore_auth_reference(envelope.get('a2a_auth_ref'), event)
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

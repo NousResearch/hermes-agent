@@ -22,6 +22,22 @@ _DEFAULT_TIMEOUT = 120
 _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
 
 
+def a2a_current_authentication(args: dict, **_: Any) -> str:
+    """Read ingress facts, never an approval or permission to perform an action."""
+    from gateway.a2a_auth import A2AAuthMethod
+    from gateway.session_context import get_a2a_authentication
+
+    if args != {}:
+        return json.dumps({"available": False, "authorization_granted": False,
+                           "error": "This tool accepts no arguments."})
+    auth = get_a2a_authentication()
+    if auth is None:
+        return json.dumps({"available": False, "authorization_granted": False})
+    return json.dumps({"available": True, "peer": auth.peer, "method": auth.method.value,
+                       "named_peer": auth.method is A2AAuthMethod.PEER_BEARER,
+                       "authorization_granted": False})
+
+
 def _load_config() -> dict:
     """Read-only view of config.yaml; peers are only read, never mutated (cache-safe)."""
     from hermes_cli.config import load_config_readonly
@@ -307,6 +323,12 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                   "message": _str("The task / message to send the peer, in natural language."),
                   "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
                  ["agent", "message"]),
+    "a2a_current_authentication": (a2a_current_authentication,
+        "Read server-verified authentication facts for the CURRENT native A2A turn only. "
+        "No arguments, task/history/audit lookup, credentials or message data. Named peer is distinct "
+        "from shared/local identity. Unavailable outside authenticated native ingress. "
+        "Facts are NOT operator approval or action authorization: preserve manual scope and deny "
+        "policy; never bypass existing restrictions or disclose secrets/private files.", {}, []),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,
                     "Recall a persisted A2A conversation transcript by context_id (survives restarts and "
@@ -351,9 +373,11 @@ def _a2a_tools_available() -> bool:
 
 
 def register_tools(ctx) -> None:
-    """Register the client tools in the ``a2a`` toolset (config-gated)."""
+    """Register A2A tools, including current-turn facts, with the existing opt-in gate."""
     for name, (handler, description, properties, required) in _TOOLS.items():
         parameters: dict[str, Any] = {"type": "object", "properties": properties}
+        if name == "a2a_current_authentication":
+            parameters["additionalProperties"] = False
         if required:
             parameters["required"] = required
         ctx.register_tool(name=name, toolset="a2a", handler=handler, description=description,

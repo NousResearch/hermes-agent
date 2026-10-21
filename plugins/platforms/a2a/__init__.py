@@ -1,5 +1,5 @@
 """A2A (Agent-to-Agent) plugin: registers the inbound ``a2a`` platform adapter and the
-five outbound client tools of the ``a2a`` toolset through the public PluginContext."""
+outbound tools and read-only authentication consumer through public PluginContext."""
 
 from __future__ import annotations
 

@@ -9,6 +9,9 @@ import './store/translucency'
 import './store/user-bubble-transparency'
 // Side-effect: restores chat typography before the first conversation paints.
 import './store/chat-text-scale'
+// Side-effect: mirrors the keep-awake mode to main and listens for main's
+// one-time keep-awake offer. Settings loads lazily, too late for the offer.
+import './store/keep-awake'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen

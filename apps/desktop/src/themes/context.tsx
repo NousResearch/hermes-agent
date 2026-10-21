@@ -30,10 +30,11 @@ import {
   localDisplaySkinProfile
 } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
-import { harmonize, readableInk } from './color'
+import { harmonize, normalizeHex, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
+import { $pendingModeApply } from './request'
 import { retintTheme } from './retint'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
@@ -134,6 +135,10 @@ const storedSkin = (profile: string): string =>
   skinPref.stored(profile) ??
   (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
 
+/** The live profile's committed theme: what the ThemeProvider paints without a preview. */
+export const committedTheme = (): DesktopTheme =>
+  resolveTheme(normalizeSkin(storedSkin(normalizeProfileKey($activeGatewayProfile.get())))) ?? nousTheme
+
 /** Everything a peer window could change that this one has to repaint for. */
 const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
 
@@ -181,8 +186,10 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
 
 /** Returns the seed palette for a given skin + mode (no overrides applied). */
 export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
-  const seed = resolveTheme(skinName) ?? nousTheme
+  return paletteFor(resolveTheme(skinName) ?? nousTheme, mode)
+}
 
+function paletteFor(seed: DesktopTheme, mode: 'light' | 'dark'): DesktopThemeColors {
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
   }
@@ -190,20 +197,54 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
   return seed.darkColors ? seed.colors : synthLightColors(seed)
 }
 
-function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
-  const seed = resolveTheme(skinName) ?? nousTheme
+// A backend skin named `default`/`mono`/… keeps the desktop's own palette
+// (never shadowed — see ingestBackendSkin), but its customCSS is carried
+// separately in $backendCustomCSS. The seed's own customCSS (non-built-in
+// backend skins) wins when both exist.
+const customCSSOf = (seed: DesktopTheme): string | undefined => seed.customCSS ?? $backendCustomCSS.get()[seed.name]
 
+function deriveFrom(seed: DesktopTheme, mode: 'light' | 'dark'): DesktopTheme {
   return {
     ...seed,
-    name: `${skinName}-${mode}`,
+    name: `${seed.name}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode),
-    // A backend skin named `default`/`mono`/… keeps the desktop's own palette
-    // (never shadowed — see ingestBackendSkin), but its customCSS is carried
-    // separately in $backendCustomCSS. The seed's own customCSS (non-built-in
-    // backend skins) wins when both exist.
-    customCSS: seed.customCSS ?? $backendCustomCSS.get()[skinName]
+    colors: paletteFor(seed, mode),
+    customCSS: customCSSOf(seed)
+  }
+}
+
+const deriveTheme = (skinName: string, mode: 'light' | 'dark'): DesktopTheme =>
+  deriveFrom({ ...(resolveTheme(skinName) ?? nousTheme), name: skinName }, mode)
+
+/** The theme a saved accent was retinted from; any other theme is its own base. */
+export const accentBase = (theme: DesktopTheme): DesktopTheme =>
+  (theme.accentOf && resolveTheme(theme.accentOf)) || theme
+
+/**
+ * `theme` with only its accent moved to `accent`, both modes painted exactly as the live accent preview
+ * paints them. Every other colour and the CSS stay the base's. One `<base>-accent-<hex>` copy per base and
+ * colour: user themes are shared by every profile, so a copy per base alone let one profile's accent
+ * overwrite another's. The base's own accent returns the base itself.
+ */
+export function accentedTheme(theme: DesktopTheme, accent: string): DesktopTheme {
+  const base = accentBase(theme)
+  const hex = normalizeHex(accent)
+
+  if (!hex || hex === normalizeHex(base.colors.primary)) {
+    return base
+  }
+
+  const tint = (mode: 'light' | 'dark') => retintTheme({ ...base, colors: paletteFor(base, mode) }, hex).colors
+
+  return {
+    ...base,
+    name: `${base.name}-accent-${hex.slice(1)}`,
+    label: `${base.label} · ${hex}`,
+    accentOf: base.name,
+    colors: tint('light'),
+    darkColors: tint('dark'),
+    customCSS: customCSSOf(base)
   }
 }
 
@@ -247,6 +288,28 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-elevated': isDark ? '46%' : '28%',
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
+
+const TYPOGRAPHY_KNOB_VARS = {
+  baseSize: '--dt-base-size',
+  lineHeight: '--dt-line-height',
+  letterSpacing: '--dt-letter-spacing'
+} as const
+
+// Optional typography knobs. They are the ONLY vars applyTheme may paint
+// inline conditionally: styles.css declares the same fallbacks on :root, so
+// a theme that stops providing one must drop the inline value — otherwise
+// the previous skin's size/leading/tracking sticks across a switch (#41766).
+function applyTypographyKnobs(root: HTMLElement, typo: Partial<DesktopThemeTypography>) {
+  for (const [key, cssVar] of Object.entries(TYPOGRAPHY_KNOB_VARS) as [keyof typeof TYPOGRAPHY_KNOB_VARS, string][]) {
+    const value = typo[key]
+
+    if (value) {
+      root.style.setProperty(cssVar, value)
+    } else {
+      root.style.removeProperty(cssVar)
+    }
+  }
+}
 
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
@@ -325,6 +388,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
   for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
     root.style.setProperty(k, v)
   }
+
+  applyTypographyKnobs(root, typo)
 
   const chromeBg = chromeBackground(c.background, isDark)
 
@@ -534,14 +599,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [paintedName, paintedMode, userThemes, backendThemes, backendCustomCSS, registryVersion]
   )
 
-  // Dev-only accent retint. `null` (always, in production) returns the theme
-  // untouched, and retintTheme is an identity when the seed already matches —
-  // so the picker costs nothing until it's actually moved off the default.
+  // Unsaved accent preview (dev picker, onboarding accent card). `null` returns
+  // the theme untouched.
   const accentOverride = useStore($accentOverride)
 
+  // Painted from the same theme persistAccent saves, so committing the accent changes nothing on screen.
   const paintedTheme = useMemo(
-    () => (accentOverride === null ? activeTheme : retintTheme(activeTheme, accentOverride)),
-    [activeTheme, accentOverride]
+    () =>
+      accentOverride === null
+        ? activeTheme
+        : deriveFrom(accentedTheme(resolveTheme(paintedName) ?? nousTheme, accentOverride), paintedMode),
+    [activeTheme, accentOverride, paintedName, paintedMode]
   )
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
@@ -593,6 +661,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       $pendingSkinApply.set(null)
     }
   }, [pendingSkin, setTheme])
+
+  // Same door for light/dark/system (set_theme from the agent).
+  const pendingMode = useStore($pendingModeApply)
+
+  useEffect(() => {
+    if (pendingMode) {
+      setMode(pendingMode)
+      $pendingModeApply.set(null)
+    }
+  }, [pendingMode, setMode])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.

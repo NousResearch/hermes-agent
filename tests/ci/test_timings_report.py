@@ -9,7 +9,7 @@ and provides a one-line summary plus optional per-job delta detail.
 from __future__ import annotations
 
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "timings_report.py"
@@ -19,13 +19,13 @@ if _spec is None or _spec.loader is None:
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
-_T0 = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
 
 
 def _ts(seconds: float) -> str:
     """ISO timestamp `seconds` after T0."""
     dt = _T0.timestamp() + seconds
-    return datetime.fromtimestamp(dt, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(dt, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _job(name: str, dur_s: float, start_s: float = 0.0, conclusion: str = "success") -> dict:

@@ -569,7 +569,7 @@ class TestLightpandaSessionCreation:
         return bt, calls
 
     def test_spawns_lightpanda_in_browser_use_mode(self, monkeypatch):
-        bt, calls = self._common(monkeypatch)
+        _bt, calls = self._common(monkeypatch)
         info = bt_session._create_local_session("task-1")
         assert info["session_name"].startswith("lp_")
         assert info["cdp_url"] == "http://127.0.0.1:4321"
@@ -578,19 +578,19 @@ class TestLightpandaSessionCreation:
         assert calls == [(info["session_name"], False)]
 
     def test_blocks_private_networks_for_containerised_terminal(self, monkeypatch):
-        bt, calls = self._common(monkeypatch, local_backend=False)
+        _bt, calls = self._common(monkeypatch, local_backend=False)
         bt_session._create_local_session("task-1")
         assert calls[0][1] is True
 
     def test_ignores_engine_outside_browser_use_mode(self, monkeypatch):
-        bt, calls = self._common(monkeypatch, bu_mode=False)
+        _bt, calls = self._common(monkeypatch, bu_mode=False)
         info = bt_session._create_local_session("task-1")
         assert info["features"] == {"local": True}
         assert info["cdp_url"] is None
         assert calls == []
 
     def test_launch_failure_raises(self, monkeypatch):
-        bt, _ = self._common(monkeypatch, launch=(None, "no lightpanda binary was found"))
+        _bt, _ = self._common(monkeypatch, launch=(None, "no lightpanda binary was found"))
         with pytest.raises(RuntimeError, match="no lightpanda binary"):
             bt_session._create_local_session("task-1")
 
@@ -716,3 +716,18 @@ class TestLightpandaSessionLifecycle:
         dead_owner.write_text(json.dumps({"owner_pid": 2**22 + 7}), encoding="utf-8")
         assert browser_lightpanda.reap_orphaned_lightpanda() == 0
         assert not bad.exists() and not dead_owner.exists()
+
+    def test_orphan_sweep_mid_record_write_keeps_the_live_record(self, tmp_path, monkeypatch):
+        """A sweep running while the owner writes its record must not see a torn (empty) file:
+        it would unlink it as corrupt and the live server would never be reaped after a crash."""
+        from tests.file_write_observer import observe_file_writes
+        from tools import browser_lightpanda
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        server = browser_lightpanda.LightpandaServer("live", 9222, MagicMock(pid=os.getpid()), "x.log")
+        monkeypatch.setitem(browser_lightpanda._servers, "live", server)
+        with observe_file_writes(browser_lightpanda.reap_orphaned_lightpanda):
+            browser_lightpanda._write_record(server)
+        record = browser_lightpanda._state_dir() / "live.json"
+        assert record.exists()
+        assert json.loads(record.read_text(encoding="utf-8"))["port"] == 9222

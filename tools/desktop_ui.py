@@ -26,7 +26,7 @@ _emit: Optional[Callable[[str, str, dict], None]] = None
 # routing these through HERMES_UI_SESSION_ID (the window identity) means
 # the frame lands on a stream that doesn't own the transcript and is
 # never painted (#80678).
-_SESSION_SCOPED_EVENTS: FrozenSet[str] = frozenset({"message.reaction"})
+_SESSION_SCOPED_EVENTS: frozenset[str] = frozenset({"message.reaction"})
 
 
 def set_emitter(fn: Optional[Callable[[str, str, dict], None]]) -> None:

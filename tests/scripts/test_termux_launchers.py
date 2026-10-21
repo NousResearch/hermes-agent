@@ -69,7 +69,7 @@ def test_postinst_refuses_foreign_path_and_prerm_preserves_it(tmp_path):
     subprocess.run(command, check=True, env=env)
     link.unlink()
     link.write_text("foreign launcher", encoding="utf-8")
-    assert subprocess.run(command, env=env).returncode != 0
+    assert subprocess.run(command, env=env, check=False).returncode != 0
     subprocess.run([shutil.which("sh"), str(control / "prerm"), "remove"], check=True, env=env)
     assert link.read_text(encoding="utf-8") == "foreign launcher"
 

@@ -31,9 +31,9 @@ _DOC_EXTS = (".md", ".mdx", ".txt", ".rst", ".json", ".yaml", ".yml")
 # Shared path_filter predicates. JS-only gating keeps bare `exec(` off Python's exec()
 # and prose; Python-only gating keeps pickle/os.system rules off other languages;
 # the eval rule skips doc/prose files entirely.
-_JS_ONLY = lambda p: p.endswith(_JS_EXTS)  # noqa: E731
-_PY_ONLY = lambda p: p.endswith(_PY_EXTS)  # noqa: E731
-_NOT_DOCS = lambda p: not p.endswith(_DOC_EXTS)  # noqa: E731
+_JS_ONLY = lambda p: p.endswith(_JS_EXTS)
+_PY_ONLY = lambda p: p.endswith(_PY_EXTS)
+_NOT_DOCS = lambda p: not p.endswith(_DOC_EXTS)
 
 _UNSAFE_DESERIALIZATION_REMINDER = """⚠️ Security Warning: Loading pickle data (or equivalents: cPickle, cloudpickle, dill, marshal, shelve, joblib, pandas.read_pickle, numpy with allow_pickle=True) from untrusted sources allows arbitrary code execution.
 

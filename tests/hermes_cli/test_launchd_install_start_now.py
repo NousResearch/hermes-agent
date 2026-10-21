@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway_cli
+from hermes_cli import gateway_service_owner
 from hermes_cli.subcommands.gateway import build_gateway_parser
 
 LABEL = "ai.hermes.gateway"
@@ -40,7 +41,7 @@ def launchd(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: state.plist)
     monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: LABEL)
     monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: DOMAIN)
-    monkeypatch.setattr(gateway_cli, "_refuse_temp_home_service_write", lambda *a: False)
+    monkeypatch.setattr(gateway_service_owner, "refuse_temp_home_service_write", lambda *a: False)
     monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
     monkeypatch.setattr(gateway_cli, "_launchctl_supervised_pid", lambda label: state.supervised_pid)
     monkeypatch.setattr(gateway_cli, "_launchctl_bootstrap", lambda *a, **k: state.bootstraps.append(a))

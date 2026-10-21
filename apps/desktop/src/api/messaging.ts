@@ -169,10 +169,7 @@ export function enableWebhooks(profile?: null | string): Promise<WebhookEnableRe
   })
 }
 
-export function createWebhook(
-  body: WebhookCreatePayload,
-  profile?: null | string
-): Promise<WebhookCreateResponse> {
+export function createWebhook(body: WebhookCreatePayload, profile?: null | string): Promise<WebhookCreateResponse> {
   return hermesApi<WebhookCreateResponse>({
     ...profileScoped(profile),
     path: '/api/webhooks',

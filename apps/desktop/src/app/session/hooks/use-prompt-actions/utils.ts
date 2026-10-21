@@ -652,6 +652,18 @@ export function renderRpcResult(response: unknown, name: string): string {
     return `Saved transcript to ${r.file}`
   }
 
+  // config.set — { key, value, tool_progress? } (/focus, /verbose): the
+  // gateway's display-toggle envelope. focus stashes/restores the configured
+  // tool-progress mode, so its reply carries the effective mode alongside.
+  if (typeof r.key === 'string' && r.key && 'value' in r) {
+    const label = r.key === 'focus' ? 'Focus view' : r.key === 'verbose' ? 'Tool progress' : r.key
+    const value = String(r.value ?? '')
+
+    return typeof r.tool_progress === 'string' && r.tool_progress
+      ? `${label}: ${value} · tool progress: ${r.tool_progress}`
+      : `${label}: ${value}`
+  }
+
   // session.status — { output }
   if (typeof r.output === 'string' && r.output) {
     return r.output

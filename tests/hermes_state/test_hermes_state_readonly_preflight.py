@@ -143,8 +143,30 @@ class TestRefusalOutsideScope:
 
 
 class TestSkips:
+    def test_sidecars_unlinked_by_sibling_close_mid_preflight_are_not_readonly(
+        self, hermes_home, monkeypatch
+    ):
+        """A sibling connection's last close() unlinks -wal/-shm after the preflight
+        listed them; the vanished sidecar is gone, not read-only (CI flake in
+        test_concurrent_openers_zero_byte_startup_serialization)."""
+        db = hermes_home / "state.db"
+        sibling = sqlite3.connect(str(db))
+        sibling.execute("PRAGMA journal_mode=WAL")
+        sibling.execute("CREATE TABLE t (x)")
+        sibling.commit()
+        wal = db.with_name(db.name + "-wal")
+        assert wal.is_file(), "fixture precondition: the live sibling holds a -wal"
+        real_access = os.access
+        open_sibling = [sibling]
 
+        def access_racing_sibling_close(path, mode, *args, **kwargs):
+            if Path(path) == wal and open_sibling:
+                open_sibling.pop().close()  # last connection: SQLite unlinks -wal/-shm
+            return real_access(path, mode, *args, **kwargs)
 
+        monkeypatch.setattr(os, "access", access_racing_sibling_close)
+        preflight_db_writability(db, db_label="state.db")
+        assert not open_sibling and not wal.exists()
 
     def test_healthy_db_untouched(self, hermes_home):
         db = hermes_home / "state.db"

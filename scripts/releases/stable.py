@@ -21,7 +21,6 @@ from scripts.releases import lanes as lane_set
 from scripts.releases.desktop_targets import MANIFEST_TARGETS
 from scripts.releases.draft_warning import strip_draft_warning
 from scripts.releases.versioning import tag_record
-from scripts.termux.deb_version import deb_version_for_tag
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = tuple(f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS)
@@ -86,6 +85,13 @@ def is_canary_claim(tag: object) -> bool:
     from hermes_cli.update_channel import is_canary_tag
 
     return is_canary_tag(tag)
+
+
+def _deb_version(tag: str) -> str:
+    # Imported here: release.py's isolated entrypoint copies scripts/releases alone.
+    from scripts.termux.deb_version import deb_version_for_tag
+
+    return deb_version_for_tag(tag)
 
 
 def payload_version(tag: str) -> str:
@@ -291,7 +297,7 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
         elif item["platform"] == "macos":
             if item.get("version") != payload_version(tag) or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
                 raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
-        elif item.get("version") != deb_version_for_tag(tag):
+        elif item.get("version") != _deb_version(tag):
             raise ValueError("Termux candidate version differs from the admitted release")
         rows[target] = item
     return rows

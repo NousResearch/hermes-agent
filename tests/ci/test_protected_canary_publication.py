@@ -40,6 +40,12 @@ def canary_job():
     return jobs[canary_publisher(jobs)]
 
 
+
+def _version(tag: str) -> str:
+    """The version a fixture tag's packages carry (empty for a tagless commit build)."""
+    from hermes_cli.update_channel import release_version
+
+    return release_version(tag) or ""
 def stage_script(target, mode):
     """The tag/commit receipt stage of the native build leg for *target*."""
     jobs = workflow_jobs()
@@ -121,10 +127,10 @@ def canary(tmp_path, r2_server, monkeypatch):
 
 def native_leg(root, identity, env, platform, arch):
     root.mkdir(parents=True, exist_ok=True)
-    version = env["RELEASE_TAG"][1:]
+    version = _version(env["RELEASE_TAG"])
     stamp = {
         "tag": env["RELEASE_TAG"], "commit": env["RELEASE_COMMIT"],
-        "baseVersion": env["RELEASE_TAG"][1:],
+        "baseVersion": _version(env["RELEASE_TAG"]),
     }
     artifact = identity["artifactNamePascal"]
     if platform == "win32":
@@ -176,7 +182,7 @@ def test_canary_metadata_is_recorded_and_receipt_bound(canary, r2_server, platfo
     metadata = json.loads(body)
     assert entry["sha256"] == hashlib.sha256(body).hexdigest()
     assert metadata["commit"] == env["RELEASE_COMMIT"] and metadata["tag"] == env["RELEASE_TAG"]
-    assert metadata["version"] == (env["FIXTURE_WINDOWS_VERSION"] if platform == "win32" else env["RELEASE_TAG"][1:])
+    assert metadata["version"] == (env["FIXTURE_WINDOWS_VERSION"] if platform == "win32" else _version(env["RELEASE_TAG"]))
 
 
 def test_linux_build_results_never_gate_canary_publication():

@@ -90,6 +90,15 @@ export function releaseVersion(tag) {
   return canary ? `${canary[2]}+canary.${canary[1]}` : null
 }
 
+/** releaseVersion for a tag already admitted as a release tag; throws on anything else.
+ * @param {string} tag @returns {string}
+ */
+export function requireReleaseVersion(tag) {
+  const version = releaseVersion(tag)
+  if (version === null) throw new Error(`Invalid release tag: ${tag}`)
+  return version
+}
+
 /**
  * @param {string} stamp YYYYMMDDTHHMMSSZ
  * @returns {number} epoch seconds
@@ -276,13 +285,13 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
   }
   if (identity.store) {
     return { identity, version: storePackageVersion(String(tag), repoRoot),
-      fileVersion: releaseVersion(tag), name: identity.artifactNamePascal }
+      fileVersion: requireReleaseVersion(String(tag)), name: identity.artifactNamePascal }
   }
   if (CANARY_TAG_RE.test(String(tag)) || (tag && STABLE_TAG_RE.test(tag))) {
     return {
       identity,
       version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),
-      fileVersion: releaseVersion(tag),
+      fileVersion: requireReleaseVersion(String(tag)),
       name: identity.artifactNamePascal,
     }
   }

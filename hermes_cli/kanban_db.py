@@ -552,7 +552,33 @@ def _board_path(
     pin = os.environ.get(env_var, "").strip() if env_var else ""
     slug = _explicit_board_slug(board)
     if pin and (slug is None or _explicit_board_intent_pinned()):
-        return Path(pin).expanduser()
+        resolved = Path(pin).expanduser()
+        if slug is not None and not _PIN_FIRST_BOARD_RESOLUTION.get() and _explicit_board_intent_pinned():
+            # Dispatched worker / delegated child (NOT a board-enumerating
+            # machine flow) expressing explicit cross-board intent: the fence
+            # still wins, but failing silent let kanban_create(board=...)
+            # report ok while writing the worker's own board (#142435 —
+            # an 11-card fan-out all landed on the wrong board). Fail noisy.
+            # Same-board intent is fine: the slug naming the pin's own board
+            # (HERMES_KANBAN_BOARD, injected by the dispatcher alongside
+            # HERMES_KANBAN_DB) or resolving to the pinned path itself.
+            try:
+                pin_board = _normalize_board_slug(os.environ.get("HERMES_KANBAN_BOARD", ""))
+            except ValueError:
+                pin_board = None
+            intended = (
+                kanban_home().joinpath(*default_parts)
+                if slug == DEFAULT_BOARD
+                else board_dir(slug) / leaf
+            )
+            if slug != pin_board and intended != resolved:
+                raise ValueError(
+                    f"kanban board {slug!r} cannot be honored: this execution is fenced "
+                    f"to the dispatcher-pinned {env_var}={resolved} (worker/delegate "
+                    "isolation). Drop the explicit board= to use the pinned board, or "
+                    "run outside the dispatcher fence."
+                )
+        return resolved
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:

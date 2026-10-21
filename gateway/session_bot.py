@@ -179,17 +179,22 @@ def _home(authority, actor, profile):
     return home
 
 
-async def _target(authority, actor):
+async def _target(authority, actor, session_id=None):
+    """The Bot Chat's live local target, or — for an agent handoff — the named local session's.
+    A handoff never creates a chat: the session must already exist as the profile's own local chat."""
     ref = None
-    row = authority.db.get_session_by_title('Bot Chat')
-    if row is None or (displaced := displaceable_bot_chat(authority, row)) is not None:
+    row = authority.db.get_session_by_title('Bot Chat') if session_id is None else None
+    if session_id is None and (row is None or (displaced := displaceable_bot_chat(authority, row)) is not None):
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
         # can own is moved aside first, under the same lock (MSG-21, #140769).
         ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
     if ref is None:
-        row = authority.db.get_session_by_title('Bot Chat')
-        tip = authority.db.get_compression_tip(row['id'])
-        target = authority.db.get_session(tip)
+        if session_id is None:
+            row = authority.db.get_session_by_title('Bot Chat')
+            tip = authority.db.get_compression_tip(row['id'])
+        else:
+            tip = authority.db.get_compression_tip(session_id)
+        target = authority.db.get_session(tip) if tip else None
         if target is None:
             raise RuntimeStoreError('not_found')
         from gateway.session_local_migration import resolve_local_target
@@ -716,8 +721,16 @@ def _delivery_params(authority, actor, params):
     """``(home, key, message, author, category)`` of one ``deliver``/``settle`` request: the
     delivery's full identity, validated the same way for both verbs."""
     home = _home(authority, actor, params.get('profile'))
-    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
+    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category', 'target_session'}:
         raise RuntimeStoreError('invalid_params')
+    # Agent handoff into a desktop chat other than the Bot Chat: the message must carry a bot
+    # author so the chat shows who sent it; it is never attributed to the owner.
+    handoff = params.get('target_session')
+    if handoff is not None:
+        bot = parse_turn_author(params.get('author'))
+        if not isinstance(handoff, str) or not handoff or bot is None or not bot.get('is_bot') \
+                or not str(bot.get('id') or '').startswith('bot:'):
+            raise RuntimeStoreError('handoff_author_required')
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata(params)
     category = notification.get('notification_category', 'result')
@@ -777,8 +790,9 @@ async def _deliver(connection, params):
                 return answer
             if record is not None:
                 raise RuntimeStoreError('unknown_execution')
-            holder = authority.db.get_session_by_title('Bot Chat')
-            ref, live, entry = await _target(authority, actor)
+            handoff = params.get('target_session')  # validated in _delivery_params
+            holder = None if handoff else authority.db.get_session_by_title('Bot Chat')
+            ref, live, entry = await _target(authority, actor, session_id=handoff)
             pinned = params.get('session_id', entry.session_id)
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')

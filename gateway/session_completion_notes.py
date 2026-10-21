@@ -1,4 +1,5 @@
-"""A completion for a local session no viewer is watching is written into it as a note (#134889 LC-7).
+"""A completion for a local session no viewer is watching, or one a later queued completion will answer,
+is written into it as a note (#134889 LC-7).
 
 Main's CLI and TUI hosted async delegations and background processes in their own process, so once
 the user left nothing started a turn for them. Under the gateway the owner outlives its viewers. The
@@ -36,15 +37,25 @@ def noted_completion(row):
 
 
 def _completion_follows(authority, ref, row):
-    """The next queued admission after the claimed *row* is a completion: it carries the run's turn."""
-    from hermes_state_runtime import list_session_admissions
+    """The next queued admission after the claimed *row* is a completion its own claim will admit: it
+    carries the run's turn. A successor the preclaim check refuses pauses the FIFO, so it never does."""
+    from gateway.session_automation import check_local_automation
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
     later = (r for r in list_session_admissions(authority.db, session_id=ref.session_id)
              if r['status'] == 'queued' and r['seq'] > row['seq'])
-    return noted_completion(next(later, None))
+    successor = next(later, None)
+    if not noted_completion(successor):
+        return False
+    try:
+        check_local_automation(authority, ref, successor)
+    except RuntimeStoreError:
+        return False
+    return True
 
 
 async def note_if_unviewed(authority, ref, row):
-    """The claimed *row*'s response when it was written as a note instead of running, else None.
+    """The claimed *row*'s response when it was written as a note instead of running, else None: with
+    no viewer attached, or with a viewer when the next queued admission is a completion that runs the turn.
     It is the FIFO head, so the note lands after every input committed before it and before every
     input committed after; the viewer check and the decision share one loop step."""
     if not noted_completion(row):

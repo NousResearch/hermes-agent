@@ -9,8 +9,9 @@ silently remove its own guard.
 
 from __future__ import annotations
 
-import os
 import hashlib
+import json
+import os
 import re
 import subprocess
 import sys
@@ -124,7 +125,117 @@ def prepare_update_guards() -> tuple[UpdateGuard, ...]:
     return tuple(checks)
 
 
-def check_pulled_plugin_compatibility(source: Path, checks: tuple[UpdateGuard, ...]) -> str | None:
+def guard_records(checks: tuple[UpdateGuard, ...]) -> list[dict[str, str]]:
+    """Pass the frozen pre-update declarations to the fresh completion interpreter."""
+    return [dict(profile=check.profile, plugin_id=check.plugin_id,
+                 script=str(check.script), digest=check.digest) for check in checks]
+
+
+def guards_from_records(records: list[dict[str, str]]) -> tuple[UpdateGuard, ...]:
+    """Restore only the simple immutable fields that the old updater captured."""
+    return tuple(UpdateGuard(row["profile"], row["plugin_id"], Path(row["script"]), row["digest"])
+                 for row in records)
+
+
+def pending_path(source: Path) -> Path:
+    """One host-owned stop marker per source checkout, including multiplex profiles."""
+    from hermes_constants import get_default_hermes_root
+
+    key = hashlib.sha256(os.path.normcase(str(source.resolve())).encode()).hexdigest()[:12]
+    return get_default_hermes_root() / f".hermes-update-plugin-guard.{key}.json"
+
+
+def _runtime_facts_digest(source: Path) -> str | None:
+    """Detect a dependency selection changed after the original source baseline."""
+    from pm.environments import runtime_facts_path
+
+    try:
+        return hashlib.sha256(runtime_facts_path(source).read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def arm_pending(source: Path, checks: tuple[UpdateGuard, ...], *, pre_sha: str | None = None) -> None:
+    """Keep a paused fleet stopped until the selected runtime passes every check."""
+    if not checks:
+        return
+    from hermes_cli._early_recovery import write_durable_text
+
+    path = pending_path(source)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        return  # an earlier incomplete update owns its original admitted baseline
+    write_durable_text(path, json.dumps({"source": str(source.resolve()),
+                                         "guards": guard_records(checks), "pre_sha": pre_sha,
+                                         "runtime_facts_digest": _runtime_facts_digest(source)}))
+
+
+def clear_pending(source: Path) -> None:
+    pending_path(source).unlink(missing_ok=True)
+
+
+def clear_after_verified_rollback(source: Path, pre_sha: str | None) -> None:
+    """Only a return to the marker's original admitted revision discharges it."""
+    if not pre_sha:
+        return
+    try:
+        record = json.loads(pending_path(source).read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, ValueError):
+        return  # an unreadable or earlier marker keeps gateways stopped
+    if (isinstance(record, dict) and record.get("pre_sha") == pre_sha
+            and "runtime_facts_digest" in record
+            and record["runtime_facts_digest"] == _runtime_facts_digest(source)):
+        clear_pending(source)
+
+
+def pending_reason(source: Path) -> str | None:
+    """A missing marker admits startup; an unreadable marker holds it closed."""
+    try:
+        pending_path(source).lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "required plugin update admission state cannot be read"
+    return "a required plugin has not passed the selected runtime check"
+
+
+def prepare_or_stop(windows_resume):
+    """Freeze every profile's requirement before any checkout move."""
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_cmd_common import _record_stop
+
+    try:
+        return prepare_update_guards()
+    except (OSError, ValueError) as exc:
+        print(f"✗ Required plugin update check cannot be prepared: {exc}")
+        print("  No update was applied; your install is unchanged.")
+        _m()._resume_windows_gateways_after_update(windows_resume)
+        _record_stop("plugin_update_guard_invalid")
+        raise SystemExit(1) from exc
+
+
+def arm_noop_or_stop(source: Path, checks: tuple[UpdateGuard, ...], windows_resume,
+                     *, on_failure=None, pre_sha: str | None = None) -> None:
+    """Refuse before a tree move or completion if the durable stop cannot be armed."""
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_cmd_common import _record_stop
+
+    try:
+        arm_pending(source, checks, pre_sha=pre_sha)
+    except OSError as exc:
+        print(f"✗ Could not record the required plugin runtime check: {exc}")
+        if on_failure is not None:
+            on_failure()
+        _m()._resume_windows_gateways_after_update(windows_resume)
+        _record_stop("plugin_update_guard_record_failed")
+        raise SystemExit(1) from exc
+
+
+def check_pulled_plugin_compatibility(
+        source: Path, checks: tuple[UpdateGuard, ...], *, python_executable: Path | None = None) -> str | None:
     """Return a refusal for the first failed required check, else ``None``.
 
     Checks run under the selected Python with an empty Hermes home, no inherited
@@ -146,7 +257,8 @@ def check_pulled_plugin_compatibility(source: Path, checks: tuple[UpdateGuard, .
             env["HERMES_HOME"] = temp
             try:
                 result = subprocess.run(
-                    [sys.executable, "-I", "-B", str(script), "--hermes-root", str(source.resolve()),
+                    [str(python_executable or sys.executable), "-I", "-B", str(script),
+                     "--hermes-root", str(source.resolve()),
                      "--profile", profile],
                     cwd=temp, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     timeout=_CHECK_TIMEOUT_SECONDS, check=False,

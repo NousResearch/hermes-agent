@@ -731,6 +731,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the
     unmanaged idle exit (``gateway.run_idle_exit``) for a client-started daemon."""
+    # A required profile plugin is part of the service's startup contract. The update
+    # arms this host-owned marker before moving source and clears it only after the
+    # selected runtime passes the plugin check. Also cover manual/native launches,
+    # which bypass the updater's paused-gateway resume path.
+    from hermes_cli.update_plugin_guards import pending_reason
+
+    if reason := pending_reason(Path(__file__).resolve().parents[1]):  # health: allow ASYNC240 -- one local marker stat before startup
+        logger.error("Gateway startup held: %s. Run `hermes update` or restore a tested backup.", reason)
+        return False
+
     from gateway.run import (
         GatewayRunner,
         _best_effort,

@@ -136,8 +136,10 @@ The stage-by-stage contract: `website/docs/developer-guide/cli-internals.md` § 
   `_ZIP_PRESERVED_NESTED` build outputs into the swap.
 - Restarts are fleet-wide and drain-first, bounded by the home each unit runs on
   (`update_fleet_scope.py`); another install's runtime is never restarted.
-- Post-commit failures are owed follow-ups, exit 0 (stash left 1, Ctrl-C 130);
-  receipts in ROOT `logs/update_receipts/`.
+- Post-commit failures are owed follow-ups, exit 0 (stash left 1, Ctrl-C 130).
+  A profile-required plugin guard is the narrow exception: until its selected-runtime
+  check passes, a committed source update reports partial/exit 1 and keeps gateway starts stopped.
+  Receipts live in ROOT `logs/update_receipts/`.
 - Nothing runs pulled code in the pre-pull interpreter. `update_handoff.py` and
   `update_serve_obligations.py` are a FROZEN compat surface (`tests/compat/old_updater_surface.json`):
   removing a name bricks releases mid-update.

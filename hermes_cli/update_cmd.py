@@ -34,6 +34,8 @@ from hermes_cli import update_cmd_posix_pause as _posix_pause
 from hermes_cli.update_cmd_pause_gate import _checkout_move, _moves_for
 from hermes_cli import update_cmd_check as _check
 from hermes_cli import update_plugin_guards as _plugin_guards
+from hermes_cli.update_plugin_guards import (
+    arm_noop_or_stop as _arm_noop_plugin_guard, prepare_or_stop as _prepare_plugin_update_guards)
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (
@@ -993,6 +995,7 @@ def _roll_back_broken_update(git_cmd, pre_pull_sha, failing_path, syntax_error, 
                     print(f"  ✗ Could not check out {rollback_branch}; restoring its commit detached.")
         if rollback_result.returncode == 0:
             interrupted_pull_marker(root).unlink(missing_ok=True)
+            _plugin_guards.clear_after_verified_rollback(Path(root), pre_pull_sha)
             _commit.disarm_commit_obligations()  # back on the code this run started from
             print("  ✓ Rollback complete — your install is unchanged.")
             print("  Try ``hermes update`` again later once a fix lands.")
@@ -1132,6 +1135,9 @@ def _pull_updates(
             print(f"✗ {refused}.")
             _record_stop("commit_point_refused")
             sys.exit(1)
+        _arm_noop_plugin_guard(Path(_m().PROJECT_ROOT), plugin_update_guards,
+                               _windows_gateway_resume, on_failure=_commit.disarm_commit_obligations,
+                               pre_sha=pre_pull_sha)
         try:
             # The paused gateways' tree gate must know this move's target before git writes a file.
             with _checkout_move(_windows_gateway_resume, target_sha):
@@ -1145,6 +1151,7 @@ def _pull_updates(
             # handed back at the run's start, else owed for the HEAD it settled on; torn: owed for
             # the commit the next launch's restore lands on.
             if _commit.settle_failed_tree_move(_m().PROJECT_ROOT):
+                _plugin_guards.clear_after_verified_rollback(Path(_m().PROJECT_ROOT), pre_pull_sha)
                 _commit.disarm_commit_obligations()
             else:
                 _commit.owe_restore_of(_m().PROJECT_ROOT, pre_pull_sha)
@@ -1283,18 +1290,6 @@ def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) ->
     print("  No update was applied; your install is unchanged.")
     _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     sys.exit(1)
-
-
-def _prepare_plugin_update_guards(_windows_gateway_resume):
-    """Freeze installed profile checks before any checkout move or gateway restart."""
-    try:
-        return _plugin_guards.prepare_update_guards()
-    except (OSError, ValueError) as exc:
-        print(f"✗ Required plugin update check cannot be prepared: {exc}")
-        print("  No update was applied; your install is unchanged.")
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        _record_stop("plugin_update_guard_invalid")
-        sys.exit(1)
 
 
 def _exit_after_failed_branch_switch(
@@ -1775,6 +1770,7 @@ def _finish_already_up_to_date(
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         _record_stop("plugin_update_guard_noop_refused")
         sys.exit(1)
+    _arm_noop_plugin_guard(Path(_m().PROJECT_ROOT), plugin_update_guards, _windows_gateway_resume)
 
     if completion_request is not None:
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
@@ -1954,6 +1950,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         plugin_update_guards = _prepare_plugin_update_guards(_windows_gateway_resume)
+        completion_request["plugin_update_guards"] = _plugin_guards.guard_records(plugin_update_guards)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,

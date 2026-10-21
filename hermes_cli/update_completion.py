@@ -274,13 +274,28 @@ def settle_lost_completion(request: dict, reason: str) -> dict:
         parked = not _record_owed_user_action(request)
         if parked:
             print(_owed_user_action(request))  # the completion child that prints it may never have run
-        update_receipt.finalize_pending_update_receipt(1 if parked else 0, "completion owed after the code was updated")
+        guarded = _required_plugin_pending(request)
+        if guarded:
+            print("  ✗ Required plugin verification is incomplete; the updated source is present, "
+                  "but its gateway must not restart. Retry `hermes update` or restore a tested backup.")
+            update_receipt.record_user_action("required_plugin", "finish the required plugin check before restart")
+        update_receipt.finalize_pending_update_receipt(
+            1 if parked or guarded else 0, "completion owed after the code was updated")
         receipt = _read_terminal_receipt(request)
     outcome = (receipt or {}).get("outcome")
     code = 130 if outcome == "interrupted" else 1 if outcome == "partial" else 0
     if code == 0:
         _publish_gateway_success(request)
     return {"exit_code": code, "receipt": receipt, "windows_resume": None, "pm_receipt": None}
+
+
+def _required_plugin_pending(request: dict) -> bool:
+    """A selected-runtime proof already cleared the stop; other tails remain ordinary debt."""
+    if not request.get("plugin_update_guards"):
+        return False
+    from hermes_cli.update_plugin_guards import pending_reason
+
+    return pending_reason(Path(request["source"])) is not None
 
 
 def _settle_after_commit(request: dict, result_path: Path, step: str, reason: str) -> int:
@@ -309,7 +324,13 @@ def _settle_after_commit(request: dict, result_path: Path, step: str, reason: st
                                        if step == "dependencies" else "the next launch or `hermes update` retries it")
         if not _record_owed_user_action(request):
             print(_owed_user_action(request))  # the completion child that would print it never ran
-        update_receipt.finalize_pending_update_receipt(0, f"{step} owed after the code was updated")
+        guarded = _required_plugin_pending(request)
+        if guarded:
+            print("  ✗ Required plugin verification is incomplete; the updated source is present, "
+                  "but its gateway must not restart. Retry `hermes update` or restore a tested backup.")
+            update_receipt.record_user_action("required_plugin", "finish the required plugin check before restart")
+        update_receipt.finalize_pending_update_receipt(
+            1 if guarded else 0, f"{step} owed after the code was updated")
         receipt = _read_terminal_receipt(request)
     code = 0 if receipt is not None and receipt.get("outcome") == "success" else 1
     if code == 0:
@@ -353,6 +374,15 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # update guard prevents its plugin from being silently evicted; PM
             # records the failed sync and the committed source gets an owed tail.
             pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            if request.get("plugin_update_guards"):
+                from hermes_cli.update_plugin_guards import (
+                    check_pulled_plugin_compatibility, guards_from_records)
+
+                checks = guards_from_records(request["plugin_update_guards"])
+                refusal = check_pulled_plugin_compatibility(
+                    root, checks, python_executable=project_python(root))
+                if refusal:
+                    raise RuntimeError(f"required plugin failed under the selected runtime: {refusal}")
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
@@ -502,6 +532,12 @@ def _finish(request: dict, result_path: Path) -> int:
     _resume_receipt(request["receipt"])
     accept_worker_receipt(request.get("pm_receipt"), request["receipt"]["update_id"])
     update_receipt.record_stage("deps", "success")  # only a completed PM preparation reaches --prepared
+    if request.get("plugin_update_guards"):
+        # The selected interpreter activated successfully; only now may a paused
+        # gateway resume on the admitted code and dependencies.
+        from hermes_cli.update_plugin_guards import clear_pending
+
+        clear_pending(Path(request["source"]))
     code, reason = 0, "source update completion"
     try:
         if not _complete_selected(request):

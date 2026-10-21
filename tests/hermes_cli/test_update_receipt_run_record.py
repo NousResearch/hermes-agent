@@ -1,9 +1,11 @@
 """A run's own archive is read through one lookup: an unreadable record is a missing record."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from hermes_cli import update_completion, update_receipt
+from hermes_cli import update_completion, update_plugin_guards, update_receipt
 
 
 def _lost_run(tmp_path):
@@ -40,3 +42,29 @@ def test_lost_completion_keeps_the_stages_the_completion_child_persisted(_isolat
     assert result["receipt"]["stages"][:2] == progress
     assert [row["step"] for row in result["receipt"]["followups"]] == ["completion"]
     assert update_receipt._current.get() is None  # the parent's own receipt closed, nothing left open
+
+
+def test_lost_guarded_completion_requires_action_and_cannot_report_success(_isolate_hermes_home, tmp_path):
+    _run, archive, request = _lost_run(tmp_path)
+    request["plugin_update_guards"] = [{"profile": "sample", "plugin_id": "context-check"}]
+    update_plugin_guards.arm_pending(Path(request["source"]), (
+        update_plugin_guards.UpdateGuard("sample", "context-check", tmp_path / "check.py", "sha"),))
+    archive.write_text("null", encoding="utf-8")
+
+    result = update_completion.settle_lost_completion(request, "completion process disappeared")
+
+    assert result["exit_code"] == 1
+    assert result["receipt"]["outcome"] == "partial"
+    assert result["receipt"]["user_action"]["step"] == "required_plugin"
+
+
+def test_lost_completion_after_selected_plugin_pass_keeps_ordinary_followup(_isolate_hermes_home, tmp_path):
+    _run, archive, request = _lost_run(tmp_path)
+    request["plugin_update_guards"] = [{"profile": "sample", "plugin_id": "context-check"}]
+    archive.write_text("null", encoding="utf-8")
+
+    result = update_completion.settle_lost_completion(request, "completion process disappeared")
+
+    assert result["exit_code"] == 0
+    assert result["receipt"]["outcome"] == "success"
+    assert [row["step"] for row in result["receipt"]["followups"]] == ["completion"]

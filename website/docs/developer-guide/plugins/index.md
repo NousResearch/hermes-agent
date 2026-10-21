@@ -248,9 +248,20 @@ A same-revision `hermes update` runs the check again before dependency repair.
 During dependency preparation, a plugin named in `plugins.update_guards` cannot
 be automatically disabled or left out because its Python, manifest, Hermes
 version, build, or dependency requirements no longer fit. PM records a failed
-sync rather than publishing a smaller selection. If this happens after the
-source revision changed, the update records an owed dependency follow-up;
-automatic source-and-environment rollback is not provided at that stage.
+sync rather than publishing a smaller selection. The check runs again under the
+newly selected Python before the completion process may restart a paused gateway.
+Until that selected-runtime check passes, a durable install-scoped marker keeps
+paused gateways and new gateway launches stopped. An incomplete check after the source revision changed
+is reported as a partial update with exit 1 and an owed dependency follow-up:
+the source has changed, but the gateway is not ready. Retry `hermes update` after
+fixing the dependency or restore both source and environment from a tested backup.
+Automatic source-and-environment rollback is not provided at that stage.
+If a later update attempt rolls back to the still-unadmitted revision, the
+original marker remains; only a return to the source revision and dependency
+selection it started from, or a successful selected-runtime check, removes it.
+An interruption before source movement can also leave the conservative marker
+on the old revision. Rerun
+`hermes update` to complete admission before starting its gateway.
 
 During a Git source update Hermes runs each required script with
 `--hermes-root <pulled-checkout>` and `--profile <name>` after the checkout move
@@ -261,7 +272,9 @@ resumes the paused gateway fleet on that revision. The script receives a
 temporary `HERMES_HOME`, no stdin, and no inherited credential environment.
 It should inspect the source contract with only the currently installed Python
 standard library and packages; it cannot rely on the target's new dependencies
-being installed yet. The script is trusted installed plugin code, not a sandbox
+being installed yet. Its second invocation uses the selected Python and can check
+that the target API and dependencies import together. The script is trusted installed
+plugin code, not a sandbox
 for an adversarial plugin. On the ZIP update path, guarded installations refuse
 the update before download because that path cannot offer this rollback point.
 Normal plugins need no update check. Installations that require uninterrupted

@@ -53,4 +53,4 @@ post_install: |
   Paid tools (screenshot_url, keyword_research, remove_background) return an
   x402 402 Payment Required. To pay automatically, run the local pay-proxy
   (wallet key never leaves your machine):
-    https://github.com/icosaedro-git/toolsnap-mcp#paid-tools--connect-through-the-pay-proxy
+    https://github.com/ToolSnap-app/toolsnap-mcp#paid-tools--connect-through-the-pay-proxy

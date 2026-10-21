@@ -65,6 +65,57 @@ def native(path: str | os.PathLike[str]) -> str:
     return text.removeprefix(_VERBATIM)
 
 
+def open_deletable(path: Path, *, create: bool = False, mode: int = 0o600) -> int:
+    """Open *path* for byte-locking, permitting a delete while the handle is open.
+
+    On Windows a handle opened WITHOUT ``FILE_SHARE_DELETE`` blocks the deletion of
+    its own file: the pruner that unlinked a lease while holding the lock got
+    ``WinError 32`` and the lease was never reclaimed, so the ``.leases`` directory
+    grew without bound and a delete hook that redirects ``os.unlink`` to a
+    recycle-bin move turned the same refusal into a fail-closed command
+    (#142528). The claimant's handle needs the same permission: a peer's prune
+    unlinks the file in the window between the claim and the lock, and without
+    share-delete that unlink is refused and the claim ends up holding an unlinked
+    inode no collector can see.
+
+    POSIX has no such rule - an open file can always be unlinked - so this is the
+    plain ``os.open`` there. ``create`` maps to ``O_CREAT|O_EXCL`` (atomic create)
+    and to ``CREATE_NEW`` on Windows.
+    """
+    if os.name != "nt":
+        flags = os.O_RDWR | (os.O_CREAT | os.O_EXCL if create else 0)
+        return os.open(path, flags, mode) if create else os.open(path, flags)
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    _GENERIC_READ, _GENERIC_WRITE = 0x80000000, 0x40000000
+    _FILE_SHARE_READ, _FILE_SHARE_WRITE, _FILE_SHARE_DELETE = 0x1, 0x2, 0x4
+    _CREATE_NEW, _OPEN_EXISTING, _FILE_ATTRIBUTE_NORMAL = 1, 3, 0x80
+    _INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        _GENERIC_READ | _GENERIC_WRITE,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        None,
+        _CREATE_NEW if create else _OPEN_EXISTING,
+        _FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if not handle or handle == _INVALID_HANDLE:
+        raise OSError(ctypes.get_last_error(), f"CreateFileW failed for {path}")
+    # The CRT takes ownership of the handle, so os.close(fd) closes it.
+    return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+
+
 def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
     """Take the byte lock; ``timeout`` bounds the retry loop (None waits forever, 0 tries once)."""
     deadline = None if timeout is None else time.monotonic() + timeout

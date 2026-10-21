@@ -59,6 +59,31 @@ def empty_jwks_server():
     srv.shutdown()
 
 
+@pytest.fixture(scope="module")
+def one_key_jwks_server():
+    """A reachable JWKS endpoint that publishes one signing key (kid ``k1``)."""
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    public = rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key()
+    jwk = {**json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(public)), "kid": "k1", "use": "sig"}
+
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"keys": [jwk]}).encode())
+
+        def log_message(self, *a):  # silence
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+
+
 def _nous(portal_url: str) -> nous_plugin.NousDashboardAuthProvider:
     return nous_plugin.NousDashboardAuthProvider(client_id="agent:test-instance", portal_url=portal_url)
 
@@ -95,6 +120,13 @@ def test_opaque_bearer_with_healthy_portal_is_not_unreachable(empty_jwks_server)
 
 def test_foreign_kid_jwt_with_healthy_portal_is_not_unreachable(empty_jwks_server):
     provider = _nous(empty_jwks_server)
+    assert provider.verify_session(access_token=FOREIGN_KID_JWT) is None
+
+
+def test_unknown_kid_against_populated_jwks_is_not_unreachable(one_key_jwks_server):
+    """The JWKS was fetched fine; it just has no key for this kid (rotated out, or a forged
+    header). That is an unverifiable token, not an unreachable provider."""
+    provider = _nous(one_key_jwks_server)
     assert provider.verify_session(access_token=FOREIGN_KID_JWT) is None
 
 
@@ -150,7 +182,7 @@ def test_gated_api_rejects_opaque_bearer_with_401_not_503(_gated_nous):
 
 
 def test_gated_api_rejects_opaque_cookie_with_401_not_503(_gated_nous):
-    _gated_nous.cookies.set(SESSION_AT_COOKIE, OPAQUE_PEER_KEY)
+    _gated_nous.cookies.set(f"__Host-{SESSION_AT_COOKIE}", OPAQUE_PEER_KEY)
     r = _gated_nous.get("/api/auth/me")
     assert r.status_code != 503, r.text
     assert "unreachable" not in r.text.lower()

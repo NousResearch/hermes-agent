@@ -367,6 +367,8 @@ _MEDIA_PROXY_ALLOWED_HOSTS = (
     "*.fal.media", "*.fal.run",
 )
 _MEDIA_PROXY_TIMEOUT_S = 20.0
+_MEDIA_PROXY_MAX_REDIRECTS = 3
+_MEDIA_PROXY_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
 def _media_proxy_host_allowed(host: str) -> bool:
@@ -375,6 +377,27 @@ def _media_proxy_host_allowed(host: str) -> bool:
         host == allowed.lstrip("*.") or (allowed.startswith("*.") and host.endswith(allowed[1:]))
         for allowed in _MEDIA_PROXY_ALLOWED_HOSTS
     )
+
+
+async def _media_proxy_get(url: str):
+    """GET ``url``, following up to ``_MEDIA_PROXY_MAX_REDIRECTS`` redirects only while each hop
+    stays on the allowlist (httpx's ``follow_redirects`` would chase a 30x to any host, e.g. a
+    link-local metadata or RFC1918 address). A redirect still pending after the cap is returned
+    as-is and fails the caller's 200 check."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=False) as client:
+        response = await client.get(url)
+        for _ in range(_MEDIA_PROXY_MAX_REDIRECTS):
+            location = response.headers.get("location")
+            if response.status_code not in _MEDIA_PROXY_REDIRECT_CODES or not location:
+                break
+            url = urllib.parse.urljoin(url, location)
+            hop = urllib.parse.urlparse(url)
+            if hop.scheme not in ("http", "https") or not _media_proxy_host_allowed(hop.hostname or ""):
+                raise HTTPException(status_code=403, detail="Image redirect host not allowed")
+            response = await client.get(url)
+    return response
 
 
 @router.get("/api/media/proxy")
@@ -398,11 +421,10 @@ async def proxy_remote_media(url: str, request: Request):
         if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
             raise HTTPException(status_code=415, detail="Unsupported media type")
 
-    import httpx
-
     try:
-        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
-            response = await client.get(url)
+        response = await _media_proxy_get(url)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
 

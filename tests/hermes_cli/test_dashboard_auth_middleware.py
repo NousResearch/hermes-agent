@@ -279,7 +279,7 @@ def test_callback_invalid_code_returns_400(gated_app):
 
 
 def test_invalid_cookie_returns_401_on_api(gated_app):
-    gated_app.cookies.set(SESSION_AT_COOKIE, "garbage-not-a-real-token")
+    gated_app.cookies.set(f"__Host-{SESSION_AT_COOKIE}", "garbage-not-a-real-token")
     r = gated_app.get("/api/sessions")
     assert r.status_code == 401
 
@@ -494,7 +494,7 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     register_provider(_UnreachableProvider())
     client = _gated_state()
     # Any non-empty cookie — the unreachable provider raises before parsing.
-    client.cookies.set(SESSION_AT_COOKIE, "some-opaque-token")
+    client.cookies.set(f"__Host-{SESSION_AT_COOKIE}", "some-opaque-token")
     r = client.get("/api/auth/me")
     assert r.status_code == 503
     assert "unreachable" in r.text.lower()

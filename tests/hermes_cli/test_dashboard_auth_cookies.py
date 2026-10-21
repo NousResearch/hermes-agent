@@ -136,6 +136,22 @@ def test_read_session_cookies_from_request_secure_prefix():
     assert rt == "rt_value"
 
 
+def test_https_reader_ignores_bare_cookie_names():
+    """Over HTTPS the server only ever sets ``__Host-``/``__Secure-`` names. A bare
+    ``hermes_session_*`` cookie there can only come from somewhere else (e.g. a sibling
+    subdomain setting ``Domain=`` on the parent), so the reader must not honour it."""
+    bare = "; ".join(
+        f"{name}=planted"
+        for name in (SESSION_AT_COOKIE, SESSION_RT_COOKIE, SESSION_PROVIDER_COOKIE, PKCE_COOKIE))
+    req = Request({
+        "type": "http", "method": "GET", "path": "/", "scheme": "https",
+        "server": ("agent.example.test", 443), "headers": [(b"cookie", bare.encode())],
+    })
+    assert read_session_cookies(req) == (None, None)
+    assert read_session_provider(req) is None
+    assert read_pkce_cookie(req) is None
+
+
 # ---------------------------------------------------------------------------
 # PKCE cookie codec: base64url(JSON) wire format
 # ---------------------------------------------------------------------------

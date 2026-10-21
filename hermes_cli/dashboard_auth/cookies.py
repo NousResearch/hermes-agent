@@ -152,8 +152,11 @@ def clear_pkce_cookie(response: Response, *, use_https: bool, prefix: str = "") 
 
 
 def _read_with_fallback(request: Request, bare_name: str) -> Optional[str]:
-    """Try every prefix variant (the reading request may not match the setting request's shape)."""
-    return next((v for v in (request.cookies.get(f"{p}{bare_name}") for p in _NAME_VARIANTS)
+    """Try every prefix variant (the reading request may not match the setting request's shape).
+    Over HTTPS only the prefixed names: the setter never writes a bare one there, and honouring it
+    would let a sibling subdomain's ``Domain=`` cookie stand in for the ``__Host-`` one."""
+    variants = _NAME_VARIANTS[:2] if detect_https(request) else _NAME_VARIANTS
+    return next((v for v in (request.cookies.get(f"{p}{bare_name}") for p in variants)
                  if v is not None), None)
 
 

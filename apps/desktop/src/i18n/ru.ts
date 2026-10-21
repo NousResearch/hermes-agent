@@ -2738,43 +2738,6 @@ export const ruOverrides = {
     snippetsDesc: 'Выберите стартовый промпт, чтобы вставить в композер.',
     dropFiles: 'Перетащите файлы, чтобы прикрепить',
     dropSession: 'Перетащите, чтобы связать этот чат',
-    mcpSuggestions: {
-      label: server => `Добавить ${server}`,
-      tip: keyword => `Предложено, потому что вы упомянули «${keyword}» — нажмите, чтобы подключить`,
-      connecting: server => `Подключаем ${server}…`,
-      cancelTip: 'Нажмите, чтобы отменить',
-      added: server => `Добавлен ${server}`,
-      addedTip: 'Подключено — его инструменты готовы в этом чате',
-      connectFailed: server => `Не удалось подключить ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Использовать навык: ${skill}`,
-      tip: skill => `Вы упомянули «${skill}» — нажмите, чтобы начать с этого навыка`,
-      done: skill => `Добавлено /${skill}`,
-      doneTip: 'Навык загрузится при отправке'
-    },
-    githubSuggestions: {
-      label: 'Настроить GitHub',
-      tip: 'GitHub работает через навыки gh CLI здесь — нажмите, чтобы подключить аккаунт',
-      done: 'Добавлено /github-auth',
-      doneTip: 'Отправьте сообщение, и агент проведёт вас через вход в GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Переподключить ${server}`,
-      tip: server => `Недавний вызов ${server} завершился ошибкой соединения`,
-      working: server => `Переподключаем ${server}…`,
-      workingTip: 'Нажмите, чтобы отменить',
-      done: server => `Переподключено ${server}`,
-      doneTip: 'Свежие учётные данные активны в этом чате',
-      failed: server => `Не удалось переподключить ${server}`
-    },
-    cronSuggestions: {
-      label: 'Запланировать это',
-      tip: phrase => `«${phrase}» звучит как повторяющееся — запланируйте выполнение по расписанию`,
-      prefix: 'Настроить это как запланированную задачу:',
-      done: 'Отмечено для планирования',
-      doneTip: 'Отправьте, и агент создаст задачу'
-    },
     snippets: {
       codeReview: {
         label: 'Рецензия кода',

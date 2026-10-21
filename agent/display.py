@@ -1015,6 +1015,27 @@ def _degraded_suffix(data: dict) -> str:
     return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
 
 
+# Tools whose refused calls are the agent's own retry loop, not something the user must act on: a
+# skill_manage write refused by the size cap, a stale old_string or a guard is re-planned by the
+# agent. Renderers show these rows neutrally; the failure still reaches the model and the loop
+# guardrail unchanged (display-only).
+NEUTRAL_FAILURE_TOOLS = frozenset({"skill_manage"})
+# Except a batch whose rollback failed (tools/skill_manager_batch.py::_rollback): partial changes
+# are left on disk, which the user does have to see.
+_UNSAFE_FAILURE_MARKER = "ROLLBACK FAILED"
+
+
+def is_neutral_failure(tool_name: str, result: Any) -> bool:
+    """True when a failed call of ``tool_name`` should render neutrally (see NEUTRAL_FAILURE_TOOLS)."""
+    if tool_name not in NEUTRAL_FAILURE_TOOLS:
+        return False
+    # Only the error text: a refused patch also returns a file_preview of the skill, whose own
+    # prose may mention the marker.
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    error = data.get("error") if isinstance(data, dict) else result
+    return _UNSAFE_FAILURE_MARKER not in str(error or "")
+
+
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):

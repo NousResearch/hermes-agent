@@ -1192,11 +1192,10 @@ def _plan_execution(
     if timeout is not None and timeout <= 0:
         raise _Rejected(tool_error(f"timeout must be a positive number of seconds (got {timeout})."))
     promoted = None
-    if not _tenv_bool("TERMINAL_ALLOW_BACKGROUND", "true"):
-        if background or (timeout and timeout > FOREGROUND_MAX_TIMEOUT):
-            raise _Rejected(tool_error(
-                "Background processes are disabled (terminal.allow_background: false). Run the command "
-                f"in the foreground with timeout <= {FOREGROUND_MAX_TIMEOUT}s."))
+    if (background or (timeout and timeout > FOREGROUND_MAX_TIMEOUT)) and not _tenv_bool("TERMINAL_ALLOW_BACKGROUND", "true"):
+        raise _Rejected(tool_error(
+            "Background processes are disabled (terminal.allow_background: false). Run the command "
+            f"in the foreground with timeout <= {FOREGROUND_MAX_TIMEOUT}s."))
     if not background:
         # An over-cap foreground timeout is a bounded job the caller wants to wait for (test suites,
         # builds). Refusing it only bought a mechanical retry: 454 refusals in one run, every one

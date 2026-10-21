@@ -254,6 +254,116 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     return {"ok": True, "adopted": str(root)}
 
 
+def step_run_declared_commands() -> dict:
+    """Run user-declared post-update commands from ``post_update.commands``.
+
+    There is currently no supported way for a user to run a command after a code
+    update and BEFORE the gateway restarts. That ordering matters: an update
+    git-pulls with ``non_interactive_local_changes: stash``, so local core-code
+    patches are stashed out of the running tree and profile configs are
+    regenerated. A user who re-asserts those customizations out of band (a
+    launchd ``WatchPaths`` job, a cron, a manual script) can only catch up AFTER
+    the gateway has already come back on unpatched code — and then a second
+    restart is needed when the re-assert lands. Declaring the command here makes
+    the ordering deterministic: update -> declared commands -> gateway restart.
+
+    Config shape (top-level ``post_update:`` block, optional):
+
+        post_update:
+          commands:
+            - command: ~/bin/hermes-restore-customizations.py
+              timeout: 600          # optional, seconds; default 600
+              run_with: profile      # optional; "profile" | "system" | inferred
+
+    Each entry is executed as a subprocess with the ACTIVE profile's home in the
+    environment (``HERMES_HOME``) so a command that re-asserts profile configs
+    sees the profile it is restoring. ``run_with`` selects the interpreter:
+    ``profile`` forces the active interpreter, ``system`` runs the command as
+    written, and when it is omitted a ``.py`` command runs under the active
+    interpreter (so it sees the venv the update just synced) while anything else
+    runs as written. A non-zero exit is reported as a failed step (the runner
+    is failure-isolated, so one broken command never stops the rest), and an
+    absent or empty block is a no-op. Commands run in declaration order.
+    """
+    import os as _os
+    import shlex
+    import subprocess
+    import sys as _sys
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+    except Exception as exc:  # noqa: BLE001 — a config read must not fail the boot
+        return {"ok": True, "skipped": f"config unreadable ({exc})"}
+
+    block = cfg.get("post_update")
+    entries = block.get("commands") if isinstance(block, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return {"ok": True, "skipped": "no-declared-commands"}
+
+    ran: list[str] = []
+    failed: list[str] = []
+    for index, entry in enumerate(entries):
+        if isinstance(entry, str):
+            entry = {"command": entry}
+        if not isinstance(entry, dict):
+            failed.append(f"[{index}]: not a mapping")
+            continue
+        raw = entry.get("command")
+        if not isinstance(raw, str) or not raw.strip():
+            failed.append(f"[{index}]: empty command")
+            continue
+        argv = shlex.split(raw.strip())
+        if not argv:
+            failed.append(f"[{index}]: empty command")
+            continue
+        # shlex.split does not expand ~, and a shell-less exec passes the literal
+        # path to the OS — so expand a leading ~ in the program and in any
+        # argument that is a bare path (e.g. `python3 ~/bin/script.py`).
+        argv = [os.path.expanduser(a) if a.startswith("~") else a for a in argv]
+        mode = str(entry.get("run_with") or "").strip().lower()
+        if mode == "system":
+            pass  # run the command as written
+        elif mode == "profile":
+            # Route through the active interpreter so a Python script sees the
+            # venv the update just synced (yaml/plyvel and friends).
+            argv = [str(_sys.executable), *argv]
+        else:
+            # Default: a Python command runs under the active interpreter (so it
+            # sees the synced venv); anything else runs as written. Inferring
+            # from the command keeps a shell one-liner working without the
+            # operator having to declare run_with.
+            if argv[0].endswith(".py"):
+                argv = [str(_sys.executable), *argv]
+        try:
+            timeout = float(entry.get("timeout") or 600)
+        except (TypeError, ValueError):
+            timeout = 600.0
+        env = dict(_os.environ)
+        try:
+            from hermes_constants import get_hermes_home
+            env["HERMES_HOME"] = str(get_hermes_home())
+        except Exception:  # noqa: BLE001 — the ambient value is the fallback
+            pass
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=timeout, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            failed.append(f"[{index}] {argv[0]}: timed out after {timeout:g}s")
+            continue
+        except Exception as exc:  # noqa: BLE001 — one command must not stop the rest
+            failed.append(f"[{index}] {argv[0]}: {exc}")
+            continue
+        if proc.returncode == 0:
+            ran.append(f"[{index}] {argv[0]}")
+        else:
+            failed.append(f"[{index}] {argv[0]}: rc={proc.returncode} {(proc.stderr or '')[-300:]}")
+    if failed:
+        return {"ok": False, "error": "; ".join(failed), "ran": ran}
+    return {"ok": True, "ran": ran}
+
+
 def step_provision_runtimes() -> dict:
     """Explicit refresh of PM's drifted packages; never selected by boot.
 
@@ -297,6 +407,7 @@ def step_provision_runtimes() -> dict:
 HOME_STEPS: tuple = (
     ("adopt_blessed_checkout", step_adopt_blessed_checkout),
     ("migrate_config", step_migrate_config),
+    ("run_declared_commands", step_run_declared_commands),
     ("sync_skills", step_sync_skills),
     ("state_db_guard", step_state_db_guard),
     ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),

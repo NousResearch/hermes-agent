@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from pm.filesystem import long_root, native
+from pm.filesystem import long_root, native, retry_held
 from pm.package import (
     DebPackage,
     InstallError,
@@ -220,6 +220,175 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+# Plugin-host payload: exact pins of httpx[socks] and its full runtime
+# closure, installed into the staged tool tree's own site-packages. The
+# store interpreter runs plugin discovery under `-I`
+# (hermes_cli._launchers.runtime_command), where only the tool tree's own
+# site-packages is importable — the venv is never on sys.path there — and
+# the bundled solstice provider imports httpx
+# (agent/gemini_native_adapter.py:20), so the tool image must carry it.
+# Every pin is `==`: a floating transitive would drift the published tree
+# digest between republishes. Keep in lockstep with [project].dependencies
+# (`httpx[socks]`) and uv.lock (closure versions). The closure is
+# marker-free (no platform/python_version markers outside unrequested
+# extras), so one file set serves every target; the install fails closed
+# on compiled artifacts.
+_TOOL_PYTHON_PLUGIN_PINS = (
+    "httpx[socks]==0.28.1",
+    "anyio==4.14.2",
+    "certifi==2026.5.20",
+    "h11==0.16.0",
+    "httpcore==1.0.9",
+    "idna==3.19",
+    "socksio==1.0.0",
+)
+
+_TOOL_PYTHON_UV_PLATFORMS = (
+    ("win32", "windows"),
+    ("darwin", "macos"),
+    ("linux", "linux"),
+)
+
+
+def _tool_uv_platform(target: str) -> str:
+    """uv's cross-resolution platform for a PM target (pure payload: one set fits all)."""
+    for prefix, platform in _TOOL_PYTHON_UV_PLATFORMS:
+        if target.startswith(prefix):
+            return platform
+    raise InstallError("python", f"no uv resolution platform for target {target!r}")
+
+
+def _tool_site_packages(staged: Path, target: str, prefix_rel: str) -> Path:
+    """The staged interpreter's own site-packages: the one dir importable under `-I`."""
+    if target.startswith("win32"):
+        candidates = [staged / "Lib" / "site-packages"]
+    else:
+        candidates = [
+            match
+            for root in (staged, staged / prefix_rel)
+            for match in sorted(root.glob("lib/python*/site-packages"))
+        ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    raise InstallError("python",
+                       f"staged {target} tree has no site-packages under {native(staged)}")
+
+
+def _payload_uv_bin() -> Path:
+    """PM's pinned uv for this host, else the ambient one (fresh installs stage python first)."""
+    from pm.install import _installed_location, _lockfile
+    from pm.registry import get_package
+    from pm.store import current_target as _current_target
+
+    host = _current_target()
+    package = get_package("uv")
+    location = _installed_location(package, _lockfile(), host)
+    fact = location[0].get("uv") if location is not None else None
+    if fact is not None:
+        binary = package.binary(location[1].entry(fact["entry"]), host)
+        if binary is not None and binary.is_file():
+            return binary
+    ambient = shutil.which("uv")
+    if ambient:
+        return Path(ambient)
+    raise InstallError("python",
+                       "the plugin-host payload needs uv, which is neither installed nor on PATH",
+                       "run `hermes pm install` on a networked host first")
+
+
+def _payload_install_env(cache: Path) -> dict[str, str]:
+    """Sanitized env for the payload install: hermes index bridging survives,
+    ambient config does not."""
+    from pm.index_config import bridged_index_settings, is_forwarded
+
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("PYTHON") and key != "VIRTUAL_ENV"
+        and (not key.startswith("UV_") or is_forwarded(key))
+    }
+    env.update(bridged_index_settings(os.environ))
+    env.update({
+        "UV_CACHE_DIR": native(cache),
+        "UV_PYTHON_DOWNLOADS": "never",
+    })
+    return env
+
+
+def _run_payload_install(uv: Path, requirements: tuple[str, ...], *, python_version: str,
+                         platform: str, dest: Path, cache: Path) -> None:
+    """Install exact pins into dest: offline from the hermes cache first,
+    online retry on a cold cache."""
+
+    def attempt(offline: bool) -> "subprocess.CompletedProcess[str]":
+        command = [native(uv), "pip", "install", "--no-config"]
+        if offline:
+            command.append("--offline")
+        command += ["--only-binary", ":all:", "--link-mode=copy",
+                    "--python-version", python_version, "--python-platform", platform,
+                    "--target", native(dest), *requirements]
+        return subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=600, cwd=native(dest.parent),
+                              env=_payload_install_env(cache))
+
+    try:
+        result = attempt(True)
+        if result.returncode != 0:
+            LOG.debug("offline tool-payload install failed, retrying online: %s",
+                      (result.stderr or result.stdout)[-300:])
+            result = attempt(False)
+    except OSError as exc:
+        raise InstallError("python", f"could not exec {native(uv)} pip install: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise InstallError("python", "uv pip install timed out after 600s") from exc
+    if result.returncode != 0:
+        raise InstallError("python",
+                           f"uv pip install exited {result.returncode}: "
+                           f"{(result.stderr or result.stdout)[-600:]}")
+
+
+def _merge_payload(payload: Path, site_dir: Path) -> None:
+    """Move the payload into site-packages: importable packages only, never
+    entry-point scripts (their shebangs name the resolution interpreter)."""
+    merged: list[str] = []
+    for child in sorted(payload.iterdir()):
+        if child.name == "bin":
+            continue
+        if child.name == ".lock":
+            # uv's working lock for the target dir: empty, deterministic,
+            # but working state, not payload.
+            continue
+        target = site_dir / child.name
+        if target.exists():
+            raise InstallError("python",
+                               f"tool payload collides with the staged tree: {child.name}")
+        if child.is_dir():
+            merge_tree(child, target)
+        else:
+            retry_held(lambda: child.replace(target))
+        merged.append(child.name)
+    for name in merged:
+        if not name.endswith(".dist-info"):
+            continue
+        record = site_dir / name / "RECORD"
+        if not record.is_file():
+            continue
+        rows = record.read_text(encoding="utf-8").splitlines()
+        kept = [row for row in rows if not row.startswith("bin/")]
+        if len(kept) != len(rows):
+            record.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    offenders = sorted(
+        str(path.relative_to(site_dir))
+        for name in merged
+        for path in (site_dir / name).rglob("*")
+        if path.is_file() and path.suffix in (".so", ".pyd", ".dll", ".dylib")
+    )
+    if offenders:
+        raise InstallError("python",
+                           "tool payload must stay pure-python for cross-target staging: "
+                           f"{', '.join(offenders)}")
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -261,6 +430,28 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+        # The plugin-host payload (httpx closure) must be part of the
+        # published bytes: the tree digest is recorded over the staged tree,
+        # so anything added after publish reads as tampering (and the next
+        # republish wipes it).
+        self._stage_plugin_host_payload(staged, version, target)
+
+    def _stage_plugin_host_payload(self, staged: Path, version: str, target: str) -> None:
+        site_dir = _tool_site_packages(staged, target, self.prefix_rel)
+        pyver = version.partition("+")[0]
+        major_minor = ".".join(pyver.split(".")[:2])
+        if not major_minor or not major_minor[0].isdigit():
+            raise InstallError(self.name, f"version {version!r} has no parsable python version")
+        # Scratch beside the staged tree: same filesystem, so the merge
+        # below moves (renames) instead of copying across devices.
+        with tempfile.TemporaryDirectory(prefix="hermes-tool-payload-", dir=staged.parent) as work:
+            dest = Path(work) / "payload"
+            dest.mkdir()
+            _run_payload_install(_payload_uv_bin(), _TOOL_PYTHON_PLUGIN_PINS,
+                                 python_version=major_minor,
+                                 platform=_tool_uv_platform(target),
+                                 dest=dest, cache=uv_cache_dir())
+            _merge_payload(dest, site_dir)
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":

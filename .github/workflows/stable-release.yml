@@ -8,7 +8,8 @@ run-name: ${{ contains(inputs.tag, '+canary.') && 'Canary' || 'Stable' }} releas
 #
 # This one workflow is also the canary pipeline (canary-release.yml dispatches it with a
 # vX.Y.Z+canary.<stamp> tag), so a canary runs exactly the jobs a stable release does, with
-# every lane on (scripts/releases/lanes.py CANARY). Admission emits the policy, and a canary
+# every lane on except the signed-package upgrade arms (scripts/releases/lanes.py CANARY;
+# install-e2e covers old stable -> this commit). Admission emits the policy, and a canary
 # differs only in two ways:
 #   - where it publishes: publish-canary moves the canary channels (feeds, Termux APT, the
 #     protected R2 canary head, a GitHub prerelease, the canary Docker aliases). It never runs

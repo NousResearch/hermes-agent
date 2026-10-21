@@ -13,8 +13,9 @@ name: Canary Release
 #
 # The canary build itself is a Stable Release run (stable-release.yml) on the
 # canary tag: the exact job graph a stable release runs, with every lane on
-# (Termux included; scripts/releases/lanes.py CANARY), so the
-# two never drift. It differs only in where it publishes (the canary channels,
+# (Termux included; scripts/releases/lanes.py CANARY) except
+# the signed-package upgrade arms -- the canary app cannot upgrade a stable
+# install; install-e2e tests old stable -> this commit -- so the two never drift. It differs only in where it publishes (the canary channels,
 # never the Store or a stable head) and in that only the built, smoked
 # candidate gates publication; every other suite reports in the same run.
 

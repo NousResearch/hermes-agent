@@ -643,8 +643,9 @@ _HOLD_IN_REF_TRANSACTION = """#!/bin/sh
 input=$(cat)
 case "$1:$input" in
   prepared:*refs/remotes/origin/main*)
-    : > "$(git rev-parse --git-dir)/held"
-    while [ ! -e "$(git rev-parse --git-dir)/release" ]; do sleep 0.05; done ;;
+    dir=$(git rev-parse --git-dir)  # once: a git spawned in the loop would be a live git here
+    : > "$dir/held"
+    while [ ! -e "$dir/release" ]; do sleep 0.05; done ;;
 esac
 """
 
@@ -675,18 +676,22 @@ def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_
     hook.chmod(0o755)
     lock = git_dir / "refs" / "remotes" / "origin" / "main.lock"
     _killed_update_receipt()
-    proc = subprocess.Popen(_FETCH, cwd=clone, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    err = tmp_path / "fetch.err"  # a file, not a pipe: the hook inherits it and outlives the killed git
+    with err.open("w", encoding="utf-8") as sink:
+        proc = subprocess.Popen(_FETCH, cwd=clone, stdout=subprocess.DEVNULL, stderr=sink)
     try:
         deadline = time.monotonic() + 30
         while not (git_dir / "held").exists():
-            assert proc.poll() is None and time.monotonic() < deadline, f"the fetch never reached its ref transaction: {proc.stderr.read() if proc.poll() is not None else ''}"
+            assert proc.poll() is None and time.monotonic() < deadline, \
+                f"the fetch never reached its ref transaction: {err.read_text(encoding='utf-8')}"
             time.sleep(0.05)
         assert lock.exists(), "premise: the held fetch holds its ref lock"
         assert release_dead_ref_locks(clone) == [] and lock.exists(), "the reclaim took a live fetch's lock"
     finally:
         proc.kill()
-        proc.communicate()
+        proc.wait()
         (git_dir / "release").touch()  # the hook (not a git) exits; the dead fetch's lock stays
+
     hook.unlink()
 
     stuck = _fetch(clone)

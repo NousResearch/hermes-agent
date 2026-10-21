@@ -35,6 +35,18 @@ def parsed_flag(argv, name):
     return values[0] if len(values) == 1 else (values or None)
 
 
+def assert_single_long_flag(argv, name, expected):
+    """The expanded argv carries exactly one long-form ``--name`` and it parses to ``expected``.
+
+    A repeated flag is what breaks Astro: yargs-parser collects it into a list and
+    ``flagsToAstroInlineConfig`` accepts only ``string | boolean``, so ``server.host`` /
+    ``server.port`` silently fall back to their defaults.
+    """
+    occurrences = [t for t in argv if t == f"--{name}" or t.startswith(f"--{name}=")]
+    assert occurrences == [f"--{name}"] or occurrences == [f"--{name}={expected}"], argv
+    assert parsed_flag(argv, name) == expected
+
+
 class TestPackageManagerDetection:
     def test_pnpm_lock_wins(self, tmp_path):
         (tmp_path / "pnpm-lock.yaml").touch()
@@ -140,6 +152,11 @@ class TestAstroFlagsAgainstScriptBody:
     ``flagsToAstroInlineConfig`` accepts only ``string | boolean`` -- the array makes
     ``server.host`` undefined, so Astro silently falls back to its ``[::1]`` default: the
     exact bind the flag exists to override.
+
+    Only the long forms (``--host`` / ``--port``) count as pinned: Astro declares no
+    ``-H``/``-p`` alias, so a short form cannot stand in for the flag Astro parses. The
+    recipe's probe port is derived from that same long-form notion, so whenever the append
+    is skipped the probe still targets the port the app will bind.
     """
 
     def test_pinned_host_is_not_duplicated(self, tmp_path):
@@ -189,6 +206,66 @@ class TestAstroFlagsAgainstScriptBody:
         argv = expand_runner_command(recipe.start, scripts)
         assert parsed_flag(argv, "host") == "127.0.0.1"
         assert parsed_flag(argv, "port") == "4321"
+
+    def test_pinned_port_equals_form_sets_the_probe_port(self, tmp_path):
+        # ``--port=4111`` is pinned, so the append is skipped -- the probe port must then be
+        # the pinned 4111, not the 4321 default (a probe port the app never binds refuses).
+        scripts = {"dev": "astro dev --port=4111"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.port == 4111
+        assert recipe.start == "bun run dev --host 127.0.0.1"
+        argv = expand_runner_command(recipe.start, scripts)
+        assert_single_long_flag(argv, "host", "127.0.0.1")
+        assert_single_long_flag(argv, "port", "4111")
+        assert int(parsed_flag(argv, "port")) == recipe.port
+
+    def test_short_port_form_does_not_suppress_the_long_form(self, tmp_path):
+        # Astro declares no ``-p`` alias, so ``-p 4111`` is invisible to it: the recipe must
+        # still hand Astro a long-form ``--port``, and probe the value it appended.
+        scripts = {"dev": "astro dev -p 4111"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.port == 4111
+        argv = expand_runner_command(recipe.start, scripts)
+        assert_single_long_flag(argv, "host", "127.0.0.1")
+        assert_single_long_flag(argv, "port", "4111")
+        assert int(parsed_flag(argv, "port")) == recipe.port
+
+    def test_short_host_form_does_not_suppress_the_long_form(self, tmp_path):
+        # ``-H 127.0.0.1`` is not an Astro spelling; suppressing ``--host`` would leave the
+        # server on its ``[::1]`` default and the IPv4 readiness probe would refuse.
+        scripts = {"dev": "astro dev -H 127.0.0.1"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.port == 4321
+        argv = expand_runner_command(recipe.start, scripts)
+        assert_single_long_flag(argv, "host", "127.0.0.1")
+        assert_single_long_flag(argv, "port", "4321")
+        assert int(parsed_flag(argv, "port")) == recipe.port
+
+    def test_both_equals_forms_pin_host_and_port(self, tmp_path):
+        scripts = {"dev": "astro dev --host=127.0.0.1 --port=4111"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.port == 4111
+        assert recipe.start == "bun run dev"
+        argv = expand_runner_command(recipe.start, scripts)
+        assert_single_long_flag(argv, "host", "127.0.0.1")
+        assert_single_long_flag(argv, "port", "4111")
+        assert int(parsed_flag(argv, "port")) == recipe.port
 
 
 class TestPythonDetection:

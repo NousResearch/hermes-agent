@@ -118,13 +118,36 @@ def _infer_port_from_command(command: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
-# Match an existing flag in a shell command, accepting both space- and equals-separated
-# forms (``--port 4321`` / ``--port=4321`` / ``-p 4321``). Anchored so the flag does not
-# match a fragment inside another token (e.g. a path containing ``--port``).
+# Long-form spellings only, in both the space and the equals form. These are the tokens the
+# frameworks we force flags for actually parse: Astro reads its argv with
+# ``yargs(argv, {boolean: ["global"], alias: {g: "global"}})`` and declares no ``-H``/``-p``
+# alias (astro/dist/cli/index.js), so a short form a project wrote is invisible to the app.
+# Treating a short form as "already set" suppresses the only flag Astro parses, and the bind
+# the flag exists to force never happens. Anchored so a flag is not matched inside a longer
+# token (``--hosts``, a path containing ``--port``).
+#
+# The port pattern requires the digits on purpose: the append decision and the probe port
+# come from this one pattern (``_pinned_port_value``), so we can never skip the append for a
+# port we cannot predict and then probe a port the app never binds.
+_PORT_FLAG_RE = re.compile(r"(?:^|\s)--port(?:\s+|=)(\d{2,5})(?!\d)")
 _FLAG_PRESENT_RE = {
-    "host": re.compile(r"(?:^|\s)(?:--host|-H)(?:\s|=)"),
-    "port": re.compile(r"(?:^|\s)(?:--port|-p)(?:\s|=)"),
+    "host": re.compile(r"(?:^|\s)--host(?:\s|=|$)"),
+    "port": _PORT_FLAG_RE,
 }
+
+
+def _pinned_port_value(text: str | None) -> int | None:
+    """Numeric value of a long-form ``--port`` already present in ``text``, else ``None``.
+
+    The same pattern :func:`_ensure_flags` consults before appending ``--port``, so a pinned
+    port both suppresses the append and becomes the recipe's probe port (``--port=4111``
+    must probe 4111). A short ``-p 4111`` does not count: Astro declares no ``-p`` alias, so
+    the value only feeds the flag we append ourselves.
+    """
+    if not text:
+        return None
+    match = _PORT_FLAG_RE.search(text)
+    return int(match.group(1)) if match else None
 
 
 def _ensure_flags(command: str, script_body: str = "", **flags: str | int | None) -> str:
@@ -132,13 +155,18 @@ def _ensure_flags(command: str, script_body: str = "", **flags: str | int | None
     not already present.
 
     A flag is skipped when its value is ``None``/empty, when its name is not in
-    :data:`_FLAG_PRESENT_RE`, or when it already appears in ``command`` **or** in
-    ``script_body``. ``script_body`` is the package script the command invokes (the body of
-    ``package.json``'s ``dev`` script, say): the runner command alone hides it (``bun run
-    dev``), so a project that pins the flag itself would otherwise get it appended a second
-    time. A duplicated flag is not a no-op -- ``yargs-parser`` returns an *array* for it and
-    consumers accepting only ``string | boolean`` silently drop the setting (Astro then
-    falls back to its ``[::1]`` bind, the very default this flag exists to override).
+    :data:`_FLAG_PRESENT_RE`, or when its **long form** already appears in ``command``
+    **or** in ``script_body``. ``script_body`` is the package script the command invokes
+    (the body of ``package.json``'s ``dev`` script, say): the runner command alone hides it
+    (``bun run dev``), so a project that pins the flag itself would otherwise get it
+    appended a second time. A duplicated flag is not a no-op -- ``yargs-parser`` returns an
+    *array* for it and consumers accepting only ``string | boolean`` silently drop the
+    setting (Astro then falls back to its ``[::1]`` bind, the very default this flag exists
+    to override).
+
+    Only long-form spellings count as present (:data:`_FLAG_PRESENT_RE`), because that is
+    all Astro parses; see the note on the pattern table. Short forms never suppress the
+    append.
 
     Recognised names: ``host``, ``port``. Useful for binding Astro ``dev`` explicitly to
     IPv4 127.0.0.1 so ``hermes verify``'s IPv4 readiness probe reaches it.
@@ -192,21 +220,29 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
         return _dedupe([_script_runner(package_manager, s) for s in names if scripts.get(s)])
 
     start_script = next((s for s in ("dev", "start") if scripts.get(s)), None)
-    inferred_port = _infer_port_from_command(scripts[start_script]) if start_script else None
+    start_body = scripts.get(start_script, "") if start_script else ""
+    # The probe port must be the port the app will bind. A long-form ``--port`` the project
+    # already pins (space or equals spelling) wins over the looser grok-style inference:
+    # both ``--port 4111`` and ``--port=4111`` are understood by Astro, while ``-p 4111`` is
+    # not -- a short form only informs the value we append ourselves, never the probe port
+    # on its own. This is the same pattern ``_ensure_flags`` uses to decide the append, so
+    # "skip the flag" and "probe its value" cannot disagree. (The resolved command is built
+    # by ``_script_runner`` and never carries flags, so the script body is the only place a
+    # pin can come from here.)
+    resolved_port = (
+        _pinned_port_value(start_body) or _infer_port_from_command(start_body) or default_port
+    )
     start_cmd = runners(start_script)[0] if start_script else None
     # Astro binds [::1]:4321 by default; the verify readiness probe hits IPv4 127.0.0.1
     # and would connection-refuse. Force the dev server to listen on 127.0.0.1 and the
     # recipe's resolved port so the probe always reaches it.
-    if start_cmd and start_script and kind == "astro":
+    if start_cmd and kind == "astro":
         # The pinned script body matters here too: ``bun run dev`` alone cannot reveal a
         # flag the project already sets inside its own ``dev`` script.
-        start_cmd = _ensure_flags(
-            start_cmd, scripts.get(start_script, ""),
-            host="127.0.0.1", port=inferred_port or default_port,
-        )
+        start_cmd = _ensure_flags(start_cmd, start_body, host="127.0.0.1", port=resolved_port)
     return Recipe(
         name=label, kind=kind, start=start_cmd,
-        port=(inferred_port or default_port) if start_script else None,
+        port=resolved_port if start_script else None,
         bootstrap=[_NODE_INSTALL.get(package_manager or "", "npm install")],
         build=runners("build", "typecheck"), test=runners("test", "check", "lint"),
         evidence=_dedupe([

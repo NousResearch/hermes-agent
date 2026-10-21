@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import json
 import logging
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Optional, cast
 
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -77,6 +80,83 @@ def _refusal_retry_at(step: int) -> float:
     return time.monotonic() + jittered_backoff(
         step, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
         max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
+
+
+# A proven-permanent watch refusal is spent against a budget shared by every copy of ONE logical
+# producer candidate, not against the event dictionary that carries it: the drain handles plain
+# dicts, so a restart or a re-emitted notice starts a fresh copy whose event-local count would be 1
+# again and the notice would loop at the backoff ceiling. The key is _watch_refusal_key's tuple.
+#
+# BOUNDED on purpose: least-recently-spent evicted first at _MAX_WATCH_REFUSAL_TRACKED, so a churn
+# of unrelated candidates cannot grow the gateway without bound and counters are never cleared
+# wholesale. An evicted identity may start a fresh budget again — the documented limit of a
+# process-local ledger; the durable async-delegation ledger is the lane that survives a restart.
+_MAX_WATCH_REFUSAL_TRACKED = 256
+_WATCH_REFUSAL_LEDGER: dict[tuple, list] = OrderedDict()
+_WATCH_REFUSAL_LOCK = threading.Lock()
+
+
+def _watch_candidate_digest(text: str) -> str:
+    """Canonical fingerprint of one notice candidate: the exact text this consumer offers.
+
+    The store digests the whole admitted payload, and this text is its only variable part (route,
+    owner and producer identity are in the ledger key), so equal text is the same candidate and any
+    edit is a corrected candidate that must start with its own budget.
+    """
+    return hashlib.sha256(text.encode('utf-8', 'surrogateescape')).hexdigest()[:32]
+
+
+def _watch_refusal_key(evt: dict, scope: str) -> Optional[tuple]:
+    """The producer-stable key a proven-permanent watch refusal is spent against, or ``None``.
+
+    ``scope`` is the store namespace the notice was admitted in (the owning profile's home), so two
+    profiles' identical ids never share a budget. The rest is read off the event: the route it was
+    addressed to (structured key plus the pin it resolves to), the producer identity the store uses
+    as its request id, and the candidate text's fingerprint. A notice that later belongs to another
+    route, or a corrected candidate, therefore starts with its own budget instead of inheriting an
+    exhausted one. ``None`` (no producer identity, or a refusal raised before the text existed)
+    keeps the upstream event-local count: nothing producer-stable is known to share.
+    """
+    identity = GatewayNotificationsMixin._completion_delivery_identity(evt)
+    candidate = str(evt.get('_watch_refusal_candidate') or '')
+    if identity is None or not candidate:
+        return None
+    route = tuple(str(evt.get(field) or '') for field in
+                  ('session_key', 'platform', 'chat_type', 'chat_id', 'thread_id',
+                   'parent_session_id', 'proven_session_id'))
+    try:
+        return (str(scope or ''), route, json.dumps(list(identity), separators=(',', ':')), candidate)
+    except (TypeError, ValueError):
+        # An identity that cannot be canonicalized shares nothing: the caller falls back to the
+        # event-local count rather than letting a key error cost the event its requeue.
+        logger.debug('Watch refusal budget key unavailable for %r; using the event-local count',
+                     identity, exc_info=True)
+        return None
+
+
+def _spend_watch_refusal(key: tuple, step: int) -> tuple:
+    """Count one proven-permanent refusal of ``key``: ``(attempts, next_retry_at)``.
+
+    The attempt count AND its pacing are shared, so copying the dictionary cannot reset either; the
+    pacing uses the larger of the copy's own step and the shared count.
+    """
+    with _WATCH_REFUSAL_LOCK:
+        entry = _WATCH_REFUSAL_LEDGER.get(key)
+        if entry is None:
+            entry = _WATCH_REFUSAL_LEDGER[key] = [0, 0.0]
+        entry[0] += 1
+        entry[1] = _refusal_retry_at(max(int(step), entry[0]))
+        _WATCH_REFUSAL_LEDGER.move_to_end(key)
+        while len(_WATCH_REFUSAL_LEDGER) > _MAX_WATCH_REFUSAL_TRACKED:
+            _WATCH_REFUSAL_LEDGER.popitem(last=False)
+        return entry[0], entry[1]
+
+
+def _watch_refusal_namespace() -> str:
+    """The store namespace notices are being admitted in: the owning profile's home while its scope
+    is installed (call inside ``_completion_event_scope``), ``''`` when the gateway is unscoped."""
+    from hermes_constants import get_hermes_home_override
+    return str(get_hermes_home_override() or '')
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -726,7 +806,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # instead of re-attempting admission every 2 s (#140899).
                 completion_queue.put(evt)
                 continue
+            scope = ''
             async with self._completion_event_scope(evt):
+                scope = _watch_refusal_namespace()
                 from tools.process_registry_notifications import should_surface_notification
                 if not should_surface_notification(evt):
                     continue
@@ -746,21 +828,33 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         delivered = False
             # The original event: a requeued tick folds again from what is still queued.
             if delivered is False:
-                self._requeue_refused_watch_event(completion_queue, evt)
+                self._requeue_refused_watch_event(completion_queue, evt, scope=scope)
 
     @staticmethod
-    def _requeue_refused_watch_event(completion_queue, evt: dict) -> None:
+    def _requeue_refused_watch_event(completion_queue, evt: dict, *, scope: str = '') -> None:
         """Retry a refused watch event on a bounded backoff, never on every 2 s tick (#140899).
 
-        Only a refusal proven permanent (``WakeNotAccepted.permanent``: the route has no session,
-        or the payload is invalid) counts toward the cap that drops it. A transient one (a restart's
-        after-turn wait, a parked profile, a full owner FIFO) or one whose owner may still appear (an
-        unowned or foreign-pinned notice) waits it out however long it lasts.
+        Only a refusal proven permanent (``WakeNotAccepted.permanent``: the route has no session, the
+        payload is invalid, the pin is gone, or the store proved an immutable payload collision)
+        counts toward the cap that drops it. A transient one (a restart's after-turn wait, a parked
+        profile, a full owner FIFO) or one whose owner may still appear (an unowned or foreign-pinned
+        notice) waits it out however long it lasts.
+
+        A permanent count is spent against ``_watch_refusal_key``'s producer-stable budget rather
+        than this dictionary's own, so a re-emitted copy of one candidate — and therefore one logical
+        notice — cannot restart at attempt 1. ``scope`` names the store namespace it was admitted in.
         """
         step = int(evt.get("_watch_retry_step") or 0) + 1
         evt["_watch_retry_step"] = step
+        refusals = 0
         if evt.pop("_refusal_permanent", False):
-            refusals = int(evt.get("_watch_injection_attempts") or 0) + 1
+            key = _watch_refusal_key(evt, scope)
+            if key is not None:
+                refusals, evt["_watch_next_retry_at"] = _spend_watch_refusal(key, step)
+            else:
+                # Nothing producer-stable to share with: the event's own count, as upstream.
+                refusals = int(evt.get("_watch_injection_attempts") or 0) + 1
+                evt["_watch_next_retry_at"] = _refusal_retry_at(step)
             evt["_watch_injection_attempts"] = refusals
             if refusals >= _MAX_COMPLETION_INJECTION_ATTEMPTS:
                 logger.warning(
@@ -771,7 +865,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     evt.get("type") or "?", evt.get("session_id", "unknown"), refusals,
                 )
                 return
-        evt["_watch_next_retry_at"] = _refusal_retry_at(step)
+        else:
+            evt["_watch_next_retry_at"] = _refusal_retry_at(step)
         completion_queue.put(evt)
 
     def _adapter_by_platform_value(self, platform_name: str):
@@ -945,20 +1040,29 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 try:
                     await admit_process_notice(self, authority, adapter, synth_event, evt)
                 except RuntimeStoreError as exc:
-                    raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
+                    raise WakeNotAccepted(str(exc), reason=exc.reason, conflict=exc.conflict) from exc
             else:
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
-            # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
+            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562), a final
+            # code, or the store's own closed proof that the payload offered at this exact immutable
+            # identity differs from the one stored there (``AdmissionConflict.IMMUTABLE_PAYLOAD`` —
+            # compared as the enum, never inferred from the reason text, elapsed time or ownership).
+            # An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
             from gateway.wake import PERMANENT_REFUSAL_REASONS
+            from hermes_state_runtime import AdmissionConflict
             pin_gone = await self._watch_pin_gone(evt, str(exc), log=not raise_not_accepted)
-            exc.permanent = pin_gone or exc.reason in PERMANENT_REFUSAL_REASONS
+            exc.permanent = (pin_gone or exc.reason in PERMANENT_REFUSAL_REASONS
+                             or exc.conflict is AdmissionConflict.IMMUTABLE_PAYLOAD)
             if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:
                 evt["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
+                if exc.permanent:
+                    # The candidate this refusal belongs to: the drain's shared budget is keyed on it,
+                    # so a corrected candidate never inherits this one's exhausted attempts.
+                    evt["_watch_refusal_candidate"] = _watch_candidate_digest(synth_text)
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.

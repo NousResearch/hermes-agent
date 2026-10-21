@@ -67,10 +67,13 @@ async def test_new_session_carries_picker_modes_provenance_and_commands(daemon, 
         loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
         assert loaded['result']['modes']['currentModeId'] == 'accept_edits', loaded
         assert _selectors(loaded['result'])['model']['currentValue'] == model
-        for method in ('session/resume', 'session/fork'):
+        # Forks deliberately start at Default; resumes keep the owner's existing policy.
+        for method, policy, mode in (('session/resume', 'workspace_session', 'accept_edits'),
+                                     ('session/fork', 'ask', 'default')):
             attached = await acp.rpc(method, sessionId=sid, cwd=str(tmp_path), mcpServers=[])
             assert _selectors(attached['result'])['model']['currentValue'] == model
-            assert _selectors(attached['result'])['edit_approval_policy']['currentValue'] == 'workspace_session'
+            assert _selectors(attached['result'])['edit_approval_policy']['currentValue'] == policy
+            assert attached['result']['modes']['currentModeId'] == mode
 
 
 @pytest.mark.platforms('linux')

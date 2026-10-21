@@ -1,0 +1,37 @@
+name: gameforge
+repo: https://github.com/DECRUX9812/hermes-plugin-gameforge
+sha: d88bdd1dd0fbc4c684dbe5361f330cf478b0a7e3
+version: "1.1.0"
+title: GameForge
+description: >-
+  Game development toolkit: sound effects, music loops with MIDI, NPC voices, pixel-art sprite
+  sheets and autotiling tilesets, low-poly and AI 3D models (.glb); 4 playable web genres
+  (topdown, platformer, arena, roguelike), Godot 4 and Unity builds; headless Blender and Unreal
+  pipelines; an automated playtester that plays each genre and reports crashes, stuck spots and
+  boring stretches; one-click PWA, itch.io, single-HTML and Capacitor export. Offline by default.
+  Disclosure — runs local Chrome/Chromium for playtests, and Godot, Unity, Blender,
+  UnrealEditor-Cmd, ffmpeg, xvfb-run or butler only when a call asks for them; blender
+  action=script runs a bpy file the caller names. Network only when asked: fal.ai or Meshy
+  (FAL_KEY / MESHY_API_KEY, prompt and image sent), ElevenLabs (ELEVENLABS_API_KEY, SFX prompt),
+  Edge TTS when edge-tts is installed (dialogue text), Godot export templates from GitHub
+  (~1 GB, target=godot_templates), itch.io via butler (target=itch with an explicit itch_target).
+  Writes only inside the game project directory, plus a temporary browser profile. No telemetry.
+maintainer: DECRUX9812
+tier: community
+category: tools
+docs_url: https://github.com/DECRUX9812/hermes-plugin-gameforge#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - forge_sfx
+    - forge_music
+    - forge_voice
+    - forge_sprite
+    - forge_tileset
+    - forge_model3d
+    - forge_engine
+    - forge_playtest
+    - forge_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

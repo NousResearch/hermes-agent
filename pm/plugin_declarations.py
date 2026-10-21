@@ -58,6 +58,8 @@ class PythonDeclaration:
     requirements: tuple[str, ...]
     manifest: dict
     requires_python: str | None = None
+    # The pyproject builds a package or declares extras: the environment needs it without requirements.
+    packaged: bool = False
 
     @property
     def external(self) -> bool:
@@ -69,7 +71,7 @@ class PythonDeclaration:
 
     @property
     def is_member(self) -> bool:
-        return not self.external and (self.pyproject is not None or bool(self.install_requirements))
+        return not self.external and (self.packaged or bool(self.install_requirements))
 
     def python_error(self, version: str) -> str | None:
         """Why this member cannot join a workspace built for *version*; uv intersects every
@@ -144,7 +146,9 @@ def read_python_declaration(plugin_dir: Path) -> PythonDeclaration:
             requires_python = document.get("project", {}).get("requires-python")
             if requires_python is not None and not isinstance(requires_python, str):
                 raise ValueError(f"invalid project.requires-python: {project}")
-            return PythonDeclaration(tuple(files), project, tuple(specs), manifest, requires_python)
+            packaged = ("build-system" in document or document.get("tool", {}).get("uv", {}).get("package") is True
+                        or bool(document.get("project", {}).get("optional-dependencies")))
+            return PythonDeclaration(tuple(files), project, tuple(specs), manifest, requires_python, packaged)
     specs = []
     for key in ("pip_dependencies", "python_dependencies"):
         values = manifest.get(key, [])

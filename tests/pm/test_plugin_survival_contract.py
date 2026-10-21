@@ -52,6 +52,17 @@ def _uv_available() -> bool:
     return shutil.which("uv") is not None
 
 
+def _member(plugin: Path, name: str, requires_python: str = ">=3.11") -> None:
+    """A workspace member whose one requirement, a project vendored in the plugin, resolves offline."""
+    (plugin / "member_lib").mkdir(parents=True)
+    (plugin / "member_lib" / "pyproject.toml").write_text(
+        f'[project]\nname="{name}-lib"\nversion="1"\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    (plugin / "pyproject.toml").write_text(
+        f'[project]\nname="{name}"\nversion="1"\nrequires-python="{requires_python}"\n'
+        f'dependencies=["{name}-lib"]\n[tool.uv]\npackage=false\n'
+        f'[tool.uv.sources]\n{name}-lib={{path="member_lib"}}\n', encoding="utf-8")
+
+
 # 1. Sidecar with no root dependency surface never joins the union
 
 def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkeypatch):
@@ -281,12 +292,7 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
     profile = home_a / "profiles" / "work"
     profile.mkdir(parents=True)
     _write_enabled(profile, ["profile-dep"])
-    member = profile / "plugins" / "profile-dep"
-    member.mkdir(parents=True)
-    (member / "pyproject.toml").write_text(
-        '[project]\nname="profile-dep"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
-    )
+    _member(profile / "plugins" / "profile-dep", "profile-dep")
     sync_venv(explicit=True)
     recorded = Facts(runtime_facts_path(core), strict=True).get("venv")
     selected = selected_venv(core)
@@ -295,12 +301,7 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
 
     bad = profile / "config.yaml"
     bad.write_text("plugins: [broken]\n", encoding="utf-8")
-    candidate = home_a / "plugins" / "new-dep"
-    candidate.mkdir(parents=True)
-    (candidate / "pyproject.toml").write_text(
-        '[project]\nname="new-dep"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
-    )
+    _member(home_a / "plugins" / "new-dep", "new-dep")
     _write_enabled(home_a, ["new-dep"])
     assert venv_is_current(project_root=core) is False
     assert str(bad) in caplog.text
@@ -345,12 +346,7 @@ def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
     tmp_path, home = admission_env
     core = tmp_path / "core"
     for name, requires in (("fits", ">=3.11"), ("too-old", f"<{sys.version_info[0]}.{sys.version_info[1]}")):
-        plugin = home / "plugins" / name
-        plugin.mkdir(parents=True)
-        (plugin / "pyproject.toml").write_text(
-            f'[project]\nname="{name}"\nversion="1"\nrequires-python="{requires}"\n'
-            'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
-        )
+        _member(home / "plugins" / name, name, requires)
     (home / "config.yaml").write_text("# operator note\nplugins:\n  enabled: [fits, too-old]\n", encoding="utf-8")
     profile = home / "profiles" / "work"
     _write_enabled(profile, [], provider="too-old")
@@ -402,12 +398,7 @@ def test_update_sync_survives_unreadable_secondary_profile(admission_env):
 
     tmp_path, home = admission_env
     core = tmp_path / "core"
-    member = home / "plugins" / "primary-dep"
-    member.mkdir(parents=True)
-    (member / "pyproject.toml").write_text(
-        '[project]\nname="primary-dep"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
-    )
+    _member(home / "plugins" / "primary-dep", "primary-dep")
     _write_enabled(home, ["primary-dep"])
     broken = home / "profiles" / "work" / "config.yaml"
     broken.parent.mkdir(parents=True)
@@ -441,12 +432,7 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
     # A tagless checkout (CI's) has no parseable version, which makes requires_hermes permissive.
     monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
     for name in ("fits", "needs-newer"):
-        plugin = home / "plugins" / name
-        plugin.mkdir(parents=True)
-        (plugin / "pyproject.toml").write_text(
-            f'[project]\nname="{name}"\nversion="1"\nrequires-python=">=3.11"\n'
-            'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
-        )
+        _member(home / "plugins" / name, name)
     manifest = home / "plugins" / "needs-newer" / "plugin.yaml"
     manifest.write_text("name: needs-newer\nrequires_hermes: '>=999'\n", encoding="utf-8")
     _write_enabled(home, ["fits", "needs-newer"])

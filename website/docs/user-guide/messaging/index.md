@@ -342,10 +342,39 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- `model`, `provider`, and `system_prompt` are optional. Unset fields fall back to the global defaults. A room can also opt into intentional silence with `allow_silence` (below).
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+
+## Per-Room Intentional Silence
+
+In multi-agent rooms, a model may choose to end its turn with an explicit silence marker such as
+`NO_REPLY` or `[SILENT]`. To let a successful marker-only turn stay silent even when Hermes was
+mentioned or directly addressed, enable `allow_silence` for that room in the serving profile's
+`config.yaml`:
+
+```yaml
+platforms:
+  matrix:
+    channel_overrides:
+      "!exampleTeamRoom:example.org":
+        allow_silence: true
+```
+
+The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
+when a human message needs a reply (or the adapter cannot tell). Internal notifications,
+scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
+even with `allow_silence: false`. This is a room override, not a profile-wide setting.
+It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
+matching entry wins, including an explicit `false`.
+
+Restart the gateway after editing configuration so all serving profiles use the updated settings.
+The override affects final delivery only: it does not undo tool actions, retract progress already
+sent, or instruct the model to choose silence. Empty, failed, partial, and interrupted results do
+not gain permission to disappear. Ordinary replies and conversation history stay unchanged.
+Crash recovery honors a suppression decision only after it was saved for that exact final reply;
+a crash before that point keeps the human-turn safeguard.
 
 ## Security
 

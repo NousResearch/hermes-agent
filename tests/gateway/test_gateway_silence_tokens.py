@@ -240,6 +240,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     assert followup["persist_user_display_metadata"]["reply_expected"] is True
     assert merged["queued_terminal_display_kind"] == "internal_notification"
     assert merged["queued_terminal_reply_expected"] is True
+    assert merged["queued_terminal_source"] is pending_event.source
 
     def _result(terminal_kind, terminal_reply_expected=None):
         return {

@@ -82,6 +82,13 @@ def _rotated_session(monkeypatch, db):
     return sid, key, session, agent, _rotate_to_compression_child(db, key, agent, reopen_parent=True)
 
 
+
+def test_first_tui_submit_uses_transport_session_key(monkeypatch):
+    session = {"source": "tui", "session_key": "pty-session", "agent": SimpleNamespace(session_id="sidecar-session")}
+    monkeypatch.setattr(server, "_submit_row_target_key", server._submit_row_target_key)
+    assert server._submit_row_target_key(session) == "pty-session"
+
+
 def test_submit_user_row_lands_where_the_turns_tool_rows_land(monkeypatch, tmp_path):
     """The reporter's exact shape: one typed message, a tool result and the final text — all one session."""
     db = SessionDB(db_path=tmp_path / "state.db")

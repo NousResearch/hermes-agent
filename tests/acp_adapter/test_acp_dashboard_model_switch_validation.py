@@ -133,7 +133,7 @@ def test_acp_set_config_option_model_rejected_while_turn_running(monkeypatch):
 def test_acp_switch_model_carries_the_live_agent_toolsets_into_the_rebuild(monkeypatch):
     """Regression for #42719: ACP-provided MCP servers live only on the running agent's toolsets
     (``_register_session_mcp_servers``); a rebuild that re-derived them from config.yaml dropped
-    every session MCP tool after ``session/set_model`` or ``/model``."""
+    every session MCP tool after a model config-option update or ``/model``."""
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **_kw: ModelSwitchResult(success=True, target_provider="anthropic", new_model="claude-sonnet-5"))

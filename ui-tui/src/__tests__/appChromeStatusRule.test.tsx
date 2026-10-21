@@ -6,6 +6,21 @@ import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
 
+// Resolve childless leaf components by name so prop-passed text is visible to the
+// walk; calling arbitrary components would throw for the hook-using siblings.
+const SESSION_ID_SEGMENT = 'SessionIdSegment'
+
+const resolveLeaf = (node: React.ReactElement): ReactNodeLike => {
+  const { children, ...props } = node.props as { children?: ReactNodeLike }
+  const name = typeof node.type === 'function' ? (node.type as { name?: string }).name : ''
+
+  if (children !== undefined || name !== SESSION_ID_SEGMENT) {
+    return null
+  }
+
+  return (node.type as (p: Record<string, unknown>) => ReactNodeLike)(props)
+}
+
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {
     return ''
@@ -20,7 +35,7 @@ const textContent = (node: ReactNodeLike): string => {
   }
 
   if (React.isValidElement(node)) {
-    return textContent(node.props.children)
+    return textContent(resolveLeaf(node)) + textContent(node.props.children)
   }
 
   return ''
@@ -504,5 +519,107 @@ describe('sessionIdVisible (status-bar session id segment)', () => {
 
   it('is hidden on a narrow terminal below the sessionId breakpoint', () => {
     expect(sessionIdVisible(enabled, durableSid, 110)).toBe(false)
+  })
+})
+
+describe('StatusRule session id segment (tail budget)', () => {
+  const durableSid = '20261005_111549_970fc8'
+  const enabled = new Set(['model', 'context_pct', 'session_id'])
+  // A terminal far past the 116-col breakpoint, so only the BUDGET decides.
+  const wide = 200
+
+  it('renders the full id, untruncated, when the tail budget allows it', () => {
+    const text = textContent(StatusRule({ ...baseProps, cols: wide, statusBarFields: enabled, storedSid: durableSid }))
+
+    // The trailing hex suffix is the discriminator between two same-second sessions.
+    expect(text).toContain(durableSid)
+  })
+
+  it('drops the segment whole instead of cutting the id when the bar is crowded', () => {
+    // A crowded tail leaves the id no budget; absent is honest, a truncated prefix is not.
+    const crowded = new Set([
+      'model',
+      'context_pct',
+      'session_id',
+      'duration',
+      'compressions',
+      'cache_hit',
+      'latency',
+      'tps',
+      'bg_tasks',
+      'voice'
+    ])
+
+    const text = textContent(
+      StatusRule({
+        ...baseProps,
+        bgCount: 3,
+        busy: false,
+        cols: 140,
+        cwdLabel: '~/repos-remote/hermes-agent-configd',
+        sessionStartedAt: Date.now() - 3_600_000,
+        statusBarFields: crowded,
+        storedSid: durableSid,
+        usage: {
+          ...baseProps.usage,
+          active_subagents: 2,
+          avg_latency_s: 2.4,
+          avg_tps: 88,
+          cache_hit_pct: 91,
+          compressions: 3,
+          context_percent: 62,
+          context_used: 124_000
+        },
+        voiceLabel: '🎙 streaming'
+      })
+    )
+
+    expect(text).not.toContain(durableSid)
+    expect(text).not.toContain('20261005_1115')
+  })
+
+  it('never renders a partial id on any width from 100 to 240', () => {
+    const crowded = new Set([
+      'model',
+      'context_pct',
+      'session_id',
+      'duration',
+      'compressions',
+      'cache_hit',
+      'latency',
+      'tps',
+      'bg_tasks',
+      'voice'
+    ])
+
+    for (const cols of [100, 110, 116, 117, 120, 130, 140, 150, 160, 200, 240]) {
+      const text = textContent(
+        StatusRule({
+          ...baseProps,
+          bgCount: 3,
+          cols,
+          cwdLabel: '~/repos-remote/hermes-agent-configd',
+          sessionStartedAt: Date.now() - 3_600_000,
+          statusBarFields: crowded,
+          storedSid: durableSid,
+          usage: {
+            ...baseProps.usage,
+            active_subagents: 2,
+            avg_latency_s: 2.4,
+            avg_tps: 88,
+            cache_hit_pct: 91,
+            compressions: 3,
+            context_percent: 62,
+            context_used: 124_000
+          },
+          voiceLabel: '🎙 streaming'
+        })
+      )
+
+      // Whole or nothing: any id-shaped content must be the COMPLETE id.
+      if (text.includes('20261005')) {
+        expect(text).toContain(durableSid)
+      }
+    }
   })
 })

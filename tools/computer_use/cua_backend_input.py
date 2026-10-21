@@ -3,12 +3,17 @@ value-setter methods (mixed into ``CuaDriverBackend``)."""
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_parse import _parse_key_combo
 
 _NO_TARGET_MSG = "No active window — call capture() first."
+_WINDOWS = sys.platform == "win32"
+_IL_BLOCKED_MSG = ("Target window's process sits at a higher integrity level (or is protected) — its token cannot "
+                   "be opened by this process, so synthetic input would be silently discarded by Windows UIPI. "
+                   "No input was sent; capture still works, but input cannot reach this window.")
 _BTF_UNSUPPORTED_MSG = "The connected cua-driver does not advertise the standalone bring_to_front tool."
 _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not accept delivery_mode, so foreground "
                                "delivery is unavailable. Use another verified rung without assuming the reported "
@@ -19,6 +24,57 @@ _Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
+
+
+def _token_denial_is_determinate(own_token_ok: Callable[[], bool], target_token_ok: Callable[[], bool]) -> bool:
+    """Refuse only on the one determinate combination: our own process token is readable while the target's is
+    not. Anything else (both readable — target is at or below our level; neither readable — the probe itself is
+    permission-blind) must fall back to today's send-and-verify semantics. NousResearch/hermes-agent#142661."""
+    return bool(own_token_ok()) and not bool(target_token_ok())
+
+
+def _win_input_blocked_by_integrity(pid: int) -> bool:
+    """True when *pid* is provably unreachable by synthetic input on Windows: our own token answers
+    ``TokenElevation`` while the target's token cannot even be opened (``ERROR_ACCESS_DENIED`` — UIPI blocks
+    token reads on higher-integrity/protected processes). Read-only probes; never raises. On any ctypes
+    failure or non-Windows host this returns False so callers keep today's ``unverifiable`` behavior instead
+    of refusing (the permission-blind fallback of NousResearch/hermes-agent#142661)."""
+    if not _WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        TOKEN_QUERY, TokenElevation = 0x0008, 20
+
+        def _token_readable(process: int) -> bool:
+            token = wintypes.HANDLE()
+            if not advapi32.OpenProcessToken(wintypes.HANDLE(process), TOKEN_QUERY, ctypes.byref(token)):
+                return False  # ACCESS_DENIED here is the higher-integrity signal
+            elevation, needed = wintypes.DWORD(), wintypes.DWORD()
+            ok = advapi32.GetTokenInformation(token, TokenElevation, ctypes.byref(elevation),
+                                              ctypes.sizeof(elevation), ctypes.byref(needed))
+            kernel32.CloseHandle(token)
+            return bool(ok)
+
+        def _own_ok() -> bool:
+            return _token_readable(kernel32.GetCurrentProcess())
+
+        def _target_ok() -> bool:
+            # PROCESS_QUERY_LIMITED_INFORMATION opens regardless of integrity; the token query is the gate.
+            proc = kernel32.OpenProcess(0x1000, False, pid)
+            if not proc:
+                return True  # process gone or otherwise unprobeable: not determinate, let the driver try
+            try:
+                return _token_readable(proc)
+            finally:
+                kernel32.CloseHandle(proc)
+
+        return _token_denial_is_determinate(_own_ok, _target_ok)
+    except Exception:
+        return False
 
 
 class _InputMixin:
@@ -61,11 +117,34 @@ class _InputMixin:
         args["delivery_mode"] = "foreground"
         return None
 
+    def _integrity_refusal(self, action: str) -> Optional[ActionResult]:
+        """Windows UIPI pre-check: before injecting into the sticky target, refuse determinately when the
+        target's process sits above this process on the integrity ladder — Windows silently discards the
+        synthetic input while the verdict reads as an unverifiable success, so the verify → escalate ladder
+        never terminates (NousResearch/hermes-agent#142661). Probe results are cached per pid; when the probe
+        is inconclusive we proceed and keep today's semantics."""
+        pid = self._active_pid
+        if pid is None or not _WINDOWS:
+            return None
+        cache = getattr(self, "_il_probe_cache", None)
+        if cache is None:
+            cache = self._il_probe_cache = {}
+        if pid not in cache:
+            cache[pid] = _win_input_blocked_by_integrity(pid)
+        if cache[pid]:
+            # No `escalation`: this rung has no next step, the ladder must stop here.
+            return _refuse(action, _IL_BLOCKED_MSG, code="input_blocked_il",
+                           effect="suspected_noop", verified=False)
+        return None
+
     def _run_input_action(self, action: str, args: dict[str, Any], delivery_mode: Optional[str],
                           bring_to_front: bool) -> ActionResult:
         """Apply one delivery rung, optionally focusing via its own tool. ``bring_to_front`` is never an
         input-action property: when requested, the separately approved standalone focus action runs first,
         then the original foreground input runs unchanged."""
+        refusal = self._integrity_refusal(action)
+        if refusal is not None:
+            return refusal
         refusal = self._apply_delivery(action, args, delivery_mode)
         if refusal is not None:
             return refusal

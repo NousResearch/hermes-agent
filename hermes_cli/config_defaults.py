@@ -2338,7 +2338,7 @@ DEFAULT_CONFIG = {
         "run": None,
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
-    # and transmission to Nous (`send`) are SEPARATE opt-ins; see
+    # and upload to Nous (`send`) are separate keys that every consent surface sets together; see
     # website/docs/developer-guide/relay-shared-metrics.md Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {

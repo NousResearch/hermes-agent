@@ -64,6 +64,7 @@ describe('approval mode statusbar item', () => {
     // 'smart' default for the whole session even though the configured mode
     // is 'off'.
     const requestGateway = vi.fn(async () => ({ value: 'off' }))
+
     const { rerender } = render(
       <Harness gatewayState="connecting" profile="boot" requestGateway={requestGateway} />
     )

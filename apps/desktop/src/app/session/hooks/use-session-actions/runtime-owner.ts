@@ -1,6 +1,8 @@
 // Runtime-info ownership for applyRuntimeInfo: the status-bar approval chip
 // is keyed by the ACTIVE profile's name, so only the active gateway's runtime
-// may reconcile it — the session.info event path applies the same rule.
+// may reconcile it. This mirrors the session.info event rule, except that a
+// missing connection id counts as `local` here (that rule keys on
+// registryBackendScopeKey, where the two differ); for the chip they are one gateway.
 // Another profile's `approvals.mode` written under the active name shows
 // "Manual" on a profile that auto-approves, or the reverse.
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'

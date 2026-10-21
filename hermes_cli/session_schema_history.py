@@ -207,6 +207,14 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('28 2026-09-25T23:25Z 2941aadffa', (('+', 'compression_overload_streak', 'compression_recovery_deadline'),)),
         ('29 2026-09-27T00:29Z d75f29934b', (('+', 'created_source', 'source'),)),
         ('30 2026-09-28T00:00Z #117713', (('+', 'auto_archived', 'archived'),)),
+        # Runtime-authority columns (unified gateway runtime, PR #106742): appended after main's
+        # 27-30 because they ship after them on main.
+        ('31 2026-09-08T18:45Z 0695b12b4c', (
+            ('+', 'runtime_revision', 'id'),
+            ('+', 'runtime_generation', 'runtime_revision'),
+        )),
+        # GW-18 (package 10, #140968): write-side revision a transcript-derived cache keys on.
+        ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
         ),
     ),
     "messages": _TableHistory(

@@ -73,6 +73,10 @@ class PromptSubmitResult(Result):
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None
+    # RT-37: the gateway's durable ledger held work for this session, so the prompt was admitted into
+    # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.
+    admission_id: str | None = None
+    forwarded: bool | None = None
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,

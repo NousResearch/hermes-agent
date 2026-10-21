@@ -1,7 +1,7 @@
 """Move a home onto the catalog plugin of a feature that left core.
 
-A feature (gateway platform, toolset) that moves from core into a standalone catalog plugin keeps its
-names, config keys and env vars, so migrating is only "install the plugin". Each row of
+A feature (gateway platform, toolset, bundled plugin) that moves from core into a standalone catalog
+plugin keeps its names, config keys and env vars, so migrating is only "install the plugin". Each row of
 :data:`LEFT_CORE` names the catalog plugin and a read-only predicate "does this home use it". The
 contract is the one memory providers established (``memory_provider_migration``, whose helpers this
 reuses; memory is not a row because its plugin name comes from ``memory.provider``, not a table):
@@ -18,8 +18,10 @@ reuses; memory is not a row because its plugin name comes from ``memory.provider
 
 Installs go through the normal catalog install path at the reviewed pin (kill list, dependency
 constraints, enable). Unattended dependency consent covers only these rows: the feature shipped in
-core, so its users already accepted its dependencies. Every outcome reaches the user (terminal,
-Desktop, chat); a gateway-start outcome waits for the home's first agent to deliver it.
+core, so its users already accepted its dependencies. Agent/gateway start always installs with it
+(nothing can answer a prompt there); ``hermes update`` in a terminal still asks. Every outcome
+reaches the user (terminal, Desktop, chat); a gateway-start outcome waits for the home's first agent
+to deliver it.
 """
 
 from __future__ import annotations
@@ -120,6 +122,31 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
+def _bundled_plugin_selected(home: Path, plugin: str) -> bool:
+    """*plugin*'s bundled copy was on for *home*: its key or name in ``plugins.enabled`` and neither in
+    ``plugins.disabled`` (which wins, as in the loader), read with the managed overlay applied like the
+    loader's config, so an administrator's pinned list counts."""
+    from gateway import config_loader
+    feature = next(f for f in LEFT_CORE if f.plugin == plugin)
+    try:
+        plugins = config_loader.read_yaml_layers(home).get("plugins")
+    except Exception:  # malformed config.yaml: the loader enables nothing from it either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        return False
+    plugins = plugins if isinstance(plugins, dict) else {}
+
+    def listed(key: str) -> bool:
+        names = plugins.get(key)
+        return isinstance(names, list) and any(str(n) in (feature.plugin_key, feature.plugin) for n in names)
+    return listed("enabled") and not listed("disabled")
+
+
+def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core trace to Langfuse for *home*: the bundled ``observability/langfuse`` selected
+    (:func:`_bundled_plugin_selected`). The plugin was opt-in, so keys in ``.env`` alone are not use."""
+    return _bundled_plugin_selected(home, "langfuse")
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -150,6 +177,10 @@ class LeftCoreFeature:
     # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
     # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
     cli: str = ""
+    # Key of the bundled plugin core shipped (``observability/langfuse``). It stays an alias of the
+    # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
+    # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
+    plugin_key: str = ""
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -166,17 +197,38 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                   "`hermes auth spotify` is now `hermes spotify login`",
         cli="spotify",
     ),
+    LeftCoreFeature(
+        plugin="langfuse", label="Langfuse", in_use=langfuse_in_use,
+        unchanged="your Langfuse keys and HERMES_LANGFUSE_* settings are unchanged; the plugin is now "
+                  "`langfuse` (was observability/langfuse)",
+        secret_env=("HERMES_LANGFUSE_SECRET_KEY",),
+        private_env=("HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_BASE_URL"),
+        plugin_key="observability/langfuse",
+    ),
 )
+
+def _install_sentence(feature: LeftCoreFeature) -> str:
+    from hermes_constants import get_hermes_home
+    return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "
+            f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`")
+
 
 def platform_install_hint(platform: str) -> str:
     """For an unknown platform name that left core: the sentence that names its install command for
     the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
-    from hermes_constants import get_hermes_home
     feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
-    if feature is None:
-        return ""
-    return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "
-            f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`")
+    return f". {_install_sentence(feature)}" if feature else ""
+
+
+def legacy_plugin_alias(name: str) -> str:
+    """The catalog plugin a bundled key that left core now names (``observability/langfuse`` ->
+    ``langfuse``), else ``""``."""
+    return next((f.plugin for f in LEFT_CORE if f.plugin_key and f.plugin_key == name), "")
+
+
+def legacy_plugin_keys(plugin: str) -> set[str]:
+    """Bundled keys that now name catalog *plugin* (inverse of :func:`legacy_plugin_alias`)."""
+    return {f.plugin_key for f in LEFT_CORE if f.plugin_key and f.plugin == plugin}
 
 
 def moved_command_hint(prog: str, value: str, action: str = "") -> str:
@@ -198,6 +250,14 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
     return f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
+
+
+def moved_plugin_hint(name: str) -> str:
+    """For a plugin name nothing resolves to (so the plugin is not installed): the bundled key of a
+    plugin that left core (``observability/langfuse``) or its catalog name, the line naming the install
+    command for the active home, else ``""``. Appended to "No plugin named ..." errors."""
+    feature = next((f for f in LEFT_CORE if f.plugin_key and name in (f.plugin_key, f.plugin)), None)
+    return f"{_install_sentence(feature)}." if feature else ""
 
 
 _attempted: set[str] = set()
@@ -319,14 +379,15 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     return out
 
 
-def _install_into(home: Path) -> Callable[[str], dict]:
+def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
-                                            assume_deps_consent=_unattended_consent())
+                                            assume_deps_consent=_unattended_consent() if consent is None
+                                            else consent)
         finally:
             reset_hermes_home_override(token)
     return _install
@@ -430,6 +491,11 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
     (an agent's startup-warning sink) outcomes are delivered now, together with any a gateway-start
     attempt queued for this home; without it they are logged and queued for the home's first agent.
     Returns installed plugin names."""
+    from agent.safe_worker_policy import worker_config_snapshot
+    if worker_config_snapshot() is not None:
+        # A frozen safe/ignore-user-config worker never reads the profile's config.yaml and never
+        # installs customizations; the owner process runs this migration for the home.
+        return []
     from hermes_constants import get_hermes_home, hermes_home_key
 
     home = Path(get_hermes_home())
@@ -468,8 +534,11 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
                        f"fetch it: run `{_install_command(feature.plugin, home)}`.")
             return []
         installed = []
+        # Agent init cannot answer a dependency prompt: under the CLI the chat input owns the terminal,
+        # so the question hangs at "Initializing agent...". Every row shipped in core, so its users
+        # already accepted its dependencies (as memory_provider_migration.recover_at_startup does).
         for feature in features:
-            if _install_one(home, feature, install=_install_into(home), say=report):
+            if _install_one(home, feature, install=_install_into(home, consent=True), say=report):
                 installed.append(feature.plugin)
                 if say is not None and feature.platform and _gateway_serves(home):
                     report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")

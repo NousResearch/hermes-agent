@@ -32,6 +32,7 @@ const LIT_CLASS = 'bg-(--chrome-action-hover) text-foreground'
 export function useApprovalModeStatusbarItem(
   profile: string,
   requestGateway: ApprovalModeRequester,
+  gatewayState: string,
   sessionYolo?: SessionYoloOptions
 ): StatusbarItem {
   const { t } = useI18n()
@@ -56,8 +57,18 @@ export function useApprovalModeStatusbarItem(
   )
 
   useEffect(() => {
+    // The shell (and this chip) mount before the gateway socket opens at
+    // boot, and a sync issued that early rejects with "Hermes gateway
+    // unavailable" — the swallow below then leaves the chip on its
+    // optimistic 'smart' default until some later session event reconciles
+    // it. Gate on the open socket and re-run when it opens (or a reconnect
+    // lands), the same way useStatusSnapshot does.
+    if (gatewayState !== 'open') {
+      return
+    }
+
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [profile, requestGateway])
+  }, [gatewayState, profile, requestGateway])
 
   // Global "off" already bypasses everything; the per-chat flag adds nothing
   // on top of it, so the trigger reads the mode and the row is inert.

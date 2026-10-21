@@ -1,0 +1,22 @@
+name: pidgeon
+repo: https://github.com/pidgeon-ai/pidgeon-python
+sha: aa0036d09fd9ed9baf665d115554d98a8ba85170
+subdir: hermes/pidgeon
+title: Pidgeon
+description: 'Email for Hermes through Pidgeon: mail to your agent''s own address starts a conversation,
+  one per email thread, and the agent''s answer goes back as a reply in that thread. The agent reads
+  Pidgeon Firewall''s clean text, mail flagged as prompt injection is held before it reaches the agent,
+  and the agent can only reply, never write to a new recipient. Standard library only.'
+maintainer: pidgeon-ai
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+docs_url: https://pidgeon.ai/docs/hermes
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - PIDGEON_API_KEY

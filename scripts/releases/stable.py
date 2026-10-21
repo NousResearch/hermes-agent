@@ -341,22 +341,12 @@ def _transition_row(target: str, left: dict, right: dict) -> dict:
     else:
         if left["teamId"] != right["teamId"]:
             raise ValueError("Update must preserve signing team")
-        newer = _mac_version_key(right) > _mac_version_key(left)
+        newer = tuple(map(int, right["version"].split("."))) > tuple(map(int, left["version"].split(".")))
     if not newer:
         raise ValueError("New package version must increase")
     return {"target": target.replace("/", "-"), "transition": {
         "schema": 1, "platform": right["platform"], "arch": right["arch"], "old": left, "new": right,
     }}
-
-
-def _mac_version_key(row: dict) -> tuple:
-    """Order macOS bundle versions. A canary (``X.Y.Z+canary.<stamp>``) shares its stable core with
-    every other canary of that stable, so the stamp in its tag breaks the tie."""
-    from hermes_cli.update_channel import canary_timestamp
-
-    version = row["version"]
-    core = tuple(map(int, version.split("+", 1)[0].split(".")))
-    return core, canary_timestamp(row.get("tag")) or ""
 
 
 def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[dict]:
@@ -801,16 +791,14 @@ def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
             "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
 
 
-def _published_baseline(env: dict, base: str, policy: str = "stable") -> dict | None:
-    """The previous package manifest of this policy's channel, or None when none shipped one.
+def _published_baseline(env: dict, base: str) -> dict | None:
+    """The previous stable package manifest, or None when no stable release shipped one.
 
-    A release that skipped bundles never writes the pointer, so its absence only means there is
-    no OLD package to upgrade from. A canary upgrades from the last published canary: the canary
-    app is its own package family, so a stable package is never its OLD.
+    A release that skipped bundles never writes the pointer, so its absence
+    only means there is no OLD package to upgrade from.
     """
-    channel = "canary" if policy == "canary" else "stable"
     try:
-        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/{channel}/release-candidates.json",
+        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
                                  expected_origin=base)
     except urllib.error.HTTPError as error:
         if error.code != 404:
@@ -819,9 +807,8 @@ def _published_baseline(env: dict, base: str, policy: str = "stable") -> dict | 
             raise ValueError("The supplied baseline-manifest does not exist") from error
         return None
     published = json.loads(output(["gh", "release", "view", previous["tag"], "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
-    if (published["tagName"] != previous["tag"] or published["isDraft"]
-            or published["isPrerelease"] is not (channel == "canary")):
-        raise ValueError(f"Upgrade baseline must be a published {channel} release")
+    if published["tagName"] != previous["tag"] or published["isDraft"] or published["isPrerelease"]:
+        raise ValueError("Upgrade baseline must be a published stable release")
     return previous
 
 
@@ -845,7 +832,7 @@ def transitions(env: dict) -> None:
     _tag, _commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
-    previous = _published_baseline(env, base, claim.get("policy", "stable"))
+    previous = _published_baseline(env, base)
     receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
     if previous is None or not baseline_covers(previous, receipt, base):

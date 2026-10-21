@@ -1,9 +1,9 @@
 """A canary is a Stable Release run on its own tag: every lane, canary destinations.
 
 canary-release.yml dispatches stable-release.yml with ``vX.Y.Z+canary.<stamp>``. These tests pin
-the parts of the stable controller that branch on that tag: admission (every lane, the tag stamp as
-the epoch, main only), candidate validation (canary package versions), the upgrade baseline (the
-previous canary), the Docker tag, and publication to the canary channels only.
+the parts of the stable controller that branch on that tag: admission (every lane but the
+signed-package upgrade arms, the tag stamp as the epoch, main only), candidate validation (canary
+package versions), the Docker tag, and publication to the canary channels only.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from scripts.releases import stable
 
 BASE = "https://releases.example"
 CANARY = "v1.2.3+canary.20261021T064100Z"
-EARLIER = "v1.2.3+canary.20261020T064100Z"
 COMMIT = "a" * 40
 TAG_OBJECT = "b" * 40
 CONTROLLER_ENV = {
@@ -165,39 +164,6 @@ def test_canary_candidates_carry_the_canary_package_versions():
     stable.require_release_identity(CANARY, COMMIT)
     with pytest.raises(ValueError, match="stable payload"):
         stable.require_stable_identity(CANARY, COMMIT)
-
-
-def test_a_canary_upgrades_from_the_previous_canary_and_never_backwards():
-    old, new = canary_candidates(EARLIER, digest="1" * 64), canary_candidates()
-    for row in old["packages"]:
-        row["commit"] = "9" * 40
-    old["commit"] = "9" * 40
-    rows = stable.plan_transitions(old, new, BASE)
-    assert {row["target"] for row in rows} == {"windows-x64", "windows-arm64", "macos-arm64"}
-    # Both canaries share the 1.2.3 core: the macOS order comes from the tag stamps.
-    mac = next(row for row in rows if row["target"] == "macos-arm64")["transition"]
-    assert (mac["old"]["version"], mac["new"]["version"]) == (EARLIER[1:], CANARY[1:])
-    with pytest.raises(ValueError, match="must increase"):
-        stable.plan_transitions(new, old, BASE)
-
-
-def test_the_canary_upgrade_baseline_is_the_last_published_canary(monkeypatch):
-    previous = canary_candidates(EARLIER)
-    read = []
-    monkeypatch.setattr(stable, "read_manifest", lambda url, **_kw: read.append(url) or previous)
-    release = {"tagName": EARLIER, "isDraft": False, "isPrerelease": True}
-    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
-    env = {"GITHUB_REPOSITORY": "o/r"}
-    assert stable._published_baseline(env, BASE, "canary") is previous
-    assert read == [f"{BASE}/releases/canary/release-candidates.json"]
-    # A stable release is never a canary's OLD, and a canary is never stable's.
-    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps({**release, "isPrerelease": False}))
-    with pytest.raises(ValueError, match="published canary"):
-        stable._published_baseline(env, BASE, "canary")
-    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
-    with pytest.raises(ValueError, match="published stable"):
-        stable._published_baseline(env, BASE, "stable")
-    assert read[-1] == f"{BASE}/releases/stable/release-candidates.json"
 
 
 def test_the_canary_gate_expects_its_own_publication_job():

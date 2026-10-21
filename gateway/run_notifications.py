@@ -388,6 +388,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
+        # Chats that were warned the gateway was going down owe a "we're back" notice too, not
+        # just an in-chat /restart requester. `systemctl restart`, an update or a reboot writes
+        # that marker instead (see mark_shutdown_notified) and used to leave those chats silent.
+        await self._send_return_notice_to_shutdown_chats()
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -542,6 +546,62 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 atomic_json_write(path, data, indent=None)
             except Exception:
                 logger.warning("Planned-restart notification remains pending", exc_info=True)
+
+    async def _send_return_notice_to_shutdown_chats(self) -> None:
+        """Tell chats that were warned of a shutdown that the gateway is back.
+
+        ``_notify_active_sessions_of_shutdown`` pings active chats as the process goes down, but
+        nothing ever told them it came back: only an in-chat ``/restart`` requester (via
+        ``.restart_notify.json``) or a configured home channel got that message. A restart from
+        outside the process — ``systemctl restart``, an update, a reboot — left those chats
+        waiting to ask "are you back?". The shutdown path now records who it warned; this owns
+        the second half. Best-effort and bounded: a stale marker is dropped, not retried forever.
+        """
+        from gateway.delivery import resolve_delivery_transport
+        from gateway.run import _hermes_home, _non_conversational_metadata
+        from gateway.run_shutdown import read_shutdown_notice_marker, clear_shutdown_notice_marker
+
+        targets = read_shutdown_notice_marker(_hermes_home)
+        if not targets:
+            return
+        delivered: set[tuple[str, str, Optional[str]]] = set()
+        for entry in targets:
+            platform_str, chat_id = entry.get("platform"), entry.get("chat_id")
+            thread_id = entry.get("thread_id")
+            profile = entry.get("profile")
+            if not platform_str or not chat_id:
+                continue
+            try:
+                platform = Platform(platform_str)
+            except ValueError:
+                continue
+            try:
+                adapters = self._adapters_for_profile(profile) if profile else self.adapters
+                platform_cfg = self.config.platforms.get(platform)
+                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                    continue
+                transport = resolve_delivery_transport(platform, self.config, adapters)
+                if transport is None:
+                    continue
+                metadata = (
+                    self._thread_metadata_for_target(platform, str(chat_id), thread_id, adapter=transport.adapter)
+                    if thread_id else None
+                )
+                result = await transport.send(
+                    platform, str(chat_id), t("gateway.startup.restarted"),
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+                if _send_failed(result):
+                    logger.debug(
+                        "Return notice to %s:%s not delivered: %s", platform_str, chat_id, _send_error(result)
+                    )
+                    continue
+                delivered.add((platform_str, str(chat_id), str(thread_id) if thread_id else None))
+            except Exception as e:
+                logger.debug("Return notice to %s:%s failed: %s", platform_str, chat_id, e)
+        if delivered:
+            logger.info("Sent %d return notice(s) to chats warned of the shutdown", len(delivered))
+        clear_shutdown_notice_marker(_hermes_home)
 
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None

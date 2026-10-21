@@ -149,6 +149,43 @@ def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
 
 
+def _shutdown_notice_marker(home: Path) -> Path:
+    """Path of the record of chats warned that the gateway is going down.
+
+    Written by ``_notify_active_sessions_of_shutdown`` and consumed at the next startup by
+    ``_send_return_notice_to_shutdown_chats`` so those chats learn it came back. Only an in-chat
+    ``/restart`` (``.restart_notify.json``) or a home channel used to get that second message.
+    """
+    return home / ".shutdown_notify.json"
+
+
+def mark_shutdown_notified(home: Path, entries: list[dict]) -> None:
+    """Persist the chats that received the shutdown notice (atomic, best-effort)."""
+    if not entries:
+        return
+    from utils import atomic_json_write
+    with suppress(Exception):
+        atomic_json_write(_shutdown_notice_marker(home), {"targets": entries})
+
+
+def read_shutdown_notice_marker(home: Path) -> list[dict]:
+    """Targets recorded by the last shutdown, or [] when absent/unreadable."""
+    path = _shutdown_notice_marker(home)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    targets = data.get("targets")
+    return [t for t in targets if isinstance(t, dict)] if isinstance(targets, list) else []
+
+
+def clear_shutdown_notice_marker(home: Path) -> None:
+    with suppress(Exception):
+        _shutdown_notice_marker(home).unlink(missing_ok=True)
+
+
 def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
     """Dedupe key for one DELIVERED chat: profile-independent, except Telegram private chats.
 
@@ -1128,6 +1165,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
             async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
                 await present_notification(_send_home, platform=platform)
+
+        # Remember who was told the gateway is going down so the next startup can tell them it is
+        # back (``_send_return_notice_to_shutdown_chats``). An in-chat /restart already owns its own
+        # marker, so it records nothing here — its requester gets the notice from that path.
+        if notified and restart_source is None:
+            from gateway.run import _hermes_home as _home_path
+            mark_shutdown_notified(_home_path, [
+                {"platform": target[0], "chat_id": target[1], "thread_id": target[2]}
+                for target in notified
+            ])
 
     # Agent finalization / resource cleanup
     @staticmethod

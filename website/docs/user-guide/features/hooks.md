@@ -1383,7 +1383,7 @@ def register(ctx):
 
 Fires for supported platform-native events only **after** the gateway's normal, profile-scoped authorization check succeeds. The callback receives plain dictionaries; raw SDK objects, adapter handles, bot clients, and callback contexts are never part of this stable contract.
 
-Telegram message reactions were the first supported event; message edits, deletes, and thread lifecycle events followed:
+Telegram message reactions were the first supported event. Message edits followed on Telegram and Discord; Discord also emits message deletes and thread created/renamed events:
 
 ```python
 def on_platform_event(platform, event_type, payload, **kwargs):

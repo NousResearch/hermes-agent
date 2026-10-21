@@ -1,5 +1,14 @@
 import type { TranslationOverrides } from './define-locale'
 
+const ruNum = (count: number | string) => (typeof count === 'string' ? Number(count) || 0 : count)
+
+const RU_NOUN = (count: number | string, one: string, few: string, many: string) => {
+  const c = ruNum(count)
+  const n = Math.abs(c) % 10
+  const nn = Math.abs(c) % 100
+  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
+}
+
 // The desktop surface's copy, composed by ru.ts.
 export const ruDesktop = {
   desktop: {

@@ -24,7 +24,7 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 | xiaomi | API key | `XIAOMI_API_KEY` |
 | huggingface | Token | `HF_TOKEN` |
 | fireworks / novita / nvidia / deepinfra / gmi / arcee / stepfun / upstage / kilocode / ai-gateway / opencode-zen / opencode-go / ollama-cloud | API key | `<NAME>_API_KEY` |
-| bedrock / vertex / azure-foundry | Cloud SDK / key | AWS SDK creds / Vertex ADC / `AZURE_FOUNDRY_API_KEY` |
+| bedrock / vertex / azure-foundry | Cloud SDK / key | AWS SDK creds / Vertex credentials file (service-account JSON **or** gcloud `authorized_user` ADC) / `AZURE_FOUNDRY_API_KEY` |
 | custom | Config | `model.base_url` + `model.api_key` in config.yaml |
 
 GitHub Copilot (`copilot`, `copilot-acp`) is a labs plugin, not core: `hermes plugins install github-copilot`, then `hermes auth add copilot` (https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot).

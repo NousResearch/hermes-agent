@@ -88,6 +88,53 @@ export function matchesInboundWhatsAppGroup({
   return groupPolicy === 'open';
 }
 
+/**
+ * True when ``identifier`` names one of the account's OWN identities, so a
+ * "Message yourself" self-chat bound to it must be accepted (self-chat mode).
+ *
+ *   * ``accountId`` / ``accountLid`` are the current ``sock.user`` identity.
+ *   * ``selfIdentifiers`` are the identities the account's own operator
+ *     declares: self-chat mode seeds ``WHATSAPP_ALLOWED_USERS`` with the paired
+ *     number, and an operator who changed numbers can keep the previous one
+ *     there. Each declared identity is expanded through its own
+ *     ``lid-mapping-*.json`` pair, which only adds that identity's other form.
+ *     ``*`` means "allow everyone" and never means "this is me".
+ *
+ * The session's mapping files are deliberately NOT searched for the incoming
+ * identifier on their own: they map every known CONTACT, so treating their LIDs
+ * as "self" would let a stranger's DM through the self-chat guard and reopen
+ * the pairing-code reply (#8389).
+ */
+export function isSelfChatIdentity(identifier, {
+  accountId,
+  accountLid,
+  selfIdentifiers,
+  sessionDir,
+} = {}) {
+  const normalized = normalizeWhatsAppIdentifier(identifier);
+  if (!normalized) {
+    return false;
+  }
+
+  for (const own of [accountId, accountLid]) {
+    const normalizedOwn = normalizeWhatsAppIdentifier(own);
+    if (normalizedOwn && normalizedOwn === normalized) {
+      return true;
+    }
+  }
+
+  for (const declared of selfIdentifiers || []) {
+    if (!declared || declared === '*') {
+      continue;
+    }
+    if (expandWhatsAppIdentifiers(declared, sessionDir).has(normalized)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   // Empty allowlist = NO ONE allowed (secure default, #8389).  Operators
   // who want an open bot must set ``WHATSAPP_ALLOWED_USERS=*`` explicitly.

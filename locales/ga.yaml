@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (an chéad seal eile amháin — filleann sé tar éis freagra amháin)"
     switch_cancelled: "🟡 Athrú samhla cealaithe. Samhail reatha gan athrú ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Cúltaca téacs: freagair `{prefix}approve` chun athrú nó `{prefix}cancel` chun an tsamhail reatha a choinneáil._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Gníomhairí & Tascanna Gníomhacha**"
     active_agents: "**Gníomhairí gníomhacha:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
+    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug` chun an achoimre a uaslódáil."
   deny:
     stale: "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
     no_pending: "Níl aon ordú ag fanacht le diúltú."
@@ -443,6 +446,9 @@ gateway:
     state_no: "Níl"
     queued: "**Tascanna i scuaine:** {count}"
     platforms: "**Ardáin Cheangailte:** {platforms}"
+  discard:
+    nothing: "Níl aon rud le caitheamh amach: níl aon seal caillte ag an gcomhrá seo i n-atosú."
+    done: "🗑️ Caitheadh amach {count} seal caillte; níor ritheadh arís iad. Freagrófar do theachtaireachtaí sábháilte anois."
   stop:
     stopped_pending: "⚡ Stoptha. Ní raibh an gníomhaire tosaithe fós — is féidir leat leanúint leis an seisiún seo."
     stopped: "⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo."
@@ -685,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Chuaigh rud éigin amú agus níorbh fhéidir liom an freagra seo a chríochnú.{hint}\nÚsáid /retry le triail eile a bhaint as, nó /new chun comhrá úr a thosú. Tá na sonraí teicniúla i log an gateway (`hermes logs`)."
     history_unavailable: "⚠️ Níl stair an tseisiúin seo ar fáil go sealadach, mar sin níor próiseáladh an teachtaireacht seo. Iarr ar an oibreoir state.db a scrúdú, ansin seol arís í nuair a bheidh sé folláin. Ná húsáid /reset ach amháin más mian leat comhrá nua a thosú d'aon ghnó."
     no_credentials: "⚠️ Níorbh fhéidir liom ceangal le seirbhís na samhla AI, mar sin níor próiseáladh an teachtaireacht seo. Úsáid /login chun síniú isteach arís, nó /model chun samhail eile a roghnú. Má leanann sé ag teip, rith `hermes doctor` ar an óstach."
+    cron_session_read_only: "⚠️ Baineann an comhrá seo le jab sceidealaithe agus ní ritheann sé ach an jab sin, mar sin níor ritheadh do theachtaireacht. Tosaigh comhrá nua chun í a sheoladh."
   skills:
     disabled: "Tá an scil **{name}** suiteáilte ach díchumasaithe.\nCumasaigh í le: `hermes skills config`"
     not_installed: "Tá an scil **{name}** ar fáil ach níl sí suiteáilte.\nSuiteáil í le: `hermes skills install {install_name}`"
@@ -1528,6 +1535,8 @@ slash:
     description: "Iompórtáil cartlann próifíle roinnte mar phróifíl nua"
   stop:
     description: "Maraigh gach próiseas cúlra atá ag rith"
+  discard:
+    description: "Caith amach seal a cailleadh nuair a atosaíodh Hermes ionas go ritheann scuaine an chomhrá seo arís"
   pause:
     description: "Cuir obair nua ar sos go domhanda (stop éigeandála); atosaíonn '/pause off' í"
   deny:
@@ -1681,6 +1690,21 @@ slash:
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
+  modern:
+    thought_for: "Smaoinigh ar feadh {seconds}s"
+    thought: "Smaoinigh"
+    working: "Ag obair…"
+    preparing: "{what} á ullmhú…"
+    hint_steer: "stiúir"
+    hint_queue: "cuir sa scuaine"
+    hint_interrupt: "cuir isteach air"
+    hint_stop: "stop"
+    hint_commands: "orduithe"
+    hint_files: "comhaid"
+    hint_shell: "blaosc"
+    placeholder_busy_steer: "clóscríobh chun an seal seo a stiúradh · cuireann Tab sa scuaine é"
+    placeholder_busy_interrupt: "clóscríobh chun an seal seo a atreorú · cuireann Tab sa scuaine é"
+    placeholder_busy_queue: "clóscríobh chun teachtaireacht a chur sa scuaine don tréimhse ina dhiaidh"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Níorbh fhéidir an bhilleáil a lódáil"
@@ -1966,6 +1990,7 @@ cli:
     desc_switch_anyway: "Úsáid an tsamhail seo don seisiún Hermes reatha."
     choice_cancel: "Cealaigh"
     desc_keep_current_model: "Coinnigh an tsamhail reatha."
+    confirm_choice_prompt: "Rogha [1/2]: "
     switch_cancelled: "Athrú samhla cealaithe."
     selection_failed: "✗ Theip ar roghnú samhla: {error}"
     switch_failed: "⚠ Theip ar athrú samhla go {model} ({error}); ag fanacht ar {old_model}."
@@ -2223,6 +2248,7 @@ cli:
     queue_heading: "Scuaine · {count} i scuaine · /queue list{controls}"
     more_queued: "+{count} eile"
     transcript_unavailable: "Níl an traschríbhinn bheo ar fáil fós."
+    control_pending: "Á sheoladh…"
     steer_prompt: "Stiúir: "
     roster_empty: "Níl aon fho-ghníomhairí beo ná próisis chúlra ann. Tagann na torthaí isteach sa chomhrá."
     entry_gone: "Níl an iontráil seo beo a thuilleadh."
@@ -2361,6 +2387,14 @@ cli:
     move_out_of_range: "Bogadh scuaine as raon. Méid reatha: {size}"
     moved: "Bogadh mír scuaine {source} go {destination}."
     usage_add: "Úsáid: /queue add <prompt>"
+    gateway_refused: "Níor chuir an geata sa scuaine é: {error}. Níor cuireadh aon rud sa scuaine; seol arís é nuair a chríochnaíonn an seal."
+    submit_unknown: "Níor fhreagair an geata ({error}), mar sin seans go bhfuil an leid sa scuaine cheana. Seiceáil /queue list sula seolann tú arís í."
+    move_gateway_fifo: "Ritheann an geata leideanna sa scuaine san ord inar seoladh iad; cuir ceann in eagar nó bain é ina ionad."
+    remove_refused: "Níorbh fhéidir mír {index} a bhaint den scuaine: {error}"
+    edit_refused: "Níorbh fhéidir mír {index} den scuaine a chur in eagar: {error}"
+    already_started: "Tá mír {index} den scuaine tosaithe cheana; ritheann sí mar a seoladh í."
+    started_stopped: "Bhí mír {index} den scuaine tosaithe cheana; stop an geata í."
+    change_unknown: "Níor fhreagair an geata faoi mhír {index} den scuaine ({error}); seiceáil /queue list sula ndéanann tú iarracht arís."
   reload:
     env_reloaded: "Athlódáladh .env ({count} athróg nuashonraithe)"
   steer:
@@ -3001,6 +3035,10 @@ cli:
       usage_disconnect: "disconnect   Fill ar inneall brabhsálaí réamhshocraithe"
       usage_status: "status       Taispeáin mód reatha an bhrabhsálaí"
       usage_use: "use [off]    Athraigh go mód Browser Use (CLI 3.0) / ar ais go huirlisí ionsuite"
+      remote_gateway: "Bainistíonn /browser connect agus /browser disconnect brabhsálaí Chromium ar óstach an gheata — ar fáil ach amháin le geata áitiúil."
+      checking: "Ag seiceáil dífhabhtú cianda an bhrabhsálaí Chromium ag {url}..."
+      new_sessions_only: "Baineann sé le seisiúin nua — coinníonn an ceann seo a uirlisí reatha (/new chun ceann a thosú)."
+      status_gateway_default: "🌐 Brabhsálaí: inneall réamhshocraithe brabhsálaí an gheata (gan nasc beo CDP)"
     heartbeat:
       label: "Buillí croí"
       paused: "⏸ Buille croí curtha ar sos: {prompt}"
@@ -3109,6 +3147,10 @@ cli:
     loaded: "(lódáilte)"
     not_found: "(gan aimsiú)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Gan socrú!"
     value_not_set: "gan socrú"
     section_model: "Samhail"
@@ -3290,8 +3332,22 @@ cli:
     next_session_deepens: "Déanann an chéad seisiún `hermes -w` eile an clón a dhoimhniú agus bearrann sé worktrees cumaiscthe go huathoibríoch."
     unpushed_keeping: "⚠ Tá tiomantais gan bhrú sa worktree, á choinneáil: {path}"
     uncommitted_keeping: "⚠ Tá athruithe gan tiomantas sa worktree, á choinneáil: {path}"
+    kept_reason: "⚠ Worktree á choinneáil ({reason}): {path}"
     clean_up_manually: "Chun glanadh de láimh: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree glanta: {path}"
+    exit_question_dirty: "Tá athruithe gan tiomantas sa worktree seo: {path}"
+    exit_question_unpushed: "Tá tiomantais gan bhrú sa worktree seo: {path}"
+    exit_choice_keep: "Coinnigh an worktree (réamhshocrú)"
+    exit_choice_archive: "Cartlannaigh agus bain é (is féidir é a athchóiriú)"
+    exit_choice_discard: "Bain é agus caith na hathruithe uait"
+    archiving: "{path} á chartlannú … (féadfaidh sé seo tamall a thógáil do chrann mór)"
+    archived: "✓ Worktree cartlannaithe go {ref} agus bainte: {path}"
+    restore_hint: "Athchóirigh é le: hermes worktree restore {name}"
+    archive_failed: "✗ Níorbh fhéidir {path} a chartlannú, á choinneáil: {error}"
+    archived_kept: "✓ Worktree cartlannaithe go {ref} ach coinnithe ({reason}): {path}"
+    sweep_archived_removed: "cartlannaithe + bainte → {ref}"
+    sweep_archived_kept: "cartlannaithe, coinnithe ({reason}) → {ref}"
+    discarded: "Worktree bainte agus a athruithe caite uait: {path}"
 display:
   verb:
     web_search: "ag cuardach an ghréasáin"
@@ -3720,7 +3776,7 @@ tips:
   t241: "Taisceann an gateway ásca AIAgent in aghaidh an tseisiúin — má scriostar an taisce seo, briseann sé taisceadh leideanna Anthropic."
   t242: "Is féidir le suíomh gréasáin ar bith scileanna a nochtadh trí /.well-known/skills/index.json — aimsíonn mol na scileanna iad go huathoibríoch."
   t243: "Rianaíonn loga iniúchta na scileanna ag ~/.hermes/skills/.hub/audit.log gach oibríocht suiteála agus baint."
-  t244: "Glantar worktrees git seanchaite go huathoibríoch ag am tosaithe: bearrtar crainn ghlana atá cumaiscthe go hiomlán; caomhnaítear obair shalach nó neamhbhrúite i gcónaí."
+  t244: "Glantar worktrees git seanchaite go huathoibríoch: baintear crainn ghlana chumaiscthe; déantar crainn dhíomhaoine a bhfuil athruithe gan tiomantas nó gan bhrú iontu a chartlannú ar dtús, agus is féidir iad a athchóiriú le hermes worktree restore."
   t245: "Scópálann próifílí staid Hermes trí HERMES_HOME; coinníonn fophróisis uirlisí an óstaigh do HOME fírinneach mura bhfuil terminal.home_mode socraithe go profile."
   t246: "Socraíonn athróg timpeallachta HERMES_HOME_MODE (ochtnártha, m.sh. 0701) ceadanna eolaire saincheaptha le haghaidh trasnaithe freastalaí gréasáin."
   t247: "Mód coimeádáin: cuir .container-mode in HERMES_HOME agus déanann CLI an óstaigh uath-exec isteach sa choimeádán."

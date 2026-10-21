@@ -134,6 +134,8 @@ jobs:
         run: |
           node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/e2e-assets/windows-bundled-processes.test.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Start recording
         uses: ./.github/actions/e2e-screen-record
         with:

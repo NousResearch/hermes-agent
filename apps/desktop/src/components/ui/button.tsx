@@ -25,6 +25,9 @@ const buttonVariants = cva(
         // Soft-fill action (the default "non-primary button" look).
         secondary:
           'bg-(--ui-bg-quaternary) text-(--ui-text-primary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+        // Clickable tag/filter chip — the soft fill plus a hairline inset ring on
+        // hover (shadow, not border, so nothing reflows).
+        chip: 'bg-(--ui-bg-quaternary) text-(--ui-text-primary) hover:bg-(--chrome-action-hover) hover:shadow-[inset_0_0_0_0.5px_var(--ui-stroke-secondary)]',
         ghost: 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
         grip: 'bg-transparent text-(--ui-text-tertiary) transition-colors hover:text-(--ui-text-secondary) focus-visible:text-(--ui-text-primary)',
         // A control floating free of any surface (fan-menu discs, detached

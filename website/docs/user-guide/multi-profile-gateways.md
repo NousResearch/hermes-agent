@@ -737,6 +737,15 @@ one-credential-one-poller rule still applies: a
 hot-added profile that reuses another profile's token is parked with a
 `duplicate_credential` error, never started as a second poller.
 
+Hot-serving also grows the multiplexer's **profile reservation**: the new
+profile's `gateway.lock` is taken and its own session authority is built, so
+`hermes -p <name>` finds the multiplexer as its owner (no stray per-profile
+daemon) and the next `hermes gateway restart` reserves the whole set cleanly.
+A profile whose `state.db` cannot be opened is **parked** — logged as
+`Profile '<name>' not served`, left out of `served_profiles` — and every other
+profile keeps booting; fix the store and re-run `hermes profile create` or wait
+for the periodic rescan.
+
 ### Routing shared-bot chats to profiles (`profile_routes`)
 
 Multiplexing selects a profile per **credential** (each profile's own bot
@@ -1181,6 +1190,15 @@ wins over the profile's own file. It governs the **automatic** path only:
 `hermes gateway migrate --multiplex` is an explicit request and still migrates
 (and is the supported way to opt back in). Absent or `true` keeps the default
 behaviour described above.
+
+The same setting covers a gateway that booted with only the default profile.
+Normally, once you create a second profile (Desktop's New Agent or
+`hermes profile create`), that gateway starts serving every profile in place,
+with no restart. With `auto_multiplex_migration: false` it keeps serving only
+its own profile, and the new profile is refused with that reason until you run
+`hermes gateway migrate --multiplex` or set the key back to `true`. The key is
+re-read on every profile rescan, so setting it back takes effect within about
+30 seconds, with no restart.
 
 The explicit command is different: `hermes gateway migrate --multiplex` with
 two or more profiles and **no** standalone secondary gateway still applies the

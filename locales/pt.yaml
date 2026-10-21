@@ -3899,7 +3899,7 @@ tips:
   t364: "HERMES_BUNDLED_SKILLS aponta para uma árvore personalizada de skills embutidas — usado pelos pacotes do Homebrew e do Nix."
   t365: "HERMES_DUMP_REQUEST_STDOUT=1 despeja o payload de cada solicitação à API no stdout em vez de em arquivos de log."
   t366: "HERMES_OAUTH_TRACE=1 registra, com dados ocultados, as trocas e renovações de token OAuth para depurar a autenticação de fornecedores."
-  t367: "HERMES_STREAM_RETRIES (padrão 3) controla as tentativas de reconexão no meio do stream em erros de rede transitórios."
+  t367: "HERMES_STREAM_RETRIES (padrão 2) controla as tentativas de reconexão no meio do stream em erros de rede transitórios."
   t368: "HERMES_GATEWAY_BUSY_ACK_ENABLED=false silencia as mensagens de confirmação ⚡/⏳/⏩ quando um usuário escreve para um agente ocupado."
   t369: "HERMES_AGENT_NOTIFY_INTERVAL (padrão 180s) define com que frequência o gateway envia atualizações de progresso em turnos longos."
   t370: "HERMES_RESTART_DRAIN_TIMEOUT (padrão 900s) limita quanto tempo /restart espera pelas execuções em andamento antes de forçar."

@@ -3899,7 +3899,7 @@ tips:
   t364: "Díríonn HERMES_BUNDLED_SKILLS ar chrann saincheaptha de scileanna cuachta — úsáidtear é ag pacáistiú Homebrew agus Nix."
   t365: "Dumpálann HERMES_DUMP_REQUEST_STDOUT=1 pálasta gach iarratais API chuig stdout in ionad comhaid logála."
   t366: "Logálann HERMES_OAUTH_TRACE=1 malartuithe tokens OAuth agus iarrachtaí athnuachana folaithe le haghaidh dífhabhtú fíordheimhnithe soláthraí."
-  t367: "Rialaíonn HERMES_STREAM_RETRIES (réamhshocrú 3) iarrachtaí athcheangail i lár srutha ar earráidí líonra neamhbhuana."
+  t367: "Rialaíonn HERMES_STREAM_RETRIES (réamhshocrú 2) iarrachtaí athcheangail i lár srutha ar earráidí líonra neamhbhuana."
   t368: "Ciúnaíonn HERMES_GATEWAY_BUSY_ACK_ENABLED=false na teachtaireachtaí admhála ⚡/⏳/⏩ nuair a sheolann úsáideoir teachtaireacht chuig gníomhaire gnóthach."
   t369: "Socraíonn HERMES_AGENT_NOTIFY_INTERVAL (réamhshocrú 180s) cé chomh minic a chuireann an gateway scairt ort le dul chun cinn ar shealanna fada."
   t370: "Cuireann HERMES_RESTART_DRAIN_TIMEOUT (réamhshocrú 900s) uasteorainn ar an bhfad a fhanann /restart le rití ar siúl roimh fhorchur."

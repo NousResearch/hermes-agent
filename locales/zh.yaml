@@ -3899,7 +3899,7 @@ tips:
   t364: "HERMES_BUNDLED_SKILLS 指向自定义的内置技能目录树——Homebrew 和 Nix 打包会用到。"
   t365: "HERMES_DUMP_REQUEST_STDOUT=1 把每个 API 请求负载输出到 stdout，而不是日志文件。"
   t366: "HERMES_OAUTH_TRACE=1 记录脱敏后的 OAuth 令牌交换和刷新尝试，用于排查提供方认证问题。"
-  t367: "HERMES_STREAM_RETRIES（默认 3）控制遇到瞬时网络错误时流式传输中途的重连次数。"
+  t367: "HERMES_STREAM_RETRIES（默认 2）控制遇到瞬时网络错误时流式传输中途的重连次数。"
   t368: "HERMES_GATEWAY_BUSY_ACK_ENABLED=false 关闭用户向忙碌代理发消息时的 ⚡/⏳/⏩ 确认提示。"
   t369: "HERMES_AGENT_NOTIFY_INTERVAL（默认 180s）设置长回合中网关推送进度的频率。"
   t370: "HERMES_RESTART_DRAIN_TIMEOUT（默认 900s）限制 /restart 在强制执行前等待进行中运行的最长时间。"

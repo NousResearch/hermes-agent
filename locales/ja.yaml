@@ -3899,7 +3899,7 @@ tips:
   t364: "HERMES_BUNDLED_SKILLS はカスタムの同梱スキルツリーを指します。Homebrew と Nix のパッケージングで使われます。"
   t365: "HERMES_DUMP_REQUEST_STDOUT=1 は、すべての API リクエストのペイロードをログファイルではなく stdout に出力します。"
   t366: "HERMES_OAUTH_TRACE=1 は、プロバイダー認証のデバッグ用にマスク済みの OAuth トークン交換と更新の試行を記録します。"
-  t367: "HERMES_STREAM_RETRIES（デフォルト 3）は、一時的なネットワークエラー時のストリーム途中での再接続回数を制御します。"
+  t367: "HERMES_STREAM_RETRIES（デフォルト 2）は、一時的なネットワークエラー時のストリーム途中での再接続回数を制御します。"
   t368: "HERMES_GATEWAY_BUSY_ACK_ENABLED=false は、作業中のエージェントにユーザーがメッセージを送った際の ⚡/⏳/⏩ の応答メッセージを抑制します。"
   t369: "HERMES_AGENT_NOTIFY_INTERVAL（デフォルト 180s）は、長いターンでゲートウェイが進捗を通知する間隔を設定します。"
   t370: "HERMES_RESTART_DRAIN_TIMEOUT（デフォルト 900s）は、/restart が強制実行に移る前に進行中の処理を待つ時間の上限です。"

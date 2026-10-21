@@ -3899,7 +3899,7 @@ tips:
   t364: "HERMES_BUNDLED_SKILLS는 사용자 지정 번들 스킬 트리를 가리켜요 — Homebrew와 Nix 패키징에서 사용해요."
   t365: "HERMES_DUMP_REQUEST_STDOUT=1은 모든 API 요청 페이로드를 로그 파일 대신 stdout으로 출력해요."
   t366: "HERMES_OAUTH_TRACE=1은 제공자 인증 디버깅을 위해 마스킹된 OAuth 토큰 교환과 갱신 시도를 기록해요."
-  t367: "HERMES_STREAM_RETRIES(기본값 3)는 일시적인 네트워크 오류 시 스트림 중간 재연결 시도 횟수를 정해요."
+  t367: "HERMES_STREAM_RETRIES(기본값 2)는 일시적인 네트워크 오류 시 스트림 중간 재연결 시도 횟수를 정해요."
   t368: "HERMES_GATEWAY_BUSY_ACK_ENABLED=false는 바쁜 에이전트에 사용자가 메시지를 보낼 때 나오는 ⚡/⏳/⏩ 확인 메시지를 꺼요."
   t369: "HERMES_AGENT_NOTIFY_INTERVAL(기본값 180s)은 긴 턴에서 게이트웨이가 진행 상황을 얼마나 자주 알릴지 정해요."
   t370: "HERMES_RESTART_DRAIN_TIMEOUT(기본값 900s)은 /restart가 강제 종료 전에 진행 중인 실행을 기다리는 최대 시간을 정해요."

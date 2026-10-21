@@ -3899,7 +3899,7 @@ tips:
   t364: "HERMES_BUNDLED_SKILLS wys na 'n eie saamgebundelde vaardigheidsboom — gebruik deur Homebrew- en Nix-verpakking."
   t365: "HERMES_DUMP_REQUEST_STDOUT=1 stort elke API-versoek se inhoud na stdout in plaas van loglêers."
   t366: "HERMES_OAUTH_TRACE=1 log geredigeerde OAuth-token-uitruilings en -hernuwingspogings vir die ontfouting van verskaffer-verifikasie."
-  t367: "HERMES_STREAM_RETRIES (verstek 3) beheer herverbindingspogings middel in 'n stroom by verbygaande netwerkfoute."
+  t367: "HERMES_STREAM_RETRIES (verstek 2) beheer herverbindingspogings middel in 'n stroom by verbygaande netwerkfoute."
   t368: "HERMES_GATEWAY_BUSY_ACK_ENABLED=false onderdruk die ⚡/⏳/⏩-bevestigingsboodskappe wanneer 'n gebruiker 'n besige agent boodskap."
   t369: "HERMES_AGENT_NOTIFY_INTERVAL (verstek 180s) stel hoe gereeld die gateway vordering op lang beurte pieng."
   t370: "HERMES_RESTART_DRAIN_TIMEOUT (verstek 900s) beperk hoe lank /restart vir lopende lopies wag voordat dit forseer."

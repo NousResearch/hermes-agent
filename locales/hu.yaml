@@ -3916,7 +3916,7 @@ tips:
   t364: "A HERMES_BUNDLED_SKILLS egyéni beépített skill-fára mutat — a Homebrew- és Nix-csomagolás használja."
   t365: "A HERMES_DUMP_REQUEST_STDOUT=1 minden API-kérés tartalmát a stdout-ra írja naplófájlok helyett."
   t366: "A HERMES_OAUTH_TRACE=1 kitakarva naplózza az OAuth-tokencseréket és frissítési kísérleteket a szolgáltatói hitelesítés hibakereséséhez."
-  t367: "A HERMES_STREAM_RETRIES (alapértelmezés: 3) szabályozza az újracsatlakozási kísérleteket átmeneti hálózati hibáknál stream közben."
+  t367: "A HERMES_STREAM_RETRIES (alapértelmezés: 2) szabályozza az újracsatlakozási kísérleteket átmeneti hálózati hibáknál stream közben."
   t368: "A HERMES_GATEWAY_BUSY_ACK_ENABLED=false elnémítja a ⚡/⏳/⏩ nyugtázó üzeneteket, amikor valaki egy elfoglalt ügynöknek ír."
   t369: "A HERMES_AGENT_NOTIFY_INTERVAL (alapértelmezés: 180s) megadja, milyen gyakran küld az átjáró állapotjelentést hosszú köröknél."
   t370: "A HERMES_RESTART_DRAIN_TIMEOUT (alapértelmezés: 900s) korlátozza, meddig vár a /restart a folyamatban lévő futásokra, mielőtt kényszerít."

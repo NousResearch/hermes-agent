@@ -925,9 +925,19 @@ class WebhookAdapter(BasePlatformAdapter):
         return _TEMPLATE_KEY_RE.sub(_resolve, template)
 
     def _render_delivery_extra(self, extra: dict, payload: dict) -> dict:
-        """Render delivery_extra template values with payload data."""
-        return {key: self._render_prompt(value, payload, "", "") if isinstance(value, str) else value
-                for key, value in extra.items()}
+        """Render delivery config; exact placeholders preserve structured payload values."""
+        def render(value: Any) -> Any:
+            if not isinstance(value, str):
+                return value
+            if match := _TEMPLATE_KEY_RE.fullmatch(value):
+                resolved: Any = payload
+                for part in match.group(1).split("."):
+                    resolved = resolved.get(part) if isinstance(resolved, dict) else None
+                if isinstance(resolved, (dict, list)):
+                    return resolved
+            return self._render_prompt(value, payload, "", "")
+
+        return {key: render(value) for key, value in extra.items()}
 
     # --- Response delivery ---
 
@@ -1024,7 +1034,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            metadata = {"thread_id": thread_id} if thread_id else {}
+            if target_platform == Platform.SLACK and "slack_blocks" in extra:
+                metadata["blocks"] = extra["slack_blocks"]
+            result = await adapter.send(chat_id, content, metadata=metadata or None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
             return result

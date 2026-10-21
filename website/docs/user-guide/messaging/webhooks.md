@@ -411,6 +411,32 @@ platforms:
 
 Your Supabase edge function signs the payload with HMAC-SHA256 and POSTs to `https://your-server:8644/webhooks/antenna-matches`. The webhook adapter validates the signature, renders the template from the payload, delivers to Telegram, and returns `200 OK`.
 
+### Example: Slack Block Kit notification
+
+To deliver a prebuilt Slack card, explicitly configure `deliver_extra.slack_blocks` on the route:
+
+```yaml
+slack-alert:
+  secret: "slack-alert-secret"
+  deliver: "slack"
+  deliver_only: true
+  prompt: "{text}"
+  deliver_extra:
+    chat_id: "C0123456789"
+    thread_id: "{thread_ts}"
+    slack_blocks: "{blocks}"
+```
+
+Send a JSON payload with `text`, `thread_ts`, and a `blocks` array of Slack Block Kit objects.
+The `prompt` supplies the notification and accessibility fallback text. An exact placeholder
+such as `"{blocks}"` preserves an array or object in `deliver_extra` without JSON serialization
+or prompt truncation; scalar and embedded templates retain normal text rendering. A literal
+YAML block list also works. Payload blocks are ignored unless the route explicitly maps them.
+
+Cards apply to single-message deliveries. Missing or malformed block lists use normal message
+rendering; messages split into multiple chunks use text. If Slack rejects the blocks, delivery
+retries once with the same text and thread, without blocks. Other errors retain normal handling.
+
 ### Example: Dynamic subscription via CLI
 
 ```bash

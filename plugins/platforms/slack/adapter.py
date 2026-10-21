@@ -55,11 +55,11 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
-    from .block_kit import render_blocks, sanitize_blocks
+    from .block_kit import is_block_payload_rejection, render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
 except ImportError:  # pragma: no cover - plugin loaded outside package context
-    from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from block_kit import is_block_payload_rejection, render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
 
@@ -2214,7 +2214,7 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             return await getattr(client_fn(), method)(**kwargs)
         except Exception as e:
-            if kwargs.get("blocks") and self._is_block_payload_rejection(e):
+            if kwargs.get("blocks") and is_block_payload_rejection(e):
                 retry_kwargs = dict(kwargs)
                 if verb == "edit":
                     retry_kwargs["blocks"] = []
@@ -2254,7 +2254,8 @@ class SlackAdapter(BasePlatformAdapter):
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            last_result = await self._post_chunks(
+                chat_id, team_id, content, formatted, thread_ts, blocks=(metadata or {}).get("blocks"))
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
@@ -2282,7 +2283,8 @@ class SlackAdapter(BasePlatformAdapter):
                 retry_after=self._retry_after_from_exc(e) if _retryable else None)
 
     async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
+        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str],
+        blocks: Optional[list[dict[str, Any]]] = None,
     ) -> Any:
         """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
         Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
@@ -2290,7 +2292,12 @@ class SlackAdapter(BasePlatformAdapter):
         ``reply_broadcast`` only the first chunk is also posted to the main channel."""
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         broadcast = self.config.extra.get("reply_broadcast", False)
-        blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+        if len(chunks) != 1:
+            blocks = None
+        elif not (isinstance(blocks, list) and blocks and all(
+                isinstance(block, dict) and isinstance(block.get("type"), str) and block["type"]
+                for block in blocks)):
+            blocks = self._maybe_blocks(content)
         last_result = None
         for i, chunk in enumerate(chunks):
             kwargs = {
@@ -3083,20 +3090,6 @@ class SlackAdapter(BasePlatformAdapter):
         return self._is_retryable_error(body)
 
     # ----- Markdown → mrkdwn conversion -----
-
-    @staticmethod
-    def _is_block_payload_rejection(error: BaseException) -> bool:
-        """Errors recoverable by retrying without ``blocks`` (an enhancement over ``text``, so a
-        rejected/oversized payload must not drop the whole response)."""
-        recoverable_codes = {"invalid_blocks", "msg_too_long", "too_many_blocks"}
-        response_get = getattr(getattr(error, "response", None), "get", None)
-        if callable(response_get):
-            try:
-                if response_get("error") in recoverable_codes:
-                    return True
-            except Exception:
-                pass
-        return any(code in str(error) for code in recoverable_codes)
 
     def _extra_flag(self, key: str, default: bool = False) -> bool:
         """Boolean ``config.extra[key]`` (str forms accepted); ``default`` when unset."""

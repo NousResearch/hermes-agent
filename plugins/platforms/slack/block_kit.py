@@ -28,6 +28,7 @@ adapter state — so it is trivially unit-testable.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -530,6 +531,20 @@ def _clamp_text_obj(text_obj: dict[str, Any], limit: int) -> dict[str, Any]:
     clamped = dict(text_obj)
     clamped["text"] = txt[: limit - 1].rstrip() + "…"
     return clamped
+
+
+def is_block_payload_rejection(error: BaseException) -> bool:
+    """Errors recoverable by retrying without ``blocks`` (an enhancement over ``text``, so a
+    rejected/oversized payload must not drop the whole response)."""
+    recoverable_codes = {"invalid_blocks", "msg_too_long", "too_many_blocks"}
+    response_get = getattr(getattr(error, "response", None), "get", None)
+    if callable(response_get):
+        try:
+            if response_get("error") in recoverable_codes:
+                return True
+        except Exception:
+            logging.getLogger(__name__).debug("Could not inspect Slack block rejection response", exc_info=True)
+    return any(code in str(error) for code in recoverable_codes)
 
 
 def sanitize_blocks(blocks: Optional[list[Block]]) -> Optional[list[Block]]:

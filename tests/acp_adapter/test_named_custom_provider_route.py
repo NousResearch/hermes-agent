@@ -101,6 +101,10 @@ def test_restore_of_a_legacy_bare_kind_row_fails_closed(monkeypatch, tmp_path):
 
     _patch_resolution(monkeypatch, error=AuthError(
         "provider 'custom' resolved without credentials", provider="custom", code="missing_api_key"))
+    # The recorded endpoint belongs to no configured custom provider, so the recovery
+    # lookup finds nothing and the bare kind stays unresolvable.
+    monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
+                        lambda _base_url: None)
     db = SessionDB(tmp_path / "state.db")
     db.create_session(session_id="legacy", source="acp", model="some-model",
                       model_config={"cwd": str(tmp_path), "provider": "custom",
@@ -109,6 +113,37 @@ def test_restore_of_a_legacy_bare_kind_row_fails_closed(monkeypatch, tmp_path):
     db.append_message("legacy", "user", "turn 1 on endpoint A")
     manager = SessionManager(db=db, agent_factory=None)
     assert manager._restore("legacy") is None  # resume refuses rather than mispair key/endpoint
+    db.close()
+
+
+def test_restore_recovers_a_bare_kind_row_from_its_recorded_endpoint(monkeypatch, tmp_path):
+    """A row persisted by the old code carries the bare kind plus the endpoint it actually
+    used (#142714): the recorded base_url maps back to the configured identity, so the
+    session restores onto that endpoint instead of refusing to resume — and the next
+    persist stores the recovered name, ending the downgrade-retry loop."""
+    _patch_resolution(monkeypatch)
+    monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
+                        lambda _base_url: "custom:gw")
+    requested: list[str] = []
+
+    def _resolve(**kwargs):
+        requested.append(str(kwargs.get("requested")))
+        return {"provider": "custom", "api_mode": "chat", "base_url": "http://a/v1",
+                "api_key": "k", "credential_pool": None, "command": None, "args": []}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(session_id="recoverable", source="acp", model="some-model",
+                      model_config={"cwd": str(tmp_path), "provider": "custom",
+                                    "base_url": "http://a/v1", "api_mode": "chat"},
+                      cwd=str(tmp_path))
+    db.append_message("recoverable", "user", "turn 1 on endpoint A")
+    manager = SessionManager(db=db, agent_factory=None)
+    state = manager._restore("recoverable")
+    assert state is not None
+    assert requested == ["custom:gw"]  # resolved by the recovered identity, not the bare kind
+    assert state.agent.provider_route == "custom:gw"  # the next persist stores it named
     db.close()
 
 

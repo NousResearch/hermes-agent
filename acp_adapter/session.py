@@ -541,9 +541,21 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        # A persisted row can carry a named custom endpoint downgraded to the bare kind
+        # (`custom`) plus its base_url (#142714): bare custom resolves credentialless, so
+        # map the recorded endpoint back to the configured identity it came from first —
+        # those rows then restore onto the endpoint they used instead of failing closed.
+        requested = requested_provider or config_provider
+        if requested == "custom" and base_url:
+            from hermes_cli.runtime_provider_custom import find_custom_provider_identity
+            try:
+                requested = find_custom_provider_identity(base_url) or requested
+            except Exception:
+                logger.debug("ACP session could not map its recorded base_url back to a "
+                             "named custom provider", exc_info=True)
         try:
             runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+                requested=requested, target_model=(model or default_model) or None)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
@@ -592,8 +604,9 @@ class SessionManager:
         agent._print_fn = _acp_stderr_print
         # The named route the agent actually resolved (``custom:<name>``), which AIAgent keeps
         # only as the bare kind (``custom``): _persist stores it so a resume re-resolves the
-        # same named entry instead of a credentialless bare kind (#139908).
-        route = (requested_provider or config_provider or "").strip()
+        # same named entry instead of a credentialless bare kind (#139908). A recovered
+        # identity (#142714) is the route too, so the next persist stores it back named.
+        route = str(requested or config_provider or "").strip()
         if route:
             agent.provider_route = route
         return agent

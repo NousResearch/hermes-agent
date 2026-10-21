@@ -100,6 +100,41 @@ Methods: `approval` → `{choice}`; `clarify` → `{answers}` keyed by question 
 
 When the gateway withdraws a question (timeout, interrupt, answered from another surface) it emits `request.cancel` `{ id, method, reason }`; clear only the matching prompt. `session.resume` / `session.activate` results and `session.events.since` carry `open_requests` — the still-open frames — so a reconnecting client re-renders (and can still answer) them.
 
+### Handheld device capabilities
+
+A phone (or any client with hardware behind it) advertises what it can serve in the same `client.capabilities` call, and the agent can then ask for one of them:
+
+```
+→ {"jsonrpc":"2.0","id":1,"method":"client.capabilities",
+   "params":{"server_requests":true,"device_capabilities":["camera","location"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"server_requests":[…],"declines_not_shown":true,
+                                   "device_requests":["device.request"]}}
+
+← {"jsonrpc":"2.0","id":"srq-12","method":"device.request",
+   "params":{"session_id":"…","capability":"camera","options":{}}}
+→ {"jsonrpc":"2.0","id":"srq-12","result":{"denied":false,"value":"",
+   "captures":[{"mime_type":"image/jpeg","data":"<base64>","label":"rear camera"}]}}
+```
+
+The closed vocabulary is `camera`, `microphone`, `location`, `screen_capture`, `notifications`, `photo_library`, `files`; `options` is capability-specific and open. Answer with `denied: true` when the user refuses (`reason` is shown to the model), or a JSON-RPC error for a capability you advertised but cannot serve right now.
+
+The `device.request` answer, field by field:
+
+| field | type | required | meaning |
+|---|---|---|---|
+| `denied` | boolean | no (default `false`) | The user refused. `reason` is relayed to the model and the tool reports a refusal, not a transport failure. |
+| `reason` | string | no | Why the user or the client refused. Ignored when `denied` is absent/false. |
+| `value` | string | no (default `""`) | The small text answer of a non-binary capability — a location fix, a notification list, a picked file's metadata. Truncated at 4000 characters with a note naming what was cut. Never put a binary body here. |
+| `captures` | array | **no** (default `[]`) | The binary bodies this capability produced. Each entry is `{mime_type, data, label?}`: `mime_type` one of `image/jpeg`, `image/png`, `image/webp`, `audio/wav`, `audio/mpeg`, `audio/webm` (anything else is refused rather than guessed at), `data` the base64 body, `label` an optional client-side name (`"rear camera"`) kept on the handle. |
+
+`captures` is additive and optional: a client that answers `camera` with only `value` — or a capability with no binary part at all, like `location` — is a valid answer, and a client built before this field existed keeps working unchanged (a payload without `captures` is read as `[]`, and the tool result simply carries no handles). The array is where binaries belong because a capture is megabytes and anything that reaches a tool result is re-sent on every later request of the conversation.
+
+Three rules make this safe and cheap, and the backend enforces all three:
+
+- **Binary bodies go in `captures`, never in `value`.** `value` is small text (a location fix, a notification list) and is truncated past 4000 characters. Each capture is decoded, size-capped (`device.max_capture_bytes`, 8 MiB) and written to `<hermes home>/cache/device/`; the agent's tool result carries a handle — `path`, `mime_type`, bytes — not the image, because a tool result is re-sent on every later request of the conversation. A 300 KB frame is ~99 tokens as a handle instead of ~102 000 as base64. `vision_analyze` reads the path like any other screenshot.
+- **Nothing is asked silently.** `device_request` runs the shared approval gate first (`ask` by default per capability; `device.approval.<capability>: allow|deny` in `config.yaml`), so a prompt/card is shown, a grant is once/session/always like a terminal pattern, and an unattended context (cron, no human) fails closed. On a phone the card arrives as the ordinary `approval` server request (`{request_id, command: "device_request: camera", pattern_key: "device:camera", choices: ["once","session","always","deny"]}`) and is answered with `approval.respond {session_id, request_id, choice}` — a client that advertised the capability in `device_capabilities` is answerable for that one card even if it never sent `server_requests: true`, because serving `device.request` already means it handles server→client requests. `ask` is the default; a timeout or a closed client is a deny, never an approval.
+- **Only a session with a phone is offered the tool.** `device_request` lives in the `mobile_device` toolset, folded into a session only while a client on it advertised at least one capability — a desktop window, the TUI and the CLI never see it, and no request is ever written to a client that advertised nothing (it fails immediately instead of waiting out the deadline; a client seen within `device.client_seen_seconds`, default 120, may still answer after a reconnect).
+
 ### Rebuilding the in-flight turn on reconnect
 
 `session.resume` / `session.activate` results carry `inflight` — the turn still running (or the retained failed one) that history does not hold yet: `user`, `assistant` streamed so far, `streaming`, mid-turn `corrections`, and error fields. When the turn was started by the gateway rather than typed by a person (a background-process completion, an async delegation result, a hidden scaffolding prompt) `inflight` also carries the same `display_kind` / `display_metadata` the persisted `messages` row will get, so a client renders the live prompt exactly as it will render history after the turn lands — a `process_complete` timeline marker with `display_metadata.display_text`, nothing at all for `hidden`. Both fields are absent for genuine user input; never infer origin from the prompt text (a user quoting a marker string is still a user).

@@ -2264,6 +2264,7 @@ def init_agent(
     read_preview_callback: Callable[..., Any] | None = None, drive_preview_callback: Callable[..., Any] | None = None,
     read_window_below_callback: Callable[..., Any] | None = None, connection_callback: Callable[..., Any] | None = None,
     tour_callback: Callable[..., Any] | None = None, theme_callback: Callable[..., Any] | None = None,
+    device_callback: Callable[..., Any] | None = None,
     setup_beat_callback: Callable[..., Any] | None = None,
     step_callback: Callable[..., Any] | None = None,
     stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,

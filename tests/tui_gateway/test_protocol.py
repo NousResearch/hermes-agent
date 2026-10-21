@@ -41,7 +41,7 @@ def server():
     import tui_gateway.transport
     import hermes_constants  # real get_process_hermes_home: a mocked one put state.db under the cwd (repo)
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
+        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value=Path("/tmp/hermes_test")),
                                       get_process_hermes_home=hermes_constants.get_process_hermes_home),
         "hermes_cli.env_loader": MagicMock(),
         "hermes_cli.banner": MagicMock(),
@@ -2134,3 +2134,488 @@ def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
     assert "error" not in second, second.get("error")
     assert second["result"]["session_id"] == first_sid
     assert len(server._sessions) == 1
+
+
+# ── device capabilities (#11911) ───────────────────────────────────────────────────────────────
+
+
+def _advertise(server, peer, *, server_requests=False, device_capabilities=None):
+    """Send one ``client.capabilities`` frame from *peer* and return the result (mirrors the desktop)."""
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    token = bind_transport(peer)
+    try:
+        return server.handle_request({"id": 1, "method": "client.capabilities",
+                                      "params": {"server_requests": server_requests,
+                                                 "device_capabilities": device_capabilities}})
+    finally:
+        reset_transport(token)
+
+
+def _wait_for_frame(peer, req_id, timeout=5.0):
+    """The request frame reaches *peer* — ``send`` registers the request before writing it, so the
+    write lands a moment after ``_wait_open`` returns."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(frame.get("id") == req_id for frame in peer.frames):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"request {req_id} was never written to the client")
+
+
+def test_client_capabilities_answers_the_device_request_set(server):
+    """``device_requests`` tells a handheld client which device-shaped requests to expect, the same way
+    ``server_requests`` lists the rest — a client that never reads it would answer them blind."""
+    peer = _silent_ws()
+    response = _advertise(server, peer, server_requests=True, device_capabilities=["camera", "location"])
+    assert "device.request" in response["result"]["device_requests"]
+    assert response["result"]["server_requests"]  # the pre-existing half is untouched
+
+
+def test_device_request_is_written_to_a_client_that_advertised_it(server):
+    """A phone that advertised ``camera`` gets the ``device.request`` frame, and its answer resolves it."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-phone", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("r", server_requests.send(
+            "device.request", "ws-phone", {"capability": "camera"}, timeout=5)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert req.params["capability"] == "camera"
+    _wait_for_frame(peer, req.id)
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "{\"kind\":\"jpeg\"}", "denied": False}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "{\"kind\":\"jpeg\"}", "denied": False}
+
+
+def test_device_request_fails_fast_for_a_client_that_advertised_nothing(server):
+    """A desktop window never offers a camera: the request is refused without writing a frame, so the
+    agent is not stalled for the deadline by a capability that will never arrive.
+
+    The client advertises ``server_requests`` first — otherwise the pre-existing answerability gate
+    refuses it and this test would pass without the device gate existing at all."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-desktop", peer)
+    _advertise(server, peer, server_requests=True)
+    t0 = time.monotonic()
+    assert server_requests.send("device.request", "ws-desktop", {"capability": "camera"}, timeout=5) is None
+    assert time.monotonic() - t0 < 1
+    assert peer.frames == []
+    assert server_requests.open_requests("ws-desktop") == []
+
+
+def test_only_device_requests_are_gated(server):
+    """The gate is scoped to ``device.*``: a client that advertised nothing still receives ``sudo``, and
+    a ``device.request`` for a capability it never offered is refused while the rest of the wire is not."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-mixed", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["location"])
+
+    # A capability the client never advertised: refused without a frame.
+    assert server_requests.send("device.request", "ws-mixed", {"capability": "camera"}, timeout=5) is None
+    assert peer.frames == []
+
+    # A non-device request is unaffected by the device gate: the frame goes out and waits for its answer.
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-mixed", {}, timeout=5)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert req.method == "sudo"
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "pw"}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "pw"}
+
+
+def test_device_capabilities_reports_the_session_union(server):
+    """``device.capabilities`` is the agent's discovery call: the union of what the session's clients
+    advertised, empty for a session whose client is a desktop window."""
+    phone = _silent_ws()
+    desktop = _silent_ws()
+    _ws_session(server, "s-phone", phone)
+    _ws_session(server, "s-desktop", desktop)
+    _advertise(server, phone, server_requests=True, device_capabilities=["camera", "location"])
+    _advertise(server, desktop, server_requests=True)
+
+    got = server.handle_request({"id": 2, "method": "device.capabilities",
+                                 "params": {"session_id": "s-phone"}})
+    assert got["result"]["capabilities"] == ["camera", "location"]
+
+    got = server.handle_request({"id": 3, "method": "device.capabilities",
+                                 "params": {"session_id": "s-desktop"}})
+    assert got["result"]["capabilities"] == []
+
+
+def test_device_advertisement_is_forgotten_on_disconnect(server):
+    """A phone that disconnects stops offering its camera: the next request for one is refused again."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "s-gone", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+    server.unregister_live_transport(peer)
+    assert server_requests.device_capabilities(peer) == frozenset()
+    assert server_requests.send("device.request", "s-gone", {"capability": "camera"}, timeout=5) is None
+
+
+def test_device_request_bridge_reports_a_client_that_cannot_answer(server):
+    """The tool-side bridge turns "no client advertised that capability" into a structured refusal, so
+    the model is told why instead of reading an empty answer as success."""
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-desktop", peer)
+    assert _device_request("s-desktop", "camera") == {
+        "success": False, "value": "", "denied": False, "captures": [],
+        "reason": "no attached client advertised that device capability"}
+
+
+def test_device_request_bridge_returns_the_capability_answer(server):
+    """A phone that advertised ``camera`` answers ``device.request``; the bridge hands the JSON text
+    back with ``success`` set, so a tool result carries the capture rather than a bare string."""
+    from tui_gateway import server_requests
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-phone", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", _device_request("s-phone", "camera")),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert req.method == "device.request"
+    assert req.params == {"capability": "camera"}
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "{\"kind\":\"jpeg\"}", "denied": False}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"success": True, "value": '{"kind":"jpeg"}', "denied": False, "reason": None,
+                        "captures": []}
+
+
+def test_device_request_bridge_distinguishes_a_user_refusal(server):
+    """``denied`` is the user's own answer, not a transport failure — the tool reports it as such."""
+    from tui_gateway import server_requests
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-declined", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", _device_request("s-declined", "camera")),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "", "denied": True,
+                                       "reason": "the user declined the request"}}) is None
+    thread.join(timeout=5)
+    assert box["r"]["success"] is False
+    assert box["r"]["denied"] is True
+    assert box["r"]["reason"] == "the user declined the request"
+
+
+def test_device_request_tool_is_registered():
+    """The model is offered ``device_request`` with the closed capability vocabulary — the agent's only
+    route to a phone capability is this tool, so it must be registered, not merely importable."""
+    from tools.registry import discover_builtin_tools, registry
+
+    # Discovery is what the agent actually runs, so prove the module is found — not merely importable.
+    assert "tools.device_tool" in discover_builtin_tools()
+    entry = registry.get_entry("device_request")
+    assert entry is not None, "device_request tool is not registered"
+    assert entry.schema["properties"]["capability"]["enum"] == [
+        "camera", "microphone", "location", "screen_capture", "notifications", "photo_library", "files"]
+
+
+def test_device_request_is_refused_at_once_for_a_session_with_no_client(server):
+    """A session with NO attached client (stdio/TUI, or a closed tab) used to wait out the whole
+    deadline: nothing had advertised, so the gate defaulted to True. It is refused now, because no
+    device client was ever seen for that session (#11911 F4)."""
+    from tui_gateway import server_requests
+
+    _ws_session(server, "s-no-client", None)
+    t0 = time.monotonic()
+    assert server_requests.send("device.request", "s-no-client", {"capability": "camera"}, timeout=30) is None
+    assert time.monotonic() - t0 < 1
+    assert server_requests.open_requests("s-no-client") == []
+
+
+def test_a_detached_phone_still_answers_within_the_seen_window(server):
+    """A phone that drops its socket (a reload, a network blip) still gets to answer the request the
+    agent just made — the reconnect replay picks it up — as long as it was seen recently."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "s-roam", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+    assert server._session_device_capable("s-roam", "camera") is True  # seeds the session's memory
+    server._sessions["s-roam"]["transport"] = None  # the phone drops its socket
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("r", server_requests.send(
+            "device.request", "s-roam", {"capability": "camera"}, timeout=5)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert req.params == {"capability": "camera"}
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "{\"kind\":\"jpeg\"}", "denied": False}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "{\"kind\":\"jpeg\"}", "denied": False}
+
+
+def test_a_detached_phone_is_refused_at_once_when_the_window_is_zero(server, monkeypatch):
+    """``device.client_seen_seconds: 0`` — an operator who does not want a reconnect replay to park a
+    turn gets an immediate refusal instead."""
+    from tui_gateway import server_requests
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: {"device": {"client_seen_seconds": 0}})
+    peer = _silent_ws()
+    _ws_session(server, "s-roam-off", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+    assert server._session_device_capable("s-roam-off", "camera") is True
+    server._sessions["s-roam-off"]["transport"] = None
+
+    t0 = time.monotonic()
+    assert server_requests.send("device.request", "s-roam-off", {"capability": "camera"}, timeout=30) is None
+    assert time.monotonic() - t0 < 1
+    assert server_requests.open_requests("s-roam-off") == []
+
+
+def test_device_advertisement_is_held_weakly(server):
+    """An abnormal close (no ``forget`` call, the object simply dies) must not keep offering a camera
+    that cannot answer: the advertisement is a weak key, not a strong reference (#11911 F5)."""
+    import gc
+    import weakref
+
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    server_requests.advertise_device(peer, ["camera"])
+    assert server_requests.device_capabilities(peer) == frozenset({"camera"})
+    alive = weakref.ref(peer)
+    del peer
+    gc.collect()
+    assert alive() is None
+    assert len(server_requests._device_capabilities) == 0
+
+
+def test_a_transport_that_cannot_be_weak_referenced_is_refused_not_crashed(server):
+    """The stdio transport has ``__slots__``; it never has a device behind it, so advertising is a
+    no-op rather than a TypeError inside the ``client.capabilities`` handler."""
+    from tui_gateway import server_requests
+
+    class _Slotted:
+        __slots__ = ()
+
+    server_requests.advertise_device(_Slotted(), ["camera"])  # must not raise
+    assert len(server_requests._device_capabilities) == 0
+
+
+def test_device_request_tool_is_offered_only_to_a_session_with_a_phone(server, monkeypatch):
+    """The tool is a property of the SESSION: a phone that advertised makes ``mobile_device`` part of
+    that session's toolsets (and ``device_request`` appear in its tool definitions); a desktop window
+    never does (#11911 F3)."""
+    from model_tools import get_tool_definitions
+    from tui_gateway.server import _with_device_toolset
+
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "hermes-cli")
+    phone = _silent_ws()
+    desktop = _silent_ws()
+    _ws_session(server, "s-phone-tools", phone)
+    _ws_session(server, "s-desktop-tools", desktop)
+    _advertise(server, phone, server_requests=True, device_capabilities=["camera"])
+    _advertise(server, desktop, server_requests=True)
+
+    with_phone = _with_device_toolset(["hermes-cli"], "s-phone-tools")
+    without = _with_device_toolset(["hermes-cli"], "s-desktop-tools")
+    assert "mobile_device" in with_phone
+    assert "mobile_device" not in without
+    # session-less callers (a tools listing for a profile) never gain it either.
+    assert _with_device_toolset(["hermes-cli"], None) == ["hermes-cli"]
+
+    def _names(toolsets):
+        return {tool["function"]["name"] for tool in get_tool_definitions(enabled_toolsets=toolsets)}
+
+    assert "device_request" in _names(with_phone)
+    assert "device_request" not in _names(without)
+    # Direct, not behind a tool_search stub: a phone session has exactly one device tool, and a
+    # deferral round trip to reach it would cost more than its schema.
+    from tools.tool_search import is_deferrable_tool_name
+    assert is_deferrable_tool_name("device_request") is False
+
+
+def test_device_request_bridge_passes_captures_through(server):
+    """The bridge is a pipe: the base64 bodies travel to the TOOL, which materialises them into the
+    media cache — nothing here decides what reaches the model."""
+    from tui_gateway import server_requests
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-capture", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["camera"])
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", _device_request("s-capture", "camera")),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    answer = {"value": "", "denied": False,
+              "captures": [{"mime_type": "image/png", "data": "AAECAw==", "label": "screen"}]}
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": answer}) is None
+    thread.join(timeout=5)
+    assert box["r"]["captures"] == answer["captures"]
+
+
+def test_every_agent_callback_the_gateway_binds_is_accepted_by_the_agent(server):
+    """``_agent_cbs`` is splatted into ``AIAgent(...)``. A callback in that dict that the constructor
+    does not take fails EVERY gateway session at agent build with "unexpected keyword argument" — and
+    only a live turn shows it, because the unit suite never builds an agent. (#11911)"""
+    import inspect
+
+    from agent.agent_init import _CALLBACK_PARAMS, init_agent
+    from run_agent import AIAgent
+
+    bound = set(server._agent_cbs("s-callbacks"))
+    assert bound <= set(_CALLBACK_PARAMS)
+    # init_agent reads each callback out of its own locals, and run_agent's __init__ forwards its
+    # locals to init_agent: both signatures must carry every name.
+    assert set(_CALLBACK_PARAMS) <= set(inspect.signature(init_agent).parameters)
+    assert set(_CALLBACK_PARAMS) <= set(inspect.signature(AIAgent.__init__).parameters)
+
+
+def _open_approval(server, sid, monkeypatch, *, pattern_key="device:camera", request_id="appr-device-1"):
+    """A device approval on the server's approval queue, sent the way ``_emit_approval_request`` sends it."""
+    from tools import approval as approval_mod
+
+    monkeypatch.setattr(approval_mod, "register_gateway_settle", lambda *a, **k: True)
+    server._emit_approval_request(sid, {
+        "request_id": request_id, "command": f"device_request: {pattern_key.split(':', 1)[-1]}",
+        "description": "Allow the connected device to hand over `camera`?",
+        "pattern_key": pattern_key, "pattern_keys": [pattern_key],
+        "allow_permanent": True, "allow_session": True})
+
+
+def test_device_approval_reaches_a_client_that_only_advertised_a_device(server, monkeypatch):
+    """W1: a phone advertises ``camera`` and nothing else. ``device.approval.camera: ask`` used to be
+    withdrawn before the frame was written ("the attached client cannot answer approval requests"),
+    so the default policy was a block — never a card. Serving ``device.request`` already means the
+    client answers server→client requests, so THAT card is answerable to it."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-device-only", peer)
+    _advertise(server, peer, server_requests=False, device_capabilities=["camera"])
+    assert server_requests.answers_requests(peer) is False  # the client never claimed server_requests
+
+    _open_approval(server, "ws-device-only", monkeypatch)
+
+    cards = [frame for frame in peer.frames if frame.get("method") == "approval"]
+    assert len(cards) == 1, f"the device approval never reached the phone: {peer.frames}"
+    assert cards[0]["params"]["pattern_key"] == "device:camera"
+    assert "deny" in cards[0]["params"]["choices"]
+    # The phone answers with the ordinary RPC; the queue entry is what unblocks the agent.
+    answered = server.dispatch({"jsonrpc": "2.0", "id": cards[0]["id"], "result": {"choice": "once", "all": False}})
+    assert answered is None
+    assert server_requests.open_requests("ws-device-only") == []
+
+
+def test_device_approval_is_scoped_to_the_advertised_capability(server, monkeypatch):
+    """The widening is one card wide: a device client that offered ``camera`` is not asked about a
+    ``location`` capture, and never about a non-device approval."""
+    peer = _silent_ws()
+    _ws_session(server, "ws-device-scope", peer)
+    _advertise(server, peer, server_requests=False, device_capabilities=["camera"])
+
+    _open_approval(server, "ws-device-scope", monkeypatch, pattern_key="device:location", request_id="a-loc")
+    _open_approval(server, "ws-device-scope", monkeypatch, pattern_key="dangerous_command", request_id="a-cmd")
+    assert [f for f in peer.frames if f.get("method") == "approval"] == []
+
+
+def test_device_approval_is_not_written_to_a_client_that_advertised_nothing(server, monkeypatch):
+    """A build that never sent ``client.capabilities`` can answer neither the device request nor the
+    card: fail closed, and never park a frame nobody reads."""
+    peer = _silent_ws()
+    _ws_session(server, "ws-nothing", peer)
+
+    _open_approval(server, "ws-nothing", monkeypatch, request_id="a-none")
+    assert peer.frames == []
+
+
+def test_device_answer_without_captures_is_still_a_valid_answer(server):
+    """W3: ``captures`` is optional on the wire. A client built before the field existed (or a
+    capability with no binary part, like ``location``) answers with ``value`` alone and the bridge
+    must not lose it, invent a capture, or fail the turn."""
+    from tui_gateway import server_requests
+    from tui_gateway.server import _device_request
+
+    peer = _silent_ws()
+    _ws_session(server, "s-old-client", peer)
+    _advertise(server, peer, server_requests=True, device_capabilities=["location"])
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", _device_request("s-old-client", "location")),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"value": "{\"lat\":37.5,\"lon\":127.0}"}}) is None
+    thread.join(timeout=5)
+    assert box["r"]["success"] is True
+    assert box["r"]["captures"] == []
+    assert "37.5" in box["r"]["value"]
+
+
+def test_device_answer_contract_accepts_a_payload_without_captures():
+    """The contract, not just the bridge: ``captures`` defaults to ``[]``, so a client that omits it
+    validates (a required field here would reject every pre-#11911 client)."""
+    from tui_gateway.contracts import registry as contracts
+
+    contract = contracts.SERVER_REQUESTS["device.request"]
+    assert contract.result.model_validate({"value": "", "denied": False}) is not None
+    parsed = contract.result.model_validate({"captures": [{"mime_type": "image/jpeg", "data": "AA=="}]})
+    assert [capture.mime_type for capture in parsed.captures] == ["image/jpeg"]
+    schema = contract.result.model_json_schema()
+    assert schema["properties"]["captures"]["items"]["$ref"].endswith("DeviceCapture")
+    assert "captures" not in schema.get("required", [])
+
+
+def test_device_request_reaches_a_client_that_only_advertised_the_capability(server):
+    """The other half of W1: advertising ``camera`` is the request to be SENT ``device.request`` — a
+    phone build that never sent ``server_requests: true`` used to get neither the request nor its
+    approval card, so the whole surface was unreachable without a second flag nobody documented."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-device-request-only", peer)
+    _advertise(server, peer, server_requests=False, device_capabilities=["camera"])
+    assert server_requests.answers_requests(peer) is False
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("r", server_requests.send(
+            "device.request", "ws-device-request-only", {"capability": "camera"}, timeout=5)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    _wait_for_frame(peer, req.id)
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id,
+                            "result": {"denied": False, "value": "", "captures": []}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"denied": False, "value": "", "captures": []}

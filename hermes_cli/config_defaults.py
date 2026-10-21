@@ -1716,6 +1716,24 @@ DEFAULT_CONFIG = {
     },
     # Permanently allowed dangerous command patterns (added via "always" approval).
     "command_allowlist": [],
+    # Handheld device capabilities a phone client advertised over the gateway (/api/ws) and the agent
+    # may ask for over `device.request` (#11911). Only a session whose client advertised a capability
+    # is offered the device_request tool at all; these knobs decide what happens once it asks.
+    #   approval.<capability>: ask | allow | deny  (ask = the shared approval gate: CLI prompt,
+    #     gateway card, once/session/always grants; fail-closed in cron/unattended contexts)
+    #   client_seen_seconds: how long a detached device client may still be waited for; 0 = a
+    #     session with no attached client is refused at once
+    #   request_timeout_seconds: how long one device.request may wait (5..300)
+    #   max_capture_bytes: largest capture accepted (64 KiB..32 MiB); the bytes go to
+    #     cache/device/ and the tool result carries a path, never the image
+    "device": {
+        "approval": {
+            "camera": "ask", "microphone": "ask", "location": "ask", "screen_capture": "ask",
+            "notifications": "ask", "photo_library": "ask", "files": "ask"},
+        "client_seen_seconds": 120,
+        "request_timeout_seconds": 60,
+        "max_capture_bytes": 8 * 1024 * 1024,
+    },
     # User-defined quick commands that bypass the agent loop (type: exec only).
     "quick_commands": {},
     # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,

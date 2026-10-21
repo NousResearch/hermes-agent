@@ -51,6 +51,17 @@ CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}
 EVENTS: dict[str, EventContract] = {}
 
+#: Namespace of the server→client requests that ask a handheld client for a device capability
+#: (``device.request``); a client that advertised none of them refuses them at once rather than
+#: stalling the agent (``tui_gateway/server_requests.py``).
+DEVICE_REQUEST_PREFIX = "device."
+
+
+def device_requests() -> list[str]:
+    """The device-shaped server→client request names, sorted — what ``client.capabilities`` answers
+    as ``device_requests`` so a client knows which to expect."""
+    return sorted(name for name in SERVER_REQUESTS if name.startswith(DEVICE_REQUEST_PREFIX))
+
 
 def _declare(table: dict, entry) -> None:
     # Method names may have different envelopes on independently shipped

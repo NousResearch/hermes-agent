@@ -2310,8 +2310,8 @@ DEFAULT_CONFIG = {
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
         # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a
-        # legacy index is detected; require = shown as a REQUIRED upgrade (tooling may gate on it);
-        # off = none.
+        # legacy index is detected (a later layout change gets a rebuild notice without a size estimate);
+        # require = the same notices worded as REQUIRED (tooling may gate on it); off = none.
         "fts_optimize_notice": "advise",
         # CJK-bigram search index (messages_fts_cjk). When the extension is built
         # (native/fts5_cjk/build.sh → ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms get exact

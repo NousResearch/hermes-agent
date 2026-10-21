@@ -370,11 +370,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
   }
 }
 
-// Durable session id tail segment — opt-in (`session_id` in display.status_bar.fields),
-// mirroring git_branch/total_tokens in the classic CLI bar, which only render when the
-// user explicitly lists them (never as part of the default set, and never when the filter
-// is null). Self-contained like SpawnHud: gated on width + opt-in + id, rendered as a
-// single `│ #id` fragment that yields first on a narrow terminal.
+// Durable session id tail segment — opt-in via `session_id`, like git_branch/total_tokens.
+// Visibility is breakpoint + opt-in + id; the caller also gates the render on the tail budget.
 export function sessionIdVisible(
   statusBarFields: null | ReadonlySet<string>,
   storedSid: null | string | undefined,
@@ -383,27 +380,25 @@ export function sessionIdVisible(
   return !!statusBarFields && statusBarFields.has('session_id') && !!storedSid && statusBarSegments(cols).sessionId
 }
 
-function SessionIdSegment({
-  cols,
-  statusBarFields,
-  storedSid,
-  t
-}: {
-  cols: number
-  statusBarFields: null | ReadonlySet<string>
-  storedSid: null | string | undefined
-  t: Theme
-}) {
-  if (!sessionIdVisible(statusBarFields, storedSid, cols)) {
-    return null
-  }
-
+function SessionIdSegment({ storedSid, t }: { storedSid: string; t: Theme }) {
   return (
     <Text color={t.color.muted} wrap="truncate-end">
       {' │ '}
       {storedSid}
     </Text>
   )
+}
+
+// Whether the segment renders: visible AND affordable. Whole-or-nothing like its siblings —
+// un-budgeted it absorbed overflow and truncate-end cut the id's trailing hex discriminator.
+function sessionIdShown(
+  statusBarFields: null | ReadonlySet<string>,
+  storedSid: null | string | undefined,
+  cols: number,
+  fits: (width: number) => boolean,
+  sep: number
+): boolean {
+  return sessionIdVisible(statusBarFields, storedSid, cols) && fits(sep + stringWidth(storedSid!))
 }
 
 type UsageReadouts = {
@@ -749,6 +744,7 @@ export function StatusRule({
   )
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showSessionId = sessionIdShown(statusBarFields, storedSid, cols, fits, SEP)
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
@@ -905,7 +901,7 @@ export function StatusRule({
             {tpsText}
           </Text>
         ) : null}
-        <SessionIdSegment cols={cols} statusBarFields={statusBarFields} storedSid={storedSid} t={t} />
+        {showSessionId ? <SessionIdSegment storedSid={storedSid!} t={t} /> : null}
         {showVoice ? (
           <Text
             color={

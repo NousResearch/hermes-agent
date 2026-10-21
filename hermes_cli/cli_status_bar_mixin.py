@@ -1107,10 +1107,7 @@ class CLIStatusBarMixin:
     def _status_bar_opt_in_tail(self, snapshot, field_set: Optional[frozenset]) -> list:
         """Wide-only opt-in tail segments: session token total (Σ) and durable session id.
 
-        Both only render when the user explicitly names the field in
-        ``display.status_bar.fields`` (like git_branch — never as part of the default
-        set, never when the field list is null). Kept in a helper so a single ``if wide``
-        branch yields the full opt-in tail."""
+        Both need the field named in ``display.status_bar.fields`` (like git_branch)."""
         from cli import format_token_count_compact
 
         segs: list = []

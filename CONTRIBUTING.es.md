@@ -562,6 +562,12 @@ fix(security): prevenir inyección de shell en el piping de contraseña sudo
 test(tools): añadir tests unitarios para file_operations
 ```
 
+### CI y flujo de revisión
+
+- **CI no se ejecuta automáticamente en PRs desde forks.** Los flujos de trabajo requieren autorización del mantenedor para ejecutarse ("Approve and run workflows").
+- **Los mantenedores activan CI durante la revisión.** Los mantenedores aprueban y ejecutan los flujos de trabajo cuando comienzan su revisión. Es normal que un PR nuevo muestre cero o comprobaciones pendientes inicialmente; los colaboradores no necesitan solicitar la ejecución de CI.
+- **Ejecuta las comprobaciones localmente antes de enviar.** Verifica que `python scripts/check` (todos los linters y comprobaciones bloqueantes) y las pruebas relevantes mediante `scripts/run_tests.sh` pasen localmente antes de abrir o actualizar un PR.
+
 ---
 
 ## Reportar Issues

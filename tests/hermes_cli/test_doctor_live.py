@@ -180,6 +180,18 @@ class TestConfiguredOnlySelection:
         results = {r.name: r for r in run_live_checks([])}
         assert results["Browser"].status == "pass"
 
+    def test_browser_direct_probe_skips_without_optional_playwright(self, monkeypatch):
+        monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
+        monkeypatch.setattr(
+            doctor_live,
+            "_launch_browser_probe",
+            lambda timeout: (None, "playwright not installed; direct probe skipped"),
+        )
+        issues: list[str] = []
+        results = {r.name: r for r in run_live_checks(issues)}
+        assert results["Browser"].status == "skip"
+        assert issues == []
+
 
 @pytest.mark.parametrize("kind", ["NO_PROXY", "no_proxy"])
 @pytest.mark.parametrize("entry", ["[::1]", "[::1]:8080", "::1/128"])

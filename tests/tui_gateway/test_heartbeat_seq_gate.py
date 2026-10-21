@@ -21,10 +21,17 @@ from tui_gateway import server
 
 @pytest.fixture(autouse=True)
 def _fresh_seq_gate():
-    """The seq gate is process-global module state (like the queue itself); reset per test."""
-    server._heartbeat_last_delivered_seq.clear()
+    """The seq gate is process-global module state (like the queue itself); reset per test.
+
+    Tolerates the watermark not existing at all: without the gate the tests below must
+    fail on their own assertions, not error out in the fixture.
+    """
+    watermark = getattr(server, "_heartbeat_last_delivered_seq", None)
+    if watermark is not None:
+        watermark.clear()
     yield
-    server._heartbeat_last_delivered_seq.clear()
+    if watermark is not None:
+        watermark.clear()
 
 
 @pytest.fixture
@@ -32,7 +39,16 @@ def surface(monkeypatch):
     submits: list = []
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda evt, consumer: "claimed")
     monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: submits.append(text))
+
+    def _accepted_submit(rid, sid, session, text, **kw):
+        # The execution gate acknowledges a claimed turn by returning True ("only the
+        # execution gate can acknowledge a claimed notification turn"). A falsy return
+        # is a REFUSAL, and a refused turn is not a delivery: the seq watermark must
+        # not advance for it.
+        submits.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _accepted_submit)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_owns_notification_event", lambda sid, session, evt: True)
     return submits

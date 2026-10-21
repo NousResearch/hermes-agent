@@ -111,9 +111,20 @@ def _transaction() -> Iterator[sqlite3.Connection]:
         yield conn
 
 
+# Volatile per-request identifiers embedded in provider errors (e.g. Ollama's
+# ``(ref: <uuid>)``) change on every request; left in the signature they mint a
+# NEW incident per failure, so the alert-once gate never dedups a persistent
+# outage (hundreds of pings over one 429 storm, 2026-09-28). Scrub before signing.
+_VOLATILE_REQUEST_ID_RE = re.compile(
+    r"\((?:ref|request[ _-]?id|trace[ _-]?id|correlation[ _-]?id)[:\s]+[0-9a-f][0-9a-f-]{5,}\)"
+)
+
+
 def _normalize_error(error: str) -> str:
-    """Strip whitespace and lowercase before signing (dedup normalization)."""
-    return re.sub(r"\s+", " ", str(error or "")).strip().lower()
+    """Strip whitespace and lowercase before signing (dedup normalization), with
+    volatile request identifiers scrubbed so retries of the same failure dedup."""
+    text = re.sub(r"\s+", " ", str(error or "")).strip().lower()
+    return _VOLATILE_REQUEST_ID_RE.sub("(ref:<id>)", text)
 
 
 def _redact_error(error: str) -> str:

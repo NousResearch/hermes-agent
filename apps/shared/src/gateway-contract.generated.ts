@@ -1599,6 +1599,19 @@ export interface PeerRouteStatus {
   member_id: string
   status: string
 }
+export interface GroupsMemberYoloParams {
+  profile?: string | null
+  room_id: string
+  member_id: string
+  enabled?: boolean | null
+}
+export interface GroupsMemberYoloResult {
+  room_id: string
+  member_id: string
+  session_key: string
+  enabled: boolean
+  effective_enabled: boolean
+}
 export interface GroupsSendParams {
   profile?: string | null
   room_id: string
@@ -6117,6 +6130,8 @@ export interface RpcMethods {
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
   'groups.log': { params: GroupsLogParams; result: GroupsLogResult }
+  /** Read or set YOLO for one existing local room participant session; omit enabled to read. */
+  'groups.member.yolo': { params: GroupsMemberYoloParams; result: GroupsMemberYoloResult }
   /** Mint one target-issued room/profile grant for a prospective room home. */
   'groups.peer.invite': { params: GroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Register and probe one scoped peer route on the room home. */
@@ -6565,6 +6580,7 @@ export const RPC_METHODS = [
   'groups.disband',
   'groups.list',
   'groups.log',
+  'groups.member.yolo',
   'groups.peer.invite',
   'groups.peer.register',
   'groups.peer.revoke',

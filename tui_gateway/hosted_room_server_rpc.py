@@ -67,6 +67,63 @@ class HostedRoomServerRPC:
         return self._call("session.resume", {
             "profile": profile, "session_id": session_id, "omit_messages": True, "source": source})
 
+    def room_session_yolo(
+        self, *, profile: str, room_id: str, enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        from gateway.hosted_rooms import HostedRoomError
+        from hermes_state import SessionDB
+        from tools.approval import is_approval_bypass_active_for_session, is_session_yolo_enabled
+        from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE, room_session_title
+
+        profile_home = self.server._profile_home(profile)
+        scope = {"profile_home": str(profile_home) if profile_home else None}
+        with self.server._session_profile_runtime_scope(scope):
+            db, owns_db = self.server._profile_session_db(profile_home)
+            if db is None:
+                raise RuntimeError("participant session database is unavailable; restore the profile database")
+            try:
+                row = db.get_session_by_title(room_session_title(room_id))
+                if row is None or row.get("archived"):
+                    raise HostedRoomError("room participant has no session; send a room message to this member first")
+                session_key = db.get_compression_tip(row["id"]) or row["id"]
+                tip = db.get_session(session_key)
+                if row["source"] != ROOM_SESSION_SOURCE or not tip or tip["source"] != ROOM_SESSION_SOURCE:
+                    raise HostedRoomError("room participant session identity is invalid; refresh the room before changing YOLO")
+                if enabled is not None:
+                    self._set_room_session_yolo(db, session_key, profile_home, enabled)
+                    tip = db.get_session(session_key)
+                    if SessionDB.session_yolo_enabled(tip) != enabled:
+                        raise RuntimeError("participant YOLO was not persisted; check the session database and retry")
+                active = is_session_yolo_enabled(session_key) or SessionDB.session_yolo_enabled(tip)
+                return {"session_key": session_key, "enabled": active,
+                        "effective_enabled": active or is_approval_bypass_active_for_session(session_key)}
+            finally:
+                if owns_db:
+                    self.server._release_db(db)
+
+    def _set_room_session_yolo(self, db, session_key: str, profile_home, enabled: bool) -> None:
+        from gateway.hosted_rooms import HostedRoomError
+        from hermes_cli.active_sessions import active_session_liveness_guard
+        from tools.approval import is_session_yolo_enabled
+        from tools.approval_yolo import toggle_session_yolo
+
+        # Resume/close cannot remint the runtime while its exact session-scoped setter runs.
+        with self.server._session_resume_lock:
+            live = self.server._find_live_session_by_key(session_key, profile_home)
+            if live is not None:
+                self._call("config.set", {
+                    "session_id": live[0], "key": "yolo", "value": "1" if enabled else "0",
+                    "scope": "session"})
+                return
+            # A second worker may own this turn. Fence admissions while changing a detached
+            # session, and refuse a flip that cannot reach the current owner's approval gate.
+            with active_session_liveness_guard(session_key, registry_home=profile_home) as held:
+                if held:
+                    raise HostedRoomError("participant turn is owned by another worker; retry after that turn ends")
+                db.set_session_yolo(session_key, enabled)
+                if is_session_yolo_enabled(session_key) != enabled:
+                    toggle_session_yolo(session_key, enabled)
+
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,

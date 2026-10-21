@@ -295,6 +295,34 @@ a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
 
+### Session YOLO for a room participant
+
+Remote clients can read or set YOLO for one local participant of a backend-hosted
+room through the `groups.member.yolo` JSON-RPC method. Select the immutable room
+and member IDs from `groups.state`, rather than a display name or profile default:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"groups.member.yolo","params":{"room_id":"ROOM_ID","member_id":"MEMBER_ID","enabled":true}}
+```
+
+Omit `enabled` to read the current setting; send `false` to clear the participant's
+session override. Explicit sets are safe to retry. The response identifies the
+participant and its resolved `session_key`, with `enabled` for its session override
+and `effective_enabled` for the actual approval bypass (which also includes a
+profile configured with approvals off or a process started with `--yolo`).
+
+The override follows that participant's existing room session across reconnects,
+backend restarts, and compression. It applies across the room's threads without
+changing other members, other rooms, the Bot Chat, or profile defaults. The member
+must already have a room session; otherwise the method asks you to send a room
+message to that member first. Reading or setting the control does not build an
+agent or submit a prompt, and it does not resolve an approval already pending.
+An update is refused while another worker process owns the participant's active
+turn; retry when it finishes. Peer participants are rejected under the existing
+cross-gateway approval policy.
+This method supplies the backend control; clients must wire their per-member UI
+or targeted slash commands to it.
+
 ### Transferring hosted room authority
 
 Authority takeover is an **operator recovery procedure**, not an atomic handover.

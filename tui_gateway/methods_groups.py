@@ -19,7 +19,7 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.member.yolo")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -375,6 +375,21 @@ def _(rid, params: dict, db_path) -> dict:
     result = {"room": room}
     if service is not None and room.get("disbanded_at") is None:
         result["driver_status"] = service.status(str(room["room_id"]))
+    return _ok(rid, result)
+
+
+@_room_method("groups.member.yolo", code=5124, room_code=4124, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Read or set session YOLO for one explicitly selected local room member."""
+    from pydantic import ValidationError
+    from tui_gateway.contracts.groups_bot_relay import GroupsMemberYoloParams
+
+    try:
+        request = GroupsMemberYoloParams.model_validate(params)
+    except ValidationError as exc:
+        return _err(rid, 4002, str(exc))
+    result = service.member_yolo(
+        request.room_id, member_id=request.member_id, enabled=request.enabled)
     return _ok(rid, result)
 
 

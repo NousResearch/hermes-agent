@@ -4,7 +4,9 @@ No execution, transport, or authority objects live here. Every mutation uses the
 SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
+import os
 import uuid
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
@@ -107,9 +109,60 @@ def _row(row):
     return result
 
 
+def _profile_home_of(db) -> Optional[Path]:
+    """The profile home that owns *db*'s store (the state.db's directory), or None.
+
+    None for a store with no directory of its own (an in-memory database): there is no
+    profile home, so there is no profile lock to be fenced out of."""
+    try:
+        db_path = Path(getattr(db, "db_path", "") or "")
+    except (TypeError, ValueError):
+        return None
+    return db_path.parent if db_path.name else None
+
+
+def _assert_profile_unowned(db) -> None:
+    """Refuse an epoch bump while a live owner holds the profile's ``gateway.lock``.
+
+    The bump is a takeover, and the epoch is the fence every write is checked against: the
+    owner captures it ONCE at boot, so a bump by a process that does not own the profile
+    leaves the live owner permanently behind the fence - every write on that store then
+    fails with ``stale_epoch`` until it restarts, and ``/reset`` does not recover it
+    (#142330). So the ownership is checked here instead of being left to the caller's
+    discipline: the docstring's "the caller MUST hold the profile ownership lock" was
+    advisory, and an ordinary agent turn could reach it (a script that opens the store).
+
+    A store no live owner holds is free to be taken over - that is what the bump means -
+    and the caller that HOLDS the lock is always allowed: the lock is exclusive, so no
+    foreign holder can exist while it is held."""
+    from gateway.runtime_ownership import canonical_home
+    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+
+    home = _profile_home_of(db)
+    if home is None:
+        return
+    record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
+    if not record:
+        return  # no owner: the bump is the takeover
+    holder = _live_pid_from_record(record)
+    if holder is None or holder == os.getpid():
+        return  # a dead holder, or us
+    raise RuntimeStoreError(
+        'ownership_conflict',
+        field='runtime_epoch',
+        detail=f'profile {home} is owned by pid {holder}',
+    )
+
+
 def begin_runtime_epoch(db, *, instance_id: str) -> int:
-    """Caller MUST hold the profile ownership lock, not merely an endpoint ticket."""
+    """Caller MUST hold the profile ownership lock, not merely an endpoint ticket.
+
+    The bump is the takeover of the store, and the owner captures the epoch once at boot:
+    a bump from a process that does not own the profile leaves the live owner permanently
+    behind the fence, and every write on that store then fails with ``stale_epoch`` until
+    the owner restarts (#142330). The ownership is therefore verified here, not assumed."""
     _text(instance_id)
+    _assert_profile_unowned(db)
     def write(conn):
         conn.execute('''INSERT INTO runtime_epoch(singleton,epoch,instance_id) VALUES(1,1,?)
             ON CONFLICT(singleton) DO UPDATE SET epoch=runtime_epoch.epoch+1, instance_id=excluded.instance_id''', (instance_id,))

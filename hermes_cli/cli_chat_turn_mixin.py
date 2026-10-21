@@ -632,24 +632,26 @@ class CLIChatTurnMixin:
     def _chat_print_reasoning_box(self, turn):
         """Collapsed reasoning box when show_reasoning is on and streaming did not already show it."""
         from cli import _DIM, _RST, _cprint
+        from hermes_cli.cli_reasoning import normalize_clamp_lines
         # _reasoning_shown_this_turn, not _reasoning_stream_started: the latter resets at
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
+            clamp_lines = normalize_clamp_lines(getattr(self, "reasoning_clamp_lines", 10))
             if reasoning and getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import thought_rows
-                for line in thought_rows(None, reasoning, self.reasoning_full):
+                for line in thought_rows(None, reasoning, self.reasoning_full, clamp_lines=clamp_lines):
                     _cprint(line)
             elif reasoning:
                 w = self._scrollback_box_width()
                 r_label = f" {t('cli.chat.reasoning_label')} "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
                 r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                # First 10 lines unless the user opted into /reasoning full.
+                # The configured recap limit; /reasoning full leaves the text uncapped.
                 lines = reasoning.strip().splitlines()
-                if len(lines) > 10 and not self.reasoning_full:
-                    display_reasoning = "\n".join(lines[:10])
-                    display_reasoning += f"\n{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - 10)}{_RST}"
+                if len(lines) > clamp_lines and not self.reasoning_full:
+                    display_reasoning = "\n".join(lines[:clamp_lines])
+                    display_reasoning += f"\n{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - clamp_lines)}{_RST}"
                 else:
                     display_reasoning = reasoning.strip()
                 _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")

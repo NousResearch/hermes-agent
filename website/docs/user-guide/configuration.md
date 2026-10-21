@@ -2226,6 +2226,13 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ## Display Settings
 
+In the classic CLI, `/reasoning clamp 20` saves a 20-line limit for the post-response
+thinking recap in either CLI layout. `/reasoning full` shows the complete recap;
+`/reasoning clamp` restores the default 10-line limit. The count is stored in
+`display.reasoning_clamp_lines`; invalid persisted values fall back to 10.
+Live reasoning streaming stays complete. The shared TUI backend also accepts and
+persists these commands; the TUI and Desktop retain their own expandable thinking panels.
+
 ```yaml
 display:
   tool_progress: all      # off | new | all | verbose
@@ -2247,6 +2254,8 @@ display:
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
+  reasoning_full: false   # Show the complete classic CLI recap (/reasoning full)
+  reasoning_clamp_lines: 10  # Positive recap line count (/reasoning clamp <N>)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.

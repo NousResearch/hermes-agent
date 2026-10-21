@@ -95,15 +95,6 @@ _FAST_TIERS = {
     "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold"),
     "ultrafast": ("ultrafast", "ultrafast"), "ultra": ("ultrafast", "ultrafast")}
 
-# /reasoning display toggles: arg -> (attr, value, headline key, follow-up note key or None);
-# the keys resolve under ``cli.commands.reasoning.*`` at call time.
-_REASONING_TOGGLES = {
-    **dict.fromkeys(("show", "on"), ("show_reasoning", True, "headline_on", "note_show")),
-    **dict.fromkeys(("hide", "off"), ("show_reasoning", False, "headline_off", None)),
-    **dict.fromkeys(("full", "all"), ("reasoning_full", True, "headline_full", "note_full")),
-    **dict.fromkeys(("clamp", "collapse", "short"), ("reasoning_full", False, "headline_clamped", None)),
-}
-
 # /bg AIAgent provider-routing kwargs -> HermesCLI attribute carrying the value.
 _BG_PROVIDER_KWARGS = {
     "providers_allowed": "_providers_only", "providers_ignored": "_providers_ignore",
@@ -2006,55 +1997,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- model-behaviour settings: /reasoning, /busy, /indicator, /fast -------------------
     def _handle_reasoning_command(self, cmd: str):
-        """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
-        scope unless --global) and thinking display toggles (always saved)."""
-        from cli import CLI_CONFIG, _parse_reasoning_config
-        from agent.reasoning_effort import effort_display_label
-        raw = _command_arg(cmd)
-        from hermes_cli.codex_runtime_switch import get_current_runtime
-        # The live agent's api_mode, else the configured runtime: ``ultra`` is verbatim on the Codex app-server.
-        _route = (getattr(self, "provider", None), getattr(self, "model", None),
-                  getattr(getattr(self, "agent", None), "api_mode", None) or get_current_runtime(CLI_CONFIG))
-        if not raw:  # show current state
-            rc = self.reasoning_config
-            level = (_gt("reasoning.level_default") if rc is None else _gt("reasoning.level_disabled")
-                     if rc.get("enabled") is False else effort_display_label(rc.get("effort", "medium"), *_route))
-            display_state = _t("reasoning.display_on") if self.show_reasoning else _t("reasoning.display_off")
-            full_state = (_t("reasoning.full_state_full") if getattr(self, "reasoning_full", False)
-                          else _t("reasoning.full_state_clamped"))
-            return _cp(_accent_line(_t("reasoning.effort_line", level=level)),
-                       _accent_line(_t("reasoning.display_line", display=display_state, full=full_state)),
-                       _dim_line(_t("reasoning.usage")))
-        arg, explicit_global = _split_scope_flags(raw)
-        toggle = _REASONING_TOGGLES.get(arg)
-        if toggle is not None:  # display show/hide or full/clamp recap toggle
-            attr, value, headline_key, note_key = toggle
-            setattr(self, attr, value)
-            if attr == "show_reasoning" and self.agent:
-                self.agent.reasoning_callback = self._current_reasoning_callback()
-            _save("display.platforms.cli.show_reasoning" if attr == "show_reasoning" else f"display.{attr}", value)  # T7
-            _cp(_accent_line(_t("reasoning.display_saved", headline=_t(f"reasoning.{headline_key}"))))
-            if note_key:
-                _cp(_dim_line(f"  {_t(f'reasoning.{note_key}')}"))
-            if attr == "reasoning_full" and value and not self.show_reasoning:
-                _cp(_dim_line(f"  {_t('reasoning.display_off_note')}"))
-            return
-        # Effort level change
-        parsed = _parse_reasoning_config(arg)
-        if parsed is None:
-            return _cp(_dim_line(_t("shared.unknown_argument", arg=arg)),
-                       _dim_line(_t("reasoning.valid_levels")), _dim_line(_t("reasoning.valid_display")),
-                       _dim_line(_t("reasoning.valid_scope")))
-        self.reasoning_config = parsed
-        self._reasoning_user_set = True  # the rebuilt gateway agent commits it to the session
-        _retire_agent(self)  # Force agent re-init with new reasoning config
-        saved = explicit_global and _save("agent.reasoning_effort", arg)
-        if saved:
-            if not isinstance(CLI_CONFIG.get("agent"), dict):
-                CLI_CONFIG["agent"] = {}
-            CLI_CONFIG["agent"]["reasoning_effort"] = arg
-        _cp(_accent_line(_t("reasoning.effort_set", effort=effort_display_label(arg, *_route),
-                            scope=_scope_outcome(explicit_global, saved))))
+        from hermes_cli.cli_reasoning import handle_reasoning_command
+        return handle_reasoning_command(self, cmd)
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""

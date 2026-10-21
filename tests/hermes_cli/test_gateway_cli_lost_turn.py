@@ -131,17 +131,21 @@ def test_discard_command_acknowledges_the_lost_turn_and_unblocks_the_next_prompt
 
 def test_bare_discard_asks_before_acknowledging_every_lost_turn(monkeypatch, capsys):
     """A bare /discard covers every lost turn, so it confirms first as ``hermes sessions discard``
-    does; a declined prompt leaves the turn untouched."""
+    does, through the composer's modal (a raw input() races prompt_toolkit for stdin); a declined
+    prompt leaves the turn untouched."""
     from cli import HermesCLI
     client = _PausedClient([LOST])
     conn, agent = _agent(client)
+    asked = []
     monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("raw input() inside the TUI"))
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", lambda self, **kw: asked.append(kw) or "cancel")
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = SID
     try:
         assert cli.process_command("/discard") is True
+        assert asked and "lost-1" in asked[0]["detail"]
         assert ("prompt.resolve_unknown", {"session_id": SID, "admission_id": "lost-1",
                                            "execution_generation": 4}) not in client.calls
         assert "Nothing discarded" in capsys.readouterr().out

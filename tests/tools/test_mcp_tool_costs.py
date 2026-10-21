@@ -176,8 +176,10 @@ def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp
 def test_a_chat_keeps_its_total_across_a_rotation_and_each_cron_run_has_its_own(session, caplog):
     from cron.scheduler import _CronRunScope
     from gateway.session_context import clear_session_vars, set_session_vars
-    with caplog.at_level("WARNING", logger="tools.mcp_tool"):
-        _register(dict(COSTED, tool_costs={**COSTED["tool_costs"], "mcp_srv_typo": 3}))
+    config = dict(COSTED, tool_costs={**COSTED["tool_costs"], "mcp_srv_typo": 3})
+    _register(config)
+    with caplog.at_level("WARNING", logger="tools.mcp_tool"):  # live discovery sees the full tool list
+        registration._warn_unknown_cost_keys("srv", "srv", ["paid_render", "batch", "free_status"])
     assert "mcp_srv_typo" in caplog.text  # a key the server does not offer is named, never silently dropped
     for _ in range(2):
         _call("paid_render", chat="parent")

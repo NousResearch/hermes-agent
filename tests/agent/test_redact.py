@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, redact_terminal_output, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +110,28 @@ class TestKnownPrefixes:
             assert redact_sensitive_text(benign) == benign
         for key in ("am_" + "0123456789abcdef" * 2, "am_" + "Ab9" * 8, "am_org_" + "Zq7k" * 6):
             assert key[-12:] not in redact_sensitive_text(f"leaked {key} in output"), key
+
+    def test_infisical_static_service_token(self):
+        """``st.<uuid>.<32 hex>.<32 hex>`` (Infisical static service token, #135822) is masked in
+        prose, KEY= assignment and URL-query contexts — the contexts a terminal echo leaks today.
+        The dotted SHAPE is the discriminator, never a bare ``st.``: URL hosts such as
+        ``247wallst.com`` and truncated ``st.`` fragments must stay byte-identical."""
+        token = ("st." + "0f1e2d3c-4b5a-4978-8796-a5b4c3d2e1f0"
+                 + ".0123456789abcdef0123456789abcdef"
+                 + ".fedcba9876543210fedcba9876543210")
+        assert len(token) == 105
+        for line in (
+            f"echo {token}",                                    # prose (terminal echo)
+            f"MY_VALUE={token}",                                # KEY= assignment, non-secret key name
+            f"curl 'https://api.example.com/v3/secrets?cursor={token}'",  # URL query param
+        ):
+            assert token not in redact_sensitive_text(line), line
+            assert token not in redact_terminal_output(line, "echo"), line
+        for benign in (
+            "read https://247wallst.com/markets today",         # URL host ending in ``st.``
+            "st.0f1e2d3c-4b5a-4978-8796-a5b4c3d2e1f0.deadbeef",  # truncated: one segment short
+        ):
+            assert redact_sensitive_text(benign) == benign
 
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14

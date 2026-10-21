@@ -4,7 +4,12 @@ redirected to api.kimi.com/coding by core)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, thinking_toggle_extras
+from agent.reasoning_effort import (
+    KIMI_K3_EFFORTS,
+    KIMI_K3_OVERRIDES,
+    requested_effort,
+    thinking_toggle_extras,
+)
 from hermes_cli.version_info import get_version_info
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
@@ -35,7 +40,7 @@ def _is_confirmed_kimi_coding_url(base_url: str) -> bool:
 
 
 class KimiProfile(ProviderProfile):
-    """Kimi/Moonshot — temperature omitted, thinking xor reasoning_effort."""
+    """Kimi/Moonshot — temperature omitted, thinking + reasoning_effort both accepted."""
 
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
@@ -53,11 +58,17 @@ class KimiProfile(ProviderProfile):
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Moonshot treats extra_body.thinking and reasoning_effort as mutually
-        exclusive (400 on both): send effort when requested, else the toggle. K2.x keeps
-        replayed prior-turn reasoning_content only with ``thinking.keep: "all"`` (default null
-        ignores it; platform.kimi.ai/docs/guide/use-thinking-models); K3 always keeps it."""
+    ) -> tuple[dict, dict]:
+        """The Kimi Code endpoints accept ``thinking`` and ``reasoning_effort`` together and
+        serve ``medium`` directly, so the effort is sent as requested (endpoint evidence
+        2026-10-21, #142365); K2.x keeps replayed prior-turn reasoning_content only with
+        ``thinking.keep: "all"`` (default null ignores it;
+        platform.kimi.ai/docs/guide/use-thinking-models); K3 always keeps it."""
+        # ``reasoning_effort="none"`` is a real off switch on these endpoints: map it onto
+        # the explicit disabled toggle instead of letting the shared helper's none-fallback
+        # re-enable thinking (#142365).
+        if requested_effort(reasoning_config) == "none":
+            reasoning_config = {**(reasoning_config or {}), "enabled": False}
         extra_body, top_level = thinking_toggle_extras(reasoning_config, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
         thinking = extra_body.get("thinking")
         if isinstance(thinking, dict) and thinking.get("type") == "enabled" and "k2" in (model or "").lower():

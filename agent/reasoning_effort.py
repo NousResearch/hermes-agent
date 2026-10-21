@@ -52,11 +52,12 @@ XAI_LEGACY_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 ACTUAL_RELAY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 
 #: Moonshot/Kimi K3 (server default high) vs K2-era models. K3 quirks: ``high`` is K3's
-#: positional middle AND server default, so ``medium`` rounds to it rather than down to
-#: ``low``; ``xhigh`` rounds up to ``max`` (K3's top tier).
-KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+#: positional middle AND server default; ``xhigh`` rounds up to ``max`` (K3's top tier).
+#: ``medium`` is served directly on the Kimi Code endpoints (verified 2026-10-21, #142365) —
+#: it must not be silently upgraded to ``high`` (more reasoning tokens, latency, cost).
+KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
-KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
+KIMI_K3_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: OpenCode "Ox Alpha" (x-preview-f-free): thinking cannot be disabled and the wire accepts
 #: exactly low/high/max (medium/none/xhigh 400); xhigh rounds up.

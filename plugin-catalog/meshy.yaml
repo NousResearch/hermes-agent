@@ -1,0 +1,32 @@
+name: meshy
+title: Meshy
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: adfe0378fdaaee40da4892f9e41884680ef8c9cb
+subdir: meshy
+version: "0.4.0"
+description: >-
+  Meshy AI's own MCP server (pinned @meshy-ai/meshy-mcp-server@0.6.4) for text, image and multi-image
+  to 3D, texturing, remeshing, rigging, animation, concept images and 3D-print prep, with a bundled
+  meshy-3d workflow skill. In Hermes Desktop: inline 3D cards with a download and convert menu, a
+  gallery of recent generations and saved models (with a "Made from" history), image sets, and a credit
+  chip in the status bar. Every credit-spending call goes through Hermes's approval prompt with its
+  estimated cost, and a 200-credit limit per chat makes it ask again. Needs MESHY_API_KEY and Node.js 18+.
+  Disclosure — first start downloads the pinned server from npm through npx; it sends prompts and the
+  images or models you or the agent name to Meshy's API (api.meshy.ai) under your key, gets only
+  MESHY_API_KEY from your profile, and sends no analytics. Downloads go to the plugin's data folder or the
+  folder the agent names (never over an existing file); the Desktop backend fetches only from Meshy's
+  asset hosts. The skill's helper scripts (model stats, preview render, optional Blender hand-off) run
+  locally through the terminal tool.
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/meshy
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/adfe0378fdaaee40da4892f9e41884680ef8c9cb/assets/meshy.jpg
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MESHY_API_KEY

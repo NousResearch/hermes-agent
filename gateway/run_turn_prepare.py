@@ -584,7 +584,7 @@ class GatewayTurnPrepareMixin:
                 source, t("gateway.notify.no_home_channel", platform=platform_name.title(), sethome_cmd=sethome_cmd),
             )
 
-    def _hmwa_apply_message_timestamp(self, event, message_text):
+    def _hmwa_apply_message_timestamp(self, event, message_text, session_key=None):
         """Capture the platform event time as message metadata and keep the persisted transcript
         clean — strip any leading timestamp prefix and the Discord triggering-message note (a
         model instruction, not authored text) — regardless of the toggle; only the in-context
@@ -604,6 +604,19 @@ class GatewayTurnPrepareMixin:
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(message_text, tz=_evt_tz)
                 persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
+                # A text-mode image turn replaced the authored caption with vision-enrichment prose
+                # upstream; the durable row keeps caption + ``@image:<path>`` directives instead —
+                # the enrichment is a model instruction (not authored text), and the desktop renders
+                # its attachment thumbnail from those directive lines (#142500).
+                _enriched_persist = (
+                    self._consume_pending_enriched_image_persist(session_key)
+                    if session_key else None)
+                if _enriched_persist is not None:
+                    _caption, _image_paths = _enriched_persist
+                    _caption, _ = _strip_msg_ts(_caption, tz=_evt_tz)
+                    from tui_gateway.session_history import _build_persist_message_with_image_refs
+                    persist_user_message = _build_persist_message_with_image_refs(
+                        strip_discord_triggering_note(event, _caption), _image_paths)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
                 if _message_timestamps_enabled(_load_gateway_config()):
@@ -714,7 +727,7 @@ class GatewayTurnPrepareMixin:
             return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens
 
         message_text, persist_user_message, persist_user_timestamp = (
-            self._hmwa_apply_message_timestamp(event, message_text)
+            self._hmwa_apply_message_timestamp(event, message_text, session_key=session_key)
         )
 
         # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn

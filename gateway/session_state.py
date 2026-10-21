@@ -70,6 +70,11 @@ class PersistentState:
     approvals: Optional[dict[str, Any]] = None  # {"command": ..., "pattern_key": ...}
     update_prompt_pending: bool = False  # /update prompt awaiting a reply
     native_image_paths: list[str] = field(default_factory=list)  # consumed one-shot
+    # Text-mode image turns: (authored caption, image paths) for the durable user row. The vision
+    # enrichment that rides the model text is an instruction, not authored text — the persisted row
+    # keeps the caption plus ``@image:<path>`` directives instead (#142500). Consumed one-shot at the
+    # persist seam, cleared at the next inbound prepare like ``native_image_paths``.
+    enriched_image_persist: Optional[tuple[str, list[str]]] = None
     # Legacy runner-level pending text (flushed on shutdown); not the adapter-level one.
     pending_command_text: Optional[str] = None
     run_generation: int = 0  # monotonic; NEVER reset (stale-run detection depends on it)

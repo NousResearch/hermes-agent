@@ -161,6 +161,15 @@ def restore(key, record, plan):
         if any(job.get("plan_key") == key for job in lm._JOBS.values()):
             return
     kind = "runtime-install" if record["setup"]["model_id"] is None else "quickstart"
+    try:
+        with lm._config_profile_scope(record["setup"]["profile"]):
+            missing_engine = kind == "quickstart" and lm.binaries.installed_engine(record["setup"]["backend"]) is None
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        download_plans.remove_plan(key)
+        return
+    pending_model = record["setup"]["variant"] is None or any(not dest.is_file() for _, dest, _ in plan)
     if kind == "quickstart" and not lm._QUICKSTART_LOCK.acquire(blocking=False):
         return
     job = lm._job(kind, record["target"], model_id=record["model_id"])
@@ -169,9 +178,6 @@ def restore(key, record, plan):
                partial_urls=tuple(record.get("partial_urls", ())), phase="interrupted",
                detail="Setup interrupted. Resume to finish setup")
     if kind == "quickstart":
-        with lm._config_profile_scope(record["setup"]["profile"]):
-            missing_engine = lm.binaries.installed_engine(record["setup"]["backend"]) is None
-        pending_model = record["setup"]["variant"] is None or any(not dest.is_file() for _, dest, _ in plan)
         job["setup_stage"] = "engine" if missing_engine else "model" if pending_model else "finish"
     for name in ("done_bytes", "total_bytes", "ranges", "restart_runtime"):
         if name in record.get("state", {}):

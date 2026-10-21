@@ -5,11 +5,51 @@ import threading
 from dataclasses import replace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from tests.hermes_cli.test_local_download_jobs import client as client, poll  # noqa: PLC0414
 from tests.hermes_cli.test_local_engine_download_recovery import engine_download as engine_download  # noqa: PLC0414
 from tests.pm._fixtures import isolated_python as isolated_python  # noqa: PLC0414
 from tests.pm._range_server import RangeHandler, dl_server as dl_server  # noqa: PLC0414
+
+
+def test_deleted_profile_does_not_block_startup_or_other_recovery(client, engine_download, monkeypatch, tmp_path):
+    from hermes_cli import profiles
+
+    fixture = engine_download
+    lm = fixture.lm
+    profile = profiles._get_profiles_root() / "recovery-owner"
+    assert profile.is_relative_to(tmp_path)
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("model: {}\n")
+    first, second = fixture.entries
+    response = client.post("/api/local-models/quickstart", params={"profile": "recovery-owner"},
+                           json={"model_id": first.id})
+    assert response.status_code == 200, response.text
+    parked = poll(client, response.json()["job_id"])
+    assert parked["status"] == "paused" and "503" in parked["error"]
+    orphan_key = lm._JOBS[parked["job_id"]]["plan_key"]
+    profiles.delete_profile("recovery-owner", yes=True)
+
+    monkeypatch.setattr(lm, "_JOBS", {})
+    monkeypatch.setattr(lm, "_RUNNING", {})
+    monkeypatch.setattr(lm, "_QUICKSTART_LOCK", threading.Lock())
+    lm.download_plans.save_plan({"target": second.display_name, "model_id": second.id}, fixture.plans[second.id])
+    app = FastAPI()
+    app.include_router(lm.router)
+    with TestClient(app) as restarted:
+        jobs = restarted.get("/api/local-models/jobs").json()["jobs"]
+        assert len(jobs) == 1 and jobs[0]["model_id"] == second.id
+        assert jobs[0]["status"] == "paused" and jobs[0]["can_resume"] and jobs[0]["can_discard"]
+        assert not lm._QUICKSTART_LOCK.locked()
+        assert not lm.download_plans.has_plan(orphan_key)
+        assert not profile.exists()
+        fixture.state["outage"] = False
+        response = restarted.post("/api/local-models/quickstart", json={"model_id": first.id})
+        assert response.status_code == 200, response.text
+        finished = poll(restarted, response.json()["job_id"], until=("done", "error"))
+        assert finished["status"] == "done", finished
 
 
 @pytest.mark.parametrize("stage", ["engine", "model", "finish"])

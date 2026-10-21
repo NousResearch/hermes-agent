@@ -48,17 +48,20 @@ _RECOVERY_SCAN_SECONDS = 60.0
 
 @contextlib.asynccontextmanager
 async def _download_recovery_lifespan(_app):
-    await run_in_threadpool(_restore_download_plans)
-
     async def reconcile():
+        try:
+            await run_in_threadpool(_restore_download_plans)
+        except Exception:
+            logger.warning("saved download reconciliation failed", exc_info=True)
+
+    await reconcile()
+
+    async def watch():
         while True:
             await asyncio.sleep(_RECOVERY_SCAN_SECONDS)
-            try:
-                await run_in_threadpool(_restore_download_plans)
-            except Exception:
-                logger.warning("saved download reconciliation failed", exc_info=True)
+            await reconcile()
 
-    task = asyncio.create_task(reconcile())
+    task = asyncio.create_task(watch())
     try:
         yield
     finally:
@@ -610,26 +613,10 @@ def _plan_job(target: str, model_id: str, plan, *, kind: str = "model-download")
 def _restore_download_plans() -> None:
     with _DOWNLOAD_START_LOCK:
         for key, record, plan in download_plans.pending_plans():
-            if record.get("setup"):
-                from hermes_cli.web_routers import local_models_setup
-
-                local_models_setup.restore(key, record, plan)
-                continue
-            if all(dest.is_file() for _, dest, _ in plan):
-                download_plans.remove_plan(key)
-                continue
-            job, created = _plan_job(record["target"], record.get("model_id"), plan)
-            if not created:
-                continue
-            done, total, ranges = download_plans.retained_progress(plan)
-            saved_total = record.get("total_bytes")
-            if type(saved_total) is int and saved_total > 0:
-                total = saved_total
-            job.update(phase="interrupted", detail=_interrupted_detail(done), plan_saved=True,
-                       done_bytes=done, total_bytes=total or None, ranges=ranges)
-            _spawn_job(job, "lr-model-recovery",
-                       lambda job=job, plan=plan: _run_download_plan(job, plan, job["target"]),
-                       download_label=job["target"], resumable=True, start_paused=True)
+            try:
+                _restore_download_plan(key, record, plan)
+            except Exception:
+                logger.warning("could not restore saved download %s", key, exc_info=True)
         # GC or another process can remove a plan after this process parked it.
         with _JOBS_LOCK:
             parked = [job for job in _JOBS.values() if job["status"] == "paused"]
@@ -638,6 +625,29 @@ def _restore_download_plans() -> None:
             discard = _RUNNING.get(job["job_id"], {}).get("discard")
             if job.get("plan_saved") and key and not download_plans.has_plan(key) and discard:
                 discard()
+
+
+def _restore_download_plan(key, record, plan) -> None:
+    if record.get("setup"):
+        from hermes_cli.web_routers import local_models_setup
+
+        local_models_setup.restore(key, record, plan)
+        return
+    if all(dest.is_file() for _, dest, _ in plan):
+        download_plans.remove_plan(key)
+        return
+    done, total, ranges = download_plans.retained_progress(plan)
+    saved_total = record.get("total_bytes")
+    if type(saved_total) is int and saved_total > 0:
+        total = saved_total
+    job, created = _plan_job(record["target"], record.get("model_id"), plan)
+    if not created:
+        return
+    job.update(phase="interrupted", detail=_interrupted_detail(done), plan_saved=True,
+               done_bytes=done, total_bytes=total or None, ranges=ranges)
+    _spawn_job(job, "lr-model-recovery",
+               lambda: _run_download_plan(job, plan, job["target"]),
+               download_label=job["target"], resumable=True, start_paused=True)
 
 
 def _interrupted_detail(done: int) -> str:

@@ -27,6 +27,12 @@ Hugging Face downloads, and quickstart. Paused jobs remain visible when you
 leave and reopen Local Models. Pause stops the transfer at a chunk boundary;
 unpacking, verification, and server activation are separate phases.
 
+Interrupted setup also returns after restarting the app and backend. Select
+**Resume** to finish the remaining setup steps, including server activation
+and default-model selection. Select **Discard** to remove the pending setup
+and its unused partial files. Completed files and partials used by another
+download stay intact.
+
 PM downloads every engine component, including CUDA runtime DLLs, from the
 URLs and SHA-256 pins in `pm/lock.json`. Model weights, split GGUF parts,
 vision projectors, and draft models use the same downloader. Byte progress

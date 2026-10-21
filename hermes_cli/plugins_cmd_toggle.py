@@ -170,12 +170,8 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     }
 
     def _init_colors():
-        if curses.has_colors():
-            curses.start_color()
-            curses.use_default_colors()
-            gray = 8 if curses.COLORS > 8 else curses.COLOR_WHITE
-            for pair, fg in ((1, curses.COLOR_GREEN), (2, curses.COLOR_YELLOW), (3, curses.COLOR_CYAN), (4, gray)):
-                curses.init_pair(pair, fg, -1)
+        from hermes_cli.curses_ui import dim_color, init_color_pairs
+        init_color_pairs(curses, (curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_CYAN, dim_color(curses)))
 
     def _attr(base, pair):
         return base | curses.color_pair(pair) if curses.has_colors() else base

@@ -485,9 +485,13 @@ def _run_check_fn_bounded(fn: Callable, timeout: Optional[float]) -> tuple[bool,
             # not start a second thread for it.
             return False, False, f"did not answer within {probe.timeout_exceeded:.1f}s", True
     if not probe.done.wait(timeout):
-        probe.timed_out = True
-        probe.timeout_exceeded = timeout
-        return False, False, f"did not answer within {timeout:.1f}s", True
+        # The probe may have finished right at the deadline. A late answer is
+        # still an answer, and dropping the tool for a TTL window over a
+        # microsecond would be wrong.
+        if not probe.done.is_set():
+            probe.timed_out = True
+            probe.timeout_exceeded = timeout
+            return False, False, f"did not answer within {timeout:.1f}s", True
     with _check_fn_probe_lock:
         if _check_fn_probes.get(key) is probe:
             del _check_fn_probes[key]

@@ -41,7 +41,7 @@ _DESCRIPTOR = {
 class _HelloServer:
     """Connector stub: records every hello per connection, answers the first with a
     descriptor, and drops the first ``drops`` connections once all hellos are in
-    (with ``close_code``, e.g. 4401 for an expired upgrade token)."""
+    (with ``close_code``, e.g. 4401 with no close reason)."""
 
     def __init__(self, drops: int = 0, close_code: int = 1000) -> None:
         self.hellos: list[list[dict]] = []
@@ -107,8 +107,9 @@ async def test_every_hello_carries_one_instance_id_that_survives_a_reconnect():
 
 @pytest.mark.asyncio
 async def test_the_fresh_token_redial_after_a_4401_keeps_the_instance_id():
-    # A 4401 after the handshake (an upgrade token that aged out) is retried at once
-    # with a freshly minted token, bypassing the 5 s supervisor backoff below.
+    # A 4401 after the handshake without the "expired" close reason (a stale token or a
+    # revoked secret) is retried at once with a freshly minted token, bypassing the 5 s
+    # supervisor backoff below.
     async with _HelloServer(drops=1, close_code=4401) as srv:
         t = _transport(
             srv.url, gateway_id="gw-x", upgrade_secret="secret-x", reconnect=True, reconnect_backoff_s=5.0

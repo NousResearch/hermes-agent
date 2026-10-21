@@ -9,6 +9,7 @@
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo?, mentions? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
+ *   POST /reaction       - React/unreact to a cached message { chatId, messageId, emoji }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
@@ -30,9 +31,10 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
+import { expandWhatsAppIdentifiers, matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { handleReactionRequest } from './reaction.js';
 import {
   addMentions,
   buildPollPayload,
@@ -876,6 +878,14 @@ app.post('/send', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.post('/reaction', (req, res) => handleReactionRequest(req, res, {
+  connected: () => !!sock && connectionState === 'connected',
+  messageStore,
+  expandAliases: (jid) => expandWhatsAppIdentifiers(jid, SESSION_DIR),
+  send: sendWithTimeout,
+  trackSent: trackSentMessageId,
+}));
 
 // Edit a previously sent message
 app.post('/edit', async (req, res) => {

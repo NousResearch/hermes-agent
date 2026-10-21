@@ -91,7 +91,7 @@ def _curl_via_tunnel(tunnel_port: int, upstream_port: int, token: Optional[str])
     if token:
         argv += ["-H", f"Authorization: Bearer {token}"]
     argv.append(f"http://127.0.0.1:{upstream_port}/")
-    return subprocess.run(argv, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(argv, check=False, capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 def test_tunnel_swaps_secret_and_still_requires_token(hermes_home, monkeypatch):

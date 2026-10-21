@@ -30,6 +30,11 @@ export interface ThemeColors {
   syntaxKeyword: string
   syntaxComment: string
 
+  /** Markdown strong (bold) text color. */
+  bold_text: string
+  /** Markdown text color (fallback for bold_text). */
+  banner_text: string
+
   prompt: string
   sessionLabel: string
   sessionBorder: string
@@ -337,6 +342,8 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
     ok: seeds.ok,
     error: seeds.error,
     warn: seeds.warn,
+    bold_text: seeds.text,
+    banner_text: seeds.text,
 
     // Element tokens: independently settable, but default to their semantic
     // parents (tool marker → accent, reasoning body → muted).
@@ -921,6 +928,8 @@ export function fromSkin(
     // just derived.muted, so recoloring muted carries the reasoning body with it.
     tool: c('ui_tool') ?? derived.tool,
     thinking: c('ui_thinking') ?? c('banner_dim') ?? derived.thinking,
+    bold_text: c('bold_text') ?? c('banner_text') ?? derived.text,
+    banner_text: c('banner_text') ?? derived.text,
     diffAdded: c('diff_added') ?? derived.diffAdded,
     diffRemoved: c('diff_removed') ?? derived.diffRemoved,
     diffAddedWord: c('diff_added_word') ?? derived.diffAddedWord,

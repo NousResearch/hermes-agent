@@ -126,7 +126,7 @@ class ReasoningParamsMixin:
             from hermes_cli.models_local import lmstudio_model_reasoning_options
         except Exception:
             return []
-        return _cached_probe(self, "_lm_reasoning_opts_cache", lmstudio_model_reasoning_options, [], bool)
+        return _cached_probe(self, "_lm_reasoning_opts_cache", lmstudio_model_reasoning_options, [], bool) or []
 
     def _ollama_supports_thinking_cached(self) -> bool:
         """True only if Ollama's ``/api/show`` declares the ``thinking`` capability."""

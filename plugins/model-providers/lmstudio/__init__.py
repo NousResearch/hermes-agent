@@ -27,8 +27,7 @@ class LMStudioProfile(ProviderProfile):
         lmstudio_reasoning_options: list[str] | None = None, **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """``supports_reasoning`` is true only when the model publishes a non-``off`` option;
-        ``lmstudio_reasoning_options`` is the agent's cached probe of them. Auxiliary calls have no
-        probe (``None``) and keep the generic nested ``reasoning`` they always sent."""
+        ``lmstudio_reasoning_options`` is the agent's cached or auxiliary-request probe of them."""
         if lmstudio_reasoning_options is None:
             return generic_nested_reasoning(reasoning_config), {}
         if not supports_reasoning:

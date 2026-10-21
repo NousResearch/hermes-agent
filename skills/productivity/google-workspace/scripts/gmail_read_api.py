@@ -55,10 +55,32 @@ HARD_MAX_ATTACHMENTS = 1_000
 class AdapterError(RuntimeError):
     """A typed failure whose code is safe to expose in a body-free receipt."""
 
-    def __init__(self, code: str, *, exit_code: int = 4):
+    def __init__(
+        self,
+        code: str,
+        *,
+        exit_code: int = 4,
+        api_calls: int = 0,
+        identity_verified: bool = False,
+        request_shape: dict[str, Any] | None = None,
+    ):
         self.code = code
         self.exit_code = exit_code
+        self.api_calls = api_calls
+        self.identity_verified = identity_verified
+        self.request_shape = request_shape
         super().__init__(code)
+
+    def bind_runtime(
+        self,
+        *,
+        api_calls: int,
+        identity_verified: bool,
+        request_shape: dict[str, Any],
+    ) -> None:
+        self.api_calls = api_calls
+        self.identity_verified = identity_verified
+        self.request_shape = request_shape
 
 
 @dataclass(frozen=True)
@@ -157,11 +179,30 @@ def _validate_page_token(value: str | None) -> str | None:
 
 def _is_private_file(path: Path) -> bool:
     info = path.lstat()
+    getuid = getattr(os, "getuid", None)
+    owner_matches = getuid is None or info.st_uid == getuid()
     return (
         stat.S_ISREG(info.st_mode)
         and not path.is_symlink()
-        and not (stat.S_IMODE(info.st_mode) & 0o077)
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and owner_matches
     )
+
+
+def _read_private_json(path: Path, *, error_code: str) -> dict[str, Any]:
+    if not _is_private_file(path):
+        raise AdapterError(error_code, exit_code=3)
+    try:
+        if path.stat().st_size > MAX_TOKEN_FILE_BYTES:
+            raise AdapterError(error_code, exit_code=3)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except AdapterError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise AdapterError(error_code, exit_code=3) from None
+    if not isinstance(payload, dict):
+        raise AdapterError(error_code, exit_code=3)
+    return payload
 
 
 def load_account_context(alias: str, hermes_home: Path | None = None) -> AccountContext:
@@ -171,30 +212,34 @@ def load_account_context(alias: str, hermes_home: Path | None = None) -> Account
     home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
     accounts_root = home / "google-accounts"
     account_dir = accounts_root / alias
+    account_map_path = accounts_root / "accounts.json"
     token_path = account_dir / "google_token.json"
     try:
         resolved_root = accounts_root.resolve(strict=True)
         resolved_dir = account_dir.resolve(strict=True)
+        resolved_map = account_map_path.resolve(strict=True)
         resolved_token = token_path.resolve(strict=True)
         resolved_dir.relative_to(resolved_root)
+        resolved_map.relative_to(resolved_root)
         resolved_token.relative_to(resolved_dir)
     except (FileNotFoundError, OSError, ValueError):
         raise AdapterError("ACCOUNT_CREDENTIALS_MISSING", exit_code=3) from None
-    if resolved_token != token_path or not _is_private_file(token_path):
+    if resolved_map != account_map_path or resolved_token != token_path:
         raise AdapterError("UNSAFE_ACCOUNT_CREDENTIALS", exit_code=3)
-    try:
-        if token_path.stat().st_size > MAX_TOKEN_FILE_BYTES:
-            raise AdapterError("INVALID_ACCOUNT_CREDENTIALS", exit_code=3)
-        payload = json.loads(token_path.read_text(encoding="utf-8"))
-    except AdapterError:
-        raise
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        raise AdapterError("INVALID_ACCOUNT_CREDENTIALS", exit_code=3) from None
-    if not isinstance(payload, dict):
-        raise AdapterError("INVALID_ACCOUNT_CREDENTIALS", exit_code=3)
-    expected_email = payload.get("account")
+    account_map = _read_private_json(
+        account_map_path, error_code="UNSAFE_ACCOUNT_MAPPING"
+    )
+    if account_map.get("schema_version") != 1 or not isinstance(
+        account_map.get("accounts"), dict
+    ):
+        raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+    account_entry = account_map["accounts"].get(alias)
+    if not isinstance(account_entry, dict):
+        raise AdapterError("ACCOUNT_IDENTITY_MISSING", exit_code=3)
+    expected_email = account_entry.get("email")
     if not isinstance(expected_email, str) or not EMAIL_RE.fullmatch(expected_email):
         raise AdapterError("ACCOUNT_IDENTITY_MISSING", exit_code=3)
+    payload = _read_private_json(token_path, error_code="UNSAFE_ACCOUNT_CREDENTIALS")
     raw_scopes = payload.get("scopes")
     if (
         not isinstance(raw_scopes, list)
@@ -220,8 +265,10 @@ def build_service(context: AccountContext, *, timeout_s: float) -> Any:
     try:
         import google_auth_httplib2
         import httplib2
+        from google.auth.exceptions import GoogleAuthError, RefreshError
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
+        from googleapiclient.errors import Error as GoogleApiError
     except ImportError:
         raise AdapterError("GOOGLE_DEPENDENCIES_MISSING", exit_code=3) from None
     try:
@@ -233,7 +280,9 @@ def build_service(context: AccountContext, *, timeout_s: float) -> Any:
             http=httplib2.Http(timeout=float(timeout_s)),
         )
         return build("gmail", "v1", http=transport, cache_discovery=False)
-    except (OSError, TypeError, ValueError):
+    except RefreshError:
+        raise AdapterError("REAUTH_REQUIRED", exit_code=3) from None
+    except (GoogleAuthError, GoogleApiError, OSError, TypeError, ValueError):
         raise AdapterError("ACCOUNT_AUTH_UNAVAILABLE", exit_code=3) from None
 
 
@@ -243,6 +292,18 @@ def _http_status(exc: BaseException) -> int | None:
         return int(status) if status is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _is_refresh_error(exc: BaseException) -> bool:
+    try:
+        from google.auth.exceptions import RefreshError
+    except ImportError:
+        error_type = type(exc)
+        return (
+            error_type.__module__ == "google.auth.exceptions"
+            and error_type.__name__ == "RefreshError"
+        )
+    return isinstance(exc, RefreshError)
 
 
 def _decode_urlsafe(value: str, *, error_code: str) -> bytes:
@@ -375,9 +436,22 @@ def _atomic_private_json(
 
 
 def _stored_attachment(path: Path, digest: str) -> tuple[Path, str, bool]:
-    if path.is_symlink() or not path.is_file():
+    info = path.lstat()
+    getuid = getattr(os, "getuid", None)
+    owner_matches = getuid is None or info.st_uid == getuid()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or not owner_matches
+        or info.st_nlink != 1
+    ):
         raise AdapterError("UNSAFE_PRIVATE_STORAGE")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+    file_hash = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            file_hash.update(chunk)
+    if file_hash.hexdigest() != digest:
         raise AdapterError("ATTACHMENT_STORAGE_MISMATCH")
     return path, digest, True
 
@@ -406,6 +480,7 @@ def _store_attachment(
         except FileNotFoundError:
             pass
         raise
+    _stored_attachment(destination, digest)
     return destination, digest, False
 
 
@@ -443,6 +518,8 @@ class GmailReadClient:
             except AdapterError:
                 raise
             except Exception as exc:  # health: allow BLE001 -- redact the third-party transport boundary
+                if _is_refresh_error(exc):
+                    raise AdapterError("REAUTH_REQUIRED", exit_code=3) from None
                 status = _http_status(exc)
                 if status == 401:
                     raise AdapterError("REAUTH_REQUIRED", exit_code=3) from None
@@ -688,6 +765,9 @@ def _run_search(
         "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
         "max_results": args.max_results,
         "page_token_present": token is not None,
+        "page_token_sha256": (
+            hashlib.sha256(token.encode()).hexdigest() if token is not None else None
+        ),
     }
     return client.search(query, args.max_results, token), request_shape
 
@@ -701,7 +781,9 @@ def _run_get(
     del home, context
     message_id = _validate_id(args.message_id, "message")
     request_shape = {
-        "message_id_sha256": hashlib.sha256(message_id.encode()).hexdigest()
+        "message_id_sha256": hashlib.sha256(message_id.encode()).hexdigest(),
+        "max_body_bytes": args.max_body_bytes,
+        "max_message_bytes": args.max_message_bytes,
     }
     data = client.get_message(message_id, args.max_body_bytes, args.max_message_bytes)
     return data, request_shape
@@ -718,6 +800,7 @@ def _run_attachment_get(
     request_shape = {
         "message_id_sha256": hashlib.sha256(message_id.encode()).hexdigest(),
         "attachment_id_sha256": hashlib.sha256(attachment_id.encode()).hexdigest(),
+        "max_bytes": args.max_bytes,
     }
     root = home / "source-cache" / "gmail-read" / context.alias
     data = client.get_attachment(message_id, attachment_id, args.max_bytes, root, home)
@@ -738,6 +821,51 @@ _OPERATION_HANDLERS: dict[
 }
 
 
+def _profile_shape(args: argparse.Namespace) -> dict[str, Any]:
+    del args
+    return {}
+
+
+def _search_shape(args: argparse.Namespace) -> dict[str, Any]:
+    query = _validate_query(args.query)
+    token = _validate_page_token(args.page_token)
+    return {
+        "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+        "max_results": args.max_results,
+        "page_token_present": token is not None,
+        "page_token_sha256": (
+            hashlib.sha256(token.encode()).hexdigest() if token is not None else None
+        ),
+    }
+
+
+def _get_shape(args: argparse.Namespace) -> dict[str, Any]:
+    message_id = _validate_id(args.message_id, "message")
+    return {
+        "message_id_sha256": hashlib.sha256(message_id.encode()).hexdigest(),
+        "max_body_bytes": args.max_body_bytes,
+        "max_message_bytes": args.max_message_bytes,
+    }
+
+
+def _attachment_shape(args: argparse.Namespace) -> dict[str, Any]:
+    message_id = _validate_id(args.message_id, "message")
+    attachment_id = _validate_id(args.attachment_id, "attachment")
+    return {
+        "message_id_sha256": hashlib.sha256(message_id.encode()).hexdigest(),
+        "attachment_id_sha256": hashlib.sha256(attachment_id.encode()).hexdigest(),
+        "max_bytes": args.max_bytes,
+    }
+
+
+_REQUEST_SHAPE_BUILDERS: dict[str, Callable[[argparse.Namespace], dict[str, Any]]] = {
+    "profile": _profile_shape,
+    "search": _search_shape,
+    "get": _get_shape,
+    "attachment-get": _attachment_shape,
+}
+
+
 def execute(
     args: argparse.Namespace,
     *,
@@ -745,19 +873,34 @@ def execute(
     hermes_home: Path | None = None,
 ) -> dict[str, Any]:
     home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
-    context = load_account_context(args.account, home)
-    limits = Limits(args.deadline, args.max_api_calls, args.attempts)
-    gmail = (
-        service
-        if service is not None
-        else build_service(context, timeout_s=args.timeout)
-    )
-    client = GmailReadClient(gmail, context, limits)
-    started_at = _utcnow()
     handler = _OPERATION_HANDLERS.get(args.operation)
-    if handler is None:  # argparse prevents this, but keep dispatch fail-closed.
+    shape_builder = _REQUEST_SHAPE_BUILDERS.get(args.operation)
+    if handler is None or shape_builder is None:
         raise AdapterError("UNSUPPORTED_OPERATION", exit_code=2)
-    data, request_shape = handler(args, client, home, context)
+    request_shape = shape_builder(args)
+    client: GmailReadClient | None = None
+    started_at = _utcnow()
+    try:
+        context = load_account_context(args.account, home)
+        limits = Limits(args.deadline, args.max_api_calls, args.attempts)
+        gmail = (
+            service
+            if service is not None
+            else build_service(context, timeout_s=args.timeout)
+        )
+        client = GmailReadClient(gmail, context, limits)
+        data, handler_shape = handler(args, client, home, context)
+        if handler_shape != request_shape:
+            raise AdapterError("REQUEST_SHAPE_MISMATCH")
+    except AdapterError as exc:
+        exc.bind_runtime(
+            api_calls=client.api_calls if client is not None else 0,
+            identity_verified=(
+                client.identity_verified if client is not None else False
+            ),
+            request_shape=request_shape,
+        )
+        raise
     finished_at = _utcnow()
     operation_key = _operation_key(context.alias, args.operation, request_shape)
     receipt = {
@@ -839,7 +982,15 @@ def _persist_error_receipt(
     home = Path(home) if home is not None else get_hermes_home()
     alias = _validate_alias(args.account)
     operation = str(args.operation)
-    operation_key = _operation_key(alias, operation, {"error_code": error.code})
+    request_shape = error.request_shape
+    if request_shape is None:
+        shape_builder = _REQUEST_SHAPE_BUILDERS.get(operation)
+        request_shape = shape_builder(args) if shape_builder is not None else {}
+    operation_key = _operation_key(
+        alias,
+        operation,
+        {**request_shape, "error_code": error.code},
+    )
     now = _utcnow()
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -849,8 +1000,8 @@ def _persist_error_receipt(
         "status": "blocked" if error.exit_code == 3 else "error",
         "started_at": now,
         "finished_at": now,
-        "identity_verified": False,
-        "api_calls": 0,
+        "identity_verified": error.identity_verified,
+        "api_calls": error.api_calls,
         "operation_key": operation_key,
         "error_code": error.code,
     }

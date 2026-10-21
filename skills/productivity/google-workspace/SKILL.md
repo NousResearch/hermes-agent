@@ -183,11 +183,24 @@ GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/
 
 For a named account, prefer the separate read-only adapter. The alias resolves
 only to `${HERMES_HOME:-$HOME/.hermes}/google-accounts/<alias>/google_token.json`;
-the token must record its expected `account` email and carry exactly the
-`gmail.readonly` Gmail scope (unrelated read-only Google scopes are allowed).
-The adapter verifies `users.getProfile` before every mailbox operation and
-writes only body-free receipts plus explicitly fetched attachments under the
-private account-scoped source cache.
+the deployment independently maps aliases to expected mailbox identities in
+the owner-only `${HERMES_HOME:-$HOME/.hermes}/google-accounts/accounts.json`:
+
+```json
+{
+  "schema_version": 1,
+  "accounts": {
+    "personal": {"email": "owner@example.com"}
+  }
+}
+```
+
+The mapping and each token file must be regular owner-only files. A token's own
+account hint is never an identity authority. The token must carry exactly the
+`gmail.readonly` Gmail scope (unrelated read-only Google scopes are allowed),
+and the adapter verifies `users.getProfile` against the independent mapping
+before every mailbox operation. It writes only body-free receipts plus
+explicitly fetched attachments under the private account-scoped source cache.
 
 ```bash
 GMAIL_READ="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/gmail_read_api.py"

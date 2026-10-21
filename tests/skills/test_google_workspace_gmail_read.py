@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -34,10 +35,29 @@ def module(monkeypatch, tmp_path):
 
 
 def _write_account(
-    home: Path, alias="personal", email="person@example.com", scopes=None
+    home: Path,
+    alias="personal",
+    email="person@example.com",
+    scopes=None,
+    *,
+    mapping_email=None,
+    token_email=None,
 ):
-    directory = home / "google-accounts" / alias
+    accounts_root = home / "google-accounts"
+    directory = accounts_root / alias
     directory.mkdir(parents=True)
+    mapping = accounts_root / "accounts.json"
+    mapping.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "accounts": {
+                    alias: {"email": mapping_email or email},
+                },
+            }
+        )
+    )
+    mapping.chmod(0o600)
     token = directory / "google_token.json"
     token.write_text(
         json.dumps(
@@ -48,7 +68,7 @@ def _write_account(
                 "client_id": "test.apps.googleusercontent.com",
                 "client_secret": "test-secret",
                 "token_uri": "https://oauth2.googleapis.com/token",
-                "account": email,
+                "account": token_email or email,
                 "scopes": scopes or [READONLY, DRIVE_READONLY],
             }
         )
@@ -187,6 +207,16 @@ def test_context_rejects_symlink_and_open_permissions(module, tmp_path):
         module.load_account_context("personal", home)
 
 
+def test_context_requires_owner_only_independent_mapping(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    mapping = home / "google-accounts" / "accounts.json"
+    mapping.chmod(0o644)
+
+    with pytest.raises(module.AdapterError, match="UNSAFE_ACCOUNT_MAPPING"):
+        module.load_account_context("personal", home)
+
+
 @pytest.mark.parametrize(
     "scopes",
     [
@@ -214,6 +244,27 @@ def test_identity_mismatch_fails_before_mailbox_read(module, tmp_path):
 
     with pytest.raises(module.AdapterError, match="ACCOUNT_IDENTITY_MISMATCH"):
         module.execute(args, service=service, hermes_home=home)
+
+    assert [name for name, _ in service.calls] == ["profile"]
+
+
+def test_swapped_company_token_cannot_claim_personal_alias(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(
+        home,
+        mapping_email="person@example.com",
+        token_email="company@example.com",
+    )
+    service = FakeService(
+        profile=[{"emailAddress": "company@example.com", "historyId": "7"}]
+    )
+
+    with pytest.raises(module.AdapterError, match="ACCOUNT_IDENTITY_MISMATCH"):
+        module.execute(
+            _args(module, "search", "subject:contract"),
+            service=service,
+            hermes_home=home,
+        )
 
     assert [name for name, _ in service.calls] == ["profile"]
 
@@ -255,6 +306,25 @@ def test_search_is_bounded_paginated_and_deduplicated(module, tmp_path):
         "maxResults": 5,
         "pageToken": "page-1",
     }
+
+
+def test_search_receipt_key_binds_exact_page_token(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+
+    first = module.execute(
+        _args(module, "search", "subject:contract", "--page-token", "page-1"),
+        service=FakeService(),
+        hermes_home=home,
+    )
+    second = module.execute(
+        _args(module, "search", "subject:contract", "--page-token", "page-2"),
+        service=FakeService(),
+        hermes_home=home,
+    )
+
+    assert first["receipt"]["operation_key"] != second["receipt"]["operation_key"]
+    assert first["receipt"]["path"] != second["receipt"]["path"]
 
 
 def test_get_recurses_mime_and_lists_attachments(module, tmp_path):
@@ -370,6 +440,36 @@ def test_attachment_get_is_private_content_addressed_and_idempotent(module, tmp_
     assert second["data"]["path"] == first["data"]["path"]
 
 
+def test_attachment_reuse_rejects_broad_mode_and_hardlinks(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    encoded = module.base64.urlsafe_b64encode(b"pdf bytes").decode()
+    args = _args(module, "attachment-get", "m1", "att-1")
+    first = module.execute(
+        args,
+        service=FakeService(attachments=[{"data": encoded}]),
+        hermes_home=home,
+    )
+    path = Path(first["data"]["path"])
+    path.chmod(0o644)
+
+    with pytest.raises(module.AdapterError, match="UNSAFE_PRIVATE_STORAGE"):
+        module.execute(
+            args,
+            service=FakeService(attachments=[{"data": encoded}]),
+            hermes_home=home,
+        )
+
+    path.chmod(0o600)
+    os.link(path, path.with_name(f"{path.name}.link"))
+    with pytest.raises(module.AdapterError, match="UNSAFE_PRIVATE_STORAGE"):
+        module.execute(
+            args,
+            service=FakeService(attachments=[{"data": encoded}]),
+            hermes_home=home,
+        )
+
+
 def test_attachment_get_rejects_oversize_before_decode(module, tmp_path):
     home = tmp_path / ".hermes"
     _write_account(home)
@@ -424,6 +524,80 @@ def test_retry_and_api_call_budget_are_bounded(module, tmp_path):
     exhausted.verify_identity()
     with pytest.raises(module.AdapterError, match="API_CALL_BUDGET_EXCEEDED"):
         exhausted.search("is:unread", 1, None)
+
+
+def test_refresh_error_is_typed_reauth_without_detail(module, tmp_path):
+    RefreshError = type(
+        "RefreshError",
+        (Exception,),
+        {"__module__": "google.auth.exceptions"},
+    )
+
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    args = _args(module, "profile")
+
+    with pytest.raises(module.AdapterError) as raised:
+        module.execute(
+            args,
+            service=FakeService(
+                profile=[RefreshError("invalid_grant: private detail")]
+            ),
+            hermes_home=home,
+        )
+
+    error = raised.value
+    assert error.code == "REAUTH_REQUIRED"
+    assert error.exit_code == 3
+    assert error.api_calls == 1
+    assert error.identity_verified is False
+    assert "invalid_grant" not in str(error)
+
+
+def test_error_receipt_binds_request_and_runtime_state(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    args = _args(
+        module,
+        "--attempts",
+        "1",
+        "search",
+        "subject:private-contract",
+        "--page-token",
+        "page-1",
+    )
+
+    with pytest.raises(module.AdapterError) as raised:
+        module.execute(
+            args,
+            service=FakeService(list_response=FakeHttpError(500)),
+            hermes_home=home,
+        )
+    error = raised.value
+    receipt_path = module._persist_error_receipt(args, error, home)
+    receipt = json.loads(receipt_path.read_text())
+
+    assert receipt["api_calls"] == 2
+    assert receipt["identity_verified"] is True
+    assert receipt["error_code"] == "GMAIL_API_UNAVAILABLE"
+    assert "private-contract" not in receipt_path.read_text()
+    other_args = _args(
+        module,
+        "--attempts",
+        "1",
+        "search",
+        "subject:private-contract",
+        "--page-token",
+        "page-2",
+    )
+    other_error = module.AdapterError(
+        "GMAIL_API_UNAVAILABLE",
+        api_calls=2,
+        identity_verified=True,
+        request_shape=module._search_shape(other_args),
+    )
+    other_path = module._persist_error_receipt(other_args, other_error, home)
+    assert other_path != receipt_path
 
 
 def test_receipt_is_private_and_body_free(module, tmp_path):

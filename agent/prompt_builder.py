@@ -1245,12 +1245,17 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
+    promoted_skills: frozenset[str] | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
     Same-named skills resolve like skill_view: project > local > create_dir > external_dirs, and a
     same-tier duplicate is listed under its exact relative path (``agent.skill_utils.resolve_skill_catalog``).
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
+    The sentinel ``"*"`` demotes EVERY category (the subagent compact index).
+    ``promoted_skills`` re-promotes named skills to full descriptions even inside demoted categories — the
+    delegate_task per-task ``skills=[...]`` allowlist rides on this, so a brief hands its child exactly the
+    domain skills the task needs while the rest of the index stays compact.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
@@ -1271,7 +1276,8 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories,
+            promoted_skills=promoted_skills)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1321,6 +1327,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
+    promoted_skills: frozenset[str] | None = None,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
     sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
@@ -1328,12 +1335,23 @@ def _render_skills_index(
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
-    hidden_note = (
-        "\n(Categories marked [names only] are outside the current coding "
-        "context, so their descriptions are omitted — the skills work "
-        "normally and load with skill_view(name) as usual.)"
-    ) if demoted else ""
+    _compact = compact_categories or frozenset()
+    demoted = frozenset(cat for cat in skills_by_category if "*" in _compact or cat.split("/", 1)[0] in _compact)
+    if not demoted:
+        hidden_note = ""
+    elif "*" in _compact:
+        hidden_note = (
+            "\n(This is a compact index: descriptions are omitted for brevity, "
+            "but every skill works normally — load any of them with "
+            "skill_view(name), or browse with skills_list.)"
+        )
+    else:
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        )
+    _promoted = promoted_skills or frozenset()
     if unloadable:
         hidden_note += (f"\n(A copy of {', '.join(unloadable)} is not listed: it shares both its name and its path "
                         "with a different skill in the same skills directory tier (e.g. another external_dirs entry), "
@@ -1344,7 +1362,18 @@ def _render_skills_index(
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
         if category in demoted:
-            index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
+            names = sorted({n for n, _ in entries if n not in _promoted})
+            cat_promoted = sorted({(n, d) for n, d in entries if n in _promoted}, key=lambda x: x[0])
+            if names:
+                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+            else:
+                index_lines.append(f"  {category}:" if cat_promoted else f"  {category} [names only]:")
+            # Promoted skills keep full descriptions even in a demoted category (the per-task allowlist).
+            seen = set()
+            for name, desc in cat_promoted:
+                if name not in seen:
+                    seen.add(name)
+                    index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
             continue
         cat_desc = category_descriptions.get(category, "")
         index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
@@ -1391,6 +1420,7 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
+    promoted_skills: frozenset[str] | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1409,7 +1439,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        tuple(sorted(promoted_skills or ())), _oneshot_prompt_variant(), tuple(plugin_rows),
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
@@ -1479,7 +1509,8 @@ def _build_skills_system_prompt_inner(
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable,
+                                  promoted_skills)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

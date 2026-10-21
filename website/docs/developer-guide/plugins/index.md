@@ -143,9 +143,46 @@ call to that server that is not annotated `readOnlyHint: true` asks the user
 first, and fails closed where nobody can answer (cron, unattended runs). The
 only other accepted value is `full`, the default, so a package can narrow
 access but never widen it. A `config.yaml` server with the same name replaces
-the package's entry, including its trust. Other harnesses ignore this extension.
+the package's entry, including its trust, but keeps the package's declared costs
+and spend limit (below) unless it sets its own. Other harnesses ignore this extension.
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
+
+A server whose tools spend money or credits can declare what each call costs
+and a budget per chat. Hermes then names the cost in the approval prompt along
+with the chat's running total, and a call that would take the chat past
+`spend_limit` asks first even when the user has made the server trusted:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "renders": {
+          "trust": "untrusted",
+          "costs": {
+            "create_image": 20,
+            "animate": { "credits": [5, 20], "note": "per animation" }
+          },
+          "spend_limit": 100,
+          "cost_unit": "credits"
+        }
+      }
+    }
+  }
+}
+```
+
+Keys of `costs` are MCP tool names as the server lists them. A cost is a
+non-negative number, a `[min, max]` range, or an object with `credits` (number
+or range) and a short `note`. `spend_limit` is optional (`0` or absent = no
+limit) and `cost_unit` defaults to `credits`. A malformed table makes the
+package fail to load with an error naming the key. These map to the native
+`tool_costs`, `spend_limit` and `cost_unit` keys (see
+[Tool costs and spend limits](../../user-guide/features/mcp.md#tool-costs-and-spend-limits)).
+Costs are facts about the server, so they survive a user's same-name
+`config.yaml` entry (the way a user widens trust) unless that entry sets the
+key itself; the user's `spend_limit` wins, including `0` to turn it off.
 
 A long-running server can also declare a Hermes-specific tool-call `timeout`
 (in seconds) in `plugin.json`, without changing other servers' defaults:

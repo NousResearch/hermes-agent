@@ -32,6 +32,7 @@ from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_cli.plugins_cron_approvals import CronApprovalContextMixin
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
@@ -225,7 +226,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+class PluginContext(CronApprovalContextMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -398,11 +399,6 @@ class PluginContext:
             return get_active_profile_name()
         except Exception:
             return "default"
-
-    def current_cron_execution(self) -> Any:
-        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
-        from cron.execution_identity import current_cron_execution
-        return current_cron_execution()
 
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved

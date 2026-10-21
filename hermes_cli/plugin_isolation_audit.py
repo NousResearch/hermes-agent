@@ -2,8 +2,11 @@
 
 Reads a plugin directory's manifest and Python source (never imports it) and reports whether the
 plugin reaches Hermes only through ``ctx`` surfaces that cross the host boundary. The rules come
-from :mod:`hermes_cli.plugin_isolation`, the same tables the host enforces at runtime, so a plugin
-the audit calls host-ready loads in the host, and one it flags fails there with the same reason.
+from :mod:`hermes_cli.plugin_isolation`, the same tables the host enforces at runtime.
+This is an advisory syntax audit, not an interpreter or a guarantee that a plugin will load.
+It follows local name aliases, literal unpacking and uniform literal iteration. Container
+lookups, call results, object attributes, arbitrary iterables and cross-function/control-flow
+data flow are not inferred; the host still refuses unsupported access at runtime.
 
 What it cannot see in a process boundary it flags:
 
@@ -45,6 +48,13 @@ _MANIFEST_KIND_REASONS: dict[str, str] = {
 }
 _STREAMING_MARKERS = ("StreamingResponse", "EventSourceResponse", ".websocket(", "WebSocket")
 _SKIP_DIRS = frozenset({"tests", "test", ".git", "__pycache__", "node_modules", ".venv", "venv", "docs"})
+_CtxValue = bool | tuple["_CtxValue", ...]
+
+
+def _parameter_names(args: ast.arguments) -> set[str]:
+    names = {arg.arg for arg in args.posonlyargs + args.args + args.kwonlyargs}
+    names.update(arg.arg for arg in (args.vararg, args.kwarg) if arg is not None)
+    return names
 
 
 @dataclass
@@ -83,13 +93,17 @@ def _python_files(plugin_dir: Path) -> list[Path]:
 
 
 class _SourceVisitor(ast.NodeVisitor):
-    """Collects ctx method calls, Hermes-module aliases, and writes through those aliases."""
+    """Collect ctx calls and aliases; dynamic cross-function data flow is not inferred."""
 
     def __init__(self, rel: str, *, model_provider: bool = False):
         from hermes_cli.plugin_isolation import (
-            HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
+            HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS,
+            HOST_UNSUPPORTED_CTX_FACADES, HOST_UNSUPPORTED_CTX_METHODS,
         )
         self._unsupported, self._skipped = HOST_UNSUPPORTED_CTX_METHODS, HOST_SKIPPED_CTX_METHODS
+        self._ctx_facades = HOST_UNSUPPORTED_CTX_FACADES
+        self._ctx_names: set[str] = set()
+        self._scope_depth = 0
         self._degraded, self._object_methods = HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES
         self.rel = rel
         # A model-provider plugin's register_provider() call is its contract; the host captures it.
@@ -129,25 +143,169 @@ class _SourceVisitor(ast.NodeVisitor):
                                     f"attribute; the host's copy is not the one Hermes runs)")
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        value = self._ctx_value(node.value)
+        self.generic_visit(node)
         for target in node.targets:
             self._flag_write(target, node.lineno)
+            self._bind_ctx(target, value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        value = self._ctx_value(node.value)
         self.generic_visit(node)
+        self._flag_write(node.target, node.lineno)
+        if node.value is not None:
+            self._bind_ctx(node.target, value)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._flag_write(node.target, node.lineno)
         self.generic_visit(node)
+        self._flag_write(node.target, node.lineno)
+        self._bind_ctx(node.target, False)
+
+    def _is_ctx(self, node: Optional[ast.AST]) -> bool:
+        return isinstance(node, ast.Name) and node.id in self._ctx_names
+
+    def _ctx_value(self, node: Optional[ast.AST]) -> _CtxValue:
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return tuple(self._ctx_value(item) for item in node.elts)
+        return self._is_ctx(node)
+
+    def _iteration_value(self, node: ast.AST) -> _CtxValue:
+        items = self._ctx_value(node)
+        if isinstance(items, tuple) and items and len(set(items)) == 1:
+            return items[0]
+        return False
+
+    def _bind_ctx(self, node: ast.AST, value: _CtxValue) -> None:
+        if isinstance(node, ast.Name):
+            if value is True:
+                self._ctx_names.add(node.id)
+            else:
+                self._ctx_names.discard(node.id)
+        elif isinstance(node, ast.Starred):
+            self._bind_ctx(node.value, False)  # A starred target receives a list, not a context.
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            values = value if isinstance(value, tuple) else ()
+            star = next((i for i, item in enumerate(node.elts) if isinstance(item, ast.Starred)), None)
+            if star is not None and len(values) >= len(node.elts) - 1:
+                tail = len(node.elts) - star - 1
+                values = values[:star] + (False,) + (values[-tail:] if tail else ())
+            if len(values) != len(node.elts):
+                values = (False,) * len(node.elts)
+            for target, item in zip(node.elts, values):
+                self._bind_ctx(target, item)
+
+    def visit_For(self, node: ast.For) -> None:
+        self.visit(node.iter)
+        self._bind_ctx(node.target, self._iteration_value(node.iter))
+        self.visit(node.target)
+        for statement in node.body + node.orelse:
+            self.visit(statement)
+
+    visit_AsyncFor = visit_For
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._bind_ctx(item.optional_vars, False)
+                self.visit(item.optional_vars)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name:
+            self._ctx_names.discard(node.name)
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self._bind_ctx(node.target, self._ctx_value(node.value))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        positional = node.args.posonlyargs + node.args.args
+        params = _parameter_names(node.args)
+        outer = self._ctx_names
+        # Helpers conventionally name their context parameter ctx. Only a
+        # module-level register function receives a context regardless of name.
+        self._ctx_names = (outer - params) | (params & {"ctx"})
+        if node.name == "register" and positional and self._scope_depth == 0:
+            self._ctx_names.add(positional[0].arg)
+        self._scope_depth += 1
+        try:
+            self.generic_visit(node)
+        finally:
+            self._scope_depth -= 1
+            self._ctx_names = outer
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)  # Defaults evaluate in the enclosing scope.
+        outer = self._ctx_names
+        self._ctx_names = outer - _parameter_names(node.args)
+        try:
+            self.visit(node.body)
+        finally:
+            self._ctx_names = outer
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        outer = self._ctx_names
+        self._ctx_names = outer.copy()
+        try:
+            for generator in node.generators:
+                self.visit(generator.iter)
+                self._bind_ctx(generator.target, self._iteration_value(generator.iter))
+                for condition in generator.ifs:
+                    self.visit(condition)
+            if isinstance(node, ast.DictComp):
+                self.visit(node.key)
+                self.visit(node.value)
+            else:
+                self.visit(node.elt)
+        finally:
+            self._ctx_names = outer
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
+
+    def _flag_ctx_member(self, name: str, line: int) -> None:
+        if name in self._unsupported:
+            self.reasons.append(f"{self.rel}:{line} ctx.{name}: {self._unsupported[name]}")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # A facade can be used through a nested call or saved for later use.
+        if isinstance(node.ctx, ast.Load) and self._is_ctx(node.value):
+            self._flag_ctx_member(node.attr, node.lineno)
+        self.generic_visit(node)
+
+    def _flag_getattr(self, node: ast.Call) -> None:
+        if (isinstance(node.func, ast.Name) and node.func.id == "getattr"
+                and len(node.args) > 1 and self._is_ctx(node.args[0])):
+            name = node.args[1]
+            if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                self._flag_ctx_member(name.value, node.lineno)
 
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
+        self._flag_getattr(node)
         if isinstance(func, ast.Name) and func.id == "setattr" and node.args:
             owner = self._resolve(node.args[0])
             if owner:
                 self.reasons.append(f"{self.rel}:{node.lineno} setattr() on {owner} (patches a Hermes module)")
         if isinstance(func, ast.Attribute):
             name = func.attr
-            if name in self._unsupported:
-                self.reasons.append(f"{self.rel}:{node.lineno} ctx.{name}(): {self._unsupported[name]}")
-            elif name in self._skipped:
+            # Preserve the existing method-call heuristic; facade accesses above
+            # require a known context receiver, even when the facade is called.
+            if name in self._unsupported and name not in self._ctx_facades and not self._is_ctx(func.value):
+                self._flag_ctx_member(name, node.lineno)
+            if name in self._skipped:
                 self.notes.append(f"ctx.{name}() is skipped in the host ({self._skipped[name]})")
             if name.startswith("register_") or name in {"subscribe", "dispatch_tool", "inject_message", "emit"}:
                 self.ctx_methods.add(name)
@@ -176,7 +334,14 @@ class _SourceVisitor(ast.NodeVisitor):
                                        and item.name == "create_client" for item in node.body):
             self.reasons.append(f"{self.rel}:{node.lineno} {node.name}.create_client() returns a live SDK "
                                 f"client (model-provider profiles cross the host as data + methods)")
-        self.generic_visit(node)
+        outer = self._ctx_names
+        self._ctx_names = outer.copy()
+        self._scope_depth += 1
+        try:
+            self.generic_visit(node)
+        finally:
+            self._scope_depth -= 1
+            self._ctx_names = outer
 
 
 def audit_plugin_dir(plugin_dir: Path, manifest: Optional[Mapping[str, Any]] = None) -> IsolationReport:

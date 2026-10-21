@@ -82,6 +82,19 @@ class RemoteFacade:
         return remote
 
 
+class _UnsupportedContextSurface:
+    """Refuse both direct calls and members of in-process-only facades."""
+
+    def __init__(self, name: str, reason: str):
+        self._message = f"ctx.{name} cannot run in the plugin host: {reason}"
+
+    def __call__(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise PluginHostUnsupported(self._message)
+
+    def __getattr__(self, _name: str) -> Any:
+        return self()
+
+
 class RemotePluginContext:
     """What ``register(ctx)`` receives inside the host. Mirrors ``PluginContext``'s public surface as
     announced by Hermes at load, so ``hasattr(ctx, "register_x")`` answers the same as in-process."""
@@ -101,10 +114,7 @@ class RemotePluginContext:
             HOST_REMOTE_FACADES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
         )
         if name in HOST_UNSUPPORTED_CTX_METHODS:
-            def unsupported(*_args: Any, **_kwargs: Any) -> Any:
-                raise PluginHostUnsupported(
-                    f"ctx.{name}() cannot run in the plugin host: {HOST_UNSUPPORTED_CTX_METHODS[name]}")
-            return unsupported
+            return _UnsupportedContextSurface(name, HOST_UNSUPPORTED_CTX_METHODS[name])
         if name in HOST_SKIPPED_CTX_METHODS:
             def skipped(*_args: Any, **_kwargs: Any) -> None:
                 logger.warning("Plugin '%s': ctx.%s() is skipped in the plugin host (%s)",

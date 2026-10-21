@@ -1870,6 +1870,11 @@ it performs no origin, consent or ownership checks for you. Full contract:
 
 ### Know which cron run you are in
 
+For gateway-owned presentation of a canonical cron invocation's pending approval, see
+[`ctx.cron_approvals`](../cron-approval-presentation.md). This in-process API carries
+an exact execution lifetime; audit decisions and tool dispatch stay with their
+existing owners.
+
 `ctx.current_cron_execution()` returns the scheduled run the current code executes inside, or `None` outside cron. It works from any hook that fires during the run (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, ...) and from tool handlers. The value is a frozen `CronExecution`:
 
 | Field | Meaning |

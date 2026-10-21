@@ -41,7 +41,11 @@ HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "register_approval_transport": "approval transports hold the live approval request/response channel",
     "post_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "apost_message": "the returned handle is bound to the gateway's event loop and live adapter",
+    "cron_approvals": "cron presentations hold a live canonical execution",
 }
+# These entries are facade objects, so a same-named call on an unrelated object
+# is not evidence of a context API use during static audit.
+HOST_UNSUPPORTED_CTX_FACADES: frozenset[str] = frozenset({"cron_approvals"})
 
 # Registered in-process only; skipped (with a warning, the plugin still loads) inside the host
 # because the surface they extend does not exist in a server process.

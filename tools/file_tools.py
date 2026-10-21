@@ -1055,8 +1055,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
-                task_id: str = "default") -> str:
+                task_id: str = "default", session_id: str | None = None) -> str:
     """Search for content or files."""
+    stage = "validation"
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
@@ -1082,6 +1083,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         nt_err = get_nt_namespace_error(path, verb="Search")
         if nt_err:
             return tool_error(nt_err)
+        stage = "resolve_path"
         try:
             resolved_search_path = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1100,15 +1102,20 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if cached_search_nf is not None:
             return cached_search_nf
 
-        result = _get_file_ops(task_id).search(
+        stage = "backend_init"
+        file_ops = _get_file_ops(task_id)
+        stage = "backend_search"
+        result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
+        stage = "filter_results"
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
+        stage = "serialize_results"
         result_dict = result.to_dict(densify=True)
 
         if omitted:
@@ -1136,6 +1143,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
+        # Exception text and tracebacks can contain search patterns, paths, and document content.
+        logger.warning(
+            "search_files failed stage=%s error_type=%s errno=%s task_id=%r session_id=%r",
+            stage, type(e).__name__, e.errno if isinstance(e, OSError) else None, task_id, session_id)
         return tool_error(str(e))
 
 
@@ -1378,7 +1389,7 @@ def _handle_search_files(args, **kw):
         pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
-        order=args.get("order", "discovery"), task_id=tid)
+        order=args.get("order", "discovery"), task_id=tid, session_id=kw.get("session_id"))
 
 
 def _read_file_schema_overrides():

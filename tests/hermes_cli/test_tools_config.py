@@ -387,6 +387,24 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
     sorted(enabled)
 
 
+@pytest.mark.parametrize("listed", ["dead", "mcp-dead"])
+def test_a_saved_disabled_mcp_server_does_not_enable_every_other_server(listed):
+    """A disabled server in a saved list matched nothing and fell through to ALL enabled servers.
+    It is still the user's explicit server selection: it stays off, and no other server is added."""
+    config = {
+        "platform_toolsets": {"cli": ["terminal", listed]},
+        "mcp_servers": {
+            "dead": {"url": "https://example.com/dead", "enabled": False},
+            "live": {"url": "https://example.com/live"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "terminal" in enabled
+    assert not {"dead", "mcp-dead", "live"} & enabled, enabled
+
+
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
 
 

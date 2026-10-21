@@ -1,0 +1,19 @@
+name: degeneracy-guard
+repo: https://github.com/simin-yuan/hermes-degeneracy-guard
+sha: ffc28d0ab9ac6b6c0cbb118ed5fb0c06909a3dc1
+version: "1.3.0"
+description: Asks the user to confirm a tool call whose arguments look like a repetition loop rather than data, through Hermes' approval gate (denied or unanswered means refused); replaces flagged degenerate output with a short notice; warns when a session grows long. Disclosure — no network, shell, subprocesses, own threads, telemetry or credentials; writes incident records and a session counter to its plugin data directory; a stream-side record keeps the last 800 characters of flagged output.
+maintainer: simin-yuan
+tier: community
+category: general
+requires_hermes: ">=0.22.2"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_stream_delta
+    - transform_llm_output
+    - post_llm_call
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -182,7 +182,17 @@ export const arSettings = {
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
-        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`,
+        verified: 'موثّق',
+        unverified: 'غير موثّق',
+        reviewedByNous: 'راجعته Nous.',
+        installsAndEnables: profile => `يُثبَّت لملف ${profile} ويعمل فورًا.`,
+        installsOnly: profile => `يُثبَّت لملف ${profile}.`,
+        advanced: 'متقدم',
+        versionLabel: 'الإصدار',
+        reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
+        latestCommit: 'أحدث إيداع',
+        nothingToInstall: 'لا تحتوي هذه الحزمة على ما يُثبَّت هنا.'
       }
     },
     notifications: {
@@ -512,12 +522,6 @@ export const arSettings = {
     },
 
     config: {
-      developerTitle: 'المطوّر',
-      resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',
-      resetOnboardingDesc:
-        'حذف محادثات الإعداد، وإعادة بناء ملف الإعداد الشخصي، وتشغيل الإعداد الأولي مرة أخرى. تبقى ملفاتك الشخصية ومحادثاتك وإضافاتك كما هي.',
-      resetOnboardingAction: 'إعادة تعيين',
-      resetOnboardingFailed: 'تعذّر إعادة تعيين الإعداد الأولي',
       minimizeToTrayTitle: 'التصغير إلى علبة النظام',
       minimizeToTrayDesc:
         'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
@@ -801,6 +805,23 @@ export const arSettings = {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
         }
+      },
+      subagents: {
+        inherit: 'الوراثة من الوكيل الرئيسي',
+        modelOnly: 'نموذج مخصص (بيانات اعتماد الوكيل الرئيسي)',
+        providerLabel: 'موفّر الوكلاء الفرعيين',
+        modelLabel: 'نموذج الوكلاء الفرعيين',
+        direct: 'نقطة نهاية مباشرة',
+        customProvider: 'موفّر مخصص...',
+        customProviderLabel: 'موفّر مخصص للوكلاء الفرعيين',
+        parentModel: 'استخدام نموذج الوكيل الرئيسي',
+        parentModelWarning:
+          'يجب أن يدعم الموفّر المختار نموذج الوكيل الرئيسي. قد يفشل المسار الذي يحدد الموفّر وحده إذا كان النموذج غير متوافق. إذا حدّد هذا الموفّر نموذجًا افتراضيًا خاصًا به، يستخدمه الوكلاء الفرعيون بدلًا من ذلك.',
+        directActive:
+          'نقطة نهاية مباشرة مفعّلة ولها الأولوية على الموفّر المحفوظ. يُحتفظ بعنوانها وبيانات اعتمادها ما دام هذا الوضع محددًا.',
+        directClear: 'تطبيق هذا المسار يمسح نقطة النهاية المباشرة ومفتاحها المحفوظ. تبقى إعدادات الطلب الأخرى كما هي.',
+        catalogFailed: 'كتالوج النماذج غير متاح. أدخل الموفّر والنموذج يدويًا أو أعد المحاولة.',
+        draftHint: 'تبقى التغييرات محلية حتى تطبيقها.'
       }
     },
     providers: {

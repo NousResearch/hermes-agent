@@ -60,7 +60,7 @@ class _ConsentRefusal(str):
     """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
     so publication classifies the refusal without matching the copy."""
 
-    def __new__(cls, text: str, failure_class: str) -> "_ConsentRefusal":
+    def __new__(cls, text: str, failure_class: str) -> _ConsentRefusal:
         refusal = super().__new__(cls, text)
         refusal.failure_class = failure_class
         return refusal
@@ -328,10 +328,36 @@ def _known_issue_warnings(entry) -> list[str]:
     return [f"Known issue: {issue}" for issue in entry.known_issues]
 
 
+def interactive_scan_decision(console, verb: str) -> Callable[[Any], bool]:
+    """The terminal ``[y/N]`` that accepts a caution verdict, shared by install and update (*verb*)."""
+    def decide(scan_result) -> bool:
+        from tools.plugin_guard import format_scan_report
+        console.print()
+        console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
+        console.print(format_scan_report(scan_result))
+        return _pc()._is_tty() and _pc()._ask_yes(f"  {verb} anyway? Only continue if you trust the source. [y/N]: ")
+    return decide
+
+
+def scan_blocked_result(exc) -> dict[str, Any]:
+    """The non-interactive surfaces' answer to a scan block: the verdict and findings, so the client can
+    show them and, for a caution verdict, retry with ``force``."""
+    fields = ("pattern_id", "severity", "category", "file", "line", "description")
+    return {
+        "ok": False, "error": str(exc), "scan_blocked": True,
+        "scan_verdict": getattr(exc.scan_result, "verdict", "dangerous"),
+        "scan_findings": [
+            {k: getattr(f, k) for k in fields}
+            for f in (exc.scan_result.findings if exc.scan_result is not None else ())
+        ],
+    }
+
+
 def _install_plugin_core(
     identifier: str,
     *,
     force: bool,
+    accept_caution: Optional[bool] = None,
     ref: Optional[str] = None,
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
@@ -356,7 +382,9 @@ def _install_plugin_core(
     *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
     the single scan and portable-package check admit the merged tree (file-count/size limits
     included). It may return the relative paths it merged in, which a scan block then attributes,
-    and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
+    and may raise :class:`PluginOperationError` to abort (re-pin consent). *accept_caution* decides a
+    caution scan verdict on its own when *force* only means "replace the existing tree" (an update's
+    re-clone); None lets *force* decide both, as ``install --force`` does."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -385,6 +413,15 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        link = plugins_dir / str(plugin_name)
+        from pm.filesystem import is_junction
+        if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
+            # A provider's own installer (e.g. `mnemosyne-hermes install`) links its package here; the
+            # name is fine, the slot is taken. Say so instead of blaming the manifest.
+            raise _pc().PluginOperationError(
+                f"Plugin '{plugin_name}' is already installed outside the catalog: {link} is a link to "
+                f"{os.path.realpath(link)}. Delete that link to install the catalog version.",
+                failure_class="already_installed")
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -406,8 +443,8 @@ def _install_plugin_core(
         # admits the final bytes.
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force, scan_decision_cb=scan_decision_cb,
-                                reviewed_pin=at_reviewed_pin)
+        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force if accept_caution is None else accept_caution,
+                                scan_decision_cb=scan_decision_cb, reviewed_pin=at_reviewed_pin)
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 
@@ -568,14 +605,7 @@ def cmd_install(
             "Consider using https:// or git@ for production installs.")
 
     console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
-
-    def _interactive_scan_decision(scan_result) -> bool:
-        """Prompt the user to accept a caution-verdict plugin."""
-        from tools.plugin_guard import format_scan_report
-        console.print()
-        console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
-        console.print(format_scan_report(scan_result))
-        return _pc()._is_tty() and _pc()._ask_yes("  Install anyway? Only continue if you trust the source. [y/N]: ")
+    _interactive_scan_decision = interactive_scan_decision(console, "Install")
 
     def _install() -> tuple:
         if entry is not None:
@@ -663,6 +693,9 @@ def cmd_install(
             f"[dim]Plugin installed but not enabled. "
             f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
 
+    from hermes_cli.plugin_provider_requests import requires_auth_notice
+    if notice := requires_auth_notice(installed_manifest):
+        console.print(f"[yellow]{notice}[/yellow]")
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
@@ -780,15 +813,7 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return recorded_install(_install, catalog_name=entry.name if entry is not None else None,
                                 identifier=identifier)
     except _pc().PluginScanBlocked as exc:
-        fields = ("pattern_id", "severity", "category", "file", "line", "description")
-        return {
-            "ok": False, "error": str(exc), "scan_blocked": True,
-            "scan_verdict": getattr(exc.scan_result, "verdict", "dangerous"),
-            "scan_findings": [
-                {k: getattr(f, k) for k in fields}
-                for f in (exc.scan_result.findings if exc.scan_result is not None else ())
-            ],
-        }
+        return scan_blocked_result(exc)
     except _pc().PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 

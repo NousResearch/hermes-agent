@@ -12,7 +12,6 @@ validate them.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import secrets
@@ -24,8 +23,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
+from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -35,9 +35,12 @@ from gateway.relay.egress import (
 )
 from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
-from gateway.session import SessionSource
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
+# Native admission refusals a redelivery cannot change (sender, route or payload).
+_PERMANENT_REFUSALS = frozenset({'permission_denied', 'invalid_params', 'admission_conflict',
+                                 'profile_mismatch', 'not_found'})
 
 # The drain-path going-idle ACK budget must stay strictly under the runner's
 # default adapter disconnect timeout (5s) or cancellation fires before
@@ -54,9 +57,6 @@ _URL_RE = re.compile(r"https?://|<https?:|\]\(https?:")
 # Already-answered prompt ids to remember so a duplicate answer (double tap or
 # connector redelivery) reads as a repeat, not a stale prompt.
 _RESOLVED_PROMPT_MEMORY = 256
-
-# Connector promptCodec.decodePromptCallback id alphabet ([A-Za-z0-9_.-], <=32).
-_PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
@@ -106,7 +106,7 @@ def _profile_from_session_key(session_key: str) -> Optional[str]:
     return None if profile == "default" else profile
 
 
-class RelayAdapter(BasePlatformAdapter):
+class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
     # Connector egress splits against negotiated max_message_length, so the
@@ -152,6 +152,12 @@ class RelayAdapter(BasePlatformAdapter):
         self._auto_thread_waiters: dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: dict[str, None] = {}
+        # Discord chat labels the text lane carries and a forwarded interaction does not:
+        # (scope, chat) -> (chat_name, chat_topic); the second map is what the store holds.
+        self._discord_chat_labels: dict[tuple, tuple] = {}
+        self._discord_labels_recorded: dict[tuple, tuple] = {}
+        # (platform, chat_id) -> the chat's latest off-reader admission task (inbound_admission).
+        self._admission_lanes: dict[tuple[str, str], asyncio.Task] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -179,7 +185,7 @@ class RelayAdapter(BasePlatformAdapter):
         self._revocation_monitor: Optional[asyncio.Task[None]] = None
         # Lazily built client for the connector's /relay/media routes; None when
         # dial URL or creds are absent (media lanes degrade to text fallbacks).
-        self._media_client: Optional["RelayMediaClient"] = None
+        self._media_client: Optional[RelayMediaClient] = None
         # prompt_id -> pending-prompt state for the interactive `prompt` op; the
         # user's pick comes back as a prompt_response naming this id and resolves the
         # waiting primitive like native button callbacks. Expire lazily (_pop_prompt).
@@ -193,7 +199,7 @@ class RelayAdapter(BasePlatformAdapter):
         self._prompt_owner_nonce: str = secrets.token_hex(3)
         # Prompt ids this process already resolved, newest last (repeat answers are
         # consumed silently instead of treated as stale).
-        self._resolved_prompts: "OrderedDict[str, float]" = OrderedDict()
+        self._resolved_prompts: OrderedDict[str, float] = OrderedDict()
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -666,7 +672,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def _card_frame(
         self, chat_id: str, op: str, reply_to: Optional[str], metadata: dict[str, Any], **fields: Any
-    ) -> Union[SendResult, dict[str, Any]]:
+    ) -> SendResult | dict[str, Any]:
         """Emit one task-card op: the connector result dict, or a failed SendResult
         when the lane is unavailable / the transport raised.
 
@@ -872,27 +878,47 @@ class RelayAdapter(BasePlatformAdapter):
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
-    async def _on_inbound(self, event) -> None:
-        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+    async def _on_inbound(self, event) -> Optional[asyncio.Task]:
+        """Bridge a connector-delivered MessageEvent into the normal adapter path; a task when its
+        admission runs off the reader (``admit_relay_delivery``) and the transport ACKs on its end."""
         # Inbound replay dedupe: the relay leg is at-least-once — on WS re-handshake
         # the connector replays its durable buffer, and a long turn straddling a
         # quiet socket drop got re-run (final answer 2-5x). Platform message identity
         # is stable across replays.
-        dedupe_key = self._inbound_dedupe_key(event)
+        runner = getattr(self._message_handler, '__self__', None)
+        native = getattr(runner, 'session_authority', None) is not None and not event.get_command()
+        dedupe_key = None if native else self._inbound_dedupe_key(event)
         if dedupe_key is not None:
             if dedupe_key in self._seen_inbound:
                 logger.info("relay inbound dropped as replay (dedupe key=%s)", dedupe_key)
                 return
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
-        self._capture_scope(event)
-        self._stamp_slack_session_thread(event)
-        # A structured prompt answer resolves its waiting primitive and is CONSUMED —
-        # never also dispatched as chat.
-        if await self._consume_prompt_response(event):
-            return
-        await self._localize_inbound_media(event)
+        try:
+            self._capture_scope(event)
+            await self._remember_discord_labels(event.source)
+            self._stamp_slack_session_thread(event)
+            # A structured prompt answer resolves its waiting primitive and is CONSUMED —
+            # never also dispatched as chat.
+            if await self._consume_prompt_response(event):
+                return
+            await self._localize_inbound_media(event)
+        except asyncio.CancelledError:
+            # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
+            # connector replays this frame; the replay must be admitted, not dropped as seen.
+            if dedupe_key is not None:
+                self._seen_inbound.pop(dedupe_key, None)
+            raise
+        if native:
+            from datetime import datetime
+            from gateway.relay.inbound_admission import admit_relay_delivery
+            # The connector does not transmit a provider timestamp. Local arrival
+            # time must not change the fingerprint of a retried provider identity.
+            event.timestamp = datetime.fromtimestamp(0, UTC)
+            # Never wait for inference or outbound ACKs (those need this same WS reader).
+            return await admit_relay_delivery(self, runner, event)
         await self.handle_message(event)
+        return None
 
     _SEEN_INBOUND_MAX = 512
 
@@ -1117,137 +1143,6 @@ class RelayAdapter(BasePlatformAdapter):
         """Bridge a connector-delivered /stop into the per-session interrupt path."""
         await self.interrupt_session_activity(session_key, chat_id)
 
-    async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
-        """Handle a connector-forwarded passthrough request. The connector answered the
-        provider's latency-critical ACK at the edge, verified the signature and vaulted
-        any shared-identity credential; the agent later acts via the token-less
-        ``send_follow_up`` path. A Discord interaction becomes a normalized
-        ``MessageEvent`` on the SAME agent path as chat; other forwards are logged and
-        dropped. NEVER raises: a malformed forward must not kill the read loop."""
-        try:
-            platform = getattr(forward, "platform", "") or ""
-            if platform == "discord":
-                event = self._discord_interaction_to_event(forward)
-                if event is not None:
-                    self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
-                        return
-                    await self.handle_message(event)
-                    return
-            logger.info(
-                "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
-                platform, getattr(forward, "method", "?"), getattr(forward, "path", "?"),
-            )
-        except Exception:
-            logger.warning("relay passthrough_forward handling failed", exc_info=True)
-
-    def _discord_interaction_to_event(self, forward):
-        """Convert a forwarded Discord interaction body to a MessageEvent, or None for
-        an unusable body (a PING is answered at the edge and never forwarded). The
-        session source mirrors the connector's ``interactionSessionSource`` so the
-        session key matches the one the follow-up capability was bound under."""
-        try:
-            payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
-        except Exception:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        # type 2 = APPLICATION_COMMAND; 3 = MESSAGE_COMPONENT; 5 = MODAL_SUBMIT.
-        itype = payload.get("type")
-        data = payload.get("data") or {}
-        message_type = MessageType.TEXT
-        if itype == 2:
-            # Normalize to a leading-slash command string ("/name arg…"), the
-            # shape the dispatcher and the connector's Slack slash lane expect.
-            text = ("/" + str(data.get("name") or "")).rstrip("/") or ""
-            if text:
-                parts = [text] + self._render_interaction_options(data.get("options"))
-                text = " ".join(parts).strip()
-                message_type = MessageType.COMMAND
-        elif itype == 3:
-            text = str(data.get("custom_id") or "")
-        else:
-            text = ""
-        member = payload.get("member") or {}
-        user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
-        if not isinstance(user, dict):
-            user = {}
-        guild_id = payload.get("guild_id")
-        source = SessionSource(
-            # The LOGICAL platform, not RELAY: session keys must match the connector's
-            # capability binding (platform="discord"), /sethome must file under the
-            # logical platform, and _capture_scope skips the generic "relay".
-            platform=Platform.DISCORD,
-            chat_id=str(payload.get("channel_id") or ""),
-            # "group", not "channel": both the connector's capability binding and the
-            # native Discord adapter key guild channels as "group".
-            chat_type="group" if guild_id else "dm",
-            user_id=str(user["id"]) if user.get("id") else None,
-            user_name=str(user["username"]) if user.get("username") else None,
-            scope_id=str(guild_id) if guild_id else None,
-            message_id=str(payload.get("id")) if payload.get("id") else None,
-            # Same upstream-trust marker the relay text lane stamps. Set locally, never
-            # read off the wire (engages /sethome's via_relay guard).
-            delivered_via_upstream_relay=True,
-            # Profile routing (multiplex mode), mirroring _event_from_wire.
-            # The HERMES profile this interaction is routed to (multiplex mode) — mirrors _event_from_wire's
-            # profile stamping for plain relayed messages (#60586). Without this, a Team-Gateway's Discord
-            # slash-command/button/modal always fell back to the legacy agent:main namespace even when the
-            # connector resolved a specific profile for it.
-            profile=getattr(forward, "profile", None),
-        )
-        event = MessageEvent(text=text, message_type=message_type, source=source)
-        if itype == 3:
-            # A component press whose custom_id is a Hermes prompt token
-            # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;
-            # foreign custom_ids keep the best-effort TEXT shape.
-            decoded = self._decode_prompt_token(text)
-            if decoded:
-                prompt_id, option_id = decoded
-                msg = payload.get("message") or {}
-                prompt_message_id = str(msg["id"]) if isinstance(msg, dict) and msg.get("id") else None
-                event.prompt_response = {
-                    "prompt_id": prompt_id,
-                    "option_id": option_id,
-                    "prompt_message_id": prompt_message_id,
-                }
-                event.text = f"/{option_id}"
-                event.message_type = MessageType.COMMAND
-        return event
-
-    @staticmethod
-    def _decode_prompt_token(token: str):
-        """Decode an hp1:<prompt_id>:<option_id> callback token, or None (mirrors the connector's promptCodec)."""
-        parts = (token or "").split(":")
-        if len(parts) != 3 or parts[0] != "hp1":
-            return None
-        if not _PROMPT_ID_RE.match(parts[1]) or not _PROMPT_ID_RE.match(parts[2]):
-            return None
-        return parts[1], parts[2]
-
-    @staticmethod
-    def _render_interaction_options(options) -> list:
-        """Render Discord interaction options to text parts: scalars contribute their
-        value (native ``f"/model {name}"`` shape); SUB_COMMAND (1) / SUB_COMMAND_GROUP
-        (2) contribute their name then recurse into nested options."""
-        parts: list = []
-        if not isinstance(options, list):
-            return parts
-        for opt in options:
-            if not isinstance(opt, dict):
-                continue
-            if opt.get("type") in (1, 2):
-                sub_name = str(opt.get("name") or "").strip()
-                if sub_name:
-                    parts.append(sub_name)
-                parts.extend(RelayAdapter._render_interaction_options(opt.get("options")))
-            else:
-                value = opt.get("value")
-                if value is not None and str(value).strip():
-                    parts.append(str(value).strip())
-        return parts
-
     async def disconnect(self) -> None:
         # The runner wraps this call in wait_for(adapter disconnect budget). Monitor
         # teardown and go_idle eat into the transport's drain time, so measure from
@@ -1265,7 +1160,7 @@ class RelayAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(
                     self._revocation_monitor, timeout=_RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
             self._revocation_monitor = None
         if self._transport is not None:
@@ -1511,7 +1406,7 @@ class RelayAdapter(BasePlatformAdapter):
             self._auto_thread_waiters[key] = waiter
         try:
             await asyncio.wait_for(waiter.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         finally:
             # Only the waiter we installed, and only if no later call replaced it; a

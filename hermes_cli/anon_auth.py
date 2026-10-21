@@ -1,12 +1,16 @@
 """Nous free-tier identity: the ``anonymous`` auth method of the ``nous`` provider.
 
-The identity is created in exactly one place, at boot (``hermes_cli.free_tier_bootstrap``), and only
-while ``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
-account (``POST /api/anonymous/create``); its ``anon_`` credential is later exchanged for short-lived
-JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``. In
-the resolver ladder (``resolve_provider``) an existing free-tier identity sits directly above the
-implicit AWS Bedrock chain (NS-829): any explicit provider (env key, ``model.provider``, OpenRouter
-pool, a logged-in ``active_provider``) beats it, and the ladder never creates one.
+The identity is created in two places: by the desktop's first install, which claims the welcome
+trial (``hermes_cli.welcome_trial``), and on the first hosted connector action for anyone without a
+Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``, gated by ``guest_allowed``).
+Either mints an anonymous Nous account (``POST /api/anonymous/create``); its ``anon_`` credential is
+later exchanged for short-lived JWTs (``POST /api/anonymous/token``). The result is persisted as the
+singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference, and only on
+the backend the desktop spawned on this machine (:func:`free_inference_active`); every other guest
+serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
+carries inference sits directly above the implicit AWS Bedrock chain (NS-829): any explicit provider
+(env key, ``model.provider``, OpenRouter pool, a logged-in ``active_provider``) beats it, and the
+ladder never creates one.
 
 Only two mechanics differ from an OAuth login and both are isolated behind ``is_guest_state``:
 token acquisition (re-exchange the ``anon_`` credential; there is no refresh token) and routing
@@ -16,9 +20,9 @@ Users are never shown the words guest / anonymous / account for this state: surf
 "Nous · free tier". Two user-facing verbs reach the same flow, both keeping the identity's
 connectors: ``hermes auth upgrade`` in a terminal and ``/login`` inside a chat.
 
-Lifecycle lives in ONE primitive, :func:`ensure_portal_identity`: adopt what the shared store already
-holds, else mint under the shared-store lock. It is the only minter; nothing else calls
-:func:`mint_guest`.
+Lifecycle lives in ONE primitive, :func:`_reconcile_and_provision`: adopt what the shared store already
+holds, else mint under the shared-store lock. :func:`ensure_portal_identity` (connectors) and the
+welcome-trial claim are its only callers; nothing else calls :func:`mint_guest`.
 """
 
 from __future__ import annotations
@@ -28,12 +32,14 @@ import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, _decode_jwt_claims, httpx)
+    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, NOUS_INFERENCE_INVOKE_SCOPE, WELCOME_CLAIM_FLAG,
+    _decode_jwt_claims, httpx)
 
 logger = logging.getLogger("hermes_cli.auth")
 
@@ -45,15 +51,9 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 # The shared secret gates the anonymous surface during its integration phase. It is a deployment
 # secret (Sid's), read from the environment only.
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
-# Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
-# (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. Not a user preference: never written to
-# config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
-GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 # Preview cohort for the free tier's connector set, sent once on account creation so the account
-# service can record it on the account. "1" / "true" send true and "0" / "false" send false ("1" is
-# GUEST_ONBOARDING_ENV's spelling, so one bundle command reads the same for both); anything else (unset
-# included) omits the field and the service applies its default. Self-reported and
+# service can record it on the account. "1" / "true" send true and "0" / "false" send false; anything
+# else (unset included) omits the field and the service applies its default. Self-reported and
 # baked into desktop bundles in plain text: the service must treat it as a preference, never proof.
 PREVIEW_FULL_CONNECTORS_ENV = "HERMES_PREVIEW_FULL_CONNECTORS"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
@@ -142,8 +142,8 @@ def friendly_wait(seconds: Any) -> str:
     if s < 90:
         return "about a minute"
     if s < 3600:
-        return f"about {int(round(s / 60))} minutes"
-    hours = int(round(s / 3600))
+        return f"about {round(s / 60)} minutes"
+    hours = round(s / 3600)
     return "about an hour" if hours <= 1 else f"about {hours} hours"
 
 
@@ -153,16 +153,13 @@ def anon_failure_copy(code: str, *, retry_after: Any = None) -> str:
     return template.format(wait=friendly_wait(retry_after if retry_after else 60))
 
 
-def guest_enabled() -> bool:
-    """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off."""
-    if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
-        return False
+def guest_allowed() -> bool:
+    """``nous.guest`` (default True) has not switched guests off: no connector guest, no trial."""
     try:
         from hermes_cli.config import load_config_readonly
         nous_cfg = load_config_readonly().get("nous")
-    except Exception as exc:  # config unreadable: keep today's behaviour (no guest) rather than mint
-        logger.debug("guest: config unreadable, treating nous.guest as false: %s", exc)
+    except Exception:  # config unreadable: keep today's behaviour (no guest) rather than mint
+        logger.debug("guest: config unreadable, treating nous.guest as false", exc_info=True)
         return False
     if not isinstance(nous_cfg, dict):
         return True
@@ -202,14 +199,36 @@ def has_guest() -> bool:
     return is_guest_state(current_nous_state())
 
 
+def on_local_desktop_backend() -> bool:
+    """This process is the backend the desktop app spawned on this machine: never an SSH, URL or
+    cloud backend, and never a gateway or shell the desktop merely launched."""
+    from hermes_cli.anon_challenge import client_surface
+    from hermes_cli.process_identity import is_local_desktop_backend
+    return client_surface() == "desktop" and is_local_desktop_backend()
+
+
+def free_inference_active(state: Any = None) -> bool:
+    """The welcome trial carries inference here: a guest that claimed it (or was grandfathered),
+    guests still allowed, and this is the desktop's local backend. *state* defaults to the profile's."""
+    state = current_nous_state() if state is None else state
+    return (is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
+            and on_local_desktop_backend())
+
+
 def has_free_tier_account() -> bool:
-    """True when the profile's Nous identity is the free tier and the free tier is on.
+    """True when the profile's Nous identity is a guest that carries inference here.
 
     Profile-level: use for status, picker and notice surfaces. Routing decisions (which model a
     request may carry) must use :func:`route_is_welcome_host` on the SELECTED runtime instead: a
     credential-pool entry can pick a paid Nous key while the profile singleton is still a guest.
     """
-    return guest_enabled() and has_guest()
+    return free_inference_active()
+
+
+def guest_without_free_tier(state: Any) -> bool:
+    """A guest that does not carry inference here: it serves connectors and managed tools only, so
+    inference, account and status readers treat the profile as not signed in."""
+    return is_guest_state(state) and not free_inference_active(state)
 
 
 def free_tier_route() -> bool:
@@ -351,8 +370,36 @@ def mint_guest(client: httpx.Client, portal_base_url: str) -> dict[str, Any]:
     return payload
 
 
+# ``purpose: "connectors"`` (NAS hermes-portal#1516) mints a JWT whose only scope is
+# ``connectors:invoke``: connector routes and the tool gateway accept it, the welcome host refuses it,
+# and NAS never puts the free-inference challenge in front of it. A NAS from before #1516 ignores the
+# field and answers with an inference token (a superset), so which slot a token fills is read off its
+# ``scope`` claim, never off the purpose that asked for it.
+def is_connectors_only(token: Any) -> bool:
+    """*token* carries a scope claim and it lacks ``inference:invoke`` (a scopeless JWT reads as today's)."""
+    from hermes_cli.auth_nous import _scope_values
+    claims = _decode_jwt_claims(token)
+    scopes = _scope_values(claims.get("scope")) | _scope_values(claims.get("scp"))
+    return bool(scopes) and NOUS_INFERENCE_INVOKE_SCOPE not in scopes
+
+
+def held_connectors_token(state: Any, *, skew_seconds: Optional[int] = None) -> Optional[str]:
+    """The bearer a connectors / managed-tools call sends: the profile's token (for a guest the
+    inference one, a superset), else a guest's connectors-only token, preferring one that outlives
+    *skew_seconds*. ``None`` also accepts an expiring token (availability probes)."""
+    from hermes_cli.auth import _is_expiring
+    if not isinstance(state, dict):
+        return None
+    slots = (state, state.get("connectors_token") if is_guest_state(state) else None)
+    held = [(s["access_token"], s.get("expires_at")) for s in slots
+            if isinstance(s, dict) and isinstance(s.get("access_token"), str) and s["access_token"]]
+    live = next((token for token, exp in held if not _is_expiring(exp, skew_seconds or 0)), None)
+    return live or (held[0][0] if held and skew_seconds is None else None)
+
+
 def exchange_anon_jwt(
     client: httpx.Client, portal_base_url: str, anon_token: str, *, auth_state: dict[str, Any],
+    purpose: str,
 ) -> dict[str, Any]:
     """``POST /api/anonymous/token {token}`` -> ``{access_token, expires_in, inference_base_url, ...}``.
 
@@ -363,7 +410,7 @@ def exchange_anon_jwt(
     from hermes_cli import anon_challenge
     response = client.post(
         f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(),
-        json={"token": anon_token, "client": anon_challenge.client_info()})
+        json={"token": anon_token, "client": anon_challenge.client_info(), "purpose": purpose})
 
     def challenge(body: dict[str, Any]) -> AuthError:
         return anon_challenge.challenge_error(
@@ -385,21 +432,27 @@ def exchange_anon_jwt(
     if not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
         logger.info("Nous free tier token exchange returned no token")
         raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
-    anon_challenge.note_optional_challenges(payload, portal_base_url)
+    # A connectors-only grant must neither clear nor announce an inference challenge.
+    if not is_connectors_only(payload["access_token"]):
+        anon_challenge.note_optional_challenges(payload, portal_base_url)
     return payload
 
 
 def apply_exchange_to_state(state: dict[str, Any], exchanged: dict[str, Any]) -> None:
-    """Write a fresh exchange result into a guest state in place (token, expiry, routing)."""
+    """Write a fresh exchange result into a guest state in place: an inference token (token, expiry,
+    routing) into the state itself, a connectors-only one into ``connectors_token`` beside it."""
     from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     exp = claims.get("exp")
     if isinstance(exp, (int, float)):
-        expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
+        expires_at = datetime.fromtimestamp(float(exp), tz=UTC)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
+    if is_connectors_only(access_token):
+        state["connectors_token"] = {"access_token": access_token, "expires_at": expires_at.isoformat()}
+        return
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
     # (a staging host without NOUS_INFERENCE_BASE_URL set), the literal stands in. Never the paid
     # host: the gateway cross-refuses an anonymous JWT there.
@@ -433,10 +486,12 @@ def _shared_identity_key(state: Any) -> Optional[str]:
     return state.get("anon_token") if is_guest_state(state) else state.get("refresh_token")
 
 
-def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any]) -> dict[str, Any]:
+def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any], *,
+                 welcome_claim: bool) -> dict[str, Any]:
     """Mint under the caller's locks. The identity is persisted as soon as ``create`` succeeds, BEFORE
     the exchange: a 429 or timeout on the exchange must not lose a credential NAS still honours (the
-    next attempt exchanges the stored one instead of minting again)."""
+    next attempt exchanges the stored one instead of minting again). *welcome_claim* is written in
+    that same save, so a claimed guest is never left unstamped."""
     from hermes_cli.auth import _store_provider_state, _save_auth_store
     from hermes_cli.auth_nous import _write_shared_nous_state
     minted = mint_guest(client, portal)
@@ -446,6 +501,8 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any]) 
         "portal_base_url": portal.rstrip("/"),
         "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
         "idle_ttl_days": minted.get("idle_ttl_days"),
+        # Always present: an absent key marks a guest minted before the claim existed (grandfathering).
+        WELCOME_CLAIM_FLAG: welcome_claim,
     }
     _store_provider_state(auth_store, "nous", state, set_active=False)
     _save_auth_store(auth_store)
@@ -485,7 +542,7 @@ class MintFailure:
         """The wire shape every status RPC carries: ``{error_code, error, retryable, retry_after}``
         with ``retry_after`` the seconds still to wait (whole, rounded up)."""
         return {"error_code": self.code, "error": self.message, "retryable": self.retryable,
-                "retry_after": int(math.ceil(self.remaining())) if self.retryable else 0}
+                "retry_after": math.ceil(self.remaining()) if self.retryable else 0}
 
 
 _mint_failures: dict[str, MintFailure] = {}
@@ -552,7 +609,8 @@ def _note_mint_failure(err: AuthError) -> MintFailure:
     return failure
 
 
-def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[dict[str, Any]]:
+def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
+                             welcome_claim: bool = False) -> Optional[dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
@@ -582,68 +640,93 @@ def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[dict[str, An
                 if not shared:
                     _write_shared_nous_state(profile_state)
                 return profile_state
+            # A caller queued on these locks behind a mint that just failed waits out its cooldown.
+            failure = _mint_failure_for_profile()
+            if failure and not force and time.monotonic() < failure.not_before:
+                return None
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
-            with _nous_http_client(timeout_seconds, verify) as client:
-                return _mint_locked(client, portal, auth_store)
+            try:
+                with _nous_http_client(timeout_seconds, verify) as client:
+                    return _mint_locked(client, portal, auth_store, welcome_claim=welcome_claim)
+            except Exception as exc:
+                # Noted before the locks are released, so a caller queued on them sees the cooldown.
+                err = classify_mint_exception(exc)
+                err.mint_failure = _note_mint_failure(err)
+                if err is exc:
+                    raise
+                raise err from exc
 
 
 def ensure_portal_identity(
     *, explicit: bool, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS, force: bool = False,
+    welcome_claim: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
     store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
 
-    ``explicit`` is required and must be True: the only callers are the boot bootstrap
-    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the setup
-    chat's apps card (``setup_choose_tool._connectors_closed``, one attempt), and the
-    dead-credential replacements (``auth_nous.resolve_nous_runtime_credentials``,
-    ``managed_tool_gateway._replace_dead_guest_token``). Nothing creates an identity as a side effect
-    of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).
+    ``explicit`` is required and must be True: the only callers are the first hosted connector action
+    (``tools.connectors.gateway.config.ensure_guest_identity``), the connectors dead-credential
+    replacement (``managed_tool_gateway._replace_dead_guest_token``) and the desktop's welcome-trial
+    claim (``welcome_trial.claim_desktop_free_tier``), which passes ``welcome_claim=True`` so a guest
+    it mints carries the stamp from its first write. Every other guest is minted with
+    ``welcome_claim: False`` and serves connectors only.
+    Nothing creates an identity as a side effect of reading status, resolving a provider or fetching a
+    connector bearer (NS-845 Q1.2).
 
-    Order: ``guest_enabled`` gate -> reconcile with the shared store -> mint. Locks are taken profile
-    first, then shared, matching every other Nous path. Blocking, bounded by ``timeout_seconds``; the bootstrap puts it on its own thread.
+    Order: gate (``guest_allowed``) -> reconcile with the shared store -> mint. Locks are taken
+    profile first, then shared, matching every other Nous path. Blocking, bounded by ``timeout_seconds``.
 
     A failed mint is memoised with a cooldown (``MintFailure``): until it passes, and for a
     terminal code forever, this returns None without touching the portal. ``force=True`` is the
-    user's own retry (the desktop's ``free_tier.provision`` button): it makes exactly one attempt
+    user's own retry: it makes exactly one attempt
     regardless of the cooldown. Every failure raises an ``AuthError`` whose ``code`` is one of the
     ``ANON_*`` codes and whose ``retry_after`` / ``retryable`` say what a caller may do next.
     """
     if not explicit:
         raise ValueError("ensure_portal_identity: only explicit creators may call this (explicit=True)")
-    if not guest_enabled():
+    if not guest_allowed():
         return None
     failure = _mint_failure_for_profile()
     if failure and not force and not current_nous_state() and time.monotonic() < failure.not_before:
         return None  # in cooldown (or terminal) for this profile; do not hammer the portal
     try:
-        state = _reconcile_and_provision(timeout_seconds=timeout_seconds)
+        state = _reconcile_and_provision(timeout_seconds=timeout_seconds, force=force,
+                                         welcome_claim=welcome_claim)
     except Exception as exc:
         err = classify_mint_exception(exc)
-        noted = _note_mint_failure(err)
+        noted = getattr(err, "mint_failure", None) or _note_mint_failure(err)
         logger.info("Nous free tier not set up (%s, attempt %d%s)", noted.code, noted.attempts,
                     f", next try in {noted.retry_after:.0f}s" if noted.retryable else ", not retried")
         if err is exc:
             raise
         raise err from exc
-    _clear_mint_failure()
+    if state is not None:
+        _clear_mint_failure()
     return state
 
 
-def refresh_guest_state(state: dict[str, Any], client: httpx.Client) -> None:
-    """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place.
+def refresh_guest_state(state: dict[str, Any], client: httpx.Client, *, purpose: str) -> str:
+    """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place and return
+    the minted token. Every caller names its *purpose*: ``"connectors"`` for connector and managed-tool
+    bearers, ``"inference"`` only for a guest that carries the welcome trial.
 
     The portal URL is the resolver's canonical one (env override, else the validated stored URL,
     else the default), never a raw stored value on its own.
     Raises :class:`AnonCredentialDead` when NAS no longer knows the credential; the caller owns
     re-minting (:func:`ensure_portal_identity` after :func:`clear_dead_guest`).
     """
+    if purpose == "inference" and not free_inference_active(state):
+        # The one place a guest's inference token is minted: only the welcome trial on the desktop's
+        # local backend carries one. Not terminal: the guest stays for connectors.
+        raise AuthError("Hermes is not logged into Nous Portal.", provider="nous", code="nous_auth_missing")
     anon_token = state.get("anon_token")
     if not isinstance(anon_token, str) or not anon_token:
         raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD)
     from hermes_cli.auth import _nous_portal_base_url
-    apply_exchange_to_state(state, exchange_anon_jwt(
-        client, _nous_portal_base_url(state), anon_token, auth_state=state))
+    exchanged = exchange_anon_jwt(
+        client, _nous_portal_base_url(state), anon_token, auth_state=state, purpose=purpose)
+    apply_exchange_to_state(state, exchanged)
+    return exchanged["access_token"]
 
 
 def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
@@ -880,39 +963,64 @@ def apply_model_switch(agent: Any) -> Optional[str]:
 # the free tier (inference + connectors) now exists. The flag lives on the guest state itself so it
 # dies with the identity; a fresh guest (re-mint, new profile) may announce itself once more.
 GUEST_NOTICE_FLAG = "guest_notice_shown"
-FREE_TIER_AVAILABLE_NOTICE = (
-    "Free Nous inference and connectors are now available. "
-    "/model to try them, /login to sign in.")
 
 
 def guest_notice_pending() -> bool:
     """True when a guest identity exists and the one-time availability notice has not been shown."""
     state = current_nous_state()
-    return is_guest_state(state) and not bool(state.get(GUEST_NOTICE_FLAG))
+    return free_inference_active(state) and not bool(state.get(GUEST_NOTICE_FLAG))
 
 
 def mark_guest_notice_shown() -> bool:
     """Persist ``guest_notice_shown`` on the guest's ``providers.nous`` state (whichever store holds it).
 
     Returns True when a flag was written; False when there is no guest to mark."""
-    from hermes_cli.auth import (
-        _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path, _save_auth_store,
-        _store_section)
+    return set_guest_flag(GUEST_NOTICE_FLAG) is not None
+
+
+def set_guest_flag(flag: str) -> Optional[dict[str, Any]]:
+    """Set *flag* on the guest's ``providers.nous`` state in whichever store holds it, and return the
+    updated state; None when there is no guest."""
+    from hermes_cli.auth import _provider_state_transaction
     with _provider_state_transaction("nous") as (auth_store, state, source_path):
         if not is_guest_state(state) or source_path is None:
-            return False
-        if state.get(GUEST_NOTICE_FLAG):
-            return True
-        state = dict(state)
-        state[GUEST_NOTICE_FLAG] = True
-        if _same_path(source_path, _auth_file_path()):
-            _store_section(auth_store, "providers")["nous"] = state
-            _save_auth_store(auth_store)
-        else:
-            source_store = _load_auth_store(source_path)
-            _store_section(source_store, "providers")["nous"] = state
-            _save_auth_store(source_store, target_path=source_path)
-    return True
+            return None
+        if state.get(flag):
+            return state
+        state = {**state, flag: True}
+        _save_guest_state(auth_store, state, source_path)
+    return state
+
+
+def stamp_legacy_guest_claim() -> Optional[dict[str, Any]]:
+    """Grandfathering's write (``welcome_trial.grandfather_existing_guest``): stamp the welcome claim on
+    a guest minted before the key existed and publish it to the shared store, in one transaction under
+    the auth-then-shared locks. Nothing is written (None) unless, inside the locks, the guest still has
+    no key and the shared store is empty or holds that same guest: a sign-in another profile made is
+    never overwritten, whenever it landed."""
+    from hermes_cli.auth import _provider_state_transaction
+    from hermes_cli.auth_nous import _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state
+    with _provider_state_transaction("nous") as (auth_store, state, source_path), _nous_shared_store_lock():
+        shared = _read_shared_nous_state()
+        if (not is_guest_state(state) or source_path is None or WELCOME_CLAIM_FLAG in state
+                or (shared and _shared_identity_key(shared) != _shared_identity_key(state))):
+            return None
+        state = {**state, WELCOME_CLAIM_FLAG: True}
+        _save_guest_state(auth_store, state, source_path)
+        _write_shared_nous_state(state)
+    return state
+
+
+def _save_guest_state(auth_store: dict[str, Any], state: dict[str, Any], source_path: Path) -> None:
+    """Write the guest's ``providers.nous`` back to the store it was read from (the caller holds its lock)."""
+    from hermes_cli.auth import _auth_file_path, _load_auth_store, _same_path, _save_auth_store, _store_section
+    if _same_path(source_path, _auth_file_path()):
+        _store_section(auth_store, "providers")["nous"] = state
+        _save_auth_store(auth_store)
+    else:
+        source_store = _load_auth_store(source_path)
+        _store_section(source_store, "providers")["nous"] = state
+        _save_auth_store(source_store, target_path=source_path)
 
 
 # --- ``hermes auth upgrade``: sign the guest into a real Nous account, keeping its connectors ---------
@@ -1019,7 +1127,7 @@ def _account_state_from_token(
     """The ``providers.nous`` shape for the signed-in account (same fields the device-code login writes)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, _coerce_ttl_seconds, _optional_base_url, _tls_state_from_verify
     from hermes_cli.auth_nous import _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, refresh_nous_oauth_from_state
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ttl = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     inference_url = (
         _optional_base_url(token_data.get("inference_base_url"))
@@ -1104,48 +1212,46 @@ def persist_nous_credentials(*args, **kwargs):
 # Public sign-in imports remain here for existing callers and module-attribute patches.
 # The flow imports this module only inside calls, so either module can be imported first.
 from hermes_cli.anon_sign_in import (
-    AlreadySignedIn as AlreadySignedIn,
-    Code as Code,
-    Completed as Completed,
-    Declined as Declined,
-    FREE_TIER_RATE_LIMIT_CARD as FREE_TIER_RATE_LIMIT_CARD,
-    FREE_TIER_RATE_LIMIT_CHAT as FREE_TIER_RATE_LIMIT_CHAT,
-    Failed as Failed,
-    LOGIN_BUSY_ELSEWHERE as LOGIN_BUSY_ELSEWHERE,
-    LOGIN_COMMAND as LOGIN_COMMAND,
-    LOGIN_DM_ONLY as LOGIN_DM_ONLY,
-    LOGIN_NOT_ALLOWED as LOGIN_NOT_ALLOWED,
-    LOGIN_STARTING as LOGIN_STARTING,
-    Retired as Retired,
-    SignInState as SignInState,
-    Superseded as Superseded,
-    TimedOut as TimedOut,
-    UPGRADE_ALREADY_SIGNED_IN as UPGRADE_ALREADY_SIGNED_IN,
-    UPGRADE_CANCELLED as UPGRADE_CANCELLED,
-    UPGRADE_DO_NOT_SHARE as UPGRADE_DO_NOT_SHARE,
-    UPGRADE_NOT_COMPLETED as UPGRADE_NOT_COMPLETED,
-    UPGRADE_NO_DEFAULT_CHAT as UPGRADE_NO_DEFAULT_CHAT,
-    UPGRADE_NO_DEFAULT_TERMINAL as UPGRADE_NO_DEFAULT_TERMINAL,
-    UPGRADE_REASON_COPY as UPGRADE_REASON_COPY,
-    UPGRADE_START as UPGRADE_START,
-    UPGRADE_TIMED_OUT as UPGRADE_TIMED_OUT,
-    UPGRADE_UNAVAILABLE as UPGRADE_UNAVAILABLE,
-    UPGRADE_UNAVAILABLE_CHAT as UPGRADE_UNAVAILABLE_CHAT,
-    UPGRADE_WAITING as UPGRADE_WAITING,
-    UPGRADE_WAITING_UP_TO as UPGRADE_WAITING_UP_TO,
-    Unavailable as Unavailable,
-    Waiting as Waiting,
-    _RETIRED_REASONS as _RETIRED_REASONS,
-    _default_persist_guard as _default_persist_guard,
-    _outcome_state as _outcome_state,
-    format_wait_line as format_wait_line,
-    run_sign_in as run_sign_in,
+    AlreadySignedIn,
+    Code,
+    Completed,
+    Declined,
+    FREE_TIER_RATE_LIMIT_CARD,
+    FREE_TIER_RATE_LIMIT_CHAT,
+    Failed,
+    LOGIN_BUSY_ELSEWHERE,
+    LOGIN_COMMAND,
+    LOGIN_DM_ONLY,
+    LOGIN_NOT_ALLOWED,
+    LOGIN_STARTING,
+    Retired,
+    SignInState,
+    Superseded,
+    TimedOut,
+    UPGRADE_ALREADY_SIGNED_IN,
+    UPGRADE_CANCELLED,
+    UPGRADE_DO_NOT_SHARE,
+    UPGRADE_NOT_COMPLETED,
+    UPGRADE_NO_DEFAULT_CHAT,
+    UPGRADE_NO_DEFAULT_TERMINAL,
+    UPGRADE_REASON_COPY,
+    UPGRADE_START,
+    UPGRADE_TIMED_OUT,
+    UPGRADE_UNAVAILABLE,
+    UPGRADE_UNAVAILABLE_CHAT,
+    UPGRADE_WAITING,
+    UPGRADE_WAITING_UP_TO,
+    Unavailable,
+    Waiting,
+    _RETIRED_REASONS,
+    _default_persist_guard,
+    _outcome_state,
+    format_wait_line,
+    run_sign_in,
 )
 from hermes_cli.anon_sign_in_cli import (
-    drain_sign_in_copy as drain_sign_in_copy,
-    render_sign_in_cli as render_sign_in_cli,
-    render_sign_in_cli_code as render_sign_in_cli_code,
-    upgrade_guest as upgrade_guest,
+    drain_sign_in_copy,
+    render_sign_in_cli,
+    render_sign_in_cli_code,
+    upgrade_guest,
 )
-
-FREE_TIER_STATUS_LINE = f"{FREE_TIER_LABEL} \u00b7 {GUEST_MODEL} \u00b7 {LOGIN_COMMAND} to sign in"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -262,16 +262,21 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 class SessionImport(BaseModel):
+    request_id: Optional[str] = None
+    expected_revision: Optional[StrictInt] = Field(None, ge=0)
     sessions: list[dict[str, Any]]
     profile: Optional[str] = None
 
 class SessionRename(BaseModel):
+    request_id: Optional[str] = None
+    expected_revision: Optional[StrictInt] = Field(None, ge=0)
+    expected_generation: Optional[StrictInt] = Field(None, ge=0)
     title: Optional[str] = None
-    archived: Optional[bool] = None
-    hidden: Optional[bool] = None  # also used by cross-profile reconciliation
-    pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
+    archived: Optional[StrictBool] = None
+    hidden: Optional[StrictBool] = None  # also used by cross-profile reconciliation
+    pinned: Optional[StrictBool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
     # Read-state watermark (sessions.last_read_at): True = unread, False = read now, None = leave.
-    unread: Optional[bool] = None
+    unread: Optional[StrictBool] = None
     profile: Optional[str] = None  # session owned by another profile (opens its state.db)
 
 class SessionOwnerBackfill(BaseModel):
@@ -318,7 +323,7 @@ class CronJobCreate(BaseModel):
     # same user-facing strings the CLI accepts ('forever'/'once'/'3'). Normalization and
     # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
     # chokepoint with the CLI and update paths — so an unparseable value 400s there.
-    repeat: Optional[Union[int, str]] = None
+    repeat: Optional[int | str] = None
     skills: Optional[list[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
@@ -433,6 +438,7 @@ class SkillsUpdateRequest(BaseModel):
 
 class ProfileCreate(BaseModel):
     name: str
+    soul: Optional[str] = None
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
@@ -444,7 +450,7 @@ class ProfileCreate(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
-    mcp_servers: list["MCPServerCreate"] = []
+    mcp_servers: list[MCPServerCreate] = []
     keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.

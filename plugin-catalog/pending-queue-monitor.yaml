@@ -1,0 +1,20 @@
+name: pending-queue-monitor
+repo: https://github.com/Ardenye/pending-queue-monitor
+sha: "d6cba84feabf607ab3ec3586038b81faf04b8baf"
+version: "0.1.0"
+description: "Desktop-only, read-only monitor for pending memory and skill write approvals. Disclosure — the pane's API reads pending/memory/*.json and pending/skills/*.json under the default Hermes root and every named profile directory beneath it (all profiles, not only the active one), and returns only counts, age buckets, oldest age, and per-item profile/subsystem/id/action/origin/created_at/age_seconds. It never returns or displays summaries, payloads, or record content; it exposes no approve, reject, or delete actions; it registers no tools, hooks, or middleware, performs no network I/O, and holds no credentials."
+maintainer: Ardenye
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Ardenye/pending-queue-monitor#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Ardenye/pending-queue-monitor/d6cba84feabf607ab3ec3586038b81faf04b8baf/docs/screenshots/pending-monitor.png
+platforms:
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

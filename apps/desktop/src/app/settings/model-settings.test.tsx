@@ -91,6 +91,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // A success toast arms a 5 s auto-dismiss timer; left running, it fires after this file's
+  // jsdom window is gone and vitest reports "window is not defined" as an unhandled error.
+  clearNotifications()
   vi.clearAllMocks()
   profileSwitchHandler = null
 })
@@ -134,6 +137,16 @@ describe('ModelSettings profile scope', () => {
 })
 
 describe('ModelSettings', () => {
+  it('labels the main provider, model and default controls independently', async () => {
+    renderModelSettings()
+
+    expect(await screen.findByRole('combobox', { name: 'Provider' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeTruthy()
+    expect(await screen.findByRole('combobox', { name: 'Reasoning' })).toBeTruthy()
+    expect(screen.getByText('Provider', { exact: true })).toBeTruthy()
+    expect(screen.getByText('Model', { exact: true })).toBeTruthy()
+    expect(setModelAssignment).not.toHaveBeenCalled()
+  })
   it.each(['custom', 'local', 'custom:lab'])(
     'opens local endpoint setup when %s has no inventory row',
     async provider => {

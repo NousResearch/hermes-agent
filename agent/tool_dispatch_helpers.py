@@ -27,7 +27,7 @@ from tools.threat_patterns import scan_for_threats
 logger = logging.getLogger(__name__)
 
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog", "setup_choose"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog", "setup_beat", "set_theme"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
@@ -102,6 +102,23 @@ def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
 def _is_destructive_command(cmd: str) -> bool:
     """Heuristic: does this terminal command look like it modifies/deletes files?"""
     return bool(cmd) and bool(_DESTRUCTIVE_PATTERNS.search(cmd) or _REDIRECT_OVERWRITE.search(cmd))
+
+
+def _extend_tool_timeout(tool_name: str, default: float | None) -> float | None:
+    """A registered transport budget must not be cut short by the generic executor."""
+    from tools.registry import registry
+
+    entry = registry.get_entry(tool_name)
+    if default is None or entry is None or entry.execution_timeout is None:
+        return default
+    return max(default, entry.execution_timeout)
+
+
+def _requires_extended_tool_deadline(tool_name: str) -> bool:
+    from agent.tool_executor import _resolve_concurrent_tool_timeout
+
+    default = _resolve_concurrent_tool_timeout()
+    return _extend_tool_timeout(tool_name, default) != default
 
 
 def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
@@ -182,7 +199,7 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, lis
         return None
 
     name, args = _peel_bridge_call(tool_name, function_args)
-    if name in _NEVER_PARALLEL_TOOLS:
+    if name in _NEVER_PARALLEL_TOOLS or _requires_extended_tool_deadline(name):
         return None
     if name in _PATH_SCOPED_TOOLS:
         scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
@@ -582,13 +599,29 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 
 
 __all__ = [
-    "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
-    "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_context_pruned_argument_paths",
+    "_DESTRUCTIVE_PATTERNS",
+    "_NEVER_PARALLEL_TOOLS",
+    "_PARALLEL_SAFE_TOOLS",
+    "_PATH_SCOPED_READERS",
+    "_PATH_SCOPED_TOOLS",
+    "_PATH_SCOPED_WRITERS",
+    "_REDIRECT_OVERWRITE",
+    "_append_subdir_hint_to_multimodal",
+    "_canonical_path",
+    "_context_pruned_argument_paths",
+    "_detect_upstream_elision",
+    "_extract_error_preview",
+    "_extract_file_mutation_targets",
+    "_extract_landed_file_mutation_paths",
+    "_extract_parallel_scope_path",
+    "_extract_parallel_scope_paths",
     "_is_destructive_command",
-    "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
-    "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
-    "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",
-    "_extract_file_mutation_targets", "_extract_landed_file_mutation_paths", "_extract_error_preview",
-    "_trajectory_normalize_msg", "_detect_upstream_elision", "_maybe_append_elision_notice",
+    "_is_multimodal_tool_result",
+    "_maybe_append_elision_notice",
+    "_multimodal_text_summary",
+    "_paths_overlap",
+    "_plan_tool_batch_segments",
+    "_should_parallelize_tool_batch",
+    "_trajectory_normalize_msg",
     "make_tool_result_message",
 ]

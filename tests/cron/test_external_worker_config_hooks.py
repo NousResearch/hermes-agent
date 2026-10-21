@@ -52,7 +52,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypatch):
-    launch, profile = homes
+    _launch, profile = homes
     from agent import outbound_webhooks
     from agent import shell_hooks
     from cron import scheduler

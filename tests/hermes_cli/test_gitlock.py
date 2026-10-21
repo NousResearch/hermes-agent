@@ -41,10 +41,13 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
     (root / "a.txt").write_text("one\n", encoding="utf-8")
     subprocess.run(["git", "add", "a.txt"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "first"], cwd=root, check=True)
+    # No detached `maintenance run --auto` / `gc --auto` (git >= 2.55 spawns several per commit): one
+    # still working in the checkout is a live git to the lock reclaim and races copytree. Flag, not config.
+    quiet = ["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "-m"]
+    subprocess.run([*quiet, "first"], cwd=root, check=True)
     (root / "b.txt").write_text("two\n", encoding="utf-8")
     subprocess.run(["git", "add", "b.txt"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=root, check=True)
+    subprocess.run([*quiet, "second"], cwd=root, check=True)
     return root
 
 
@@ -315,14 +318,14 @@ def test_a_checkout_the_first_cut_configured_folds_again(partial_clone: Path) ->
 
     assert len(_packs(partial_clone)) == 1
     left = subprocess.run(["git", "config", "--local", "--get-regexp", r"^(maintenance\.auto|gc\.auto)$"],
-                          cwd=partial_clone, capture_output=True, text=True).stdout
+                          cwd=partial_clone, capture_output=True, text=True, check=False).stdout
     assert left == ""
 
 
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     settle_partial_clone_maintenance(repo)
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, check=False).stdout
     assert keys == "", "a full clone keeps git's stock maintenance"
 
 
@@ -459,7 +462,48 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
             proc.kill()
             proc.wait()
     if not form.startswith("dashed"):
-        assert release_dead_index_lock(repo) is True, "once the checkout's git is gone the killed update's lock goes"
+        released = release_dead_index_lock(repo)
+        why = None
+        if not released:  # name which leg kept it: owner proof, an unreadable process, or a holder
+            from hermes_cli import _early_recovery as er
+            from hermes_cli.gitlock import _killed_update_owns
+            why = {"killed_update_owns": _killed_update_owns(lock),
+                   "held_open": er._held_open(lock, repo, any_git=True)}
+        assert released is True, f"once the checkout's git is gone the killed update's lock goes: {why}"
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+def test_a_git_elsewhere_exiting_mid_scan_is_gone_not_a_hidden_holder(repo: Path, tmp_path: Path, monkeypatch) -> None:
+    """A git in ANOTHER repository that exits between the scan reading its argv and its cwd/environ
+    (unreadable once it has released its memory) is gone: it holds nothing and takes no lock. Read
+    as a hidden git that may work here, any busy machine's git churn postponed the launch repair
+    ("a running git holds the index after an interrupted `hermes update`")."""
+    from hermes_cli import _early_recovery as er
+    from tests.waiting import wait_until
+
+    other = tmp_path / "other"
+    # git >= 2.55 detaches `git maintenance run --auto` after the fixture's commits; it can delete
+    # .git/objects/maintenance.lock mid-copy (shutil.Error). Copy only what the scan needs.
+    shutil.copytree(repo, other, ignore=shutil.ignore_patterns("*.lock"))
+    lock = repo / ".git" / "index.lock"
+    lock.write_bytes(b"")  # a killed git's: nothing holds it
+    marker = "hermes.test=exits-mid-scan"
+    proc = _git_in_the_editor(other, tmp_path, ["git", "-c", marker, "commit", "-a"])
+    real = er._counts_as_holder
+
+    def exits_after_its_argv_was_read(args: list[str], any_git: bool) -> bool:
+        if marker in args and proc.returncode is None:
+            Path(f"{other / '.git' / 'COMMIT_EDITMSG'}.go").write_text("", encoding="utf-8")
+            wait_until(lambda: Path(f"/proc/{proc.pid}/stat").read_bytes().rsplit(b") ", 1)[1][:1] == b"Z",
+                       what="the other repository's git to exit (unreaped)")
+        return real(args, any_git)
+
+    monkeypatch.setattr(er, "_counts_as_holder", exits_after_its_argv_was_read)
+    try:
+        assert er._held_open(lock, repo) is False
+    finally:
+        Path(f"{other / '.git' / 'COMMIT_EDITMSG'}.go").write_text("", encoding="utf-8")
+        proc.wait(timeout=20)
 
 
 def test_lock_keeping_git_is_recognised_in_every_form_and_by_path_components(tmp_path: Path, monkeypatch) -> None:

@@ -27,13 +27,14 @@ from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider, resolve_runtime_pool_key,
+    credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,7 @@ def _cursor_skip_prefix(messages: list, cursor: Optional[dict]) -> int:
 
 
 def sanitize_tool_call_arguments(
-    messages: list, *, logger=None, session_id: str = None, cursor: Optional[dict] = None
+    messages: list, *, logger=None, session_id: str | None = None, cursor: Optional[dict] = None
 ) -> int:
     """Repair corrupted assistant tool-call argument JSON in-place.
     ``cursor["prefix"]`` holds strong refs (not ``id()``: address reuse aliases) to the
@@ -1451,10 +1452,9 @@ def restore_primary_runtime(agent) -> bool:
         return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
 
     def _load_primary_pool():
-        """Load the primary provider's pool; None when absent or provider-mismatched."""
-        from agent.credential_pool import load_pool
-        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        """The primary's pool (entry-scoped for a custom entry); None when absent or provider-mismatched."""
+        from agent.custom_entry_pool import load_runtime_pool
+        loaded = load_runtime_pool(primary_provider, primary_runtime_base_url, (rt or {}).get("requested_provider"), rt or {})
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0
@@ -2286,7 +2286,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    from agent.turn_recovery import reset_codex_reasoning_replay
+    from agent.turn_recovery_codex import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
     if api_key:
         agent.api_key = api_key
@@ -2382,43 +2382,6 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
     # clamp lands before the first compaction on the new window, not after it (#114707).
     from agent.conversation_compression import revalidate_compression_feasibility
     revalidate_compression_feasibility(agent)
-
-
-def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
-    """The ``_primary_runtime`` record that persists a switch across turns."""
-    cc = getattr(agent, "context_compressor", None) or None
-    rt = {
-        "model": agent.model,
-        "provider": agent.provider,
-        "requested_provider": agent.requested_provider,
-        "base_url": agent.base_url,
-        "api_mode": agent.api_mode,
-        "api_key": getattr(agent, "api_key", ""),
-        "client_kwargs": dict(agent._client_kwargs),
-        "use_prompt_caching": agent._use_prompt_caching,
-        "use_native_cache_layout": agent._use_native_cache_layout,
-        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
-        "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
-        # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
-        # PRE-switch overrides from the stale init snapshot.
-        # See #75091.
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
-        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
-        "compressor_model": getattr(cc, "model", agent.model),
-        "compressor_base_url": getattr(cc, "base_url", agent.base_url),
-        "compressor_api_key": getattr(cc, "api_key", ""),
-        "compressor_provider": getattr(cc, "provider", agent.provider),
-        "compressor_context_length": cc.context_length if cc else 0,
-        "compressor_api_mode": getattr(cc, "api_mode", agent.api_mode),
-        "compressor_threshold_tokens": cc.threshold_tokens if cc else 0,
-    }
-    if api_mode == "anthropic_messages":
-        rt.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
-    return rt
 
 
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
@@ -2545,7 +2508,7 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
-                 tool_call_id: Optional[str] = None, messages: list = None,
+                 tool_call_id: Optional[str] = None, messages: list | None = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
                  tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
@@ -3035,7 +2998,7 @@ def _pair_tool_calls_positionally(messages: list[dict[str, Any]]) -> list[dict[s
                 if variants:
                     # Key on a stable representative of the alias group so a result matching ANY
                     # spelling can consume the call.
-                    declared_calls[sorted(variants)[0]] = (tc, variants)
+                    declared_calls[min(variants)] = (tc, variants)
         elif role == "tool":
             result_variants = tool_result_id_variants(msg.get("tool_call_id"))
             matched = next((k for k, (_tc, v) in declared_calls.items() if v & result_variants), None)
@@ -3497,14 +3460,14 @@ def intent_ack_continuation_mode(agent) -> str:
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Forward reasoning fields onto an API replay message; policy lives in ``agent.message_sanitization.apply_reasoning_content_policy``."""
     from agent.message_sanitization import apply_reasoning_content_policy
-    apply_reasoning_content_policy(source_msg, api_msg, agent._needs_thinking_reasoning_pad())
+    apply_reasoning_content_policy(source_msg, api_msg, *agent._reasoning_replay_route())
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad or strip assistant turns' reasoning_content for the CURRENT provider after a
-    fallback switch: ``api_messages`` is shaped for the primary; require-side providers
+    """Reconcile assistant turns' reasoning keys with the CURRENT route after a fallback switch or
+    a recorded field rejection: ``api_messages`` is shaped for the primary; must-echo providers
     (DeepSeek/Kimi/MiMo) 400 without the pad, strict ones (Mistral, Cerebras, Groq) 400/422
-    with it. Idempotent; returns the number of assistant turns changed.
+    with any reasoning key. Idempotent; returns the number of assistant turns changed.
 
     * Switching TO a strict provider that rejects the field (Mistral, Cerebras, Groq, SambaNova, …):
     assistant turns built under a reasoning primary carry a ``reasoning_content`` pad (often a single space
@@ -3513,7 +3476,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     request falls back to Mistral, and Mistral 422s on the stale pad.
     """
     from agent.message_sanitization import reapply_reasoning_echo
-    return reapply_reasoning_echo(api_messages, agent._needs_thinking_reasoning_pad())
+    return reapply_reasoning_echo(api_messages, *agent._reasoning_replay_route())
 
 
 def _iter_httpx_pools_with_owner(http_client: Any):
@@ -3740,19 +3703,8 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
 
 def _requeue_pending_steer(agent, steer_text: str) -> None:
     """Put drained steer text back so the caller's fallback delivers it as a next-turn user message."""
-    # Under the lock the slot is read directly: an initialized agent always has both attributes, so a
-    # missing ``_pending_steer`` there is a real bug and must fail loud. The lock-less branch only
-    # exists for test stubs built via ``object.__new__`` that skipped ``__init__``.
-    _lock = getattr(agent, "_pending_steer_lock", None)
-    if _lock is not None:
-        with _lock:
-            if agent._pending_steer:
-                agent._pending_steer = agent._pending_steer + "\n" + steer_text
-            else:
-                agent._pending_steer = steer_text
-    else:
-        existing = getattr(agent, "_pending_steer", None)
-        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+    from agent.interrupt_control import requeue_drained_steer
+    requeue_drained_steer(agent, steer_text)
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
@@ -3827,13 +3779,29 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 
 __all__ = [
-    "convert_to_trajectory_format", "sanitize_tool_call_arguments", "repair_message_sequence",
-    "strip_think_blocks", "recover_with_credential_pool", "try_recover_primary_transport",
-    "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
-    "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
-    "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
-    "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
-    "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api",
-    "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
+    "_iter_pool_sockets",
+    "anthropic_prompt_cache_policy",
+    "apply_pending_steer_to_tool_results",
+    "blank_cache_policy_stub",
+    "convert_to_trajectory_format",
+    "copy_reasoning_content_for_api",
+    "create_openai_client",
+    "drop_thinking_only_and_merge_users",
+    "dump_api_request_debug",
+    "extract_api_error_context",
+    "extract_reasoning",
     "force_close_tcp_sockets",
+    "invoke_tool",
+    "looks_like_codex_intermediate_ack",
+    "plan_cache_sections_for_destination",
+    "prompt_caching_disabled_from_config",
+    "recover_with_credential_pool",
+    "repair_message_sequence",
+    "repair_tool_call",
+    "restore_primary_runtime",
+    "sanitize_api_messages",
+    "sanitize_tool_call_arguments",
+    "strip_think_blocks",
+    "switch_model",
+    "try_recover_primary_transport",
 ]

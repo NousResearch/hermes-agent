@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from datetime import UTC
 
 
 @pytest.fixture
@@ -195,7 +196,7 @@ class TestOpenCodeGoGLM52Reasoning:
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])
     def test_alias_spellings_recognized(self, opencode_go_profile, model):
-        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "max"},
             model=model,
         )
@@ -308,4 +309,4 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     assert snapshot is not None and snapshot.provider == "opencode-go"
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
-    assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=timezone.utc)
+    assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=UTC)

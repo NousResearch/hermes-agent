@@ -106,7 +106,9 @@ the gallery. There is no separate listing to maintain.
 8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
    in the Desktop renderer with the app's full authority (the loader isolates
    errors, not capabilities), so a listed one may only use the plugin SDK:
-   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no prototype patching of renderer or browser objects (`Storage.prototype.y =`,
+   `Object.defineProperty(...prototype`); a bundled library setting fields on
+   classes it declares itself (three.js and the like) is fine,
    no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
    / `react` (app bundle chunks, blob or http URLs included), no script-tag
    injection, no reaching into the app's internal stores or its own markup
@@ -123,12 +125,15 @@ the gallery. There is no separate listing to maintain.
    `sys.modules[...]`, writes into a core module's tables). Two plugins
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
-   core override` check). If the hook you need does not exist, open an issue
-   describing it: we would rather add the seam than list a patch.
-10. **Dependency security policy is the plugin's.** Hermes's 14-day
-   `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
-   `python_dependencies` / `pyproject.toml` install under the plugin's policy
-   (no quarantine, still inside Hermes's core constraints). Reviewers read the
+   core override` check), and warns (without failing) on each import of an
+   undocumented core module, by file and line. If the hook you need does not
+   exist, open an issue describing it: we would rather add the seam than list
+   a patch.
+10. **Dependency security policy is the plugin's.** Hermes's 3-day
+   `exclude-newer` release-age check covers Hermes's own dependencies only, at
+   the time Hermes locks them; a plugin's `python_dependencies` /
+   `pyproject.toml` install under the plugin's policy (no age check), inside
+   Hermes's core constraints: Hermes's exact pins cannot move. Reviewers read the
    dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
    and floors on the newest release get a request for the oldest
    API-compatible floor plus an upper bound, and authors are strongly
@@ -136,13 +141,23 @@ the gallery. There is no separate listing to maintain.
    their CI) — see the developer guide's *Dependency security policy*. A
    recent floor alone is not grounds to hold an entry.
 
-11. **Credentials stay with their owner.** A plugin reads the credentials it is
-   configured with: the env vars in `requires_env` and its own `config_schema`
-   secrets. Reading another tool's login (a vendor CLI's token file, a browser
-   profile) must be disclosed in the PR and is a trust-tier call for a
-   maintainer. Refreshing, rotating or writing another client's OAuth tokens, or
-   presenting itself as another vendor's client, is not admitted without an
-   explicit maintainer ruling; a read-only build is the usual way through.
+11. **Credentials come through Hermes, never from files.** A plugin gets
+   secrets only through Hermes's routes. Its declared `requires_env` and
+   `config_schema` secrets are read with `agent.secret_scope.get_secret(NAME)`,
+   which honours the active profile (a bare `os.environ` read can pick up another
+   profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
+   today) is used only through `credentialed_provider_request` with
+   `requires_auth`, so Hermes attaches the token and the plugin never holds it. An
+   OAuth client for a third-party API (the user's own Google Cloud client, for
+   example) is declared under `oauth:` in `plugin.yaml`, signed in with
+   `hermes auth add <plugin>:<id>` and used through the same helper; Hermes
+   stores and refreshes that token too. Its `authorize_url`, `token_url` and
+   `hosts` are `https` only, and its `hosts` belong to the API the scopes are for. A plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
+   vendor CLI's token file, a browser profile, a keychain) or any other
+   credential store directly, and never refreshes, rotates or writes OAuth tokens
+   or presents itself as another vendor's client. If Hermes has no route for a
+   credential a plugin needs, ask for one in a Hermes issue or PR; the plugin
+   does not work around it.
 12. **Approvals and unattended runs are respected.** A plugin never routes around
    Hermes's approval system: no auto-approving, no disabling guards, and no
    spawning Hermes or shell children that inherit YOLO or non-interactive mode
@@ -170,6 +185,25 @@ the gallery. There is no separate listing to maintain.
    go upstream as a PR to its author. A fork that renames, rebrands or adds small
    changes is declined in favour of the original. A listed fork names its origin
    in its disclosure line (`Derived from <entry>`).
+17. **No unscannable executable payloads.** Everything a reviewer and the
+   install scanner read at the pinned commit must be source they can read. A
+   plugin must not ship a compiled binary (a native executable or library of
+   any OS — detected by file header, not extension: ELF, Mach-O, PE/`MZ`,
+   WebAssembly), committed Python bytecode (`.pyc`/`.pyo`, including sourceless
+   or hash-forged caches that run instead of the `.py` beside them), or an
+   archive whose members are not themselves reviewable source. A plain-text
+   source bundle (a `.tar.gz` of `.py`/`.ts`/`.md` the plugin unpacks) is read
+   like any other source; a bundle hiding a binary is not. The scanner cannot
+   read machine code, and a checksum committed in the same commit only proves
+   the file was not changed after that commit, not where it came from. If a
+   plugin genuinely needs a native component, the binary must be built by the
+   plugin repository's own public GitHub Actions from source in that repository
+   and carry a GitHub build attestation (`actions/attest-build-provenance`) tying
+   it to that workflow and commit; the gate verifies the attestation against the
+   pinned commit (`gh attestation verify --repo <owner/repo> --source-digest
+   <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
+   only from the upstream tool's official source, pinned by checksum, and
+   disclosed (rule 13) — never bundled and never from an unofficial mirror.
 <!-- admission-rules:end -->
 
 ## Updating your entry

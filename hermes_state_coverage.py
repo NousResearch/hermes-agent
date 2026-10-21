@@ -162,7 +162,7 @@ class SessionCoverageMixin:
         for start in range(len(rows)):
             merged = ""
             for end in range(start, len(rows)):
-                row_id, role, part = rows[end]
+                _row_id, role, part = rows[end]
                 if role != "user" or not isinstance(part, str):
                     break
                 merged = f"{merged}\n\n{part}" if merged and part else (merged or part)

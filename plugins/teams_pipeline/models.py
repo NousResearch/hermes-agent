@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, ClassVar, Literal
 
 
@@ -20,11 +20,11 @@ def _parse_datetime(value: Any) -> datetime | None:
     if text.endswith("Z"):
         text = f"{text[:-1]}+00:00"
     parsed = datetime.fromisoformat(text)
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
-    return None if value is None else value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return None if value is None else value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _camel(name: str) -> str:
@@ -180,7 +180,7 @@ class TeamsMeetingSummaryPayload(_Model):
     _DATETIMES = ("start_time", "end_time")
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "TeamsMeetingSummaryPayload":
+    def from_dict(cls, payload: dict[str, Any]) -> TeamsMeetingSummaryPayload:
         # meeting_ref is mandatory: a missing key raises KeyError rather than building a half-empty payload.
         return super().from_dict({**payload, "meeting_ref": payload["meeting_ref"]})
 

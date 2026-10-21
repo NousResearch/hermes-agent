@@ -194,6 +194,7 @@ def _prepare_container_image(
             probe = _sp.run(
                 ["docker", "image", "inspect", container_image],
                 capture_output=True, timeout=10,
+                check=False,
             )
             if probe.returncode != 0:
                 if config.get("verbose"):
@@ -201,6 +202,7 @@ def _prepare_container_image(
                 pull = _sp.run(
                     ["docker", "pull", container_image],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+                    check=False,
                 )
                 if pull.returncode != 0:
                     return _failure_result(
@@ -429,22 +431,22 @@ class BatchRunner:
         run_name: str,
         distribution: str = "default",
         max_iterations: int = 10,
-        base_url: str = None,
-        api_key: str = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         model: str = "claude-opus-4-20250514",
         num_workers: int = 4,
         verbose: bool = False,
-        ephemeral_system_prompt: str = None,
+        ephemeral_system_prompt: str | None = None,
         log_prefix_chars: int = 100,
-        providers_allowed: list[str] = None,
-        providers_ignored: list[str] = None,
-        providers_order: list[str] = None,
-        provider_sort: str = None,
+        providers_allowed: list[str] | None = None,
+        providers_ignored: list[str] | None = None,
+        providers_order: list[str] | None = None,
+        provider_sort: str | None = None,
         openrouter_min_coding_score: Optional[float] = None,
 
-        reasoning_config: dict[str, Any] = None,
-        prefill_messages: list[dict[str, Any]] = None,
-        max_samples: int = None,
+        reasoning_config: dict[str, Any] | None = None,
+        prefill_messages: list[dict[str, Any]] | None = None,
+        max_samples: int | None = None,
     ):
         """Load the dataset (truncated to *max_samples*), validate *distribution*, create batches.
 
@@ -863,29 +865,29 @@ def _split_csv(value: Optional[str]) -> Optional[list[str]]:
 
 
 def main(
-    dataset_file: str = None,
-    batch_size: int = None,
-    run_name: str = None,
+    dataset_file: str | None = None,
+    batch_size: int | None = None,
+    run_name: str | None = None,
     distribution: str = "default",
     model: str = "anthropic/claude-sonnet-4.6",
-    api_key: str = None,
+    api_key: str | None = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
     num_workers: int = 4,
     resume: bool = False,
     verbose: bool = False,
     list_distributions: bool = False,
-    ephemeral_system_prompt: str = None,
+    ephemeral_system_prompt: str | None = None,
     log_prefix_chars: int = 100,
-    providers_allowed: str = None,
-    providers_ignored: str = None,
-    providers_order: str = None,
-    provider_sort: str = None,
+    providers_allowed: str | None = None,
+    providers_ignored: str | None = None,
+    providers_order: str | None = None,
+    provider_sort: str | None = None,
 
-    reasoning_effort: str = None,
+    reasoning_effort: str | None = None,
     reasoning_disabled: bool = False,
-    prefill_messages_file: str = None,
-    max_samples: int = None,
+    prefill_messages_file: str | None = None,
+    max_samples: int | None = None,
 ):
     """
     Run batch processing of agent prompts from a dataset.

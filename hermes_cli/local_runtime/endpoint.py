@@ -16,6 +16,18 @@ import urllib.request
 
 LLAMACPP_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
 
+
+def child_query(model_id: str) -> str:
+    """Query string for a status read of one router child (``/props``, ``/slots``, ``/metrics``).
+
+    The router loads an unloaded model for any request that names it (``--models-autoload``), so a
+    status read right after an Eject or an idle unload would load the model straight back.
+    ``autoload=false`` makes the router answer 400 "model is not loaded" instead.
+    """
+    from urllib.parse import quote
+
+    return f"model={quote(model_id)}&autoload=false"
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +64,7 @@ def _state_endpoint() -> dict | None:
     return {"base_url": base_url, "api_key": state.get("api_key", "")}
 
 
-def managed_root() -> "tuple[str, str] | None":
+def managed_root() -> tuple[str, str] | None:
     """(base_root, api_key) of the managed router, or None. Resolved through the
     ownership-guarded reader, not a raw state-file read: on the shared stable port a foreign
     install's server answers /health for anyone, and a raw read would attach callers to someone

@@ -197,7 +197,7 @@ def _description_preview(content: str) -> str:
     return ""
 
 
-def _resolve_skill_dir(name: str, category: str = None) -> Path:
+def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
     """New-skill dir; honors ``skills.create_dir`` (e.g. a shared fleet dir)."""
     base = _skills_dir()
     try:
@@ -450,7 +450,7 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 # --- Core actions -------------------------------------------------------------
 
-def _create_skill(name: str, content: str, category: str = None) -> dict[str, Any]:
+def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
         return _err(err)
@@ -505,7 +505,7 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
     return _add_description_prompt_preview(result, content)
 
 
-def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
+def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | None = None,
                  replace_all: bool = False) -> dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
@@ -532,8 +532,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
 
     # Use the same fuzzy matching engine as the file patch tool.
     from tools.fuzzy_match import fuzzy_find_and_replace
+    correction_notes = []
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
-        content, old_string, new_string, replace_all)
+        content, old_string, new_string, replace_all, correction_notes=correction_notes)
     if match_error:
         with suppress(Exception):
             from tools.fuzzy_match import format_no_match_hint
@@ -549,6 +550,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
+    if correction_notes:
+        result["note"] = "\n".join(correction_notes)
     # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
     if not file_path:
@@ -647,7 +650,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
 # --- Main entry point ---------------------------------------------------------
 
 # Set while replaying an approved staged skill write so skill_manage() does not re-gate it.
-_skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
+_skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
@@ -763,10 +766,10 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
 
 
 def skill_manage(
-    action: str, name: str, content: str = None, category: str = None, file_path: str = None,
-    file_content: str = None, old_string: str = None, new_string: str = None,
-    replace_all: bool = False, absorbed_into: str = None, task_id: str = None,
-    session_id: str = None, operations=None) -> str:
+    action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
+    file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
+    replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
+    session_id: str | None = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
     if operations is not None:

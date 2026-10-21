@@ -216,14 +216,19 @@ def _default_verify() -> bool | ssl.SSLContext:
     """Platform-aware default SSL verify for httpx clients.
 
     On macOS with Homebrew Python the system OpenSSL cannot find the system trust store, so pin
-    certifi's bundle when importable; elsewhere defer to httpx's built-in default.
+    certifi's bundle when importable; elsewhere defer to httpx's built-in default. The bundle is
+    resolved through ``agent.ssl_verify``, the one place that re-derives a path an
+    install-environment rotation deleted: the Nous credential exchange builds its context here, and
+    in a long-lived gateway it can be the first TLS client constructed after the rotation.
     """
+    from agent.ssl_verify import certifi_bundle_path, platform_ssl_context
+    bundle = certifi_bundle_path()
+    if bundle is None:
+        # No usable certifi bundle (absent, or deleted by a rotation and not re-derivable):
+        # httpx's ``True`` would still resolve through certifi, so hand over the platform store.
+        return platform_ssl_context()
     if sys.platform == "darwin":
-        try:
-            import certifi
-            return ssl.create_default_context(cafile=certifi.where())
-        except ImportError:
-            pass
+        return ssl.create_default_context(cafile=bundle)
     return True
 
 
@@ -314,10 +319,10 @@ def _print_device_code_instructions(
 
 
 def _poll_device_token_generic(
-    post: Callable[[], "httpx.Response"], *, expires_in: int, poll_interval: int,
+    post: Callable[[], httpx.Response], *, expires_in: int, poll_interval: int,
     validate_success: Callable[[dict[str, Any]], None],
-    on_non_json_error: Callable[["httpx.Response"], Exception],
-    on_error: Callable[["httpx.Response", dict[str, Any]], Exception],
+    on_non_json_error: Callable[[httpx.Response], Exception],
+    on_error: Callable[[httpx.Response, dict[str, Any]], Exception],
     on_timeout: Callable[[], Exception]) -> dict[str, Any]:
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 

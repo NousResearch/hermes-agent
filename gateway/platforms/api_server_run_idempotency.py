@@ -62,7 +62,7 @@ class RunIdempotencyStore:
     def durable(self) -> bool:
         """Whether reservations survive this process."""
         return self._db_path is not None
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
@@ -222,6 +222,12 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
+            self._conn.commit()
+
+    def forget(self, scope: str, key: str) -> None:
+        """Release a reservation whose run was refused before it existed."""
+        with self._lock:
+            self._conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
             self._conn.commit()
 
     def close(self) -> None:

@@ -78,7 +78,7 @@ def _probe(profile: str | None) -> dict:
 def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_closed(two_homes):
     from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
-    root, _b = two_homes
+    _root, _b = two_homes
     assert not is_multiplex_active()  # single-profile so far
 
     probe_b = _probe("b")
@@ -113,7 +113,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     """The scope must wrap the body of every credential-reading RPC, not only config.get."""
     from agent.secret_scope import get_secret
 
-    root, b = two_homes
+    _root, b = two_homes
     seen = {}
 
     def fake_oneshot(**kwargs):

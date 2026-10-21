@@ -118,7 +118,7 @@ class TestClassification:
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
         discover_builtin_tools()
-        names = {"read_window_below", "apply_layout", "project_list"}
+        names = {"read_window_below", "set_theme", "project_list"}
         assembled = assemble_tool_defs(
             [_td(name, f"GUI {name}") for name in names],
             context_length=200_000,
@@ -396,7 +396,7 @@ class TestBridgeDispatch:
 
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
-        name, args, err = resolve_underlying_call({
+        _name, _args, err = resolve_underlying_call({
             "name": "unknown_xxx",
             "arguments": {"foo": "bar"},
         })
@@ -407,7 +407,7 @@ class TestBridgeDispatch:
     def test_resolve_underlying_call_rejects_recursion(self):
         """tool_call cannot invoke tool_call itself."""
         from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
-        name, args, err = resolve_underlying_call({
+        _name, _args, err = resolve_underlying_call({
             "name": TOOL_CALL_NAME,
             "arguments": {},
         })

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import update_pause_record as pause_record
+from datetime import UTC
 
 REPO = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals; Windows cells live in wine2e")
@@ -178,13 +179,13 @@ def test_an_adopted_baseline_never_replaces_this_runs_own(tmp_path, monkeypatch)
 
 def _orphan(tmp_path: Path, profiles: dict) -> None:
     """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
-    owner = _child("""
+    owner = _child(f"""
         import time
         from hermes_cli import update_pause_record as r
-        r.write(r.stamp_tree({"resume_needed": True, "profiles": %r}), owner=r.identity())
+        r.write(r.stamp_tree({{"resume_needed": True, "profiles": {profiles!r}}}), owner=r.identity())
         print("written", flush=True)
         time.sleep(120)
-    """ % profiles, env={"HERMES_HOME": str(tmp_path)})
+    """, env={"HERMES_HOME": str(tmp_path)})
     assert owner.stdout.readline().strip() == "written"
     owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
     owner.wait(timeout=10)
@@ -708,7 +709,7 @@ def test_an_accepted_stop_the_record_could_not_checkpoint_outlives_the_request_t
     saved = pause_record.read()["token"]
     assert saved["stop_sent"] == [], "premise: no checkpoint landed"
     body = json.loads(marker.read_text(encoding="utf-8"))
-    body["written_at"] = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()  # past the TTL
+    body["written_at"] = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()  # past the TTL
     marker.write_text(json.dumps(body), encoding="utf-8")
     owed = pause_record.drop_never_stopped(dict(saved))["profiles"]
     assert owed == ({"p": pid} if consumed else {}), "a gateway draining an accepted stop lost its restart debt"

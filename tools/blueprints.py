@@ -16,8 +16,16 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BlueprintSpec", "parse_blueprint", "blueprint_spec_for_installed", "blueprint_to_job_spec",
-           "create_blueprint_job", "register_blueprint_suggestion", "export_blueprint", "BlueprintError"]
+__all__ = [
+    "BlueprintError",
+    "BlueprintSpec",
+    "blueprint_spec_for_installed",
+    "blueprint_to_job_spec",
+    "create_blueprint_job",
+    "export_blueprint",
+    "parse_blueprint",
+    "register_blueprint_suggestion",
+]
 
 
 class BlueprintError(ValueError):

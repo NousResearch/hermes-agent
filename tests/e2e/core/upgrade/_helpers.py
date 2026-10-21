@@ -31,6 +31,25 @@ WORKTREE = Path(__file__).resolve().parents[4]
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 UID = os.getuid()
 
+
+def _home_resetting_profile_scripts() -> tuple[Path, ...]:
+    """Host login scripts that export HOME (Blacksmith's /etc/profile.d/blacksmith.sh puts the
+    runner user's passwd home back on every login shell). A login-shell probe in a sandbox HOME
+    would read the runner's rc files instead of the ones the installer edited."""
+    found = []
+    for script in sorted(Path("/etc/profile.d").glob("*.sh")):
+        try:
+            text = script.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        if any(line.strip().startswith("export HOME=") for line in text.splitlines()):
+            found.append(script)
+    return tuple(found)
+
+
+# (host_path, sandbox_path) masks for login-shell probes: /dev/null over each HOME-resetting script.
+LOGIN_SHELL_RO_BINDS = tuple((Path("/dev/null"), s) for s in _home_resetting_profile_scripts())
+
 _ENV_ALLOW = ("LANG", "LC_ALL", "TZ", "TERM", "SHELL", "USER", "LOGNAME", "TMPDIR", "SSL_CERT_FILE")
 _SHIMMED = ("systemctl", "launchctl", "sudo", "loginctl", "journalctl")
 
@@ -43,6 +62,7 @@ def _bwrap_usable() -> bool:
         r = subprocess.run(
             [exe, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "true"],
             capture_output=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False

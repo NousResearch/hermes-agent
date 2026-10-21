@@ -43,7 +43,7 @@ class StreamingTTSConsumer:
         # since an OpenAI-compatible endpoint reports its real rate only in the response (#76466).
         self._audio_format = audio_format or AudioFormat() if self._streamer is None else self._streamer_format()
         # Thread-safe queue of completed clauses plus the _DONE/_ABORT sentinels.
-        self._queue: "queue.Queue[Any]" = queue.Queue(maxsize=256)
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=256)
         self._handle: Optional[StreamingTTSHandle] = None
         self._task: Optional[asyncio.Task] = None  # drain task, created once by start()
         self._completed = self._partial = self._aborted = False

@@ -178,7 +178,7 @@ def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
     _REGISTRY.shutdown(owner_matches=owner_matches)
 
 
-def _reap_unlocked(idle_timeout: int) -> list["RemoteKernel"]:
+def _reap_unlocked(idle_timeout: int) -> list[RemoteKernel]:
     """Pop idle-expired, unattached remote kernels; caller tears them down outside the lock. The
     runner self-exits after the same idle window, so this clears the HOST-side entry — without it
     the map grew one entry per never-revisited (owner, env_type, task_env_id) for the gateway's life."""
@@ -188,7 +188,7 @@ def _reap_unlocked(idle_timeout: int) -> list["RemoteKernel"]:
     return [_REMOTE_KERNELS.pop(key) for key in doomed]
 
 
-def _evict_over_cap_unlocked(keep: tuple) -> list["RemoteKernel"]:
+def _evict_over_cap_unlocked(keep: tuple) -> list[RemoteKernel]:
     """Pop least-recently-used unattached remote kernels beyond the process-wide cap (the same
     ``max_session_kernels`` bound as local kernels, applied independently to this map)."""
     from tools.code_kernel import _lifecycle_limits

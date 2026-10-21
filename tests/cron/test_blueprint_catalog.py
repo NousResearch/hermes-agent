@@ -20,6 +20,7 @@ from cron.blueprint_catalog import (
     get_blueprint,
     blueprint_deeplink,
 )
+import itertools
 
 
 class TestCatalog:
@@ -87,7 +88,7 @@ class TestValidation:
         first_three = [it.get_next(datetime) for _ in range(3)]
         gaps = {
             (b - a).total_seconds()
-            for a, b in zip(first_three, first_three[1:])
+            for a, b in itertools.pairwise(first_three)
         }
         assert gaps == {7200.0}, f"expected 2h gaps, got {spec['schedule']} -> {first_three}"
 

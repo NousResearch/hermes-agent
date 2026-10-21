@@ -87,12 +87,15 @@ class TestF1CommitOverrunWhileHung:
             )
 
         try:
+            # Warm the pool's thread first: the fence rightly refuses a worker that starts after the
+            # 1s commit deadline, and spawning a cold pool thread on a starved runner took longer.
+            executor.submit(lambda: None).result(timeout=30)
             t = threading.Thread(target=run, name="f1-hung-commit-host")
             t.start()
             try:
-                assert entered.wait(timeout=2)
+                assert entered.wait(timeout=10)
                 # ── Assert WHILE the commit worker is still blocked ──────
-                assert overrun_fired.wait(timeout=5), (
+                assert overrun_fired.wait(timeout=10), (
                     "on_commit_overrun must fire while the commit is hung"
                 )
                 assert not release.is_set()  # worker provably still blocked
@@ -445,7 +448,7 @@ class TestS3IdleChargedFromLastProgress:
 
         t0 = time.monotonic()
         try:
-            msgs, prompt = run_compress_context_with_progress_timeout(
+            _msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker,
                 messages=[{"role": "user", "content": "a"}],
                 system_prompt_fallback="fb",

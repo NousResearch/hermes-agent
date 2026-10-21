@@ -19,6 +19,7 @@ from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
+from . import shared_metrics_connectors as connectors_
 from . import shared_metrics_efficiency as eff
 from . import shared_metrics_engagement as engagement_
 from . import shared_metrics_fields as fields_
@@ -189,6 +190,7 @@ class _MetricsSession:
     # Compression rotated this id away: close once its in-flight turn ends.
     retiring: bool = False
     efficiency: eff.SessionEfficiency = field(default_factory=eff.SessionEfficiency)
+    connectors: connectors_.ConnectorSessionState = field(default_factory=connectors_.ConnectorSessionState)
     route_run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
     api_calls: int = 0
     tool_call_total: int = 0
@@ -206,6 +208,7 @@ class _PeakLineage:
     tally: engagement_.SessionTally = field(default_factory=engagement_.SessionTally)
     run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
     spent: deque | None = None
+    connectors: connectors_.ConnectorSessionState | None = None
 
 
 # Backstop: conversations whose rotated-to segment a surface never closed are flushed past this many.
@@ -467,6 +470,8 @@ class _Runtime:
         session, task = self._task_pair(event, start=True, allow_task_id_fallback=True)
         if session is None or task is None or not _text(event, "tool_call_id"):
             return
+        if connectors_.is_connector_batch(event):
+            return  # each entry opens its own lifecycle; the wrapper counts only if no entry ran
         identity = self._tool_call_identity(event)
         with session.lock:
             if not self._admits(session, task, event):
@@ -513,6 +518,8 @@ class _Runtime:
             tool_call = None
             if _text(event, "tool_call_id"):
                 observed_identity = self._tool_call_identity(event)
+                if self._settle_connector_batch(session, task, observed_identity, event):
+                    return
                 if observed_identity in task.completed_tool_call_ids:
                     return
                 identity = observed_identity
@@ -540,6 +547,27 @@ class _Runtime:
             if task.cost.user_turn:
                 session.efficiency.tools.used.add(eff.toolset_metric_name(event.get("toolset")))
             self._finish_tool_call(task, tool_call, event)
+            chain = session.connectors.observe(event)
+            if chain is not None:
+                self._mark(session, task, contract.CONNECTOR_CHAIN_MARK, chain)
+
+    def _settle_connector_batch(
+        self, session: _MetricsSession, task: _TaskRun, wrapper: tuple[str, str, str], event: dict[str, Any],
+    ) -> bool:
+        """A connector batch wrapper's post is not a call of its own once an entry started: entries
+        still open (the executor timed out or abandoned the batch) end with the wrapper's outcome.
+        True when the wrapper was settled this way; a batch refused before any entry counts as itself."""
+        if not connectors_.is_connector_batch(event):
+            return False
+        started = [key for key in session.tool_calls
+                   if key[0] == task.task_id and connectors_.is_batch_entry(key[1:], wrapper)]
+        if not started and not connectors_.batch_entry_ran(task.completed_tool_call_ids, wrapper):
+            return False
+        for key in started:
+            task.completed_tool_call_ids.add(key[1:])
+            self._finish_tool_call(task, session.tool_calls.pop(key), event)
+        task.completed_tool_call_ids.add(wrapper)
+        return True
 
     def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
         """Emit one allowlisted skill fact without its local identity."""
@@ -1054,7 +1082,8 @@ class _Runtime:
                 if old is None:
                     return  # a segment this process never served: the new id is its own conversation
                 key = old_id
-                self._lineages[key] = _PeakLineage(open={old_id}, run=old.route_run, spent=old.efficiency.spent)
+                self._lineages[key] = _PeakLineage(
+                    open={old_id}, run=old.route_run, spent=old.efficiency.spent, connectors=old.connectors)
                 self._lineage_of[old_id] = key
             self._lineages[key].open.add(new_id)
             self._lineage_of[new_id] = key
@@ -1077,10 +1106,15 @@ class _Runtime:
             return lineage.spent if lineage is not None else None
 
     def _share_spent(self, session: _MetricsSession) -> None:
-        """A rotated-to segment's /undo and /retry reach the turns the earlier segments spent."""
+        """A rotated-to segment's /undo and /retry reach the turns the earlier segments spent, and its
+        connector chain continues the earlier segments' searches and descriptions."""
         spent = self._lineage_spent(session.session_id)
         if spent is not None:
             session.efficiency.spent = spent
+        with self._lineage_lock:
+            lineage = self._lineages.get(self._lineage_of.get(session.session_id, ""))
+            if lineage is not None and lineage.connectors is not None:
+                session.connectors = lineage.connectors
 
     def _with_route_run(
         self, session_id: str, own: engagement_.RouteRun | None, update: Callable[[engagement_.RouteRun], Any],

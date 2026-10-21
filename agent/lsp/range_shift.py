@@ -73,4 +73,4 @@ def shift_baseline(baseline: list[dict[str, Any]], shift: _Shift) -> list[dict[s
     return [s for s in shifted if s is not None]
 
 
-__all__ = ["build_line_shift", "shift_diagnostic_range", "shift_baseline"]
+__all__ = ["build_line_shift", "shift_baseline", "shift_diagnostic_range"]

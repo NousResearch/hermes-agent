@@ -8,6 +8,7 @@ its payload depends on the Authorization header or URL so a leaked entry is obse
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import os
 import threading
@@ -197,16 +198,15 @@ def test_banner_skills_are_the_routed_profiles(homes):
     banner._available_skills_cache = None
     try:
         with _Scoped(a):
-            assert sorted(sum(banner.get_available_skills().values(), [])) == ["skill_a"]
+            assert sorted(itertools.chain.from_iterable(banner.get_available_skills().values())) == ["skill_a"]
         with _Scoped(b):
-            assert sorted(sum(banner.get_available_skills().values(), [])) == ["skill_b"]
+            assert sorted(itertools.chain.from_iterable(banner.get_available_skills().values())) == ["skill_b"]
     finally:
         banner._available_skills_cache = None
 
 
 def test_failed_guest_mint_only_suppresses_that_profile(homes, monkeypatch, tmp_path):
     a, b = homes
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
     import hermes_cli.anon_auth as anon
     from hermes_cli import auth_nous

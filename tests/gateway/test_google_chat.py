@@ -972,7 +972,7 @@ class TestTypingLifecycle:
         await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
         adapter._patch_message.assert_awaited_once()
         # Patched with a final-state label, not deleted.
-        args, kwargs = adapter._patch_message.call_args
+        args, _kwargs = adapter._patch_message.call_args
         assert "interrupted" in args[1]["text"].lower()
         assert "spaces/S" not in adapter._typing_messages
 

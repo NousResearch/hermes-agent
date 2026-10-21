@@ -25,6 +25,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     ContextCompressor,
 )
+import itertools
 
 
 JOB_SENTINEL = "CRON_JOB_PROMPT_sentinel_brief_the_inbox_and_write_a_digest"
@@ -155,7 +156,7 @@ def test_role_alternation_and_head_are_preserved():
             or (m.get("role") == "assistant" and m.get("tool_calls"))
         )
     ]
-    for previous, current in zip(visible, visible[1:]):
+    for previous, current in itertools.pairwise(visible):
         assert not (previous == current == "user"), (
             f"consecutive user rows in compressed transcript: {visible}"
         )
@@ -400,7 +401,7 @@ def test_replay_replaces_surviving_user_row_with_same_message_uid():
     assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
     visible = [r for r in map(_template_visible_role, compressed[1:]) if r is not None]
     assert visible[0] == "user", visible
-    assert all(a != b for a, b in zip(visible, visible[1:])), visible
+    assert all(a != b for a, b in itertools.pairwise(visible)), visible
     assert JOB_SENTINEL in _text(compressed[_handoff_idx(compressed)]).split(_SUMMARY_END_MARKER)[-1]
 
     # Visible assistant text in the tail makes the summary merge into tail[0],

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _EXPIRY_SKEW_MS = 120_000
 
 
-def plugin_row_is_expiring(entry: "PooledCredential") -> bool:
+def plugin_row_is_expiring(entry: PooledCredential) -> bool:
     """An expiry-stamped OAuth row (a plugin's, or Anthropic's) is due within the skew of ``expires_at_ms``.
 
     The token endpoint's ``expires_in`` is the only clock: many providers issue opaque bearers (Google's
@@ -45,7 +45,7 @@ def plugin_row_is_expiring(entry: "PooledCredential") -> bool:
     return entry.expires_at_ms is not None and int(entry.expires_at_ms) <= int(time.time() * 1000) + _EXPIRY_SKEW_MS
 
 
-def apply_plugin_refresh_result(entry: "PooledCredential", result: Any) -> "PooledCredential":
+def apply_plugin_refresh_result(entry: PooledCredential, result: Any) -> PooledCredential:
     """Merge a ``refresh_credential`` return value into *entry*.
 
     Field names go through ``dataclasses.replace``; everything else is merged into ``extra``
@@ -78,8 +78,8 @@ def is_terminal_plugin_refresh_error(exc: BaseException) -> bool:
 
 
 def recover_failed_plugin_refresh(
-    pool: "CredentialPool", entry: "PooledCredential", exc: Exception,
-) -> tuple[bool, Optional["PooledCredential"]]:
+    pool: CredentialPool, entry: PooledCredential, exc: Exception,
+) -> tuple[bool, Optional[PooledCredential]]:
     """Recovery for a plugin hook that raised: adopt a peer's rotation, or quarantine a dead grant.
 
     Returns ``(handled, result)``; ``handled=False`` means the caller should bench the row as a

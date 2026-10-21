@@ -114,7 +114,7 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", env=env)
+            encoding="utf-8", errors="replace", env=env, check=False)
     except (pm.InstallError, OSError) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
         return False
@@ -200,7 +200,7 @@ def cmd_whatsapp(args):
     with contextlib.suppress(KeyboardInterrupt):
         subprocess.run(
             [node, str(bridge_script), "--pair-only", "--session", str(session_dir)],
-            cwd=str(bridge_dir), env=with_hermes_node_path())
+            cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
 
     print()
     if not (session_dir / "creds.json").exists():
@@ -225,10 +225,10 @@ def cmd_whatsapp(args):
 
 def cmd_whatsapp_cloud(args):
     """Set up WhatsApp Business Cloud API (official Meta integration) — complementary to the
-    ``hermes whatsapp`` Baileys bridge wizard. See ``hermes_cli/setup_whatsapp_cloud.py``."""
+    ``hermes whatsapp`` Baileys bridge wizard. See ``plugins/platforms/whatsapp_cloud/setup_wizard.py``."""
     from hermes_cli.main import _require_tty
     _require_tty("whatsapp-cloud")
-    from hermes_cli.setup_whatsapp_cloud import run_whatsapp_cloud_setup
+    from plugins.platforms.whatsapp_cloud.setup_wizard import run_whatsapp_cloud_setup
     return run_whatsapp_cloud_setup()
 
 

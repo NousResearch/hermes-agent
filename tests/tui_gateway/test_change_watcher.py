@@ -290,6 +290,43 @@ def test_pairing_probe_reuses_live_profile_roots_until_the_profile_set_moves(wat
     assert sorted(live_calls) == ["play", "work", "work"]
 
 
+def test_second_ledger_with_the_same_mtime_still_broadcasts_pairing_changed(watcher_home):
+    """Coarse-timestamp filesystems give two ledgers written in one tick the same mtime; a
+    newest-mtime signature cannot see the second one, so the badge for it never appears."""
+    home, events = watcher_home
+    store = home / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    first = store / "telegram-pending.json"
+    first.write_text("{}", encoding="utf-8")
+    server._broadcast_watched_changes(now=0.0)
+
+    second = store / "discord-pending.json"
+    second.write_text("{}", encoding="utf-8")
+    pinned = first.stat().st_mtime_ns
+    os.utime(second, ns=(pinned, pinned))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert events == [("pairing.changed", {})]
+
+
+def test_sibling_projects_db_write_in_the_same_mtime_tick_broadcasts(watcher_home, monkeypatch):
+    """One served profile's projects.db write that lands in the same timestamp tick as
+    another's must not be masked by a newest-mtime-across-homes signature."""
+    home, events = watcher_home
+    coder_home = home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", {coder_home})
+    (home / "projects.db").write_text("x", encoding="utf-8")
+    server._broadcast_watched_changes(now=0.0)
+
+    (coder_home / "projects.db").write_text("x", encoding="utf-8")
+    pinned = (home / "projects.db").stat().st_mtime_ns
+    os.utime(coder_home / "projects.db", ns=(pinned, pinned))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("projects.changed", {}) in events
+
+
 def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
     """_rate_limits.json moves on every unauthorized DM, including ones that
     produce no new row — signalling on it would refetch for nothing."""
@@ -424,7 +461,7 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
 
 
 def test_no_outbox_dir_never_fires_pending(watcher_home):
-    home, events = watcher_home
+    _home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
     server._broadcast_watched_changes(now=10.0)
 
@@ -445,3 +482,64 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
 
     # The broken cron probe is skipped; sessions still broadcasts.
     assert ("sessions.changed", {}) in events
+
+
+def test_skill_installed_from_another_terminal_broadcasts_skills_changed(watcher_home, monkeypatch):
+    """CFG-8: the gateway notices a new skill dir and tells attached clients to refetch
+    ``commands.catalog``; clients never rescan disk themselves."""
+    home, events = watcher_home
+    import tools.skills_tool as st
+    skills = home / "skills"
+    skills.mkdir()
+    monkeypatch.setattr(st, "SKILLS_DIR", skills)
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "skills.changed"]
+
+    skill = skills / "new-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: new-skill\ndescription: d\n---\nbody\n")
+    os.utime(skills, (time.time() + 5, time.time() + 5))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("skills.changed", {}) in events
+
+
+def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(watcher_home, monkeypatch, tmp_path):
+    """The gateway runs in repo A; a session's catalog resolved under repo B (its workspace, via the
+    session cwd). Installing a skill in B's ``.hermes/skills`` must still notify viewers: the watcher
+    signs every scope a session resolved commands in, not only the launch repo."""
+    import json
+    import agent.skill_commands as sc
+    import tools.skills_tool as st
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    home, events = watcher_home
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "skills").mkdir()
+    monkeypatch.setattr(st, "SKILLS_DIR", home / "skills")
+    monkeypatch.setattr(sc, "_skill_commands_by_key", {})
+    monkeypatch.setattr(sc, "_skill_commands_sig_by_key", {})
+    repo_a, repo_b = tmp_path / "repo-a", tmp_path / "repo-b"
+    for repo in (repo_a, repo_b):
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".hermes" / "skills").mkdir(parents=True)
+    (home / "config.yaml").write_text(json.dumps({"skills": {"trusted_project_dirs": [str(repo_a), str(repo_b)]}}))
+    monkeypatch.chdir(repo_a)
+    st.clear_skills_cache()
+    token = set_session_cwd(str(repo_b))
+    try:
+        assert "/workspace-only" not in sc.get_skill_commands()  # B's session catalog: publishes B's scope
+    finally:
+        reset_session_cwd(token)
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "skills.changed"]
+
+    skill = repo_b / ".hermes" / "skills" / "workspace-only"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: workspace-only\ndescription: d\n---\nbody\n")
+    server._broadcast_watched_changes(now=10.0)
+    assert ("skills.changed", {}) in events
+    token = set_session_cwd(str(repo_b))
+    try:
+        assert "/workspace-only" in sc.get_skill_commands()
+    finally:
+        reset_session_cwd(token)

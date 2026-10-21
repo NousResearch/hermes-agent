@@ -164,7 +164,7 @@ async def _ensure_named_dm_topic(adapter: Any, chat_id: str, name: str, *, refre
 class DeliveryRouter:
     """Resolves delivery targets and dispatches messages to platform adapters."""
 
-    def __init__(self, config: GatewayConfig, adapters: dict[Platform, Any] = None,
+    def __init__(self, config: GatewayConfig, adapters: dict[Platform, Any] | None = None,
                  dead_targets: Optional[DeadTargetRegistry] = None):  # profile-local registry when omitted
         self.config = config
         self.adapters = adapters or {}

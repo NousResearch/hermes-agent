@@ -99,6 +99,6 @@ def test_key_detected_in_a_json_tool_result_is_also_masked_where_the_model_repea
     mgr, provider = _manager()
     mgr.sync_all("show my ov.conf", f"Your key is {key}.", messages=[{"role": "tool", "content": tool}])
     mgr.flush_pending(timeout=5.0)
-    user, assistant, messages = provider.seen[0]
+    user, _assistant, messages = provider.seen[0]
     assert key not in repr(provider.seen)
     assert user == "show my ov.conf" and json.loads(json.loads(messages[0]["content"])["output"])["model"] == "gemini"

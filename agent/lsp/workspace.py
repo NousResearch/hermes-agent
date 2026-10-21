@@ -199,6 +199,12 @@ def clear_cache() -> None:
 
 
 __all__ = [
-    "find_git_worktree", "is_inside_workspace", "is_trusted_workspace", "nearest_root", "normalize_path",
-    "operator_workspace_roots", "resolve_workspace_for_file", "clear_cache",
+    "clear_cache",
+    "find_git_worktree",
+    "is_inside_workspace",
+    "is_trusted_workspace",
+    "nearest_root",
+    "normalize_path",
+    "operator_workspace_roots",
+    "resolve_workspace_for_file",
 ]

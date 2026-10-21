@@ -286,7 +286,7 @@ def spill_overrides(profile: ModelProfile, spill_bytes: int | None = None) -> li
         return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
     blocks = recurrent_spill_blocks(profile, spill_bytes)
     if blocks:
-        return ["-ot", r"blk\.(%s)\.ffn_.*\.weight=CPU" % "|".join(map(str, blocks))]
+        return ["-ot", r"blk\.({})\.ffn_.*\.weight=CPU".format("|".join(map(str, blocks)))]
     return []  # dense: fit's back-to-front layer cut is the only axis
 
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
 from urllib.parse import urlparse
 import httpx
+from hermes_dir_acl import make_user_dir
 
 # ``agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
 # module attributes so tests can patch ``tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
@@ -215,7 +216,7 @@ def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
         return cache_dir
     # mode= is honored only for the leaf and is not further masked by umask
     # for the bits we care about; _secure_dir reconciles anything unusual.
-    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
     try:
         from hermes_cli.config import _secure_dir
 
@@ -885,7 +886,7 @@ async def _run_analysis(
 
 
 async def vision_analyze_tool(
-    image_url: str, user_prompt: str, model: str = None,
+    image_url: str, user_prompt: str, model: str | None = None,
     task_id: Optional[str] = None, region: Optional[list] = None) -> str:
     """Describe an image (URL, local path, data: URL) with the auxiliary vision LLM. ``user_prompt``
     is pre-formatted by the caller. Temp images live under $HERMES_HOME/cache/vision/."""
@@ -1119,7 +1120,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
 
 
 async def video_analyze_tool(
-    video_url: str, user_prompt: str, model: str = None, task_id: Optional[str] = None) -> str:
+    video_url: str, user_prompt: str, model: str | None = None, task_id: Optional[str] = None) -> str:
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
         temp_video_path = await _materialize_video(video_url, task_id, temp_paths)

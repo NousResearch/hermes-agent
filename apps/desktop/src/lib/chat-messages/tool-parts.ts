@@ -12,7 +12,7 @@ function toolId(payload: GatewayEventPayload | undefined): string {
   return payload?.tool_id || payload?.tool_call_id || payload?.id || ''
 }
 
-export const QUESTION_CARD_TOOLS = new Set(['clarify', 'setup_choose'])
+export const QUESTION_CARD_TOOLS = new Set(['clarify'])
 
 const REQUEST_BACKED_TOOLS = new Set([...QUESTION_CARD_TOOLS, 'setup_mcp'])
 
@@ -411,6 +411,10 @@ export interface SettledClarifyProjection {
   messages: ChatMessage[]
   streamId: string | null
 }
+
+/** A tool call that neither returned nor was sealed: it is still running. */
+export const hasUnresolvedToolCall = (message: ChatMessage) =>
+  message.parts.some(part => part.type === 'tool-call' && part.result === undefined && part.completedAt === undefined)
 
 /**
  * Find the message that owns a tool call, by its stable call id, anywhere in
@@ -825,16 +829,8 @@ export function toolPartFromStoredCall(
 function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetadata | undefined {
   const display = parseMaybeJsonObject(toolMessage.display_metadata)
   const metadata = parseMaybeJsonObject(display.tool_result_metadata)
-  const retried = parseMaybeJsonObject(display.retried).result
 
-  if (typeof metadata.inline_diff !== 'string' && retried === undefined) {
-    return undefined
-  }
-
-  return {
-    ...(typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : {}),
-    ...(retried === undefined ? {} : { retried })
-  }
+  return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
 }
 
 export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {

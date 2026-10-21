@@ -240,7 +240,8 @@ def requests_error_message(response: Any, exc: Exception) -> str:
 @dataclass
 class HttpFailure:
     """One failed ``post_json`` attempt as ``(error, error_type)``. ``kind`` ∈ http / timeout /
-    connection / request / invalid_json; ``message`` = HTTP error text or decode error;
+    unreachable (DNS failure or refused connection: nothing was sent) / connection (dropped
+    after connecting) / request / invalid_json; ``message`` = HTTP error text or decode error;
     ``status`` / ``response`` are set for ``http`` only."""
 
     kind: str
@@ -270,6 +271,16 @@ def record_token_usage(usage: Any, *, model: str, provider: str, base_url: Optio
         SimpleNamespace(model=model, usage=usage), "image_generation", provider=provider, base_url=base_url)
 
 
+def _never_connected(exc: Exception) -> bool:
+    """True when the last connection attempt never connected, so no server accepted the request body
+    (a redirect hop may have answered earlier, but a redirect accepts nothing)."""
+    from urllib3.exceptions import MaxRetryError, NameResolutionError, NewConnectionError
+
+    cause = exc.args[0] if exc.args else None
+    reason = cause.reason if isinstance(cause, MaxRetryError) else cause
+    return isinstance(reason, (NewConnectionError, NameResolutionError))
+
+
 def post_json(
     url: str, *, headers: dict[str, str], payload: dict[str, Any], timeout: Any, label: str,
     error_message: Callable[[Any, Exception], str] = requests_error_message,
@@ -295,7 +306,8 @@ def post_json(
         return None, HttpFailure(
             "timeout", f"{label} image generation timed out ({int(read_timeout)}s)", "timeout")
     except requests.ConnectionError as exc:
-        return None, HttpFailure("connection", f"{label} connection error: {exc}", "connection_error")
+        kind = "unreachable" if _never_connected(exc) else "connection"
+        return None, HttpFailure(kind, f"{label} connection error: {exc}", "connection_error")
     except requests.RequestException as exc:
         if not catch_request_exception:
             raise

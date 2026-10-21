@@ -29,7 +29,7 @@ def profile_home(tmp_path, monkeypatch):
 
 
 def test_models_and_runtimes_resolve_to_the_shared_root(profile_home):
-    root, profile = profile_home
+    root, _profile = profile_home
     from hermes_cli.local_runtime import binaries
     from hermes_cli.local_runtime import bootstrap
 
@@ -48,7 +48,7 @@ def test_all_runtime_state_follows_runtimes_root(profile_home):
     """Presets, window overrides, server state, and the api key all live
     under runtimes_root() — one resolver, so profile-scoping bugs cannot
     come back one file at a time."""
-    root, profile = profile_home
+    root, _profile = profile_home
     from hermes_cli.local_runtime.growth import window_overrides_path
     from hermes_cli.local_runtime.presets import read_preset_decisions
     from hermes_cli.local_runtime import binaries

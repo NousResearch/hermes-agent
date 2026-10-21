@@ -75,4 +75,4 @@ class CronExecutionEvent(_MonitoringEvent):
     ts_ns: int = field(default_factory=time.time_ns)
 
 
-__all__ = ["GatewayHealthEvent", "GatewayDiagnosticEvent", "CronExecutionEvent"]
+__all__ = ["CronExecutionEvent", "GatewayDiagnosticEvent", "GatewayHealthEvent"]

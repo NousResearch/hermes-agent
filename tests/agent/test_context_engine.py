@@ -36,11 +36,11 @@ class StubEngine(ContextEngine):
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", 0)
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def compress(self, messages: list[dict[str, Any]], current_tokens: int = None) -> list[dict[str, Any]]:
+    def compress(self, messages: list[dict[str, Any]], current_tokens: int | None = None) -> list[dict[str, Any]]:
         self._compress_called = True
         self.compression_count += 1
         # Trivial: just return as-is

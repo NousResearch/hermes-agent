@@ -230,11 +230,11 @@ def buffer_connect_exhausted_notice(agent: Any, error: BaseException, *, attempt
 
 __all__ = [
     "STREAM_DIAG_HEADERS",
-    "connect_exhausted_notice",
     "buffer_connect_exhausted_notice",
-    "stream_diag_init",
-    "stream_diag_capture_response",
+    "connect_exhausted_notice",
+    "emit_stream_drop",
     "flatten_exception_chain",
     "log_stream_retry",
-    "emit_stream_drop",
+    "stream_diag_capture_response",
+    "stream_diag_init",
 ]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterable
 
@@ -37,7 +37,7 @@ def _backup_path(path: Path, stamp: str) -> Path:
 
 
 def _backup_existing(paths: Iterable[Path]) -> dict:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backups: dict = {}
     for path in paths:
         if not path.is_file():
@@ -238,7 +238,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
             "schemaVersion": 2,
             "updateMechanism": "self",
             "source": "adoption",
-            "adoptedAt": datetime.now(timezone.utc).isoformat(),
+            "adoptedAt": datetime.now(UTC).isoformat(),
         }
         try:
             fd, tmp_name = tempfile.mkstemp(

@@ -11,17 +11,17 @@ from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 
 __all__ = [
     "AppSpec",
-    "RequiresSpec",
     "Declaration",
     "DeclarationError",
+    "RequiresSpec",
+    "clear",
     "gpu_label",
+    "lookup",
     "parse_app",
-    "parse_requires",
     "parse_declaration",
+    "parse_requires",
     "register",
     "unregister",
-    "lookup",
-    "clear",
 ]
 
 

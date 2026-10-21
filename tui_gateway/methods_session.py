@@ -1450,8 +1450,8 @@ def _(rid, params: dict, session: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    # Nous credits are agent-independent (portal fetch); fail-open when absent.
-    with contextlib.suppress(Exception):
+    # Nous credits are agent-independent (portal fetch, in the session's profile scope, #141859); fail-open.
+    with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
         from agent.account_usage import nous_credits_lines
         if credits := nous_credits_lines():
             usage["credits_lines"] = credits
@@ -1813,13 +1813,14 @@ def _(rid, params: dict) -> dict:
 
 
 # ── billing / subscription ───────────────────────────────────────────
-# All fail-open: a logged-out / unreachable portal yields an ``ok`` envelope with a typed
-# ``error`` (not a JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes
-# return error=insufficient_scope on 403, which drives the ``billing.step_up`` device flow.
+# All fail-open: a logged-out / unreachable portal yields an ``ok`` envelope with a typed ``error`` (not a
+# JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes return error=insufficient_scope on 403,
+# which drives the ``billing.step_up`` device flow. Every route is ``_profile_scoped`` (#141859).
 def _billing_view(name: str, module: str, builder: str, serializer: str, fallback: dict) -> None:
     """Read-only view RPC (no scope required): ``serializer(module.builder())``, ``fallback`` on any error.
     The view module stays a lazy import (startup budget); the serializer is a server global."""
     @method(name)
+    @_profile_scoped
     def _(rid, params: dict) -> dict:
         try:
             from importlib import import_module
@@ -1829,6 +1830,7 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
 
 
 @method("billing.state")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
     bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
@@ -1845,12 +1847,12 @@ def _(rid, params: dict) -> dict:
 
 _billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
               {"ok": True, "available": False})
-_billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",
-              "_serialize_subscription_state",
+_billing_view("subscription.state", "agent.subscription_view", "build_subscription_state", "_serialize_subscription_state",
               {"ok": True, "logged_in": False, "error": "could not load subscription state"})
 
 
 @method("subscription.preview")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
     from agent.subscription_view import subscription_change_preview_from_payload
@@ -1861,12 +1863,12 @@ def _(rid, params: dict) -> dict:
         subscription_change_preview_from_payload(post_subscription_preview(subscription_type_id=tier_id))))
 
 
-def _billing_route(name: str, call, *, invalid=None, message: str = "", error: str = "invalid_request",
-                   idempotent: bool = False):
+def _billing_route(name: str, call, *, invalid=None, message: str = "", error: str = "invalid_request", idempotent: bool = False):
     """Portal write route on ``hermes_cli.nous_billing`` (lazy; tests patch its functions): ``invalid(params)``
     → ``_billing_invalid(message, error)``; ``call(nb, params, key)`` performs the request. ``idempotent``
     mints ``idempotency_key`` if absent and echoes it (also on error) so the TUI retries the SAME operation."""
     @method(name)
+    @_profile_scoped
     def _(rid, params: dict) -> dict:
         import hermes_cli.nous_billing as nb
         if invalid is not None and invalid(params):
@@ -1885,10 +1887,8 @@ _billing_route("subscription.change", lambda nb, p, _k: _billing_pending_change(
     invalid=lambda p: not p.get("cancel") and not p.get("subscription_type_id"),
     message="subscription_type_id or cancel is required")
 # DELETE pending-change: clear a scheduled downgrade / cancellation (re-enables recurring spend).
-_billing_route("subscription.resume",
-               lambda nb, p, _k: _billing_pending_change(nb.delete_subscription_pending_change()))
-# The money route (prorate + charge + flip plan). SCA / decline → status requires_action / payment_failed +
-# recovery_url.
+_billing_route("subscription.resume", lambda nb, p, _k: _billing_pending_change(nb.delete_subscription_pending_change()))
+# The money route (prorate + charge + flip plan). SCA / decline → status requires_action / payment_failed + recovery_url.
 _billing_route("subscription.upgrade", lambda nb, p, key: _billing_pick(
     nb.post_subscription_upgrade(subscription_type_id=p.get("subscription_type_id"), idempotency_key=key),
     status="status", target_tier_name="targetTierName", recovery_url="recoveryUrl", reason="reason"),
@@ -1900,8 +1900,7 @@ _billing_route("billing.charge", lambda nb, p, key: _billing_pick(
 # GET /api/billing/charge/{id} — a single status read; the caller drives the poll cadence.
 _billing_route("billing.charge_status", lambda nb, p, _k: _billing_pick(
     nb.get_charge_status(p.get("charge_id")), status="status", amount_usd="amountUsd", settled_at="settledAt",
-    reason="reason"), invalid=lambda p: not p.get("charge_id"), message="charge_id is required",
-    error="invalid_charge_id")
+    reason="reason"), invalid=lambda p: not p.get("charge_id"), message="charge_id is required", error="invalid_charge_id")
 
 
 def _auto_reload(nb, p: dict, _key) -> dict:
@@ -1916,6 +1915,7 @@ _billing_route("billing.auto_reload", _auto_reload, message="threshold and top_u
 
 
 @method("billing.step_up")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """billing:manage step-up device flow → {ok, granted} (false when the server downscopes). Pooled (blocks
     for minutes); URL/code reach the TUI via ``billing.step_up.verification`` (stdout is the RPC pipe) and the

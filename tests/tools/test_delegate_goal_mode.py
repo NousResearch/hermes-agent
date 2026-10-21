@@ -146,6 +146,45 @@ class TestApplyGoalMode(unittest.TestCase):
 
 
 class TestRunLoop(unittest.TestCase):
+    def test_judge_failures_stop_before_spending_another_child_turn(self):
+        # Keep judge_goal and its parser real; replace only auxiliary inference.
+        for failure in (RuntimeError("429"), "not a verdict"):
+            with self.subTest(failure=failure):
+                child = _FakeChild([_first_result() for _ in range(9)])
+                first = _first_result()
+                inference = MagicMock()
+                if isinstance(failure, Exception):
+                    inference.side_effect = failure
+                else:
+                    inference.return_value = MagicMock(choices=[MagicMock(message=MagicMock(content=failure))])
+                with patch("agent.auxiliary_client.call_llm", inference):
+                    result, info = run_goal_continuations(
+                        child=child, goal_text="finish batch", first_result=first,
+                        child_task_id="s-0", relay_text=None, max_turns=10, session_id=child.session_id,
+                    )
+                self.assertEqual(info["outcome"], "judge_unreachable")
+                self.assertEqual(info["turns_used"], 1)
+                self.assertEqual(child.prompts, [])
+                self.assertIs(result, first)
+                self.assertEqual(inference.call_count, 1)
+                note = _remaining_work_note(info)
+                self.assertIsNotNone(note)
+                self.assertIn("judge", str(note).lower())
+
+    def test_unexpected_judge_exception_also_stops_and_restores_affinity(self):
+        from agent.portal_tags import get_affinity_scope
+        before = get_affinity_scope()
+        child = _FakeChild([_first_result() for _ in range(9)])
+        with _with_fake_judge(MagicMock(side_effect=RuntimeError("broken judge"))):
+            result, info = run_goal_continuations(
+                child=child, goal_text="finish batch", first_result=_first_result(),
+                child_task_id="s-0", relay_text=None, max_turns=10, session_id=child.session_id,
+            )
+        self.assertEqual(info["outcome"], "judge_unreachable")
+        self.assertEqual(child.prompts, [])
+        self.assertFalse(result["completed"])
+        self.assertEqual(get_affinity_scope(), before)
+
     def test_continue_then_done(self):
         calls = {"n": 0}
 

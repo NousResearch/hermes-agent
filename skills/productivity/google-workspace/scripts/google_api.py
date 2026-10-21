@@ -24,6 +24,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1145,6 +1146,64 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 # =========================================================================
 
 
+def _google_error_hint(exc):
+    """Turn a googleapiclient HttpError into one actionable line, or None to re-raise.
+
+    The common first-run failures (a Google API not enabled in the Cloud project, a
+    token missing a scope) otherwise reach the agent as a raw Python traceback, which
+    is unreadable in a chat and hides the one fact the user needs: which URL to open.
+    """
+    try:
+        from googleapiclient.errors import HttpError
+    except ImportError:  # deps not installed: let the real error surface
+        return None
+    if not isinstance(exc, HttpError):
+        return None
+
+    reason, message, activation = "", "", ""
+    try:
+        payload = json.loads(exc.content.decode("utf-8", errors="replace"))
+        err = payload.get("error", {})
+        message = err.get("message", "")
+        for detail in err.get("errors") or []:
+            reason = detail.get("reason") or reason
+            activation = activation or detail.get("extendedHelp", "")
+        if not reason:
+            reason = (err.get("details") or [{}])[0].get("reason", "")
+    except (ValueError, AttributeError, IndexError, TypeError):
+        pass
+
+    status = getattr(exc.resp, "status", None)
+    if reason in ("accessNotConfigured", "SERVICE_DISABLED") or "has not been used in project" in message:
+        api = ""
+        marker = "apis/api/"
+        if "/apis/api/" in message:
+            api = message.split(marker, 1)[1].split("/", 1)[0].split("?")[0]
+        name = f"La API de Google `{api}`" if api else "Una API de Google"
+        url = activation or f"https://console.cloud.google.com/apis/library?project={_project_from_message(message)}"
+        return (
+            f"{name} no está habilitada en tu proyecto de Google Cloud.\n"
+            f"Actívala aquí y vuelve a intentarlo: {url}"
+        )
+    if status == 403 and "insufficient" in message.lower():
+        return (
+            "El token no tiene el permiso necesario para esta operación.\n"
+            "Vuelve a autorizar con el setup de la skill: setup.py --revoke y después "
+            "las instrucciones de OAuth de nuevo."
+        )
+    if status == 401:
+        return "El token de Google ha caducado o se ha revocado. Vuelve a autorizar la skill."
+    if status == 429 or "rateLimitExceeded" in reason or "quotaExceeded" in reason:
+        return "Google ha limitado las peticiones (cuota). Espera un minuto y vuelve a intentarlo."
+    return f"Error de la API de Google ({status or 'sin código'}): {message or exc}"
+
+
+def _project_from_message(message):
+    """Pull the numeric project id out of \"... used in project 123456 before ...\"."""
+    match = re.search(r"project[ :]+(\d+)", message or "")
+    return match.group(1) if match else ""
+
+
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
     sub = parser.add_subparsers(dest="service", required=True)
@@ -1314,7 +1373,14 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except Exception as exc:
+        hint = _google_error_hint(exc)
+        if hint is None:
+            raise
+        print(hint, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

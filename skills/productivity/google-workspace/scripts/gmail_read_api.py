@@ -2,9 +2,9 @@
 """Strict, account-scoped, read-only Gmail adapter for Hermes skills.
 
 Named accounts resolve only below ``HERMES_HOME/google-accounts``.  Every
-operation verifies the Gmail profile against the identity recorded in that
-account's token before returning mailbox data.  The CLI has no mutation
-commands.
+operation verifies the Gmail profile against an independent owner-only
+deployment mapping before returning mailbox data.  Token metadata is never an
+identity authority, and the CLI has no mutation commands.
 """
 
 from __future__ import annotations
@@ -233,6 +233,7 @@ def _normalize_account_mapping(payload: dict[str, Any]) -> dict[str, str]:
     else:
         raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
     normalized: dict[str, str] = {}
+    seen_mailboxes: set[str] = set()
     for alias, email in raw_accounts.items():
         if (
             not isinstance(alias, str)
@@ -242,7 +243,11 @@ def _normalize_account_mapping(payload: dict[str, Any]) -> dict[str, str]:
             or not EMAIL_RE.fullmatch(email)
         ):
             raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
-        normalized[alias] = email.lower()
+        normalized_email = email.lower()
+        if normalized_email in seen_mailboxes:
+            raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+        seen_mailboxes.add(normalized_email)
+        normalized[alias] = normalized_email
     return normalized
 
 
@@ -359,18 +364,18 @@ def _decode_urlsafe(value: str, *, error_code: str) -> bytes:
 def _decode_body_prefix(value: str, max_bytes: int) -> tuple[bytes, bool]:
     if not isinstance(value, str):
         raise AdapterError("INVALID_MESSAGE_BODY")
+    max_encoded = ((max_bytes + 2) // 3) * 4
+    prefix_text = value[:max_encoded]
     try:
-        encoded = value.encode("ascii")
+        prefix = prefix_text.encode("ascii")
     except UnicodeEncodeError:
         raise AdapterError("INVALID_MESSAGE_BODY") from None
-    max_encoded = ((max_bytes + 2) // 3) * 4
-    prefix = encoded[:max_encoded]
     padded = prefix + b"=" * (-len(prefix) % 4)
     try:
         decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
     except (binascii.Error, ValueError):
         raise AdapterError("INVALID_MESSAGE_BODY") from None
-    truncated = len(encoded) > len(prefix) or len(decoded) > max_bytes
+    truncated = len(value) > len(prefix_text) or len(decoded) > max_bytes
     return decoded[:max_bytes], truncated
 
 
@@ -547,13 +552,14 @@ class GmailReadClient:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         request_timeout_s: float | None = None,
+        started_monotonic: float | None = None,
     ) -> None:
         self.service = service
         self.context = context
         self.limits = limits
         self.monotonic = monotonic
         self.sleep = sleep
-        self.started = monotonic()
+        self.started = monotonic() if started_monotonic is None else started_monotonic
         self.request_timeout_s = min(
             request_timeout_s if request_timeout_s is not None else limits.deadline_s,
             limits.deadline_s,
@@ -663,6 +669,8 @@ class GmailReadClient:
                     )
                 )
             )
+            if _validate_id(message.get("id"), "message") != message_id:
+                raise AdapterError("MESSAGE_ID_MISMATCH")
             headers = _headers(message.get("payload") or {})
             items.append(_message_metadata(self.context, message, headers))
         next_page_token = _validate_page_token(page.get("nextPageToken"))
@@ -690,7 +698,9 @@ class GmailReadClient:
         )
         if _validate_id(metadata.get("id"), "message") != message_id:
             raise AdapterError("MESSAGE_ID_MISMATCH")
-        size_estimate = _nonnegative_int(metadata.get("sizeEstimate"))
+        size_estimate = _required_nonnegative_int(
+            metadata.get("sizeEstimate"), "INVALID_MESSAGE_SIZE"
+        )
         if size_estimate > max_message_bytes:
             raise AdapterError("MESSAGE_TOO_LARGE")
         message = self._execute(
@@ -762,6 +772,12 @@ def _nonnegative_int(value: Any) -> int:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
         else 0
     )
+
+
+def _required_nonnegative_int(value: Any, error_code: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise AdapterError(error_code)
+    return value
 
 
 def _message_metadata(
@@ -938,28 +954,37 @@ def execute(
     *,
     service: Any | None = None,
     hermes_home: Path | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
+    started_at = _utcnow()
+    started_monotonic = monotonic()
     handler = _OPERATION_HANDLERS.get(args.operation)
     shape_builder = _REQUEST_SHAPE_BUILDERS.get(args.operation)
     if handler is None or shape_builder is None:
         raise AdapterError("UNSUPPORTED_OPERATION", exit_code=2)
     request_shape = shape_builder(args)
     client: GmailReadClient | None = None
-    started_at = _utcnow()
     try:
         context = load_account_context(args.account, home)
         limits = Limits(args.deadline, args.max_api_calls, args.attempts)
+        remaining_for_build = args.deadline - (monotonic() - started_monotonic)
+        if remaining_for_build <= 0:
+            raise AdapterError("DEADLINE_EXCEEDED")
         gmail = (
             service
             if service is not None
-            else build_service(context, timeout_s=min(args.timeout, args.deadline))
+            else build_service(
+                context, timeout_s=min(args.timeout, remaining_for_build)
+            )
         )
         client = GmailReadClient(
             gmail,
             context,
             limits,
+            monotonic=monotonic,
             request_timeout_s=min(args.timeout, args.deadline),
+            started_monotonic=started_monotonic,
         )
         data, handler_shape = handler(args, client, home, context)
         if handler_shape != request_shape:

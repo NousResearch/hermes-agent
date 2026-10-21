@@ -163,6 +163,7 @@ def _metadata(message_id="m1", thread_id="t1"):
     return {
         "id": message_id,
         "threadId": thread_id,
+        "sizeEstimate": 512,
         "labelIds": ["INBOX"],
         "snippet": "preview",
         "payload": {
@@ -228,6 +229,26 @@ def test_context_rejects_malformed_or_mixed_mapping(module, tmp_path, mapping_pa
     _write_account(home)
     mapping = home / "google-accounts" / "accounts.json"
     mapping.write_text(json.dumps(mapping_payload))
+    mapping.chmod(0o600)
+
+    with pytest.raises(module.AdapterError, match="INVALID_ACCOUNT_MAPPING"):
+        module.load_account_context("personal", home)
+
+
+def test_context_rejects_duplicate_normalized_mailbox_identities(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    mapping = home / "google-accounts" / "accounts.json"
+    mapping.write_text(
+        json.dumps(
+            {
+                "accounts": {
+                    "personal": "Person@Example.com",
+                    "company": "person@example.com",
+                }
+            }
+        )
+    )
     mapping.chmod(0o600)
 
     with pytest.raises(module.AdapterError, match="INVALID_ACCOUNT_MAPPING"):
@@ -397,6 +418,24 @@ def test_search_fails_if_provider_exceeds_result_budget(module, tmp_path):
     assert [name for name, _ in service.calls] == ["profile", "list"]
 
 
+def test_search_rejects_metadata_id_mismatch(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    service = FakeService(
+        list_response={"messages": [{"id": "m1"}]},
+        messages={"m1": _metadata("m2")},
+    )
+
+    with pytest.raises(module.AdapterError, match="MESSAGE_ID_MISMATCH"):
+        module.execute(
+            _args(module, "search", "subject:contract"),
+            service=service,
+            hermes_home=home,
+        )
+
+    assert [name for name, _ in service.calls] == ["profile", "list", "get"]
+
+
 def test_get_recurses_mime_and_lists_attachments(module, tmp_path):
     home = tmp_path / ".hermes"
     _write_account(home)
@@ -459,10 +498,19 @@ def test_get_bounds_base64_decode_before_allocating_full_body(
     _write_account(home)
     message = _metadata()
     raw_body = b"x" * 10_000
+
+    class RejectFullEncode(str):
+        def encode(self, *args, **kwargs):
+            raise AssertionError("full base64 body must not be encoded")
+
     message["payload"].update(
         {
             "mimeType": "text/plain",
-            "body": {"data": module.base64.urlsafe_b64encode(raw_body).decode()},
+            "body": {
+                "data": RejectFullEncode(
+                    module.base64.urlsafe_b64encode(raw_body).decode()
+                )
+            },
         }
     )
     observed_encoded_lengths = []
@@ -494,6 +542,27 @@ def test_get_rejects_large_message_before_full_read(module, tmp_path):
 
     with pytest.raises(module.AdapterError, match="MESSAGE_TOO_LARGE"):
         module.execute(args, service=service, hermes_home=home)
+
+    assert [name for name, _ in service.calls] == ["profile", "get"]
+
+
+@pytest.mark.parametrize("size_estimate", [None, True, "512", -1])
+def test_get_requires_real_nonnegative_size_preflight(module, tmp_path, size_estimate):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    message = _metadata()
+    if size_estimate is None:
+        message.pop("sizeEstimate")
+    else:
+        message["sizeEstimate"] = size_estimate
+    service = FakeService(messages={"m1": message})
+
+    with pytest.raises(module.AdapterError, match="INVALID_MESSAGE_SIZE"):
+        module.execute(
+            _args(module, "get", "m1"),
+            service=service,
+            hermes_home=home,
+        )
 
     assert [name for name, _ in service.calls] == ["profile", "get"]
 
@@ -638,18 +707,21 @@ def test_request_timeout_is_capped_by_declared_and_remaining_deadline(
     built_service._http = types.SimpleNamespace(
         http=types.SimpleNamespace(timeout=999.0)
     )
+    now = [0.0]
 
     def fake_build(_context, *, timeout_s):
         captured["build_timeout"] = timeout_s
+        now[0] = 4.0
         return built_service
 
     monkeypatch.setattr(module, "build_service", fake_build)
     module.execute(
         _args(module, "--timeout", "30", "--deadline", "5", "profile"),
         hermes_home=home,
+        monotonic=lambda: now[0],
     )
     assert captured["build_timeout"] == 5
-    assert built_service._http.http.timeout <= 5
+    assert built_service._http.http.timeout == 1
 
     clock = iter([0.0, 7.0])
     remaining_service = FakeService()

@@ -164,7 +164,10 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not _past_profile_paragraph(prompt[after_end:]).startswith("\n\nConversation started:"):
+    # Bot Chat omits the date; without a timezone, the first populated
+    # metadata field opens the same paragraph (_join_tier strips its newline).
+    trailer_starts = ("Conversation started:", "Timezone:", "Session ID:", "Model:", "Provider:", "Platform:")
+    if not _past_profile_paragraph(prompt[after_end:]).startswith(tuple("\n\n" + label for label in trailer_starts)):
         return ()
     framed = prompt[start:after_end]
     restored = []

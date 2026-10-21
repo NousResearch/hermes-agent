@@ -7,6 +7,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 from agent.system_prompt import (
     _restore_plugin_prompt_sections,
     build_system_prompt,
@@ -98,9 +100,10 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
     assert "example.rules" not in agent._cached_system_prompt_static
 
 
-def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tmp_path):
+@pytest.mark.parametrize("mode", ["ordinary", "bot-zone", "bot-no-zone", "bot-no-zone-session"])
+def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tmp_path, mode):
     """The existing persisted full prompt is the only resume state required."""
-    db_path = tmp_path / "state.db"
+    db_path = tmp_path / ".hermes" / "state.db"
     calls_path = tmp_path / "calls.txt"
     child = textwrap.dedent(
         """
@@ -108,6 +111,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         import json
         import os
         from pathlib import Path
+        from unittest.mock import patch
 
         from agent.conversation_loop import _restore_or_build_system_prompt
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
@@ -116,6 +120,15 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         from hermes_state import SessionDB
         from run_agent import AIAgent
 
+        mode = os.environ["TEST_MODE"]
+        if mode.startswith("bot-"):
+            home = Path(os.environ["HERMES_HOME"])
+            home.mkdir(parents=True, exist_ok=True)
+            (home / "profile.yaml").write_text("ui_meta:\\n  hermes-bots: {}\\n")
+            patch.object(Path, "home", return_value=home.parent).start()
+            patch("agent.system_prompt._zone_bits", return_value=(
+                ["UTC", "+00:00"] if mode == "bot-zone" else []
+            )).start()
         db = SessionDB(db_path=Path(os.environ["TEST_DB"]))
         session_id = "resume-plugin-section"
         db.ensure_session(session_id, source="cli", model="test/model")
@@ -131,6 +144,10 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             session_id=session_id,
             session_db=db,
         )
+
+        if mode.startswith("bot-"):
+            agent._session_title_hint = "Bot Chat"
+            agent.pass_session_id = mode == "bot-no-zone-session"
 
         manager = PluginManager()
         manager._discovered = True
@@ -152,6 +169,11 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         _restore_or_build_system_prompt(agent, None, history)
         restored = agent._cached_system_prompt
         calls_after_restore = int(calls_path.read_text())
+        sections = [s.content for s in agent._plugin_system_prompt_sections_snapshot]
+        if mode.startswith("bot-"):
+            assert "Conversation started:" not in restored
+            if os.environ["TEST_PHASE"] == "first":
+                assert agent._bot_chat_timeless_prompt
         rebuilt_equal = None
         rebuilt_has_changed = None
         calls_after_rebuild = None
@@ -170,6 +192,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
                 restored.encode("utf-8")
             ).decode("ascii"),
             "calls": calls_after_restore,
+            "sections": sections,
             "rebuilt_equal": rebuilt_equal,
             "rebuilt_has_changed": rebuilt_has_changed,
             "calls_after_rebuild": calls_after_rebuild,
@@ -182,7 +205,8 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     for phase in ("first", "resume"):
         env = os.environ.copy()
         env.update(
-            HERMES_HOME=str(tmp_path / "hermes-home"),
+            HERMES_HOME=str(tmp_path / ".hermes"),
+            TEST_MODE=mode,
             TEST_DB=str(db_path),
             TEST_CALLS=str(calls_path),
             TEST_PHASE=phase,
@@ -194,8 +218,9 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             text=True,
             capture_output=True,
             timeout=90,
-            check=True,
+            check=False,
         )
+        assert proc.returncode == 0, proc.stderr
         outputs.append(json.loads(proc.stdout.strip().splitlines()[-1]))
 
     first_prompt = base64.b64decode(outputs[0]["prompt_b64"])
@@ -210,6 +235,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             f"first={first_prompt[diff_at - 100:diff_at + 100]!r} "
             f"resumed={resumed_prompt[diff_at - 100:diff_at + 100]!r}"
         )
+    assert outputs[0]["sections"] == outputs[1]["sections"] == ["original bytes"]
     assert b"original bytes" in first_prompt
     # RESTORE stays frozen: the resumed prompt is byte-identical, plugin
     # render never ran (calls unchanged). The REBUILD boundary re-renders:

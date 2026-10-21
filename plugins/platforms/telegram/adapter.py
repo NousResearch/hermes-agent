@@ -151,6 +151,11 @@ from gateway.platforms.base import (
 # Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
 _TOAST_LIMIT = 200
 _BOT_COMMAND_DESCRIPTION_LIMIT = 256
+# ``clarify_tool`` validates labels before they reach adapters. The adapter deliberately does not
+# truncate them: if a model bypasses that tool validation, hiding the option's meaning is worse than
+# showing a long button. ``callback_data`` has Telegram's separate 64-byte limit; it remains an opaque
+# interaction/index payload and is not derived from the visible label.
+_CLARIFY_BUTTON_PAIR_LIMIT = 30
 
 
 def _unauthorized() -> str:
@@ -162,6 +167,37 @@ def _unauthorized() -> str:
 def _toast(key: str, **kwargs: Any) -> str:
     """``t()`` for ``query.answer(text=...)`` payloads, cut at Telegram's 200-char toast cap."""
     return t(key, **kwargs)[:_TOAST_LIMIT]
+
+
+def _clarify_button_label(value: Any, fallback: str) -> str:
+    """Return the model's button-ready label without hiding meaning through truncation."""
+    label = re.sub(r"\s+", " ", str(value)).strip() or fallback
+    # The body still carries the recommendation marker, while the button should stay focused on
+    # the action/name itself. This also leaves the label within the source-level limit.
+    label = re.sub(r"\s*\(Recommended\)\s*$", "", label, flags=re.IGNORECASE).strip()
+    return label or fallback
+
+
+def _clarify_button_rows(buttons: list[tuple[str, Any]]) -> list[list[Any]]:
+    """Pack at most two short clarify buttons per row without making mobile labels wrap."""
+    rows: list[list[Any]] = []
+    current: list[Any] = []
+    current_units = 0
+    for label, button in buttons:
+        label_units = utf16_len(label)
+        if current and len(current) == 1 and current_units + label_units + 2 <= _CLARIFY_BUTTON_PAIR_LIMIT:
+            current.append(button)
+            rows.append(current)
+            current = []
+            current_units = 0
+        else:
+            if current:
+                rows.append(current)
+            current = [button]
+            current_units = label_units
+    if current:
+        rows.append(current)
+    return rows
 
 
 def _bold_label_html(line: str) -> str:
@@ -4286,20 +4322,47 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
-        text-capture mode); without choices, plain question and the gateway text-intercept captures."""
+        text capture); without choices, plain question and the gateway text-intercept captures."""
+        durable_clarify = bool((metadata or {}).get("durable_clarify"))
+        callback_prefix = "cld" if durable_clarify else "cl"
         def build():
             text = f"❓ {_html.escape(question)}"
             keyboard = None
             if choices:
-                # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
-                keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+                button_specs = []
+                for idx, choice in enumerate(choices):
+                    label = _clarify_button_label(choice, fallback=f"Option {idx + 1}")
+                    button_specs.append((
+                        label,
+                        InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{clarify_id}:{idx}"),
+                    ))
+                other_label = _clarify_button_label(
+                    t("platform.telegram.prompt.other"), fallback="Other")
+                button_specs.append((
+                    other_label,
+                    InlineKeyboardButton(
+                        other_label, callback_data=f"{callback_prefix}:{clarify_id}:other"),
+                ))
+                keyboard = InlineKeyboardMarkup(_clarify_button_rows(button_specs))
+            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key) if not durable_clarify else None
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
+
+    async def clear_clarify_prompt(self, chat_id: str, message_id: str) -> bool:
+        """Remove the inline keyboard from a durable clarify prompt."""
+        if not self._bot or not message_id:
+            return False
+        try:
+            await self._bot.edit_message_reply_markup(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                message_id=int(message_id),
+                reply_markup=None,
+            )
+            return True
+        except Exception:
+            logger.debug("[%s] clear_clarify_prompt failed for message %s", self.name, message_id, exc_info=True)
+            return False
 
     @staticmethod
     def _provider_get_label():
@@ -4719,7 +4782,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 return
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
-            ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+            ("sc:", self._handle_slash_confirm_callback), ("cld:", self._handle_deferred_clarify_callback),
+            ("cl:", self._handle_clarify_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
@@ -4824,6 +4888,89 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 await self._send_message_with_thread_fallback(**send_kwargs)
         except Exception as exc:
             logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+
+    async def _handle_deferred_clarify_callback(self, query, data: str, cb: dict[str, Any]) -> None:
+        """Resolve a durable ``cld:<interaction_id>:<idx|other>`` callback."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return
+        interaction_id, choice_token = parts[1], parts[2]
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not await self._callback_authorized(query, cb, _unauthorized()):
+            return
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        chat_id = str(cb["chat_id"]) if cb.get("chat_id") is not None else None
+        thread_id = str(cb["thread_id"]) if cb.get("thread_id") is not None else None
+        if choice_token == "other":
+            try:
+                from tools.clarify_interaction import mark_awaiting_text
+                marked = mark_awaiting_text(
+                    interaction_id, user_id=caller_id, chat_id=chat_id, thread_id=thread_id)
+            except Exception:
+                marked = None
+            if not marked or not marked.ok:
+                await self._notify_clarify_expired(query, user_display)
+                return
+            await query.answer(text=t("platform.telegram.prompt.type_answer"))
+            await self._edit_html_quiet(
+                query,
+                f"❓ {query.message.text or ''}\n\n"
+                f"<i>{_html.escape(t('platform.telegram.prompt.awaiting_typed', user=user_display))}</i>",
+            )
+            return
+        try:
+            idx = int(choice_token)
+        except (ValueError, TypeError):
+            await query.answer(text=t("platform.telegram.prompt.invalid_choice"))
+            return
+        try:
+            from gateway.extensions.deferred_clarify import build_recovery_prompt
+            from tools.clarify_interaction import resolve_choice
+            resolved = resolve_choice(
+                interaction_id, idx, user_id=caller_id, chat_id=chat_id, thread_id=thread_id)
+        except Exception:
+            logger.exception("[%s] durable resolve_choice failed", self.name)
+            resolved = None
+        if not resolved or not resolved.ok or not resolved.interaction:
+            await self._notify_clarify_expired(query, user_display)
+            return
+        resolved_text = resolved.answer or ""
+        await query.answer(text=f"✓ {resolved_text[:60]}")
+        await self._edit_html_quiet(
+            query,
+            f"❓ {query.message.text or ''}\n\n"
+            f"<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+        )
+        if not self._message_handler:
+            return
+        chat_type = str(cb.get("chat_type") or "dm").lower()
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            chat_type = "forum" if thread_id else "group"
+        from gateway.session import SessionSource
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(cb.get("chat_id") or ""),
+            chat_type=chat_type,
+            user_id=caller_id,
+            user_name=cb.get("user_name"),
+            thread_id=thread_id,
+        )
+        event = MessageEvent(
+            text=build_recovery_prompt(
+                question=resolved.interaction.question, answer=resolved_text),
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=query,
+            message_id=str(getattr(query.message, "message_id", "") or ""),
+            internal=True,
+            metadata={"deferred_clarify_interaction_id": interaction_id},
+        )
+        response = await self._message_handler(event)
+        if response:
+            metadata = {"thread_id": thread_id} if thread_id else None
+            await self.send(str(cb.get("chat_id")), response, metadata=metadata)
 
     async def _handle_clarify_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``cl:<clarify_id>:<idx|other>`` — resolve a clarify prompt or flip to text capture."""

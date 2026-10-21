@@ -7,8 +7,10 @@ from typing import Callable, Dict, List, Optional
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per call
-# Per-choice cap. Surfaces wrap long choice text (newlines kept), so anything longer is rejected here, at the
-# source, instead of a surface silently dropping a choice that ``choices_offered`` still reports as shown.
+# Choices are button labels on messaging surfaces. Keep the model's labels short and single-line; put
+# explanations and context in the question instead of relying on a surface to truncate them.
+MAX_CHOICE_LABEL_CHARS = 24
+# Defensive upper bound for malformed/tool-generated input before the label-specific validation below.
 MAX_CHOICE_CHARS = 8000
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
@@ -67,9 +69,17 @@ def _normalize_questions(questions) -> tuple:
             if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
                 return None, f"questions[{index}].choices must be a list of strings."
             for pos, choice in enumerate(choices):
-                if len(choice.strip()) > MAX_CHOICE_CHARS:
+                stripped_choice = choice.strip()
+                if len(stripped_choice) > MAX_CHOICE_CHARS:
                     return None, (f"questions[{index}].choices[{pos}] is {len(choice.strip())} characters; the limit is "
                                   f"{MAX_CHOICE_CHARS}. Move detail into the question text and resend.")
+                if "\n" in stripped_choice or "\r" in stripped_choice:
+                    return None, (f"questions[{index}].choices[{pos}] must be a single-line button label. "
+                                  "Move detail into the question text and resend.")
+                if len(stripped_choice) > MAX_CHOICE_LABEL_CHARS:
+                    return None, (f"questions[{index}].choices[{pos}] is {len(stripped_choice)} characters; button labels "
+                                  f"must be at most {MAX_CHOICE_LABEL_CHARS} characters. Use a short name and move "
+                                  "detail into the question text, then resend.")
             cleaned = [c.strip() for c in choices if c.strip()][:MAX_CHOICES]
             if choices and not cleaned:
                 # A card with no options strands the turn: say so instead of silently asking open-ended.
@@ -147,7 +157,8 @@ CLARIFY_SCHEMA = {
         "'Other' free-text row), multi-select (multi_select=true), or "
         "open-ended (omit choices). Options go ONLY in `choices`, never "
         "enumerated inside the question text (choices render as pickable "
-        "rows; options written into the question are dead prose the user "
+        f"rows; each choice must be a short, single-line button label of at most {MAX_CHOICE_LABEL_CHARS} "
+        "characters; put explanations and context in the question. Options written into the question are dead prose the user "
         "can't click). Result: {responses: [...], outcome} in question order. "
         "Each response has status answered, skipped or unanswered "
         "(user_response is null unless answered); outcome is submitted, "
@@ -175,7 +186,8 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
+                            "description": f"Short, single-line button labels (at most {MAX_CHOICE_LABEL_CHARS} characters); put explanations in the question.",
+                            "items": {"type": "string", "maxLength": MAX_CHOICE_LABEL_CHARS},
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

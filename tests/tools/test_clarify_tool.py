@@ -5,6 +5,7 @@ import json
 from tools.clarify_tool import (
     clarify_tool,
     MAX_CHOICES,
+    MAX_CHOICE_LABEL_CHARS,
     MAX_QUESTIONS,
     CLARIFY_SCHEMA,
 )
@@ -91,6 +92,9 @@ class TestClarifySchema:
         params = CLARIFY_SCHEMA["parameters"]
         assert params["required"] == ["questions"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
+        choices_schema = params["properties"]["questions"]["items"]["properties"]["choices"]
+        assert choices_schema["items"]["maxLength"] == MAX_CHOICE_LABEL_CHARS
+        assert str(MAX_CHOICE_LABEL_CHARS) in choices_schema["description"]
 
 
 class TestClarifyToolMultiSelect:
@@ -266,12 +270,16 @@ class TestClarifyBatchValidation:
         result = _ask(lambda questions: _reply({}), [{"question": "Pick?", "choices": ["short", long_choice]}])
         assert "error" in result and str(MAX_CHOICE_CHARS) in result["error"]
 
-    def test_long_multi_line_choice_within_limit_is_kept(self):
-        seen = {}
-        choice = "Option A\n" + "detail " * 60
-        _ask(lambda questions: seen.setdefault("q", questions) and _reply({"q0": "Option A"}),
-             [{"question": "Pick?", "choices": [choice, "B"]}])
-        assert seen["q"][0]["choices_offered"][0] == choice.strip()
+    def test_multi_line_button_label_is_rejected(self):
+        choice = "Option A\nwith detail"
+        result = _ask(lambda questions: _reply({}), [{"question": "Pick?", "choices": [choice, "B"]}])
+        assert "error" in result and "single-line" in result["error"]
+
+    def test_long_button_label_is_rejected_so_agent_must_rename_it(self):
+        long_choice = "x" * (MAX_CHOICE_LABEL_CHARS + 1)
+        result = _ask(lambda questions: _reply({}), [{"question": "Pick?", "choices": [long_choice, "B"]}])
+        assert "error" in result
+        assert str(MAX_CHOICE_LABEL_CHARS) in result["error"]
 
     def test_batch_rejects_non_list(self):
         result = _ask(lambda questions: _reply({}), {"question": "Q?"})

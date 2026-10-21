@@ -363,6 +363,69 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         replies return "" so adapters don't double-post — the agent produces the next user-facing message."""
         try:
             from tools import clarify_gateway as _clarify_mod
+            from tools import clarify_interaction as _durable_mod
+            from gateway.extensions.deferred_clarify import build_recovery_prompt
+        except Exception:
+            return None
+
+        _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
+        _source_platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", ""))
+        _is_telegram_source = str(_source_platform or "").lower() == "telegram"
+        if _is_telegram_source and _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+            _durable_interaction = _durable_mod.resolve_text_for_session(
+                _quick_key,
+                _raw_clarify_reply,
+                user_id=str(getattr(source, "user_id", "") or "") or None,
+                chat_id=str(getattr(source, "chat_id", "") or "") or None,
+                thread_id=str(getattr(source, "thread_id", "") or "") or None,
+            )
+            if _durable_interaction is not None:
+                event.text = build_recovery_prompt(
+                    question=_durable_interaction.question,
+                    answer=_durable_interaction.answer or _raw_clarify_reply,
+                )
+                _durable_adapter = self._adapter_for_source(source)
+                if _durable_adapter:
+                    with suppress(Exception):
+                        _durable_adapter.resume_typing_for_chat(source.chat_id)
+                    if _durable_interaction.message_id:
+                        _clear_prompt = getattr(_durable_adapter, "clear_clarify_prompt", None)
+                        if callable(_clear_prompt):
+                            with suppress(Exception):
+                                await _clear_prompt(source.chat_id, _durable_interaction.message_id)
+                    if _durable_interaction.message_id and callable(
+                        getattr(type(_durable_adapter), "retire_clarify_card", None)
+                    ):
+                        with suppress(Exception):
+                            await _durable_adapter.retire_clarify_card(
+                                _durable_interaction.interaction_id,
+                                t("gateway.clarify.answered", response=_raw_clarify_reply),
+                            )
+                logger.info(
+                    "Gateway intercepted durable clarify text response (session=%s, id=%s)",
+                    _quick_key, _durable_interaction.interaction_id,
+                )
+                # Fall through to the normal turn dispatcher with a synthetic
+                # recovery prompt; the durable interaction itself is already resolved.
+                return None
+            # A normal non-command turn supersedes only interactions owned by
+            # this actor. This also invalidates stale choice keyboards.
+            for _active_interaction in _durable_mod.get_active_for_actor(
+                _quick_key,
+                user_id=str(getattr(source, "user_id", "") or "") or None,
+                chat_id=str(getattr(source, "chat_id", "") or "") or None,
+                thread_id=str(getattr(source, "thread_id", "") or "") or None,
+            ):
+                _durable_mod.cancel_interaction(
+                    _active_interaction.interaction_id, reason="superseded_by_normal_turn")
+                _durable_adapter = self._adapter_for_source(source)
+                if _durable_adapter and _active_interaction.message_id:
+                    _clear_prompt = getattr(_durable_adapter, "clear_clarify_prompt", None)
+                    if callable(_clear_prompt):
+                        with suppress(Exception):
+                            await _clear_prompt(source.chat_id, _active_interaction.message_id)
+        try:
+            from tools import clarify_gateway as _clarify_mod
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
         except Exception:
             return None

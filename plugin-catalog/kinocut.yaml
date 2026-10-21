@@ -1,0 +1,24 @@
+name: kinocut
+title: Kinocut
+repo: https://github.com/KyaniteLabs/kinocut
+sha: c6bd47f23afdb26abc8725577b0456ff83d3e7d5
+subdir: plugins/kinocut
+version: "1.16.2"
+description: >-
+  Guardrailed local video editing: Kinocut's MCP server plus two workflow skills
+  (editing and short-form repurposing). Trim, caption, reformat for Shorts and run
+  quality checks with FFmpeg on your own machine. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json + skills/), no plugin code. Requires uv and FFmpeg on PATH;
+  the server launches as uvx kinocut==1.16.2 over stdio. Disclosure: on first launch
+  uv downloads kinocut from PyPI; the server runs FFmpeg/ffprobe on files the user
+  names and writes outputs locally. No account, API key or telemetry.
+maintainer: KyaniteLabs
+tier: community
+category: tools
+docs_url: https://github.com/KyaniteLabs/kinocut/tree/master/plugins/kinocut
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

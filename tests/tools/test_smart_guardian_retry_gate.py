@@ -2,13 +2,16 @@
 
 ``_smart_approve``'s retry contract only matters if the real gate — ``check_all_command_guards`` →
 ``_human_decision`` → ``_smart_gate`` → ``_smart_verdict`` → the guardian call — still recovers a
-truncated answer and still hands a completed abstention to the human. Only the LLM boundary
-(``agent.auxiliary_client.call_llm``) is faked here, so the retry, the verdict mapping, the
+truncated answer and still hands a completed abstention to the human. The guardian's answer is the
+only thing stubbed at the ``call_llm`` boundary, so the retry, the verdict mapping, the
 hook/redaction wrapper and the escalation path all run for real (tools/AGENTS.md: approval/
-security-boundary tools are E2E'd with real imports against a temp ``HERMES_HOME``).
+security-boundary tools are E2E'd with real imports against a temp ``HERMES_HOME``). The fixture
+additionally stubs the approval mode, the danger detection and the security check so that a plain
+command reaches the smart gate at all.
 
-Two tests, per the repo's ≤2 invariant-test bar: one proves the recovery (red on the base commit),
-the other pins the boundary the retry must not cross.
+Three tests: one proves the recovery (red on the base commit), one pins the boundary the retry must
+not cross, and one pins main's thinking-off control across both attempts (a rebase that dropped it
+would otherwise stay green).
 """
 
 from __future__ import annotations
@@ -110,7 +113,34 @@ def test_truncated_answer_recovers_through_the_real_terminal_guard(smart_gate_se
     assert result.get("smart_approved") is True
     assert len(calls) == 2, "the truncation must be retried once"
     assert calls[1]["max_tokens"] > calls[0]["max_tokens"]
+    # main's thinking-off control (#518ce272b922) covers the recovery path, not just the first call:
+    # both attempts carry the same value, so the retry asks the same question with a bigger budget.
+    assert calls[0]["reasoning_config"] == {"enabled": False}
+    assert calls[1]["reasoning_config"] == calls[0]["reasoning_config"]
+    assert calls[0]["messages"] is calls[1]["messages"]
     assert asked == [], "a recovered truncation must not reach the human prompt"
+
+
+def test_operator_reasoning_setting_is_preserved_on_both_attempts(smart_gate_session, monkeypatch):
+    """An explicit approval-task reasoning setting survives the retry unchanged.
+
+    ``_verdict_reasoning()`` returns ``None`` when the operator set ``auxiliary.approval.
+    reasoning_effort`` or ``extra_body.reasoning``; the retry has to pass that through instead of
+    forcing thinking off on its own second call.
+    """
+
+    monkeypatch.setattr("tools.approval_smart._verdict_reasoning", lambda: None)
+    calls = _guardian(monkeypatch, [("", "length"), ("APPROVE", "stop")])
+    asked = []
+    _human_answers("deny", asked)
+
+    result = A.check_all_command_guards("rm -rf /tmp/gate-retry-target", "local")
+
+    assert len(calls) == 2, "the bounded retry still fires when reasoning is operator-configured"
+    assert calls[0]["reasoning_config"] is None
+    assert calls[1]["reasoning_config"] is None
+    assert result["approved"] is True
+    assert asked == []
 
 
 def test_completed_abstention_reaches_the_human_instead_of_a_second_verdict(smart_gate_session, monkeypatch):

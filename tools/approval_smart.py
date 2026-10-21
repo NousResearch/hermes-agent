@@ -33,6 +33,9 @@ _SYSTEM_PROMPT = (
 _VERDICTS = {"APPROVE": "approve", "DENY": "deny", "ESCALATE": "escalate"}
 # One extra call finishes hidden reasoning that exhausted 16 tokens (measured 151-408 reasoning tokens on 2026-09-21).
 _RETRY_MAX_TOKENS = 512
+# Below this much remaining budget the retry cannot finish a 512-token generation, so it is skipped
+# as "budget exhausted" instead of being issued as a call that can only end in a timeout warning.
+_MIN_RETRY_TIMEOUT = 0.5
 
 
 def _strip_line_comment(line: str) -> str:
@@ -130,7 +133,7 @@ def _smart_approve(command: str, description: str) -> str:
         finish_reason = None  # set by the first attempt; read by the exhausted-budget warning
         for attempt, max_tokens in enumerate((16, _RETRY_MAX_TOKENS)):
             timeout = smart_timeout if attempt == 0 else max(0.0, deadline - time.monotonic())
-            if attempt > 0 and timeout == 0:
+            if attempt > 0 and timeout < _MIN_RETRY_TIMEOUT:
                 logger.warning("Smart approvals: guardian returned an empty answer "
                                "(finish_reason=%s), assessment budget exhausted, escalating", finish_reason)
                 return "escalate"
@@ -151,11 +154,20 @@ def _smart_approve(command: str, description: str) -> str:
             # finish_reason) stays on the human path.
             finish_reason = getattr(response.choices[0], "finish_reason", None)
             retry = attempt == 0 and not answer and finish_reason == "length"
-            logger.warning("Smart approvals: guardian returned %s (finish_reason=%s), %s",
-                           "an empty answer" if not answer else "an unrecognized answer",
-                           finish_reason, "retrying with a larger budget" if retry else "escalating")
+            if not answer:
+                logger.warning("Smart approvals: guardian returned an empty answer "
+                               "(finish_reason=%s), %s", finish_reason,
+                               "retrying with a larger budget" if retry else "escalating")
+            else:
+                # A chatty-but-unrecognized answer is a model-quality signal, not an infrastructure
+                # failure: it escalates like any uncertain outcome, but at INFO so operators do not
+                # learn to skim past the truncation WARNING above (#117428).
+                logger.info("Smart approvals: guardian returned an unrecognized answer "
+                            "(finish_reason=%s), escalating", finish_reason)
             if not retry:
                 return "escalate"
+        # Unreachable with the current two-attempt budget — every iteration returns — but kept
+        # fail-closed so a future budget tuple can never fall through to an implicit ``None``.
         return "escalate"
     except Exception as e:
         # WARNING, not DEBUG: a failed/blocked guardian call is a real event

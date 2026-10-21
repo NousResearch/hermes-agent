@@ -1750,19 +1750,6 @@ class GatewayAdapterLifecycleMixin:
 
         return _handler
 
-    def _make_profile_pre_gateway_dispatch_handler(self, profile_name: str):
-        """Apply pre-dispatch under the owning secondary profile before a busy diversion
-        (canonicalize FIRST, like the busy-path twin, so the hook sees the routed identity)."""
-        from gateway.run import _async_profile_runtime_scope
-        profile_home = self._routed_profile_home(profile_name)
-
-        async def _handler(event):
-            self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
-            async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
-                return await self._hm_admit_busy_ingress(event)
-
-        return _handler
-
     def _make_default_profile_message_handler(self):
         """Scope primary-adapter messages to their routed multiplex profile. Authorization stays
         with the transport profile (a routed profile may have no credential/allowlist)."""
@@ -1797,21 +1784,6 @@ class GatewayAdapterLifecycleMixin:
                 return await self._handle_active_session_busy_message(
                     event, self._session_key_for_source(source)
                 )
-
-        return _handler
-
-    def _make_default_profile_pre_gateway_dispatch_handler(self):
-        """Apply pre-dispatch under a primary adapter event's routed profile."""
-        from gateway.run import _async_profile_runtime_scope, get_hermes_home
-        default_home = Path(get_hermes_home())
-
-        async def _handler(event):
-            source = event.source
-            profile_home = self._admit_primary_source(source, default_home)
-            if profile_home is None:
-                return None
-            async with _async_profile_runtime_scope(profile_home):
-                return await self._hm_admit_busy_ingress(event)
 
         return _handler
 
@@ -1850,12 +1822,6 @@ class GatewayAdapterLifecycleMixin:
                 return await handler(*args)
 
         return _handler
-
-    def _primary_pre_gateway_dispatch_handler(self):
-        """Return the correctly scoped pre-dispatch handler for busy primary ingress."""
-        if self._multiplex_on():
-            return self._make_default_profile_pre_gateway_dispatch_handler()
-        return self._hm_admit_busy_ingress
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))

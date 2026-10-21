@@ -583,7 +583,13 @@ def get_default_model_for_provider(provider: str) -> str:
         # fetched live; its curated snapshot carries the default).
         if preferred and (preferred in models or not models):
             return preferred
-    return models[0] if models else ""
+    # Route every provider's static-catalog fallback through the same frontier-tier guard as the
+    # Nous/OpenRouter "preferred" path above, not just models[0]. Without this, a provider absent
+    # from _SILENT_DEFAULT_PROVIDERS (e.g. "anthropic", whose own catalog happens to list its
+    # priciest tier first) bypasses the guard entirely: a config load that empties model.default
+    # (HERMES_IGNORE_USER_CONFIG=1 / --ignore-user-config) falls through to here and silently
+    # billed the frontier tier (claude-fable-5.1) for traffic the user configured for Sonnet.
+    return pick_silent_default_model(models, provider=provider) if models else ""
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:

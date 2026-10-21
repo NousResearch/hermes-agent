@@ -36,5 +36,16 @@ export const frNotices = {
     message:
       'Hermes peut empêcher la mise en veille pendant qu’une tâche s’exécute. L’écran s’éteint toujours, et sur batterie l’ordinateur peut quand même se mettre en veille.',
     action: 'Empêcher la veille pendant le travail'
+  },
+  billingBlock: {
+    titleNous: 'Plus de crédits Nous',
+    titleProvider: provider => `Plus de crédits — ${provider}`,
+    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
+    openBilling: 'Ouvrir la facturation',
+    addCredits: 'Ajouter des crédits',
+    dismiss: 'Fermer'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

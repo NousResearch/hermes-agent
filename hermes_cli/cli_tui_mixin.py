@@ -915,7 +915,7 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_c(self, event):
         """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt or the wait for a
-        gateway plugin command → clear a typed draft, even mid-run (a correction must never kill the turn)
+        command on its own gateway socket (a plugin command, /cron) → clear a typed draft, even mid-run (a correction must never kill the turn)
         → interrupt the running agent → force exit (second press within 2s) → when idle and empty, exit."""
         now = time.time()
         if self._tui_cancel_voice_recording(event):
@@ -923,7 +923,7 @@ class CLITuiMixin:
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
             ("_model_picker_state", self._close_model_picker), ("_command_palette_state", self._close_command_palette),
-            ("_plugin_command_wait", lambda: self._plugin_command_wait.set()))):
+            ("_gateway_command_wait", lambda: self._gateway_command_wait.set()))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):

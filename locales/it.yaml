@@ -691,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ Qualcosa è andato storto e non sono riuscito a completare questa risposta.{hint}\nUsa /retry per riprovare, oppure /new per iniziare una nuova conversazione. I dettagli tecnici sono nel log del gateway (`hermes logs`)."
     history_unavailable: "⚠️ La cronologia di questa sessione è temporaneamente non disponibile, quindi questo messaggio non è stato elaborato. Chiedi all'operatore di controllare state.db, poi invialo di nuovo quando è di nuovo integro. Usa /reset solo se vuoi davvero iniziare una nuova conversazione."
     no_credentials: "⚠️ Non sono riuscito a connettermi al servizio del modello AI, quindi questo messaggio non è stato elaborato. Usa /login per accedere di nuovo, oppure /model per scegliere un altro modello. Se continua a fallire, esegui `hermes doctor` sull'host."
+    cron_session_read_only: "⚠️ Questa chat appartiene a un'attività pianificata ed esegue solo quella, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo."
   skills:
     disabled: "La skill **{name}** è installata ma disattivata.\nAttivala con: `hermes skills config`"
     not_installed: "La skill **{name}** è disponibile ma non installata.\nInstallala con: `hermes skills install {install_name}`"

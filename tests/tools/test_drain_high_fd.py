@@ -81,10 +81,22 @@ def test_command_output_survives_pipe_fd_above_fd_setsize(high_fds, tmp_path, mo
 
 
 @pytest.mark.platforms("posix")
-def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds):
-    """The PTY bridge delivers output at a high fd, and an idle read blocks for its timeout."""
+def _assert_idle_read_waits(bridge):
+    started = time.monotonic()
+    assert bridge.read(timeout=0.5) == b""
+    assert time.monotonic() - started >= 0.3, "idle PTY read returned without waiting"
+
+
+@pytest.mark.platforms("posix")
+def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
+    """The PTY bridge delivers output at a high fd and an idle read blocks for its timeout;
+    when the selector cannot be created (EMFILE), the bridge either still waits (poll
+    fallback) or refuses to spawn, never a busy-looping bridge (macOS poll on a PTY)."""
+    import errno
+
     pytest.importorskip("ptyprocess")
     from hermes_cli.pty_bridge import PtyBridge
+    from tools.environments import fd_wait
 
     bridge = PtyBridge.spawn(["/bin/sh", "-c", "echo pty-high-fd; exec sleep 30"])
     try:
@@ -96,9 +108,19 @@ def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds):
             assert chunk is not None, f"PTY reported EOF before output (got {bytes(buf)!r})"
             buf.extend(chunk)
         assert b"pty-high-fd" in buf
-
-        started = time.monotonic()
-        assert bridge.read(timeout=0.5) == b""
-        assert time.monotonic() - started >= 0.3, "idle PTY read returned without waiting"
+        _assert_idle_read_waits(bridge)
     finally:
         bridge.close()
+
+    def _emfile():
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(fd_wait.selectors, "DefaultSelector", _emfile)
+    try:
+        fallback = PtyBridge.spawn(["/bin/sh", "-c", "exec sleep 30"])
+    except OSError:
+        return  # no safe wait for this device on this OS: the spawn is refused
+    try:
+        _assert_idle_read_waits(fallback)
+    finally:
+        fallback.close()

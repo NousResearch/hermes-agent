@@ -155,7 +155,11 @@ class PtyBridge:
         # every OS app-switch).
         spawn_env[PTY_HOST_ENV] = PTY_HOST_DASHBOARD
         proc = ptyprocess.PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols))  # type: ignore[union-attr]
-        return cls(proc)
+        try:
+            return cls(proc)
+        except OSError:  # no safe readiness wait for the master (fd_wait): don't leak the child
+            proc.close(force=True)
+            raise
 
     @property
     def pid(self) -> int:

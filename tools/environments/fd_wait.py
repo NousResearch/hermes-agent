@@ -13,7 +13,10 @@ fd of its own.
 """
 
 import errno
+import os
 import selectors
+import stat
+import sys
 
 
 class FdWaiter:
@@ -39,7 +42,7 @@ class FdWaiter:
 
 def open_fd_waiter(fd: int):
     """Return an :class:`FdWaiter` for *fd*, or None only when *fd* is closed/invalid
-    and there is nothing to drain."""
+    and there is nothing to drain. Raises OSError when no safe wait exists."""
     try:
         return FdWaiter(fd, selectors.DefaultSelector)
     except ValueError:
@@ -47,6 +50,9 @@ def open_fd_waiter(fd: int):
     except OSError as exc:
         if exc.errno == errno.EBADF:
             return None
-    # The selector itself could not be set up (EMFILE: the process is at its fd limit)
-    # while the pipe is still live. poll() needs no extra fd; never report that as EOF.
+        # The selector itself could not be set up (EMFILE: the process is at its fd limit)
+        # while the fd is still live. poll() needs no extra fd; never report that as EOF.
+        # On macOS it is no wait at all for a device (PTY): raise rather than spin.
+        if sys.platform == "darwin" and stat.S_ISCHR(os.fstat(fd).st_mode):
+            raise
     return FdWaiter(fd, selectors.PollSelector)

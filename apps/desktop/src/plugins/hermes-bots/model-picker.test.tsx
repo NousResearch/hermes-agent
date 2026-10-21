@@ -21,7 +21,7 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
@@ -97,6 +97,37 @@ function mountWithSelection(bot: null | RosterRow, value: { model: string; provi
   return mountWithValue(bot, vi.fn(), value)
 }
 
+/**
+ * Mount a CONTROLLED picker: the parent stores the value and hands it back,
+ * exactly like the profile editor does. The plain `mountWithValue` leaves the
+ * value frozen, so a controlled <input> would snap back to it on the next
+ * render and the field could never be seen holding typed text.
+ */
+function mountStateful(bot: null | RosterRow, initial: { model: string; provider: string }) {
+  const changes: Array<unknown> = []
+
+  function Controlled() {
+    const [value, setValue] = useState(initial)
+
+    return (
+      <ModelPicker
+        bot={bot}
+        onChange={patch => {
+          changes.push(patch)
+          setValue(prev => ({ ...prev, ...(patch as Partial<typeof prev>) }))
+        }}
+        value={value}
+      />
+    )
+  }
+
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+
+  return { changes, ...render(<Controlled />, { wrapper }) }
+}
+
 /** The fallback the picker paints when the catalog is unavailable. */
 const isFreeText = (container: HTMLElement) =>
   Boolean(container.querySelector('input[placeholder*="omnirouter"]')) &&
@@ -149,8 +180,7 @@ describe('the catalog read', () => {
     expect(hostMock.requestProfile).toHaveBeenCalledTimes(1)
   })
 
-  it('updates the model when typing a known provider slug', async () => {
-    const onChange = vi.fn()
+  it('canonicalizes a case-insensitive provider slug and picks that provider’s first model', async () => {
     hostMock.requestProfile.mockResolvedValue({
       providers: [
         { models: ['m1'], name: 'Provider One', slug: 'prov-one' },
@@ -158,12 +188,51 @@ describe('the catalog read', () => {
       ]
     })
 
-    mountWithValue(remoteBot, onChange, { model: 'm1', provider: 'prov-one' })
+    const { changes } = mountStateful(remoteBot, { model: 'm1', provider: 'prov-one' })
 
-    await waitFor(() => expect(screen.getByLabelText('Provider')).toBeTruthy())
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'PROV-TWO' } })
+    const field = await screen.findByLabelText('Provider')
+    fireEvent.change(field, { target: { value: 'PROV-TWO' } })
+    fireEvent.blur(field)
 
-    expect(onChange).toHaveBeenLastCalledWith({ provider: 'prov-two', model: 'a1' })
+    expect(changes.at(-1)).toEqual({ provider: 'prov-two', model: 'a1' })
+  })
+
+  it('keeps the field mounted while a provider is typed, so no keystroke is lost', async () => {
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [{ models: ['m1'], name: 'Provider One', slug: 'prov-one' }]
+    })
+
+    mountStateful(remoteBot, { model: 'm1', provider: 'prov-one' })
+
+    const field = await screen.findByLabelText('Provider')
+
+    // A partial slug matches no catalog row. The control must NOT swap to
+    // the free-text form mid-word — that unmounts the focused input and
+    // swallows the next keystroke.
+    fireEvent.change(field, { target: { value: 'p' } })
+
+    expect(screen.getByLabelText('Provider')).toBe(field)
+    expect((field as HTMLInputElement).value).toBe('p')
+  })
+
+  it('does not rewrite the model while the provider is still being typed', async () => {
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [
+        { models: ['m1'], name: 'Provider One', slug: 'prov-one' },
+        { models: ['a1', 'a2'], name: 'Provider Two', slug: 'prov-two' }
+      ]
+    })
+
+    const { changes } = mountStateful(remoteBot, { model: 'm1', provider: 'prov-one' })
+
+    const field = await screen.findByLabelText('Provider')
+
+    // `prov` is a prefix of both catalog slugs; canonicalizing per keystroke
+    // would snap the model to the first model of whatever row the partial
+    // text happened to match.
+    fireEvent.change(field, { target: { value: 'prov' } })
+
+    expect(changes.at(-1)).toEqual({ provider: 'prov' })
   })
 
   it('never dispatches for a row whose connection was removed', async () => {

@@ -132,9 +132,11 @@ _FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")
 
 
 def _stored_form(sql: str) -> str:
-    """``sqlite_master.sql`` as compared here: whitespace collapsed and the object name unquoted (an ALTER TABLE
-    RENAME round trip stores it as ``"name"`` without changing the layout)."""
-    return re.sub(r'^CREATE (VIRTUAL TABLE|VIEW) "([^"]+)"', r"CREATE \1 \2", " ".join((sql or "").split()))
+    """``sqlite_master.sql`` as compared here: whitespace collapsed, none kept around parentheses and commas (the
+    same definition written with different spacing is the same layout), and the object name unquoted (an ALTER
+    TABLE RENAME round trip stores it as ``"name"`` without changing the layout)."""
+    collapsed = re.sub(r"\s*([(),])\s*", r"\1", " ".join((sql or "").split()))
+    return re.sub(r'^CREATE (VIRTUAL TABLE|VIEW) "([^"]+)"', r"CREATE \1 \2", collapsed)
 
 
 def _expected_stored_sql(ddl: str, kind: str, name: str) -> str:
@@ -156,21 +158,21 @@ def _expected_vtable_sql(ddl: str, table: str) -> str:
 # previous form recognisable as old.
 FTS_VTABLE_LAYOUTS: dict[str, tuple[str, ...]] = {
     "messages_fts": (
-        "CREATE VIRTUAL TABLE messages_fts USING fts5( content, content=messages, content_rowid=id )",
-        "CREATE VIRTUAL TABLE messages_fts USING fts5( content )",
-        "CREATE VIRTUAL TABLE messages_fts USING fts5( content, tool_name, tool_calls, content='messages', "
-        "content_rowid='id' )",
-        "CREATE VIRTUAL TABLE messages_fts USING fts5( content, tool_name, tool_calls, content='messages_fts_src', "
-        "content_rowid='id' )",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content,content=messages,content_rowid=id)",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content)",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content,tool_name,tool_calls,content='messages',"
+        "content_rowid='id')",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content,tool_name,tool_calls,"
+        "content='messages_fts_src',content_rowid='id')",
     ),
     "messages_fts_trigram": (
-        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, content=messages, content_rowid=id, "
-        "tokenize='trigram' )",
-        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, tokenize='trigram' )",
-        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, tool_name, tool_calls, "
-        "content='messages_fts_trigram_src', content_rowid='id', tokenize='trigram' )",
-        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, tool_name, "
-        "content='messages_fts_trigram_src', content_rowid='id', tokenize='trigram' )",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,content=messages,content_rowid=id,"
+        "tokenize='trigram')",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,tokenize='trigram')",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,tool_name,tool_calls,"
+        "content='messages_fts_trigram_src',content_rowid='id',tokenize='trigram')",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,tool_name,"
+        "content='messages_fts_trigram_src',content_rowid='id',tokenize='trigram')",
     ),
 }
 
@@ -189,6 +191,12 @@ def _is_older_layout(table: str, stored: str) -> bool:
     if table == "messages_fts":
         return "tool_name" not in stored
     return "tool_calls" in stored.lower()
+
+
+def base_index_recognised(cursor: sqlite3.Cursor) -> bool:
+    """``messages_fts`` holds a definition this code or an earlier release created; the open-time realign
+    replaces nothing else."""
+    return _stored_vtables(cursor).get("messages_fts") in FTS_VTABLE_LAYOUTS["messages_fts"]
 
 
 def base_index_realigned_on_open(stored: str) -> bool:

@@ -26,7 +26,8 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
-from hermes_state_fts import _drop_orphan_fts_shadow_tables, base_source_view_is_stale, fts_layout_current
+from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recognised, base_source_view_is_stale,
+                              fts_layout_current)
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
@@ -355,8 +356,9 @@ class SessionSchemaMixin:
         in-place continuity is not achievable — the ONLY valid transition is a full rebuild
         from the view, under the shared cross-process rebuild admission. Legacy inline DBs
         skip this entirely (their index is self-contained; they still take the DDL on the
-        optimize path)."""
-        if legacy or not self._sqlite_table_exists(cursor, "messages_fts"):
+        optimize path), and so does a definition no release of this code created (a newer
+        release's, after a downgrade)."""
+        if legacy or not base_index_recognised(cursor):
             return
         stale_view = base_source_view_is_stale(cursor)
         if not stale_view and not self._fts_index_is_misaligned_source(cursor):

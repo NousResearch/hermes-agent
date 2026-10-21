@@ -234,6 +234,23 @@ def test_the_layout_registry_ends_with_the_shipping_ddl():
         LEGACY_FTS_TRIGRAM_SQL, "messages_fts_trigram") in layouts["messages_fts_trigram"][:-1]
 
 
+def _install_newer_base_layout(db: SessionDB) -> str:
+    """A base-index definition this code does not recognise (a newer release's), stamped with a newer version."""
+    from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION
+
+    sql = db._conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts'").fetchone()[0]
+    db._conn.executescript(
+        "DROP TRIGGER messages_fts_insert; DROP TRIGGER messages_fts_delete; DROP TRIGGER messages_fts_update;"
+        "DROP TABLE messages_fts;")
+    newer = sql.replace("content_rowid='id'", "content_rowid='id', tokenize='porter unicode61'")
+    db._conn.execute(newer)
+    db._conn.executescript(FTS_SQL)
+    db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+    db._conn.execute("UPDATE state_meta SET value = ? WHERE key = 'fts_storage_version'", (str(FTS_STORAGE_VERSION + 1),))
+    db._conn.commit()
+    return newer
+
+
 def _forbid_demote(db: SessionDB, monkeypatch) -> None:
     def _demote():
         pytest.fail("optimize-storage demoted an index it does not recognise as an old layout")
@@ -242,20 +259,12 @@ def _forbid_demote(db: SessionDB, monkeypatch) -> None:
 
 def test_a_layout_from_a_newer_release_is_left_alone(tmp_path, monkeypatch):
     """Downgrade: an unrecognised (newer) definition is neither rebuilt nor re-stamped as this release's."""
-    from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION
+    from hermes_state_common import FTS_STORAGE_VERSION
 
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
     _seed(db)
-    sql = db._conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts'").fetchone()[0]
-    db._conn.executescript(
-        "DROP TRIGGER messages_fts_insert; DROP TRIGGER messages_fts_delete; DROP TRIGGER messages_fts_update;"
-        "DROP TABLE messages_fts;")
-    db._conn.execute(sql.replace("content_rowid='id'", "content_rowid='id', tokenize='porter unicode61'"))
-    db._conn.executescript(FTS_SQL)
-    db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
-    db._conn.execute("UPDATE state_meta SET value = ? WHERE key = 'fts_storage_version'", (str(FTS_STORAGE_VERSION + 1),))
-    db._conn.commit()
+    _install_newer_base_layout(db)
     db.close()
 
     db = SessionDB(db_path=db_path)
@@ -370,6 +379,28 @@ def test_the_base_realign_finishes_a_pending_trigram_backfill(tmp_path):
         assert [row["id"] for row in db.search_messages("大别山")] == [last_id]
     finally:
         db.close()
+
+
+def test_a_stale_source_view_does_not_replace_a_newer_base_index(tmp_path):
+    """Downgrade with a differing source view: the open-time repair leaves an unrecognised base index alone."""
+    from hermes_state_common import FTS_STORAGE_VERSION
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _seed(db)
+    newer = _install_newer_base_layout(db)
+    db._conn.execute("DROP VIEW messages_fts_src")
+    db._conn.execute("CREATE VIEW messages_fts_src AS SELECT id, content, tool_name, tool_calls FROM messages")
+    db._conn.commit()
+    db.close()
+
+    SessionDB(db_path=db_path).close()
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        assert conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts'").fetchone()[0] == newer
+    finally:
+        conn.close()
+    assert _stamp(db_path) == str(FTS_STORAGE_VERSION + 1)
 
 
 def test_doctor_offers_the_resume_after_backfill_before_teardown(tmp_path, monkeypatch):

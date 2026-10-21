@@ -65,9 +65,51 @@ def _reject_unsafe(action: str, args: dict[str, Any]) -> Optional[str]:
     if action == "key" and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
                                              if b.issubset(_canon_key_combo(args.get("keys", "")))), None)) is not None:
         return json.dumps({"error": f"blocked key combo: {sorted(blocked)}", "hint": "Destructive system shortcuts are hard-blocked."})
+    if action == "run_steps" and (err := _reject_unsafe_steps(args.get("steps"))):
+        return err
     if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
         return json.dumps({"error": "bring_to_front requires delivery_mode='foreground'",
                            "code": "bring_to_front_requires_foreground"})
+    return None
+
+def _reject_unsafe_steps(steps: Any) -> Optional[str]:
+    """Apply the same hard blocks to every step of a run_steps batch.
+
+    A batch is many input actions in one call, so it must face the same gate as the single-action
+    path: otherwise run_steps becomes a way around the blocked-type-pattern and blocked-key-combo
+    rules (e.g. a `cmd+shift+backspace` step would slip through where action='key' is refused).
+    """
+    if not isinstance(steps, list):
+        return None
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        if "tool" in step:
+            _tool, raw = step.get("tool"), step.get("args")
+        else:
+            named = [k for k in step if k in ("click", "double_click", "right_click", "set_value",
+                                              "type_text", "press_key", "hotkey", "scroll", "drag",
+                                              "move_cursor", "type", "key", "middle_click")]
+            if len(named) != 1:
+                continue
+            _tool, raw = named[0], step.get(named[0])
+        if not isinstance(raw, dict):
+            continue
+        text = raw.get("text")
+        if isinstance(text, str) and (pat := next((p.pattern for p in _BLOCKED_TYPE_PATTERNS
+                                                   if p.search(text)), None)):
+            return json.dumps({"error": f"blocked pattern in type text: {pat!r}",
+                               "hint": f"Dangerous shell patterns cannot be typed via computer_use (step {i + 1})."})
+        combo = raw.get("keys")
+        if isinstance(combo, str) and (blocked := next((b for b in _BLOCKED_KEY_COMBOS
+                                                        if b.issubset(_canon_key_combo(combo))), None)) is not None:
+            return json.dumps({"error": f"blocked key combo: {sorted(blocked)}",
+                               "hint": f"Destructive system shortcuts are hard-blocked (step {i + 1})."})
+        if isinstance(combo, list):
+            canon = frozenset(_KEY_ALIASES.get(str(p).lower(), str(p).lower()) for p in combo)
+            if (blocked := next((b for b in _BLOCKED_KEY_COMBOS if b.issubset(canon)), None)) is not None:
+                return json.dumps({"error": f"blocked key combo: {sorted(blocked)}",
+                                   "hint": f"Destructive system shortcuts are hard-blocked (step {i + 1})."})
     return None
 
 def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
@@ -478,6 +520,13 @@ _ACTIONS: dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "run_steps": _input(lambda backend, action, args, **delivery: backend.run_steps(
+        args.get("steps") or [],
+        observe=args.get("observe"),
+        delay_ms=args.get("delay_ms"),
+        delivery_mode=args.get("delivery_mode"),
+        foreground_fallback=bool(args.get("foreground_fallback")),
+    ), summarize=lambda a, args, fg: f"run_steps {len(args.get('steps') or [])} steps{fg}"),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),

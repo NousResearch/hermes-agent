@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
 _SEQUENCE_FILE = ".sequence"
+QUARANTINE_DIR_NAME = "quarantine"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
@@ -244,7 +245,10 @@ def _locked(home: Path | str):
 
 
 def _read(path: Path) -> dict[str, Any] | None:
-    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
+    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed).
+
+    Directory sweeps call :func:`_scan_read`, which quarantines such a ticket instead of raising.
+    """
     try:
         record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
@@ -252,6 +256,21 @@ def _read(path: Path) -> dict[str, Any] | None:
     if not isinstance(record, dict):
         raise ValueError(f"ticket {path.name} is not a JSON object ({type(record).__name__})")
     return record
+
+
+def _quarantine(path: Path, exc: BaseException) -> None:
+    """Move a provably-dead ticket out of the scan path, preserving every byte of it."""
+    target = path.parent / QUARANTINE_DIR_NAME
+    try:
+        target.mkdir(mode=0o700, exist_ok=True)
+        destination = target / path.name
+        if destination.exists():
+            destination = target / f"{path.stem}.{uuid.uuid4().hex[:8]}{path.suffix}"
+        os.replace(path, destination)
+        fsync_directory(target)
+        log.warning("Quarantined unreadable delivery record %s: %s", destination.name, exc)
+    except OSError:  # pragma: no cover - defensive: quarantine must never raise into a sweep
+        log.error("Could not quarantine unreadable delivery record %s", path, exc_info=True)
 
 
 # Tickets already reported unreadable by this process. The live poller rescans the
@@ -290,11 +309,20 @@ def _scan_read(path: Path) -> dict[str, Any] | None:
     Exact-id reads (admission idempotency, completion, result lookup) keep
     using _read so a permission error still fails closed instead of
     licensing an overwrite of a possibly-live receipt.
+
+    A ticket whose *content* is dead — unparseable JSON, invalid UTF-8, JSON
+    that is not an object — is moved to ``<spool>/quarantine/`` as it is
+    skipped: re-reading one bad byte on every pass would keep the lane noisy
+    forever, and the record is preserved, never deleted. An I/O error is left
+    in place (the record may be perfectly good once the environment recovers).
     """
     try:
         record = _read(path)
         problem = None if record is None else _ticket_shape_error(path, record)
-    except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
+    except ValueError as exc:  # dead content: corrupt JSON, invalid UTF-8, or not a JSON object
+        _quarantine(path, exc)
+        return None
+    except OSError as exc:  # permission/IO error: uninspectable, not provably dead
         record, problem = None, str(exc)
     if problem is not None:
         level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
@@ -318,7 +346,7 @@ def _next_sequence(root: Path) -> int:
         persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
-    scanned = max((record.get("sequence", record["created_at"])
+    scanned = max((record.get("sequence") or record.get("created_at") or 0
                    for candidate in root.glob("*.json")
                    if (record := _scan_read(candidate)) is not None), default=0)
     sequence = max(persisted, scanned) + 1

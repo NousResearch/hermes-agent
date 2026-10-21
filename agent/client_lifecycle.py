@@ -734,6 +734,11 @@ class ClientLifecycleMixin:
     def _should_adopt_env_credentials(self, api_key: str, base_url: str, default_base: str) -> bool:
         """Adopt only env *edits* (resolved value changed since last look), never drift from ``self.*``:
         pool rotation/failover and a config ``model.base_url`` legitimately move the session."""
+        if self.api_key and self.api_key == getattr(self, "_launch_api_key", None):
+            # An explicit launch key (``--api-key``) outranks .env in the route's own resolver every
+            # turn; .env is not this session's credential source, so neither a first look nor a later
+            # edit may swap it out (#142362).
+            return False
         prev = getattr(self, "_env_creds_seen", None)
         current_base = (self.base_url or "").strip().rstrip("/")
         unchanged = base_url == current_base and api_key == self.api_key

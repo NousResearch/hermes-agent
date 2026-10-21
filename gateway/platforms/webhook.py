@@ -575,7 +575,8 @@ class WebhookAdapter(BasePlatformAdapter):
         if secret != _INSECURE_NO_AUTH and not self._validate_signature(
                 request, raw_body, secret, route_config.get("signature")):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
-            return None, _json_error("Invalid signature", 401)
+            # Same 404 as an unknown route, so a bad signature cannot enumerate configured route names.
+            return None, _json_error(f"Unknown route: {route_name}", 404)
         return raw_body, None
 
     @staticmethod

@@ -432,9 +432,8 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
-| `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
-| `404 Not Found` | Unknown route name. |
+| `404 Not Found` | Unknown route name, or HMAC signature invalid or missing (same response, so route names can't be probed). |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
 | `429 Too Many Requests` | Route rate limit exceeded. |
 | `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
@@ -700,8 +699,8 @@ This is the same trust model that applies to everything the agent reads: web pag
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
 - For generic senders, use `X-Webhook-Signature-V2` and `X-Webhook-Timestamp`; body-only V1 signatures are rejected
-- A route with `signature` set rejects every other scheme with `401` (look for `is pinned to signature` in the gateway log); a subscription created by `hermes webhook subscribe` without `--signature` is pinned to `generic`
-- Check gateway logs for `Invalid signature` warnings
+- A route with `signature` set rejects every other scheme with the same `404 Unknown route` as a missing route (look for `is pinned to signature` in the gateway log); a subscription created by `hermes webhook subscribe` without `--signature` is pinned to `generic`
+- A bad signature returns the same `404 Unknown route` as a missing route; check gateway logs for `Invalid signature` warnings to tell them apart
 
 ### Event being ignored
 

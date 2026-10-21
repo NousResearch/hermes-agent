@@ -224,7 +224,13 @@ def changed_line_map(repo: Path, base: str | None, head: str | None) -> dict[str
     lines = added_lines(_git(repo, *args))
     if head is None:  # the working tree: untracked test files are new in full
         for rel in _untracked(repo):
-            lines.setdefault(rel, set())
+            # `git diff` never lists an untracked file, so mark every line as added; an empty
+            # set would intersect nothing in find_hits() and drop each hit the scan found.
+            try:
+                count = len((repo / rel).read_text(encoding="utf-8-sig", errors="replace").splitlines())
+            except OSError:
+                continue
+            lines[rel] = set(range(1, count + 1))
     return lines
 
 

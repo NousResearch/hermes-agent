@@ -99,6 +99,31 @@ def test_head_revision_bytes_are_judged_not_the_checkout(tmp_path, monkeypatch):
     assert main(["--base", f"{head}~1", "--repo", str(tmp_path)]) == 0  # the working tree is clean
 
 
+def test_untracked_test_file_is_judged_in_full(tmp_path, monkeypatch):
+    """A brand-new test that is not yet ``git add``ed is the guard's main target in a local run."""
+    import subprocess
+
+    from check_os_marker_mode_bits import main
+
+    def git(*args):
+        subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args],
+                       cwd=tmp_path, check=True, capture_output=True)
+
+    (tmp_path / "tests" / "tools").mkdir(parents=True)
+    (tmp_path / "tests" / "tools" / "test_old.py").write_text("def test_old():\n    pass\n", encoding="utf-8")
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    new = tmp_path / "tests" / "tools" / "test_new.py"  # untracked: git diff never lists it
+
+    monkeypatch.chdir(tmp_path)
+    new.write_text(UNMARKED, encoding="utf-8")
+    assert main(["--base", "HEAD", "--repo", str(tmp_path)]) == 1
+    new.write_text("import pytest\nimport stat\n\n\n@pytest.mark.platforms(\"posix\")\n"
+                   "def test_new(p):\n    assert stat.S_IMODE(p.stat().st_mode) == 0o600\n", encoding="utf-8")
+    assert main(["--base", "HEAD", "--repo", str(tmp_path)]) == 0
+
+
 def test_added_lines_reads_post_image_numbers():
     diff = (
         "diff --git a/tests/test_x.py b/tests/test_x.py\n"

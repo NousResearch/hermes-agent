@@ -15,6 +15,9 @@ This test pins the assembler to emit one item per call id, preferring the copy
 that carries non-empty arguments.
 """
 
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -154,7 +157,7 @@ def test_normalize_distinct_calls_preserved():
     assert len(msg.tool_calls) == 2
 
 
-def _normalized_calls(items, streamed):
+def _normalized_message(items, streamed):
     if streamed:
         assembler = _assembler()
         for index, item in enumerate(items):
@@ -162,7 +165,99 @@ def _normalized_calls(items, streamed):
         items = _finish(assembler)
     message, finish_reason = _normalize_codex_response(_resp(items))
     assert finish_reason == "tool_calls"
+    return message
+
+
+def _normalized_calls(items, streamed):
+    message = _normalized_message(items, streamed)
     return [(call.id, call.function.name, call.function.arguments) for call in message.tool_calls]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("call_ids,item_ids", [
+    (("call_a",), ("fc_shared",)),
+    (("call_a", "call_b"), ("fc_shared", "fc_shared")),
+    (("call_a", "call_b", "call_c"), ("fc_shared", "fc_shared", "fc_a")),
+    (("call_a", "call_b", "call_c"), ("fc_shared", "fc_shared", "fc_a|fc_c")),
+], ids=["single", "shared-alias", "derived-alias-collision", "expanded-alias-collision"])
+def test_call_identities_survive_history_and_next_request(streamed, call_ids, item_ids):
+    from agent.agent_runtime_helpers import sanitize_api_messages
+    from agent.chat_completion_helpers import _assistant_tool_call_dict
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    from run_agent import AIAgent
+
+    items = [SimpleNamespace(type="function_call", id=item_id,
+                             call_id=call_id, name="read_file", arguments='{"path":"' + call_id + '"}')
+             for call_id, item_id in zip(call_ids, item_ids)]
+    # A genuine repeated frame must still collapse before storage.
+    message = _normalized_message([*items, items[0]], streamed)
+    stored_calls = [_assistant_tool_call_dict(AIAgent, call, index)
+                    for index, call in enumerate(message.tool_calls)]
+    history = [
+        {"role": "user", "content": "Read the files"},
+        {"role": "assistant", "content": "", "tool_calls": stored_calls},
+        *[{"role": "tool", "tool_call_id": call_id, "name": "read_file", "content": call_id}
+          for call_id in call_ids],
+    ]
+    sanitized = sanitize_api_messages(history)
+    assert [tc["id"] for msg in sanitized for tc in msg.get("tool_calls", [])] == list(call_ids)
+    assert [msg["tool_call_id"] for msg in sanitized if msg["role"] == "tool"] == list(call_ids)
+    if len(call_ids) == 1:
+        assert stored_calls[0]["response_item_id"] == "fc_shared"
+    wire = _chat_messages_to_responses_input(sanitized)
+    calls = [item for item in wire if item.get("type") == "function_call"]
+    outputs = [item for item in wire if item.get("type") == "function_call_output"]
+    assert [item["call_id"] for item in calls] == list(call_ids)
+    assert [item["call_id"] for item in outputs] == list(call_ids)
+    assert len({call["response_item_id"] for call in stored_calls}) == len(call_ids)
+    assert [item["arguments"] for item in calls] == [item.arguments for item in items]
+    assert [item["output"] for item in outputs] == list(call_ids)
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+def test_expanded_call_id_alias_search_terminates_through_next_request(streamed):
+    # Bound the real pipeline: an alias retaining '|fc_x' can reserve the same
+    # expanded prefix forever, even as its numeric suffix grows.
+    code = textwrap.dedent("""
+        import runpy
+        import sys
+        from types import SimpleNamespace
+        from agent.agent_runtime_helpers import sanitize_api_messages
+        from agent.chat_completion_helpers import _assistant_tool_call_dict
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from run_agent import AIAgent
+
+        helpers = runpy.run_path(sys.argv[1])
+        call_ids = ['call_a|fc_x', 'call_b', 'call_c']
+        item_ids = ['fc_shared', 'fc_shared', 'fc_a']
+        items = [SimpleNamespace(type='function_call', id=item_id, call_id=call_id,
+                                 name='read_file', arguments='{"path":"' + call_id + '"}')
+                 for call_id, item_id in zip(call_ids, item_ids)]
+        message = helpers['_normalized_message'](items, sys.argv[2] == 'True')
+        assert [call.id for call in message.tool_calls] == call_ids
+        stored = [_assistant_tool_call_dict(AIAgent, call, index)
+                  for index, call in enumerate(message.tool_calls)]
+        assert stored[2]['response_item_id'] == 'fc_a'
+        history = [
+            {'role': 'user', 'content': 'Read the files'},
+            {'role': 'assistant', 'content': '', 'tool_calls': stored},
+            *[{'role': 'tool', 'tool_call_id': call_id, 'name': 'read_file', 'content': call_id}
+              for call_id in call_ids],
+        ]
+        sanitized = sanitize_api_messages(history)
+        assert [tc['id'] for msg in sanitized for tc in msg.get('tool_calls', [])] == call_ids
+        wire = _chat_messages_to_responses_input(sanitized)
+        calls = [item for item in wire if item.get('type') == 'function_call']
+        outputs = [item for item in wire if item.get('type') == 'function_call_output']
+        assert [item['call_id'] for item in calls] == call_ids
+        assert [item['arguments'] for item in calls] == [item.arguments for item in items]
+        assert [item['output'] for item in outputs] == call_ids
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__, str(streamed)],
+        capture_output=True, text=True, timeout=8,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
@@ -220,15 +315,62 @@ def test_incomplete_twin_cannot_suppress_completed_call(streamed, reverse, statu
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
 @pytest.mark.parametrize("reverse", [False, True], ids=["dict-first", "object-first"])
+@pytest.mark.parametrize("item_type", ["function_call", "custom_tool_call"])
 @pytest.mark.parametrize("dict_arguments,object_arguments", [
     ('{"path":"dict"}', "{}"),
     ("{}", "{}"),
     ("{}", '{"path":"object"}'),
 ])
-def test_dict_twin_cannot_suppress_object_call(streamed, reverse, dict_arguments, object_arguments):
-    dictionary = dict(type="function_call", id="fc_shared", call_id="call_a",
-                      name="read_file", status="completed", arguments=dict_arguments)
-    item = SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
-                           name="read_file", status="completed", arguments=object_arguments)
+def test_dict_twin_cannot_suppress_object_call(streamed, reverse, item_type, dict_arguments, object_arguments):
+    field = "arguments" if item_type == "function_call" else "input"
+    dictionary = dict(type=item_type, id="fc_shared", call_id="call_a",
+                      name="read_file", status="completed", **{field: dict_arguments})
+    item = SimpleNamespace(type=item_type, id="fc_shared", call_id="call_a",
+                           name="read_file", status="completed", **{field: object_arguments})
     items = [item, dictionary] if reverse else [dictionary, item]
     assert _normalized_calls(items, streamed) == [("call_a", "read_file", object_arguments)]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["full-first", "empty-first"])
+@pytest.mark.parametrize("status", [None, "completed", "queued", "in_progress", "incomplete", " IN_PROGRESS "])
+@pytest.mark.parametrize("full_input", ['{"path":"custom"}', "{}"])
+def test_custom_call_twins_use_input_at_every_scannable_status(streamed, reverse, status, full_input):
+    full = SimpleNamespace(type="custom_tool_call", id="fc_shared", call_id="call_a",
+                           name="read_file", status=status, input=full_input)
+    empty = SimpleNamespace(type="custom_tool_call", id="fc_shared", call_id="call_a",
+                            name="read_file", status=status, input="{}")
+    other = SimpleNamespace(type="custom_tool_call", id="fc_other", call_id="call_b",
+                            name="skills_list", status="completed", input="{}")
+    items = [empty, other, full] if reverse else [full, other, empty]
+    assert _normalized_calls(items, streamed) == [
+        ("call_a", "read_file", full_input), ("call_b", "skills_list", "{}"),
+    ]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("status", ["queued", "in_progress", "incomplete", " IN_PROGRESS "])
+def test_ignored_function_cannot_suppress_custom_call(streamed, reverse, status):
+    ignored = SimpleNamespace(type="function_call", id="fc_shared", call_id="call_a",
+                              name="read_file", status=status, arguments='{"path":"ignored"}')
+    custom = SimpleNamespace(type="custom_tool_call", id="fc_shared", call_id="call_a",
+                             name="read_file", status=status, input="{}")
+    items = [custom, ignored] if reverse else [ignored, custom]
+    assert _normalized_calls(items, streamed) == [("call_a", "read_file", "{}")]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["nonstreamed", "streamed"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["full-first", "empty-first"])
+@pytest.mark.parametrize("item_type", ["function_call", "custom_tool_call"])
+@pytest.mark.parametrize("identity_field", ["call_id", "id"])
+@pytest.mark.parametrize("padded_twin", ["full", "empty"])
+def test_whitespace_identity_twins_collapse(streamed, reverse, item_type, identity_field, padded_twin):
+    field = "arguments" if item_type == "function_call" else "input"
+    identity = "call_a" if identity_field == "call_id" else "item_a"
+    common = {"type": item_type, "id": "fc_shared", "name": "read_file", identity_field: identity}
+    full = SimpleNamespace(**{**common, field: '{"path":"full"}'})
+    empty = SimpleNamespace(**{**common, field: "{}"})
+    setattr(full if padded_twin == "full" else empty, identity_field, f" \t{identity}\n")
+    items = [empty, full] if reverse else [full, empty]
+    assert _normalized_calls(items, streamed) == [(identity, "read_file", '{"path":"full"}')]

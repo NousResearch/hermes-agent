@@ -319,10 +319,7 @@ class ConnectorClient:
             if 200 <= status < 300:
                 reply = _Reply(payload, status, request_id, _EXECUTE_ROUTE)
                 parsed = self._checked(wire.ConnectorExecuteSingleResponse, reply, "connector execute result")
-                entry = {"data": parsed.result.data, "error": None}
-                if parsed.result.account:
-                    entry["account"] = parsed.result.account
-                return entry
+                return _result_dict(parsed.result)
             headers = getattr(response, "headers", None)
             failure = _call_failure(payload)
             code = failure.code if failure else parse_gateway_error(status, payload, headers).code
@@ -476,13 +473,13 @@ def _route_key(path: str) -> str:
     return ".".join(parts) or path
 
 
-def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
-    error = None
-    if result.error is not None:
-        error = _error_dict(result.error)
-    entry = {"data": result.data, "error": error}
+def _result_dict(result: wire.ConnectorExecuteResult | wire.ConnectorExecuteSingleResult) -> dict[str, Any]:
+    error = getattr(result, "error", None)
+    entry = {"data": result.data, "error": _error_dict(error) if error is not None else None}
     if result.account:
         entry["account"] = result.account
+    if result.data_use is not None and result.data_use.requires:
+        entry["data_use"] = list(result.data_use.requires)
     return entry
 
 

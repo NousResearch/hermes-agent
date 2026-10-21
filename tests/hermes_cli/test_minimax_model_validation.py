@@ -1,9 +1,11 @@
 """Tests for MiniMax model validation via static catalog (issues #12611, #12460, #12399, #12547).
 
-MiniMax and MiniMax-CN providers don't expose /v1/models, so validate_requested_model()
-must validate against the static catalog instead of probing the live API.
+MiniMax publishes its catalog at ``<base>/v1/models``; when that endpoint cannot be
+reached, validate_requested_model() must validate against the curated catalog instead
+of probing the live API.
 """
 
+import urllib.error
 from unittest.mock import patch
 
 import pytest
@@ -26,8 +28,13 @@ class TestMiniMaxModelValidation:
             "suggested_base_url": None,
             "used_fallback": False,
         }
+
+        def _unreachable(request, **_kwargs):
+            raise urllib.error.URLError("unreachable")
+
         with patch("hermes_cli.models.fetch_api_models", return_value=None), \
-             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.urllib_security.open_credentialed_url", side_effect=_unreachable):
             yield
 
     # -------------------------------------------------------------------------

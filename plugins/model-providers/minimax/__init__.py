@@ -20,6 +20,28 @@ def _is_minimax_global_openai_base_url(base_url: str | None) -> bool:
 class MiniMaxProfile(ProviderProfile):
     """MiniMax — M3 OpenAI-compatible reasoning controls."""
 
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0,
+    ) -> list[str] | None:
+        """MiniMax's catalog lives under ``<base>/v1/models`` — ``<base>/models`` 404s.
+
+        The Anthropic-compatible route (``https://api.minimax.io/anthropic``) publishes the
+        catalog at ``/anthropic/v1/models``, the OpenAI-compatible route
+        (``https://api.minimax.io/v1``) at ``/v1/models``. The generic ``{base_url}/models``
+        probe therefore never answers, and every catalog surface (the ``/model`` picker, the
+        setup wizard, ``hermes model``) silently degrades to the curated floor — new models
+        never surface and no failure is reported (#142648). Probe the ``/v1`` route first and
+        keep the plain route as the fallback for custom endpoints that serve
+        ``{base_url}/models``.
+        """
+        effective_base = (base_url or self.base_url or "").rstrip("/")
+        if effective_base and not effective_base.endswith("/v1"):
+            models = super().fetch_models(
+                api_key=api_key, base_url=f"{effective_base}/v1", timeout=timeout)
+            if models is not None:
+                return models
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None,
         base_url: str | None = None, **context: Any,

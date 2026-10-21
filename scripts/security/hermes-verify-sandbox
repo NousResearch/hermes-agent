@@ -1,0 +1,463 @@
+#!/usr/bin/python3
+import os
+import pwd
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+from urllib.parse import urlsplit
+
+BASE = "/home/hermes/purchase-inventory-e2e"
+NPM_CACHE_HOST = "/home/hermes/purchase-inventory-e2e/.hermes-verify-cache/npm"
+HERMES_UID = pwd.getpwnam("hermes").pw_uid
+VERIFY = pwd.getpwnam("hermes-verify")
+RUN = "/usr/bin/systemd-run"
+SYSTEMCTL = "/usr/bin/systemctl"
+JOURNALCTL = "/usr/bin/journalctl"
+
+SECRET_NAMES = {
+    ".env", ".env.local", ".env.production", ".env.development",
+    ".npmrc", ".netrc", ".pypirc", ".git-credentials",
+    ".ssh", ".aws", ".kube", ".config", ".hermes",
+    ".secrets", "secrets", "credentials",
+}
+
+def die(message, code=2):
+    print("BLOCKED: " + message, file=sys.stderr)
+    raise SystemExit(code)
+
+def open_workspace(path):
+    if not path.startswith(BASE + "/") or os.path.normpath(path) != path:
+        die("workspace harus berada di bawah " + BASE)
+
+    relative = path[len(BASE) + 1:].split("/")
+    if any(part in ("", ".", "..") for part in relative):
+        die("path workspace tidak valid")
+
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    try:
+        for part in ("home", "hermes", "purchase-inventory-e2e", *relative):
+            next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+
+        st = os.fstat(fd)
+        if st.st_uid != HERMES_UID:
+            die("workspace harus dimiliki user hermes")
+        if st.st_gid != VERIFY.pw_gid:
+            die("grup workspace harus hermes-verify")
+        if not (st.st_mode & 0o020 and st.st_mode & 0o010):
+            die("workspace harus writable dan searchable oleh grup")
+        if st.st_mode & 0o002:
+            die("workspace tidak boleh world-writable")
+        return fd
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+def open_dependency_cache():
+    """Open the dependency cache without following symlinks or racing path lookup."""
+    if not NPM_CACHE_HOST.startswith("/"):
+        die("dependency cache path must be absolute")
+
+    parts = NPM_CACHE_HOST.lstrip("/").split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        die("dependency cache path is invalid")
+
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    try:
+        for part in parts:
+            next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+
+        st = os.fstat(fd)
+        if st.st_uid != HERMES_UID:
+            die("dependency cache must be owned by hermes")
+        if st.st_gid != VERIFY.pw_gid:
+            die("dependency cache must belong to hermes-verify group")
+        if (st.st_mode & 0o050) != 0o050:
+            die("dependency cache must be group-readable and searchable")
+        if st.st_mode & 0o002:
+            die("dependency cache must not be world-writable")
+        return fd
+    except FileNotFoundError:
+        os.close(fd)
+        return None
+    except OSError as exc:
+        os.close(fd)
+        die(f"dependency cache path is unsafe: {exc}")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def sandbox_args(fd, phase, timeout, unit, wait, cache_fd=None):
+    args = [RUN, "--quiet", "--unit=" + unit,
+            "--uid=hermes-verify", "--working-directory=/workspace"]
+
+    if wait:
+        args += ["--wait", "--pipe", "--collect"]
+    else:
+        args += ["--no-block", "--collect"]
+
+    properties = [
+        "NoNewPrivileges=yes",
+        "PrivateTmp=yes",
+        "PrivateDevices=yes",
+        "ProtectSystem=strict",
+        "ProtectHome=yes",
+        "ProtectKernelTunables=yes",
+        "ProtectKernelModules=yes",
+        "ProtectControlGroups=yes",
+        "RestrictSUIDSGID=yes",
+        "LockPersonality=yes",
+        "MemoryMax=2G",
+        "CPUQuota=200%",
+        "TasksMax=128",
+        "LimitNOFILE=4096",
+        "UMask=0077",
+        "TimeoutStopSec=5s",
+        f"RuntimeMaxSec={timeout}s",
+        f"BindPaths=/proc/{os.getpid()}/fd/{fd}:/workspace",
+        "ReadWritePaths=/workspace",
+    ]
+
+    if phase != "start":
+        properties += ["IPAddressDeny=any"]
+        if cache_fd is not None:
+            properties.append(
+                f"BindReadOnlyPaths=/proc/{os.getpid()}/fd/{cache_fd}:/deps/npm"
+            )
+
+    # Hide common top-level credential/config paths if present.
+    scan_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+    try:
+        names = set(os.listdir(scan_fd))
+    finally:
+        os.close(scan_fd)
+
+    for name in sorted(SECRET_NAMES):
+        if name in names:
+            properties.append("InaccessiblePaths=/workspace/" + name)
+
+    if phase == "start":
+        properties.append("PrivateNetwork=yes")
+
+    args.extend("--property=" + p for p in properties)
+    return args
+
+def child_command(command, cache_id, use_dependency_cache=False):
+    if not re.fullmatch(r"[a-f0-9]{24,32}", cache_id):
+        raise ValueError("cache_id tidak valid")
+
+    if use_dependency_cache:
+        cache_path = "/deps/npm"
+        clean_cache = "0"
+    else:
+        cache_path = f"/workspace/.hermes-verify-npm-cache-{cache_id}"
+        clean_cache = "1"
+
+    logs_path = f"/workspace/.hermes-verify-npm-logs-{cache_id}"
+
+    return [
+        "/usr/bin/env", "-i",
+        "PATH=/usr/bin:/bin",
+        "HOME=/tmp/hermes-verify-home",
+        "TMPDIR=/tmp",
+        f"NPM_CONFIG_CACHE={cache_path}",
+        f"NPM_CONFIG_LOGS_DIR={logs_path}",
+        f"CLEAN_NPM_CACHE={clean_cache}",
+        "CI=1",
+        "/bin/bash", "--noprofile", "--norc", "-c",
+        'set -eu; mkdir -p "$HOME" "$NPM_CONFIG_LOGS_DIR"; '
+        'if [ "$CLEAN_NPM_CACHE" = 1 ]; then mkdir -p "$NPM_CONFIG_CACHE"; fi; '
+        'cleanup() { '
+        'if [ "$CLEAN_NPM_CACHE" = 1 ]; then rm -rf -- "$NPM_CONFIG_CACHE"; fi; '
+        'rm -rf -- "$NPM_CONFIG_LOGS_DIR"; '
+        '}; '
+        'trap cleanup EXIT; '
+        'if /bin/bash --noprofile --norc -c "$1"; then rc=0; '
+        'else rc=$?; fi; exit "$rc"',
+        "hermes-verify-sandbox", command,
+    ]
+
+
+def run_command(workspace, phase, timeout, command):
+    if phase not in {"bootstrap", "build", "test"}:
+        die("fase run tidak valid")
+    if not command or len(command) > 32768:
+        die("command kosong atau terlalu panjang")
+
+    fd = open_workspace(workspace)
+    cache_fd = None
+    try:
+        cache_fd = open_dependency_cache()
+        cache_id = secrets.token_hex(12)
+        unit = "hermes-verify-run-" + cache_id + ".service"
+
+        # Enforce the requested timeout inside the sandbox first. The
+        # systemd RuntimeMaxSec remains an outer safety limit.
+        timed_command = (
+            f"/usr/bin/timeout --signal=TERM --kill-after=3s {timeout}s "
+            f"/bin/bash --noprofile --norc -c {shlex.quote(command)}"
+        )
+        args = sandbox_args(fd, phase, timeout + 7, unit, True, cache_fd=cache_fd)
+        args += ["--", *child_command(timed_command, cache_id, use_dependency_cache=cache_fd is not None)]
+        inherited_fds = (
+            (fd, cache_fd) if cache_fd is not None else (fd,)
+        )
+        try:
+            result = subprocess.run(
+                args, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=timeout + 15, pass_fds=inherited_fds,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"BLOCKED: timeout; unit {unit} dibatasi systemd.")
+            return 124
+
+        if result.stdout:
+            print(result.stdout, end="")
+        return result.returncode
+    finally:
+        if cache_fd is not None:
+            os.close(cache_fd)
+        os.close(fd)
+
+
+def start_command(workspace, timeout, token, command):
+    if not re.fullmatch(r"[a-f0-9]{32}", token):
+        die("token start tidak valid")
+    if not 1 <= timeout <= 3600:
+        die("timeout harus 1..3600 detik")
+    if not command or len(command) > 32768:
+        die("command start kosong atau terlalu panjang")
+
+    fd = open_workspace(workspace)
+    unit = "hermes-verify-start-" + token + ".service"
+    marker = ".hermes-verify-ready-" + token
+
+    try:
+        try:
+            os.unlink(marker, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+
+        args = sandbox_args(fd, "start", timeout, unit, False)
+        ready_command = (
+            f'touch "/workspace/{marker}" && '
+            f'exec /bin/bash --noprofile --norc -c {shlex.quote(command)}'
+        )
+        args += ["--", *child_command(ready_command, token, use_dependency_cache=False)]
+
+        result = subprocess.run(
+            args, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=15, pass_fds=(fd,),
+        )
+        if result.returncode:
+            print(result.stdout or "", end="")
+            return result.returncode
+
+        # Do not trust "active" alone: wait for a readiness marker
+        # created by the command inside its successfully initialized namespace.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            marker_ready = False
+            try:
+                st = os.stat(marker, dir_fd=fd, follow_symlinks=False)
+                marker_ready = (
+                    (st.st_mode & 0o170000) == 0o100000
+                    and st.st_uid == VERIFY.pw_uid
+                )
+            except FileNotFoundError:
+                pass
+
+            state = subprocess.run(
+                [SYSTEMCTL, "is-active", unit],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True,
+            ).stdout.strip()
+
+            if marker_ready and state == "active":
+                time.sleep(0.25)
+                state = subprocess.run(
+                    [SYSTEMCTL, "is-active", unit],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True,
+                ).stdout.strip()
+                if state == "active":
+                    print("STARTED " + token)
+                    return 0
+                break
+
+            time.sleep(0.1)
+
+        subprocess.run(
+            [SYSTEMCTL, "stop", unit],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print(
+            "BLOCKED: proses tidak membuktikan kesiapan sandbox "
+            "dalam 10 detik."
+        )
+        logs = subprocess.run(
+            [JOURNALCTL, "-u", unit, "-n", "40", "-o", "cat", "--no-pager"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        print(logs.stdout or "", end="")
+        return 1
+    finally:
+        try:
+            os.unlink(marker, dir_fd=fd)
+        except OSError:
+            pass
+        os.close(fd)
+
+def probe_command(token, url):
+    if not re.fullmatch(r"[a-f0-9]{32}", token):
+        die("token probe tidak valid")
+
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        die("URL probe tidak valid")
+
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or not 1 <= port <= 65535
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        die("URL probe hanya menerima HTTP ke 127.0.0.1 dengan port valid")
+
+    unit = "hermes-verify-start-" + token + ".service"
+    state = subprocess.run(
+        [SYSTEMCTL, "is-active", unit],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).stdout.strip()
+
+    if state != "active":
+        print("NOT_READY: unit tidak aktif")
+        return 1
+
+    pid_text = subprocess.run(
+        [SYSTEMCTL, "show", "-p", "MainPID", "--value", unit],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).stdout.strip()
+
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        print("NOT_READY: MainPID tidak valid")
+        return 1
+
+    if pid <= 1 or not os.path.exists(f"/proc/{pid}/ns/net"):
+        print("NOT_READY: proses atau network namespace tidak tersedia")
+        return 1
+
+    probe_script = "\n".join([
+        "import sys, urllib.request, urllib.error",
+        "url = sys.argv[1]",
+        "try:",
+        "    with urllib.request.urlopen(url, timeout=2) as response:",
+        "        print(f'READY {response.status}')",
+        "except urllib.error.HTTPError as exc:",
+        "    print(f'READY {exc.code}')",
+        "except Exception as exc:",
+        "    print(f'NOT_READY {type(exc).__name__}: {exc}', file=sys.stderr)",
+        "    raise SystemExit(1)",
+    ])
+
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/nsenter", "-t", str(pid), "-n", "--",
+                "/usr/bin/python3", "-c", probe_script, url,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        print("NOT_READY: probe timeout")
+        return 1
+
+    print(result.stdout or "", end="")
+    return result.returncode
+
+
+def stop_command(token):
+    if not re.fullmatch(r"[a-f0-9]{32}", token):
+        die("token stop tidak valid")
+    unit = "hermes-verify-start-" + token + ".service"
+
+    subprocess.run([SYSTEMCTL, "stop", unit],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    state = subprocess.run(
+        [SYSTEMCTL, "is-active", unit],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    ).stdout.strip()
+    if state == "active":
+        die("unit start masih aktif setelah stop", 1)
+
+    logs = subprocess.run(
+        [JOURNALCTL, "-u", unit, "-n", "100", "-o", "cat", "--no-pager"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    print(logs.stdout or "", end="")
+    return 0
+
+def main(argv):
+    if os.geteuid() != 0:
+        die("helper harus dipanggil melalui sudo")
+
+    if len(argv) == 5 and argv[0] == "run":
+        timeout = int(argv[3])
+        if not 1 <= timeout <= 3600:
+            die("timeout harus 1..3600 detik")
+        return run_command(argv[1], argv[2], timeout, argv[4])
+
+    if len(argv) == 5 and argv[0] == "start":
+        timeout = int(argv[2])
+        if not 1 <= timeout <= 3600:
+            die("timeout harus 1..3600 detik")
+        return start_command(argv[1], timeout, argv[3], argv[4])
+
+    if len(argv) == 3 and argv[0] == "probe":
+        return probe_command(argv[1], argv[2])
+
+    if len(argv) == 2 and argv[0] == "stop":
+        return stop_command(argv[1])
+
+    die("format: run WORKSPACE PHASE TIMEOUT COMMAND; "
+        "start WORKSPACE TIMEOUT TOKEN COMMAND; "
+        "probe TOKEN URL; stop TOKEN")
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"BLOCKED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise SystemExit(2)

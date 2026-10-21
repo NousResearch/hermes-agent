@@ -379,11 +379,20 @@ def _installed_plugins_dir() -> Path | None:
     This is where ``hermes plugins install`` clones a plugin — flat, one
     directory per plugin, NOT under ``model-providers/``. See
     :func:`_discover_installed_provider_plugins`.
+
+    A created profile often has an empty plugin folder. That is not an
+    install. Fall back to the process home so every profile on the machine
+    sees the same providers.
     """
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home, get_process_hermes_home
 
         d = get_hermes_home() / "plugins"
+        if d.is_dir() and any(d.iterdir()):
+            return d
+        account = get_process_hermes_home() / "plugins"
+        if account.is_dir() and account != d:
+            return account
         return d if d.is_dir() else None
     except Exception:
         return None

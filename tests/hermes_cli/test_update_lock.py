@@ -29,6 +29,7 @@ from hermes_cli import update_lock
 from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
+    UpdateHolder,
     UpdateLock,
     checkout_lock_fds,
     checkout_lock_path,
@@ -470,6 +471,18 @@ def test_describe_holder_names_the_pid_and_elapsed_time(marker):
         "the user needs the pid to find the other update"
     )
     assert "already running" in message
+
+
+def test_describe_holder_for_an_orphaned_child_points_at_the_child_not_a_closed_window():
+    """#137186: the owner exited, so "close the Desktop/dashboard window that started it"
+    names a window that no longer exists. The advice must point at the orphaned child
+    holding the checkout and say the next update resumes the owed work."""
+    message = describe_holder(UpdateHolder(pid=0, age_seconds=90 * 60 + 13, held=True))
+
+    assert "its owner exited" in message and "still holds the checkout" in message
+    assert "Desktop/dashboard window" not in message, message
+    assert "orphaned" in message and "hermes logs" in message, message
+    assert "hermes update" in message, message
 
 
 def test_unwritable_marker_location_refuses_instead_of_running_unlocked(tmp_path):

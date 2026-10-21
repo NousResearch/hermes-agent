@@ -1065,6 +1065,9 @@ export const en: Translations = {
         'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. When off, it stays docked at the bottom.',
+      composerSuggestionsTitle: 'Composer Suggestions',
+      composerSuggestionsDesc:
+        'Show helpful suggestion pills above the composer. Turn this off to hide them without affecting slash completion or draft history.',
       fileBrowserTitle: 'File Browser',
       fileBrowserDesc:
         'Show the file browser beside the chat when a workspace is open. The titlebar toggle changes this too.',

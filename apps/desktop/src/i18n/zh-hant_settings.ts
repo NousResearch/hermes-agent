@@ -349,6 +349,8 @@ export const zhHantSettings = {
       toursDesc: '讓 Hermes 逐步標示每個位置，帶你認識應用程式。開始使用滿30天後自動關閉，你可以重新開啟。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉時，輸入框停靠在底部。',
+      composerSuggestionsTitle: '輸入框建議',
+      composerSuggestionsDesc: '在輸入框上方顯示實用的建議按鈕。關閉後不會影響斜線補全或草稿歷史。',
       fileBrowserTitle: '檔案瀏覽器',
       fileBrowserDesc: '開啟工作區時，在聊天旁顯示檔案瀏覽器。標題列的切換按鈕也會變更此設定。',
       vibeHeartsTitle: '心情愛心',

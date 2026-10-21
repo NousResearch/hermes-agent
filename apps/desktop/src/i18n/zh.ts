@@ -820,6 +820,8 @@ export const zhOverrides = {
       toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭时，输入框停靠在底部。',
+      composerSuggestionsTitle: '输入框建议',
+      composerSuggestionsDesc: '在输入框上方显示实用的建议按钮。关闭后不会影响斜杠补全或草稿历史。',
       fileBrowserTitle: '文件浏览器',
       fileBrowserDesc: '打开工作区时，在聊天旁显示文件浏览器。标题栏的切换按钮也会更改此设置。',
       vibeHeartsTitle: '心情爱心',

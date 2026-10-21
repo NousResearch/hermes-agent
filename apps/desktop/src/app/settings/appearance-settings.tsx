@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $composerSuggestionsEnabled, setComposerSuggestionsEnabled } from '@/store/composer-suggestions'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import {
   $interfaceMode,
@@ -429,6 +430,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
+  const composerSuggestionsEnabled = useStore($composerSuggestionsEnabled)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const fileBrowserShadowed = useStore($modeShadowed('fileBrowserOpen'))
   const translucency = useStore($translucency)
@@ -972,6 +974,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.composerPopout)}
               label={a.composerPopoutTitle}
               onChange={setComposerPopoutGesturesEnabled}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ToggleRow
+              checked={composerSuggestionsEnabled}
+              description={a.composerSuggestionsDesc}
+              id={settingElementId(ids.composerSuggestions)}
+              label={a.composerSuggestionsTitle}
+              onChange={setComposerSuggestionsEnabled}
             />
           )}
 

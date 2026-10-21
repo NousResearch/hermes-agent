@@ -1100,6 +1100,9 @@ export const frOverrides = {
       composerPopoutTitle: 'Détacher la zone de saisie',
       composerPopoutDesc:
         'Permet de faire glisser la zone de saisie hors de son emplacement. Désactivé, elle reste ancrée en bas.',
+      composerSuggestionsTitle: 'Suggestions de la zone de saisie',
+      composerSuggestionsDesc:
+        'Afficher des pastilles de suggestion utiles au-dessus de la zone de saisie. Désactivez cette option pour les masquer sans affecter la complétion par barre oblique ni l’historique des brouillons.',
       fileBrowserTitle: 'Navigateur de fichiers',
       fileBrowserDesc:
         "Affiche le navigateur de fichiers à côté du chat lorsqu'un espace de travail est ouvert. Le bouton de la barre de titre modifie aussi ce réglage.",

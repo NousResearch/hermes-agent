@@ -1,5 +1,9 @@
 import { atom } from 'nanostores'
 
+import { persistBoolean, storedBoolean } from '@/lib/storage'
+
+const COMPOSER_SUGGESTIONS_ENABLED_STORAGE_KEY = 'hermes.desktop.composerSuggestions.enabled'
+
 /**
  * The composer suggestion bus — a generic, session-scoped feed for the pill
  * strip above the composer (rendered by `composer/suggestion-pills.tsx`).
@@ -55,6 +59,20 @@ export interface ComposerSuggestion {
 }
 
 export const MAX_SUGGESTIONS = 2
+export const $composerSuggestionsEnabled = atom(storedBoolean(COMPOSER_SUGGESTIONS_ENABLED_STORAGE_KEY, true))
+
+export function setComposerSuggestionsEnabled(value: boolean): void {
+  $composerSuggestionsEnabled.set(value)
+  persistBoolean(COMPOSER_SUGGESTIONS_ENABLED_STORAGE_KEY, value)
+
+  if (!value) {
+    $composerSuggestionsBySession.set({})
+  } else {
+    for (const sessionId of new Set([...eventOfferings.keys(), ...draftOfferings.keys()])) {
+      publish(sessionId || null)
+    }
+  }
+}
 
 /** Bus-wide key: provider-namespaced so two providers can't collide. */
 export const suggestionKey = (suggestion: Pick<ComposerSuggestion, 'id' | 'provider'>): string =>
@@ -219,6 +237,12 @@ function recordWithdrawals(sessionKey: string, next: readonly ComposerSuggestion
  *  than draft keywords), then draft matches, capped. */
 function publish(sessionId: string | null): void {
   const key = keyFor(sessionId)
+
+  if (!$composerSuggestionsEnabled.get()) {
+    write(sessionId, [])
+    return
+  }
+
   const event = [...(eventOfferings.get(key)?.values() ?? [])].flat()
   const draft = draftOfferings.get(key) ?? []
   const seen = new Set<string>()

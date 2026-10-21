@@ -1096,6 +1096,9 @@ export const deOverrides = {
       composerPopoutTitle: 'Schwebender Composer',
       composerPopoutDesc:
         'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Wenn aus, bleibt er unten angedockt.',
+      composerSuggestionsTitle: 'Composer-Vorschläge',
+      composerSuggestionsDesc:
+        'Hilfreiche Vorschlags-Pills über dem Composer anzeigen. Beim Ausschalten werden sie ausgeblendet, ohne die Slash-Vervollständigung oder den Entwurfsverlauf zu beeinflussen.',
       fileBrowserTitle: 'Dateibrowser',
       fileBrowserDesc:
         'Zeigt den Dateibrowser neben dem Chat, wenn ein Arbeitsbereich geöffnet ist. Der Schalter in der Titelleiste ändert diese Einstellung ebenfalls.',

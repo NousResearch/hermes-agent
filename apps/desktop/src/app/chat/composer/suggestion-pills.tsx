@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { composerFloatingPill } from '@/components/chat/composer-dock'
@@ -7,7 +8,12 @@ import { triggerHaptic } from '@/lib/haptics'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { $composerSuggestionsBySession, markSuggestionInvoked, suggestionKey } from '@/store/composer-suggestions'
+import {
+  $composerSuggestionsBySession,
+  $composerSuggestionsEnabled,
+  markSuggestionInvoked,
+  suggestionKey
+} from '@/store/composer-suggestions'
 
 /**
  * The composer suggestion strip — generic pills fed by the suggestion bus
@@ -32,6 +38,10 @@ import { $composerSuggestionsBySession, markSuggestionInvoked, suggestionKey } f
 
 type PillPhase = 'done' | 'idle' | 'working'
 
+interface Cancellation {
+  requested: boolean
+}
+
 /**
  * Phase belongs to the pill the user is looking at, so it lives and dies with
  * that pill — the bus owns whether a suggestion exists, this owns only how far
@@ -45,10 +55,13 @@ export function SuggestionPills({ sessionId }: { sessionId: null | string }) {
 }
 
 function SessionSuggestionPills({ sessionId }: { sessionId: null | string }) {
+  const enabled = useStore($composerSuggestionsEnabled)
   const suggestions = useSessionSlice($composerSuggestionsBySession, sessionId)
   const [phases, setPhases] = useState<Record<string, PillPhase>>({})
-  // Cancel flags outlive renders but never trigger them (poll-boundary abort).
-  const [cancels] = useState(() => new Map<string, boolean>())
+  // Each invocation owns its cancellation object. The map only points to the
+  // current invocation for a suggestion key, so a rapid withdraw/re-offer can
+  // never reset an older invocation's cancellation state.
+  const [cancellations] = useState(() => new Map<string, Cancellation>())
 
   const setPhase = (key: string, phase: PillPhase) => setPhases(current => ({ ...current, [key]: phase }))
 
@@ -73,9 +86,10 @@ function SessionSuggestionPills({ sessionId }: { sessionId: null | string }) {
   useEffect(() => {
     const live = new Set(suggestions.map(suggestionKey))
 
-    for (const key of cancels.keys()) {
+    for (const [key, cancellation] of cancellations) {
       if (!live.has(key)) {
-        cancels.set(key, true)
+        cancellation.requested = true
+        cancellations.delete(key)
       }
     }
 
@@ -84,76 +98,88 @@ function SessionSuggestionPills({ sessionId }: { sessionId: null | string }) {
 
       return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept)
     })
-  }, [cancels, suggestions])
+  }, [cancellations, suggestions])
 
   // Unmount withdraws everything at once (composer closing, session switch
   // remounting this subtree) — same rule, same reason.
   useEffect(
     () => () => {
-      for (const key of cancels.keys()) {
-        cancels.set(key, true)
+      for (const cancellation of cancellations.values()) {
+        cancellation.requested = true
       }
+
+      cancellations.clear()
     },
-    [cancels]
+    [cancellations]
   )
 
-  return suggestions.map(suggestion => {
-    const key = suggestionKey(suggestion)
-    const brand = suggestion.brand ? brandFor(suggestion.brand) : null
-    const phase = phases[key] ?? 'idle'
+  return enabled
+    ? suggestions.map(suggestion => {
+        const key = suggestionKey(suggestion)
+        const brand = suggestion.brand ? brandFor(suggestion.brand) : null
+        const phase = phases[key] ?? 'idle'
 
-    const label =
-      phase === 'working' ? suggestion.workingLabel : phase === 'done' ? suggestion.doneLabel : suggestion.label
+        const label =
+          phase === 'working' ? suggestion.workingLabel : phase === 'done' ? suggestion.doneLabel : suggestion.label
 
-    const tip = phase === 'working' ? suggestion.workingTip : phase === 'done' ? suggestion.doneTip : suggestion.tip
+        const tip = phase === 'working' ? suggestion.workingTip : phase === 'done' ? suggestion.doneTip : suggestion.tip
 
-    const invoke = async () => {
-      cancels.set(key, false)
-      setPhase(key, 'working')
-      triggerHaptic('selection')
-      // Acting on a pill clears its ignored-count in the bus's declined
-      // ledger — its later withdrawal is success, not a strike.
-      markSuggestionInvoked(sessionId, key)
+        const invoke = async () => {
+          const cancellation: Cancellation = { requested: false }
 
-      try {
-        await suggestion.invoke({ cancelled: () => cancels.get(key) === true, sessionId })
-        triggerHaptic('submit')
-        setPhase(key, 'done')
-      } catch {
-        // Provider owns error surfacing (and swallows its own cancels);
-        // the pill just returns to idle so it can be tried again.
-        setPhase(key, 'idle')
-      } finally {
-        cancels.delete(key)
-      }
-    }
+          cancellations.set(key, cancellation)
+          setPhase(key, 'working')
+          triggerHaptic('selection')
+          // Acting on a pill clears its ignored-count in the bus's declined
+          // ledger — its later withdrawal is success, not a strike.
+          markSuggestionInvoked(sessionId, key)
 
-    return (
-      <Tip key={key} label={tip}>
-        <button
-          className={cn(composerFloatingPill, 'max-w-56', phase === 'done' && 'cursor-default')}
-          onClick={() => {
-            if (phase === 'working') {
-              // Second click requests cancel (a stuck OAuth tab, etc.).
-              cancels.set(key, true)
-            } else if (phase === 'idle') {
-              void invoke()
+          try {
+            await suggestion.invoke({ cancelled: () => cancellation.requested, sessionId })
+            triggerHaptic('submit')
+            setPhase(key, 'done')
+          } catch {
+            // Provider owns error surfacing (and swallows its own cancels);
+            // the pill just returns to idle so it can be tried again.
+            setPhase(key, 'idle')
+          } finally {
+            if (cancellations.get(key) === cancellation) {
+              cancellations.delete(key)
             }
-          }}
-          type="button"
-        >
-          {phase === 'working' ? (
-            <Codicon className="shrink-0 opacity-70" name="loading" size="0.75rem" spinning />
-          ) : phase === 'done' ? (
-            <Codicon className="shrink-0 text-emerald-400" name="check" size="0.75rem" />
-          ) : brand ? (
-            <brand.Icon aria-hidden className="size-3 shrink-0" style={brandGlyphStyle(brand)} />
-          ) : (
-            <Codicon className="shrink-0 opacity-70" name={suggestion.icon ?? 'lightbulb'} size="0.75rem" />
-          )}
-          <span className="truncate">{label}</span>
-        </button>
-      </Tip>
-    )
-  })
+          }
+        }
+
+        return (
+          <Tip key={key} label={tip}>
+            <button
+              className={cn(composerFloatingPill, 'max-w-56', phase === 'done' && 'cursor-default')}
+              onClick={() => {
+                if (phase === 'working') {
+                  // Second click requests cancel (a stuck OAuth tab, etc.).
+                  const cancellation = cancellations.get(key)
+
+                  if (cancellation) {
+                    cancellation.requested = true
+                  }
+                } else if (phase === 'idle') {
+                  void invoke()
+                }
+              }}
+              type="button"
+            >
+              {phase === 'working' ? (
+                <Codicon className="shrink-0 opacity-70" name="loading" size="0.75rem" spinning />
+              ) : phase === 'done' ? (
+                <Codicon className="shrink-0 text-emerald-400" name="check" size="0.75rem" />
+              ) : brand ? (
+                <brand.Icon aria-hidden className="size-3 shrink-0" style={brandGlyphStyle(brand)} />
+              ) : (
+                <Codicon className="shrink-0 opacity-70" name={suggestion.icon ?? 'lightbulb'} size="0.75rem" />
+              )}
+              <span className="truncate">{label}</span>
+            </button>
+          </Tip>
+        )
+      })
+    : null
 }

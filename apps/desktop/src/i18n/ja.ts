@@ -586,6 +586,9 @@ export const jaOverrides = {
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc:
         '入力欄をドックからドラッグして外せるようにします。オフの間は画面下部にドッキングされたままです。',
+      composerSuggestionsTitle: '入力欄の提案',
+      composerSuggestionsDesc:
+        '入力欄の上に便利な提案ピルを表示します。オフにしてもスラッシュ補完や下書き履歴には影響しません。',
       fileBrowserTitle: 'ファイルブラウザ',
       fileBrowserDesc:
         'ワークスペースを開いているとき、チャットの横にファイルブラウザを表示します。タイトルバーのボタンでも切り替わります。',

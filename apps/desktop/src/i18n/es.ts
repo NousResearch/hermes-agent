@@ -1098,6 +1098,9 @@ export const esOverrides = {
       composerPopoutTitle: 'Compositor flotante',
       composerPopoutDesc:
         'Permite arrastrar el compositor fuera de su posición fija. Si está desactivado, permanece anclado abajo.',
+      composerSuggestionsTitle: 'Sugerencias del compositor',
+      composerSuggestionsDesc:
+        'Muestra píldoras de sugerencias útiles sobre el compositor. Desactívalo para ocultarlas sin afectar el autocompletado con barra ni el historial de borradores.',
       fileBrowserTitle: 'Explorador de archivos',
       fileBrowserDesc:
         'Muestra el explorador de archivos junto al chat cuando hay un espacio de trabajo abierto. El botón de la barra de título también cambia este ajuste.',

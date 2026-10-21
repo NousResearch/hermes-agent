@@ -113,6 +113,11 @@ export const SETTINGS_MANIFEST = {
       ['composer', 'floating', 'drag', 'popout', 'pop out', 'dock', 'lock', 'peel', 'input'],
       'composerPopout'
     ),
+    composerSuggestions: appearanceSetting(
+      'window-layout',
+      ['composer', 'suggestions', 'pills', 'recommendations'],
+      'composerSuggestions'
+    ),
     userBubble: appearanceSetting('chat-display', ['opacity', 'transparent', 'message', 'bubble'], 'userBubble'),
     textDirection: appearanceSetting(
       'chat-display',

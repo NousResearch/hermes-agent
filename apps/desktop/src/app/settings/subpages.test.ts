@@ -123,6 +123,7 @@ describe('settings subpage routing', () => {
       expect.arrayContaining([
         'In-App Tips',
         'Guided Tours',
+        'Composer Suggestions',
         'Keep computer awake',
         'Auto-archive stale chats',
         TRANSLATIONS.en.settings.about.updates

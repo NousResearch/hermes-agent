@@ -859,6 +859,8 @@ catalog: CatalogTranslations
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      composerSuggestionsTitle: string
+      composerSuggestionsDesc: string
       fileBrowserTitle: string
       fileBrowserDesc: string
       vibeHeartsTitle: string

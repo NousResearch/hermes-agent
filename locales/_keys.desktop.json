@@ -2759,6 +2759,8 @@
     "settings.appearance.colorModeDesc",
     "settings.appearance.composerPopoutDesc",
     "settings.appearance.composerPopoutTitle",
+    "settings.appearance.composerSuggestionsDesc",
+    "settings.appearance.composerSuggestionsTitle",
     "settings.appearance.embedsAlways",
     "settings.appearance.embedsAsk",
     "settings.appearance.embedsDesc",

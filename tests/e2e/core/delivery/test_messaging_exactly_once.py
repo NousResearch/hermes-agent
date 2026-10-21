@@ -68,9 +68,9 @@ class Director:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.scripts: Dict[str, List] = {}
-        self.turns: Dict[str, int] = {}
-        self.resumes: Dict[str, int] = {}
+        self.scripts: dict[str, list] = {}
+        self.turns: dict[str, int] = {}
+        self.resumes: dict[str, int] = {}
 
     def script(self, token: str, *responses) -> None:
         with self._lock:
@@ -139,7 +139,7 @@ def gw(tmp_path_factory, llm):
     proc.stop()
 
 
-def ledger_rows(db_path: Path, chat: str) -> List[tuple]:
+def ledger_rows(db_path: Path, chat: str) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
         return conn.execute("SELECT state, attempts, content FROM delivery_obligations WHERE chat_id=?",
@@ -265,7 +265,7 @@ STREAM_ACK_LOST_SIGNATURE = r"^\d+ unmarked copies of A-fk_(tg|dc)\.ack_lost \(s
 XFAILED_TOKENS: set = set()
 
 
-def faults_fired(gw: GatewayProcess, aid: str) -> List[dict]:
+def faults_fired(gw: GatewayProcess, aid: str) -> list[dict]:
     chat = "m-" + aid[2:].replace(".", "-", 1)
     return [f for f in read_jsonl(gw.spool / "faults_fired.jsonl") if f.get("chat_id") == chat]
 
@@ -546,7 +546,7 @@ def test_zz_whole_run_audit(gw, director):
                if m.group(1) in (f"A-{token}",) or m.group(1).startswith((f"R-{token}-", f"{token}-extra"))}
         unmarked = 0
         for aid in ids:
-            by_chat: Dict[str, list] = {}
+            by_chat: dict[str, list] = {}
             for v in visible:
                 by_chat.setdefault((v.platform, v.chat_id), []).append(v)
             for msgs in by_chat.values():
@@ -592,7 +592,7 @@ def test_zzz_unclean_restart_reruns_nothing(gw, director):
 
 
 
-def all_ledger_rows(db_path: Path) -> List[tuple]:
+def all_ledger_rows(db_path: Path) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
         return conn.execute("SELECT state, attempts, chat_id FROM delivery_obligations").fetchall()

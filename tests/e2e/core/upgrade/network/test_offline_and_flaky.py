@@ -10,8 +10,8 @@ what failed, no success banner, the checkout / selected PM environment / PM runt
 exactly as before, and the next ``hermes`` still starts. For a transient fault the contract is
 that the operation retries within bounds and then succeeds.
 
-Classes: offline update (channel and git phases) and offline PM provisioning; transient and
-persistent 503 on the channel record; persistent 429 from the forge (#106026 printed the success
+Classes: offline update and offline PM provisioning; a release-host outage that ``main`` (which
+reads no release record) must not notice; persistent 429 from the forge (#106026 printed the success
 banner after a failed fetch); transient 503 then a digest mismatch on a PM download, for the
 tools whose artifacts come from GitHub releases and from nodejs.org (#106027's class: a Node
 tarball accepted without verification).
@@ -72,35 +72,20 @@ def test_offline_provisioning_of_a_missing_tool_fails_loudly(inst):
             "an offline install left a store entry behind\n" + r.report(inst))
 
 
-def test_channel_503_with_retry_after_is_retried_then_updates(inst):
-    """One 503 + ``Retry-After: 1`` from the release host (a CDN blip), then normal service."""
-    new = inst.publish("channel-blip")
-    assets = N.static_app({}, faults={MAIN_RECORD: [N.Response(503, b"busy\n", {"Retry-After": "1"})]})
+def test_main_update_reads_no_release_record_and_survives_a_release_host_outage(inst):
+    """The release host answers 503 to everything (a CDN outage, or the regional WAF 403s of
+    #128295): ``main`` follows the git branch and never reads a release record, so the update
+    lands and the host sees zero record requests."""
+    new = inst.publish("release-host-outage")
+    assets = N.static_app({}, always={MAIN_RECORD: N.Response(503, b"down\n", {"Retry-After": "1"})})
     edge = inst.edge(assets=assets)
     try:
         r = inst.hermes("update", "--yes", edge=edge)
     finally:
         edge.close()
-    reads = [h for h in edge.proxy.requests(S.ASSETS) if h.path == MAIN_RECORD]
-    assert r.rc == 0 and inst.head() == new, (
-        f"a single transient 503 aborted the update ({len(reads)} channel read(s))\n" + r.report(inst))
-    assert len(reads) >= 2, f"update succeeded without re-reading the record ({reads})\n" + r.report(inst)
-
-
-def test_channel_outage_fails_truthfully_within_bounds(inst):
-    """The release host answers 503 to every request: bounded retries, then a truthful failure,
-    and no fall-through to the git branch."""
-    inst.publish("channel-outage")
-    before = inst.state()
-    assets = N.static_app({}, always={MAIN_RECORD: N.Response(503, b"down\n", {"Retry-After": "1"})})
-    edge = inst.edge(assets=assets)
-    try:
-        r = inst.hermes("update", "--yes", edge=edge, timeout=300)
-    finally:
-        edge.close()
-    assert r.secs < FAST, f"a persistent 503 took {r.secs:.0f}s to give up\n" + r.report(inst)
-    S.assert_nothing_changed(inst, before, r, "channel outage")
-    assert "503" in r.out and "channel" in r.out.lower(), "the failure does not name the 503 from the channel\n" + r.report(inst)
+    assert r.rc == 0 and inst.head() == new, "a release-host outage blocked a main update\n" + r.report(inst)
+    reads = [h for h in edge.proxy.requests(S.ASSETS) if h.path.startswith("/releases/channels/")]
+    assert not reads, f"main read a release record: {reads}\n" + r.report(inst)
 
 
 def test_forge_rate_limit_fails_truthfully(inst):

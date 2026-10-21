@@ -358,6 +358,7 @@ desktop_checkpoint old "$OLD_SHA" "$INSTALL_METHOD"
 # must survive. Done as late as possible before the update so the window
 # verify() covers contains only the upgrade.
 HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed command to drive"
+source_build_env pin_source_main_channel "$HERMES" || fail "could not record the main update channel"
 source_build_env user_state_produce "$HERMES"
 user_state_before_upgrade
 assert_redirect_is_transport_only

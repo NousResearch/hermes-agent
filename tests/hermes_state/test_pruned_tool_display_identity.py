@@ -107,3 +107,15 @@ def test_reused_provider_call_id_keeps_distinct_tool_occurrences(tmp_path, ident
             assert [m["content"] for m in messages if m["role"] == "tool"] == list(results)
     finally:
         db.close()
+
+
+def test_rewinding_pruned_tool_copy_does_not_restore_archived_output(compacted_db):
+    """The original-output preference must not resurrect a rewound tool occurrence."""
+    db = compacted_db
+    prompt = next(m for m in db.get_messages("chat") if m["role"] == "user")
+    db.rewind_to_message("chat", prompt["id"])
+    for messages in (
+        db.get_resume_conversations("chat")[1],
+        db.get_messages_as_conversation("chat", include_ancestors=True, include_compacted=True),
+    ):
+        assert not any(m["role"] == "tool" for m in messages)

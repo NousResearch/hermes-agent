@@ -115,9 +115,10 @@ export const en: Translations = {
     dismiss: "Dismiss",
     sharedMetricsTitle: "Help improve Hermes?",
     sharedMetricsBody:
-      "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.",
-    sharedMetricsShare: "Send to Nous",
-    sharedMetricsLocal: "Local only",
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Sharing sends them to Nous once a day.",
+    sharedMetricsReaskBody:
+      "Asking once more: an earlier version could save \"No thanks\" before you saw this question.",
+    sharedMetricsShare: "Share with Nous",
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
@@ -126,6 +127,7 @@ export const en: Translations = {
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",
+    actionFinishedOwed: "Updated, but still owed (re-run `hermes update` to finish)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Active Sessions",
@@ -448,6 +450,10 @@ export const en: Translations = {
     updateGit: "Git pull",
     updateConsentBody: (name: string, sha: string) =>
       `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
+    updateScanBody: (name: string, count: number) =>
+      `The security scan flagged ${count} finding${count === 1 ? "" : "s"} in the new code of ${name}. Update anyway only if you trust the source:`,
+    updateScanBlocked: (name: string) =>
+      `The security scan rated the new code of ${name} dangerous. The update was not applied.`,
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",

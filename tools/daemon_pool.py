@@ -45,7 +45,7 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
             q.put(None)
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
-            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            thread_name = f'{self._thread_name_prefix or self}_{num_threads:d}'
             executor_ref = weakref.ref(self, weakref_cb)
             if hasattr(self, "_create_worker_context"):
                 # Python 3.14 replaced _initializer/_initargs with a factory

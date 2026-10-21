@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
@@ -140,4 +141,62 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
   expect($notifications.get()[0]?.action?.label).toBe(en.notifications.actions.restartHermes)
   $notifications.get()[0]?.action?.onClick()
   expect($backendRestartRequest.get()).toBe(before + 1)
+})
+
+// RT-39: an edit/restore aimed above a compaction boundary is refused by the owner with
+// invalid_params on target_message_id and a `compacted:` detail. The toast says so in plain words.
+test('a rewind refused for a compacted target says the message was summarized', () => {
+  const refused = new JsonRpcGatewayError('invalid_params', {
+    code: 4001,
+    data: {
+      reason: 'invalid_params',
+      field: 'target_message_id',
+      detail: 'compacted: target user message was summarized when the session was compressed'
+    }
+  })
+
+  notifyError(refused, 'Restore failed')
+
+  const toast = $notifications.get()[0]
+  expect(toast?.title).toBe('Restore failed')
+  expect(toast?.message).toBe(en.promptNotices.compactedTurnUnavailable)
+  expect(toast?.message).not.toMatch(/invalid_params/)
+  expect(toast?.detail).toBeUndefined()
+})
+
+// The same refusal without the marker (a turn another window undid, an assistant row, an unknown id)
+// never claims a compression happened.
+test('a rewind refused for any other stale target says it is no longer in the history', () => {
+  notifyError(
+    new JsonRpcGatewayError('invalid_params', {
+      code: 4001,
+      data: {
+        reason: 'invalid_params',
+        field: 'target_message_id',
+        detail: 'target user message is no longer in session history'
+      }
+    }),
+    'Restore failed'
+  )
+
+  const toast = $notifications.get()[0]
+  expect(toast?.title).toBe('Restore failed')
+  expect(toast?.message).toBe(en.promptNotices.staleTurnUnavailable)
+  expect(toast?.message).not.toBe(en.promptNotices.compactedTurnUnavailable)
+  expect(toast?.detail).toBeUndefined()
+})
+
+test('an unrelated invalid_params keeps the generic toast', () => {
+  notifyError(
+    new JsonRpcGatewayError('invalid_params', { code: 4001, data: { reason: 'invalid_params', field: 'title' } }),
+    'Restore failed'
+  )
+  expect(lastMessage()).toBe('invalid_params')
+
+  clearNotifications()
+  notifyError(
+    new JsonRpcGatewayError('invalid_params', { code: 4001, data: { reason: 'invalid_params' } }),
+    'Edit failed'
+  )
+  expect(lastMessage()).toBe('invalid_params')
 })

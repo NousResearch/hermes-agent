@@ -58,5 +58,5 @@ def test_unchanged_or_missing_definition_keeps_the_running_config(monkeypatch, t
     task._config = cfg
     monkeypatch.setattr(mcp_tool_config, "_load_mcp_config", lambda: {"srv": dict(cfg, connect_timeout=9)})
     assert task._refresh_remote_config(cfg) is cfg  # non-endpoint keys do not trigger a rebind
-    monkeypatch.setattr(mcp_tool_config, "_load_mcp_config", lambda: {})
+    monkeypatch.setattr(mcp_tool_config, "_load_mcp_config", dict)
     assert task._refresh_remote_config(cfg) is cfg

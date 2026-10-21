@@ -275,7 +275,7 @@ def _evaluate_with_done_judge(mgr):
 
 
 def test_gate_runs_in_the_session_workspace_not_the_backend_directory(backend_and_session):
-    backend, session, bind = backend_and_session
+    _backend, session, bind = backend_and_session
     mgr = _mgr_with_goal("gate-cwd-sid")
     mgr.add_gate("sh check.sh")
     unbind = bind(session)
@@ -292,7 +292,7 @@ def test_gate_runs_in_the_session_workspace_not_the_backend_directory(backend_an
 def test_missing_session_workspace_pauses_instead_of_running_elsewhere(backend_and_session, tmp_path):
     # A deleted, remote or container workspace: the backend's passing check must not stand in for it,
     # and no retry can fix it, so the goal pauses on the first check with the reason and no attempt charged.
-    backend, _session, bind = backend_and_session
+    _backend, _session, bind = backend_and_session
     missing = tmp_path / "gone"
     mgr = _mgr_with_goal("gate-missing-cwd-sid")
     mgr.add_gate("sh check.sh")

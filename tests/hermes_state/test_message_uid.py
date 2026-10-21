@@ -13,12 +13,32 @@ from __future__ import annotations
 import copy
 import json
 import re
+import sqlite3
 
 import pytest
 
 from hermes_state import SessionDB
 
 UID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+# What a JSONL→SQLite conversion left behind once column reconciliation added the declared columns:
+# ``id TEXT`` without a PRIMARY KEY, every column nullable, schema_version short of the uid backfill.
+_JSONL_CONVERTED_STORE_SQL = """
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version VALUES (30);
+CREATE TABLE messages (id TEXT, session_id TEXT, role TEXT, content TEXT, tool_call_id TEXT,
+  tool_calls TEXT, tool_name TEXT, timestamp TEXT, token_count TEXT, finish_reason TEXT,
+  reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, codex_reasoning_items TEXT,
+  codex_message_items TEXT, platform_message_id TEXT, observed TEXT, active TEXT,
+  compacted INTEGER NOT NULL DEFAULT 0, effect_disposition TEXT, api_content TEXT,
+  display_kind TEXT, display_metadata TEXT, _compressed_summary INTEGER NOT NULL DEFAULT 0,
+  display_identity BLOB, display_order INTEGER, message_uid TEXT,
+  absorbed_message_uids TEXT, tool_call_uids TEXT, tool_call_uid TEXT);
+INSERT INTO messages (id, session_id, role, content, timestamp) VALUES
+  ('11022', 's', 'user', 'hi', '1779587405.0'),
+  ('11023', 's', 'assistant', 'hello', '1779587406.0'),
+  ('5078', 's', 'user', 'older row whose text id sorts last', '1779587300.0');
+"""
 
 
 @pytest.fixture()
@@ -99,6 +119,30 @@ class TestMintAndRestore:
         assert [sum(u is not None for u in uids) for uids in seen] == [2, 4, 5]
         assert seen[1][:2] == seen[0][:2] and seen[2][:4] == seen[1][:4]
         assert all(UID_RE.match(u) for u in seen[2]) and len(set(seen[2])) == 5
+        assert done == "1"
+
+    def test_a_jsonl_converted_store_with_text_ids_opens_and_backfills(self, tmp_path, monkeypatch):
+        """``_reconcile_columns`` adds the declared columns but never rebuilds the key, so a converted store
+        keeps ``id TEXT`` with no PRIMARY KEY: ``MAX(id)`` is a str and an ``id`` range compares as text.
+        The walk keys on rowid, so the open does not raise and every row is minted, whatever its id sorts
+        like (#141467)."""
+        import sqlite3
+
+        import hermes_state_schema
+
+        monkeypatch.setattr(hermes_state_schema, "_MESSAGE_UID_BACKFILL_CHUNK", 2)
+        path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(_JSONL_CONVERTED_STORE_SQL)
+        conn.close()
+        handle = SessionDB(db_path=path)
+        try:
+            rows = handle._conn.execute("SELECT id, message_uid FROM messages ORDER BY rowid").fetchall()
+            done = handle.get_meta("message_uid_backfill")
+        finally:
+            handle.close()
+        assert [r[0] for r in rows] == ["11022", "11023", "5078"]
+        assert all(UID_RE.match(u) for _, u in rows) and len({u for _, u in rows}) == 3
         assert done == "1"
 
     def test_a_row_inserted_without_a_uid_by_an_older_writer_gets_one(self, db):
@@ -233,7 +277,7 @@ class TestPersistedMergeWitness:
         rows = _rows(db, "s")
         assert [r["content"] for r in rows] == ["first, never answered\n\nsecond", "second"]
         assert rows[0]["message_uid"] == dangling["message_uid"]
-        assert _absorbed(db, "s") == ['["%s"]' % prompt["message_uid"], None]
+        assert _absorbed(db, "s") == ['["{}"]'.format(prompt["message_uid"]), None]
         restored = db.get_messages_as_conversation("s")
         assert restored[0]["_absorbed_message_uids"] == [prompt["message_uid"]]
         assert "_absorbed_message_uids" not in restored[1]
@@ -539,3 +583,19 @@ def test_a_chunked_copy_pairs_a_result_with_a_call_in_the_previous_chunk(db):
     db.append_messages_batch("s", [{"role": "user", "content": "q"}, call, result], chunk_rows=2)
     stored = db._conn.execute("SELECT tool_call_uid FROM messages WHERE role = 'tool'").fetchone()[0]
     assert stored == call["_tool_call_uids"]["call_1"]
+
+
+def test_tool_display_upgrade_and_legacy_projection_accept_text_ids(tmp_path):
+    """The display upgrade and original-result preference preserve converted TEXT-id stores."""
+    path = tmp_path / "legacy-tools.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(_JSONL_CONVERTED_STORE_SQL)
+        conn.execute("INSERT INTO messages (id, session_id, role, content, timestamp, message_uid, active, compacted) "
+                     "VALUES ('tool-a', 's', 'tool', 'original', '2', 'same-tool', 0, 1)")
+        conn.execute("INSERT INTO messages (id, session_id, role, content, timestamp, message_uid, active, compacted) "
+                     "VALUES ('tool-b', 's', 'tool', 'pruned', '2', 'same-tool', 1, 0)")
+    with SessionDB(path) as db:
+        assert db.get_meta("tool_display_identity_version") == "1"
+    with SessionDB(path, read_only=True) as db:
+        messages = db.get_messages("s", include_compacted=True)
+        assert [m["content"] for m in messages if m["role"] == "tool"] == ["original"]

@@ -28,6 +28,8 @@ import os
 import re
 import shutil
 import logging
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -37,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from pm.network import is_transient, retry_network
+from pm.network import edge_block, is_transient, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -65,7 +67,18 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_OPENER = urllib.request.build_opener(_HttpsRedirectHandler())
+def _https_context() -> ssl.SSLContext:
+    # Trust a CA the store holds even when its own issuer is absent: Windows can
+    # cache Let's Encrypt "Root YR" without ISRG Root X1. Python 3.13+ does this
+    # by default; the older interpreter that starts a cold update does not.
+    context = ssl.create_default_context()
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    return context
+
+
+_OPENER = urllib.request.build_opener(
+    _HttpsRedirectHandler(), urllib.request.HTTPSHandler(context=_https_context())
+)
 
 
 class DownloadError(RuntimeError):
@@ -118,10 +131,17 @@ class DownloadTransportError(DownloadError):
     def __init__(self, url: str, cause: Exception):
         self.url = url
         self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
+        # A host that does not resolve is not worth a retry, but the pinned
+        # mirror is a different host and the hash still guards the bytes.
+        unresolved = isinstance(getattr(cause, "reason", cause), socket.gaierror)
+        # Any 5xx is the upstream host failing, not its bytes changing: a CDN's
+        # origin-down codes (520-527) are what a dead third-party host returns.
         self.fallback_allowed = (
-            self.status in (401, 403, 404, 410) or is_transient(cause)
+            self.status in (401, 403, 404, 410) or (self.status or 0) >= 500
+            or unresolved or is_transient(cause)
         )
-        reason = f"{cause}; the host refused access" if self.status in (401, 403) else str(cause)
+        refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
+        reason = f"{cause}; {refused}" if refused else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
 
 
@@ -205,7 +225,7 @@ def replace_when_released(tmp: Path, dest: Path, *, timeout: float = _RELEASE_WA
             delay = min(delay * 2, 2.0)
 
 
-def _existing_dest_ok(source: "Source") -> bool:
+def _existing_dest_ok(source: Source) -> bool:
     """Pinned destinations are rehashed; unpinned model files are accepted as-is.
 
     Catalog policy does not supply their expected hash or stable length.

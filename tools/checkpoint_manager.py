@@ -1317,10 +1317,15 @@ class CheckpointManager:
             if not checkout_targets:
                 ok, _stdout, err = True, "", ""
             else:
+                # checkout_targets come from the safe plan (exact ls-files /
+                # diff names). Pin literal mode: a name like a[12].txt would
+                # otherwise expand as a glob and overwrite a sibling the plan
+                # classified as skipped — a user edit lost during rollback.
                 ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
+                    extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         elif selected_paths is not None:
             # Check out exactly the entries inspected above. Re-evaluating
@@ -1621,9 +1626,13 @@ class CheckpointManager:
                 # safe restore then deleted it as agent-created (#135605).
                 # -f is index-only with --cached; it clears the "staged content
                 # differs" refusal when `git add -A` re-reads the file mid-run.
-                ["rm", "--cached", "-f", "--quiet", "--"] + [f":(literal){rel}" for rel in chunk],
+                # Pin literal mode via the environment rather than :(literal)
+                # magic: an inherited GIT_LITERAL_PATHSPECS=1 turns that magic
+                # prefix into filename text and the removal silently no-ops.
+                ["rm", "--cached", "-f", "--quiet", "--"] + chunk,
                 store, working_dir, index_file=index_file,
                 allowed_returncodes={128},
+                extra_env={"GIT_LITERAL_PATHSPECS": "1"},
             )
 
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:

@@ -107,12 +107,12 @@ class ProcessOutputLogMixin:
             # A PTY child reaped by isalive() already has its exitstatus; only an
             # unknown status must stay tracked for later reconciliation.
             if proc is None and exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e, exc_info=True)
                 return
             if proc is None:
-                logger.warning("%s wait failed; recording known exit status: %s", label, e)
+                logger.warning("%s wait failed; recording known exit status: %s", label, e, exc_info=True)
             else:
-                logger.debug("%s wait timed out or failed: %s", label, e)
+                logger.debug("%s wait timed out or failed: %s", label, e, exc_info=True)
         if rc is None and proc is not None:
             rc = proc.poll()
         if rc is None and proc is not None:

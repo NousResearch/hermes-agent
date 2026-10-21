@@ -78,8 +78,58 @@ def recorded_exit_code(log) -> Optional[int]:
 
 
 class ProcessOutputLogMixin:
-    """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``, ``_finish_reader``,
+    """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``,
     ``_finish_exited`` and ``_detached_host_fate``. See ProcessRegistry."""
+
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code, proc=None) -> None:
+        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        A process may close stdout long before it exits.  The reader owns a dedicated
+        daemon thread, so it must keep waiting rather than publish a false completion
+        and discard the only ``Popen`` handle that can reap the child.
+        For pipe-backed readers (``proc`` given), EOF on the capture pipe is NOT the
+        same as process exit: the child may have closed its stdout/stderr while still
+        alive (issue #86416), so ``wait`` blocks until the real child exit. When
+        observation itself fails (``wait`` raised and ``poll`` reports nothing), leave
+        the session in _running and let poll()/wait() reconcile via
+        _reconcile_local_exit when it actually terminates. An unknown exit code is
+        never finalized as a completion.
+        """
+        with suppress(Exception):
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                append(tail)
+        rc = None
+        try:
+            rc = wait()
+        except Exception as e:
+            # A PTY child reaped by isalive() already has its exitstatus; only an
+            # unknown status must stay tracked for later reconciliation.
+            if proc is None and exit_code() is None:
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
+                return
+            if proc is None:
+                logger.warning("%s wait failed; recording known exit status: %s", label, e)
+            else:
+                logger.debug("%s wait timed out or failed: %s", label, e)
+        if rc is None and proc is not None:
+            rc = proc.poll()
+        if rc is None and proc is not None:
+            # The child state cannot be observed — keep the session running and
+            # do not emit a completion.
+            logger.info(
+                "Process %s reached EOF on capture pipe but the direct child "
+                "is still running (pid=%s); not marking as exited.",
+                session.id,
+                session.pid,
+            )
+            return
+        code = exit_code()
+        if code is None:
+            # Never fabricate a completion from an unknown exit (issue #86416).
+            return
+        self._finish_exited(session, code)
 
     def _log_reader_loop(self, session) -> None:
         """Tail ``session.output_log`` until its process ends. The spawner decides the exit from

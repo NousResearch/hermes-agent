@@ -1,13 +1,15 @@
-import { Button, Textarea } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { Button } from '@hermes/plugin-sdk'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { canonicalMentionHandle, canonicalRoomMembers } from './canonical-group-rows'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import { GroupMentionInput } from './group-chat-parts'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
@@ -163,6 +165,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     mutate(() => actCanonicalGroup(binding, action, choice))
 
   const composerLocked = !restored || busy || !!pending
+  // The room's own members, with their FROZEN handles: `resolve_mentions` at
+  // the gateway accepts only those, so the picker must insert them verbatim.
+  const mentionMembers = useMemo(() => (state?.room ? canonicalRoomMembers(state.room) : []), [state])
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
@@ -193,7 +198,16 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
       <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} />
-      <Textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
+      <GroupMentionInput
+        aria-label={labels.groupMessage}
+        className="min-w-0 flex-1"
+        disabled={composerLocked}
+        handleFor={canonicalMentionHandle}
+        members={mentionMembers}
+        onChange={setDraft}
+        onSubmitDraft={send}
+        value={draft}
+      />
       <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>

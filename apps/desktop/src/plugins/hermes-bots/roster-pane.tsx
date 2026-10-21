@@ -15,7 +15,7 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
-import { CanonicalGroupList } from './canonical-group-registry'
+import { useCanonicalGroupRooms } from './canonical-group-registry'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -329,6 +329,9 @@ export function BotsPane() {
     }
   }, [gatewayFilterExists])
   const hiddenExpanded = useValue($showHiddenBots)
+  // Hosted rooms the gateway lists for this source — the roster's group rows
+  // merge these in, so a group chat appears in the left pane as it is created.
+  const canonicalGroups = useCanonicalGroupRooms()
 
   const {
     activeSourceRoster,
@@ -348,6 +351,7 @@ export function BotsPane() {
     activityFilter,
     rowKindFilter,
     groupRooms,
+    canonicalGroups,
     activeRosterKeys,
     gatewayOptions,
     activityOf,
@@ -436,19 +440,21 @@ export function BotsPane() {
     />
   )
 
-  const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
+  const renderGroupRow = (row: { canonicalKey?: string; members: GroupMember[]; name: string }) => (
     <RosterGroupRowView
-      active={groupChatName === row.name}
+      active={groupChatName === (row.canonicalKey ?? row.name)}
       b={b}
       group={row.name}
       groupClarify={groupClarify}
       groupNeedsYou={groupNeedsYou}
       groupRooms={groupRooms}
-      key={`group:${row.name}`}
+      key={`group:${row.canonicalKey ?? row.name}`}
       members={row.members}
       onDisband={setDeletingGroup}
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
-      onOpen={group => openGroupChat(group, 'name')}
+      // A hosted room opens by its `canonical:` key, so the workspace renders
+      // the gateway's room instead of hunting for a Desktop-local record.
+      onOpen={() => openGroupChat(row.canonicalKey ?? row.name, row.canonicalKey ? 'key' : 'name')}
       sortedGroupRows={sortedGroupRows}
     />
   )
@@ -471,7 +477,6 @@ export function BotsPane() {
 
   return (
     <div className="flex h-full flex-col">
-      <CanonicalGroupList onOpen={openGroupChat} />
       {renderRosterToolbar({
         b,
         activityToasts,

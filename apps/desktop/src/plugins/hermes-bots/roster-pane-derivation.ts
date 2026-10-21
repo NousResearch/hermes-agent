@@ -1,3 +1,5 @@
+import { mergeCanonicalGroupRows } from './canonical-group-rows'
+import type { CanonicalGroupRoom } from './canonical-group-rows'
 import { botActivitySession } from './data'
 import { botRosterKey, filterBots, preferReachableSameNameRows } from './data'
 import type { $groupChats } from './group-chat'
@@ -26,6 +28,9 @@ export interface RosterGroupRow {
   members: GroupMember[]
   name: string
   pinned: boolean
+  /** The `canonical:` key of the hosted room this row stands for, when the
+   *  gateway owns it. The row opens THAT, not a Desktop-local name. */
+  canonicalKey?: string
 }
 
 interface RosterRowsInput {
@@ -36,6 +41,8 @@ interface RosterRowsInput {
   activityFilter: RosterActivityFilter
   rowKindFilter: RosterKindFilter
   groupRooms: ReturnType<typeof $groupChats.get>
+  /** Hosted rooms from the gateway's `groups.list`. */
+  canonicalGroups?: CanonicalGroupRoom[]
   activeRosterKeys: Set<string>
   gatewayOptions: ReturnType<typeof rosterGatewayOptions>
   activityOf: (bot: RosterRow) => number
@@ -50,6 +57,7 @@ export function deriveRosterRows({
   activityFilter,
   rowKindFilter,
   groupRooms,
+  canonicalGroups = [],
   activeRosterKeys,
   gatewayOptions,
   activityOf,
@@ -85,16 +93,21 @@ export function deriveRosterRows({
 
   const groupNames = groupChatNames(allMeta, groupRooms)
 
-  const groupRows = groupNames
-    .map(name => ({
-      name,
-      members: groupChatMemberBots(name, roster, allMeta)
-    }))
+  // The gateway's hosted rooms are the authority for group chats; the Desktop
+  // record only contributes the row's presentation. Merging here is what puts a
+  // group created in `groups.create` (or on another machine) in the left pane.
+  const mergedGroups = mergeCanonicalGroupRows(
+    groupNames.map(name => ({ members: groupChatMemberBots(name, roster, allMeta), name })),
+    canonicalGroups
+  )
+
+  const groupRows = mergedGroups
     .filter(row => groupMatchesRosterFilters(row.name, row.members, allMeta, query, gatewayFilter))
     .map((row): RosterGroupRow => ({
       kind: 'group',
       name: row.name,
       members: row.members,
+      canonicalKey: row.canonicalKey,
       pinned: Boolean(groupRooms[row.name]?.pinned),
       activity: groupLastActivity(groupRooms[row.name]),
       active:
@@ -126,7 +139,9 @@ export function deriveRosterRows({
     hiddenBots,
     visibleRoster,
     filteredHiddenBots,
-    groupNames,
+    // Counts and the "nothing here" states follow what the pane can show,
+    // hosted rooms included.
+    groupNames: mergedGroups.map(row => row.name),
     rosterRows,
     sortedGroupRows,
     gatewaySections,

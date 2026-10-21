@@ -159,12 +159,29 @@ interface GroupMentionInputProps {
   'aria-label'?: string
   autoFocus?: boolean
   className?: string
+  disabled?: boolean
+  /** The exact token a member's mention inserts. Callers that know the
+   *  authority's vocabulary (a hosted room resolves only the FROZEN member
+   *  handle) pass it here; the legacy path derives a friendly tag instead. */
+  handleFor?: (member: GroupMember) => string | undefined
   members: GroupMember[]
   onChange: (value: string) => void
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
   onSubmitDraft?: () => void
   placeholder?: string
   value: string
+}
+
+/** The token a mention inserts for `member`: `handleFor` when the caller knows
+ *  the ids the room accepts, else the friendly slug the legacy parser also
+ *  resolves. Shared with the tests because getting this wrong is silent — the
+ *  mention looks fine and addresses nobody. */
+export function mentionTokenFor(member: GroupMember, handleFor?: (member: GroupMember) => string | undefined): string {
+  const handle = String(botHandle(member.name, member) || '').trim()
+  const exact = handleFor?.(member)
+  const tag = String(exact ?? (botMentionTag(member) || handle)).trim()
+
+  return tag
 }
 
 /** Mention-aware composer input for group rooms. The core composer's
@@ -174,7 +191,7 @@ interface GroupMentionInputProps {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -196,7 +213,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
-      const tag = String(botMentionTag(member) || handle).trim()
+      const tag = mentionTokenFor(member, handleFor)
 
       if (!tag) {
         continue

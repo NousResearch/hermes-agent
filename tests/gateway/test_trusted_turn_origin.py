@@ -110,6 +110,17 @@ async def test_origin_scopes_first_queued_concurrent_missing_and_internal_turns(
     assert current_origin() is None
 
     seen.clear()
+    # A queued message cannot borrow the currently executing native admission's
+    # acceptance if that queued message itself failed ingress.
+    from gateway.session_ingress import executing_admission
+    unaccepted = replace(second, message_id="m3")
+    token = executing_admission.set(True)
+    try:
+        await run("unaccepted", unaccepted.source, unaccepted)
+    finally:
+        executing_admission.reset(token)
+    assert seen == [None]
+    seen.clear()
     async with _recursive_probe(runner, event, second, internal, seen):
         pass
     assert [(o.user_id if o else None) for o in seen] == ["U1", "U2", None, None, "U1"]

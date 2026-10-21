@@ -153,7 +153,12 @@ def origin_for_event(runner, event, source):
     if event is None or event.internal or event.source is None:
         return None
     from gateway.session_ingress import executing_admission
-    if not (event._gateway_accepted is True or executing_admission.get()):
+    # A native restore executes under its committed admission. A newly queued
+    # event must carry its own ingress acceptance; it cannot borrow the outer
+    # turn's executing_admission ContextVar.
+    accepted = event._gateway_accepted is True
+    if not accepted and not (getattr(event, "_native_origin_restored", False)
+                             and executing_admission.get()):
         return None
     # A channel pin may adjust the effective source, but it cannot change the
     # inbound principal, workspace, channel or thread.

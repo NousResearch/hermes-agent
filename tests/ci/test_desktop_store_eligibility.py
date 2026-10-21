@@ -1,4 +1,7 @@
-"""Execute the packaging workflow branches; nonstable never builds Store identities."""
+"""Execute the packaging workflow branches; only release candidates build Store identities.
+
+A canary candidate (Stable Release in canary mode) builds the Store bundle like any candidate and
+never submits it; the legacy direct canary dispatch and commit builds never build one."""
 import json
 import os
 import shlex
@@ -15,9 +18,10 @@ from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _work
 @pytest.mark.parametrize('tag,commit,store', [
     ('v0.28.0', '', True),
     ('v0.28.0+canary.20260818T000000Z', '', False),
+    ('v0.28.0+canary.20260818T000000Z', '', True),
     ('', 'a' * 40, False),
 ])
-def test_bundle_only_requests_store_for_stable(tmp_path, tag, commit, store):
+def test_bundle_only_requests_store_for_release_candidates(tmp_path, tag, commit, store):
     helper = tmp_path / 'bin'
     helper.mkdir()
     log = tmp_path / 'calls.jsonl'

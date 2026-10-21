@@ -133,8 +133,10 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
              "--out", str(desktop / "dist")], cwd=repo, env=env)
         version_args = []
         if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
-            script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
-            quad = capture([node, "-e", script, request.tag], repo, env)
+            # A Store package carries the Store scheme (revision zero) even on a canary.
+            script = ("const m=require('./scripts/msix-shared.mjs');const e=Number(process.env.HERMES_RELEASE_EPOCH);"
+                      "console.log(process.argv[2]==='store'?m.storePackageVersionAt(e):m.nativeQuad(process.argv[1],e))")
+            quad = capture([node, "-e", script, request.tag, variant], repo, env)
             version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
         run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
             env=packaging_environment(env, os.environ, request.target))

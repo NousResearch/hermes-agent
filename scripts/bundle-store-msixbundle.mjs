@@ -31,7 +31,8 @@ const { values } = parseArgs({ options: {
   'output-file': { type: 'string' },
 } })
 const tag = values.tag || process.env.HERMES_PAYLOAD_TAG
-if (!/^v\d+\.\d+\.\d+$/.test(tag || '') || process.env.HERMES_BUILD_COMMIT) {
+// A canary assembles its Store bundle exactly as stable does; only stable ever submits one.
+if (!/^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/.test(tag || '') || process.env.HERMES_BUILD_COMMIT) {
   throw new Error('Store packaging requires a stable release tag')
 }
 process.env.HERMES_PAYLOAD_TAG = tag

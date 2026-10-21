@@ -236,6 +236,7 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
         'always': lambda: True, 'cancelled': lambda: cancelled,
         'success': lambda: not (cancelled or failed), 'failure': lambda: failed,
         'contains': lambda value, needle: needle in value,
+        'startsWith': lambda value, prefix: str(value).startswith(prefix),
         # Expression strings reach eval already rewritten (true -> True), so read them as literals.
         'fromJSON': ast.literal_eval,
     })

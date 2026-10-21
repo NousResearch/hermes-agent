@@ -664,12 +664,15 @@ jobs:
           AZURE_TOKEN_CREDENTIALS: prod
           SKIP_SIGNED: ${{ inputs.skip-signed }}
           SKIP_STORE: ${{ inputs.skip-store }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
         run: |
           if ($env:SKIP_SIGNED -ne 'true') {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*") {
+          # A canary candidate (the Stable Release pipeline in canary mode) builds the Store package
+          # like any candidate; only the legacy direct canary dispatch leaves it out.
+          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and ($env:RELEASE_PHASE -eq 'candidate' -or $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*")) {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -2514,7 +2517,8 @@ jobs:
     # live as soon as it passes certification. A run whose stable-publish fails leaves a
     # draft no customer sees, never a live build.
     needs: [validate]
-    if: inputs.release-phase == 'publish' && inputs.skip-store != true
+    # Never a canary: a canary builds and stages its Store bundle but only stable submits one.
+    if: inputs.release-phase == 'publish' && inputs.skip-store != true && !contains(inputs.tag, '+canary.')
     # The Store is not a release gate: a failed submission leaves the release publishable
     # and the summary names the Store package for a manual Partner Center upload.
     continue-on-error: true

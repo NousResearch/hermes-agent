@@ -43,6 +43,11 @@ LANES = (
 )
 NAMES = tuple(lane.name for lane in LANES)
 DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
+# A canary is a run of the stable pipeline with every lane on: it has no claim to narrow it and
+# opts nothing out, so Termux runs too, and a lane added above runs in the canary
+# with no other edit. It differs from a stable release only in policy (POLICY_JOBS): where its
+# artifacts publish and what its green means.
+CANARY = frozenset(NAMES)
 
 DESKTOP = ("windows", "macos-arm64")
 WINDOWS = ("windows", "windows-store")
@@ -75,6 +80,7 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "candidates-termux": ("termux",),
     "candidate-manifest": ("bundles",),
     "publish-bundles": ("bundles",),
+    "publish-canary": ("bundles",),
     "transitions-darwin-arm64": ("macos-arm64", "upgrade"),
     "transitions-win32": ("windows", "upgrade"),
     "macos-packaged-arm64": ("macos-arm64", "upgrade"),
@@ -82,6 +88,13 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
 }.items()}
 
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
+
+# The release policies stable-release.yml runs. Every build and test job is shared; only these
+# publication jobs belong to one policy, and each runs only under its own. A stable release
+# publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
+# candidate to the canary channels and never touches a stable head or the Store.
+POLICIES = ("stable", "canary")
+POLICY_JOBS = {"publish-bundles": "stable", "publish-canary": "canary"}
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows-build", "win32-arm64": "windows-build", "windows-universal": "windows-build",
@@ -142,10 +155,17 @@ def from_flags(raw: object) -> frozenset[str]:
     return frozenset(name for name in NAMES if raw[name])
 
 
-def jobs_to_run(lanes: Iterable[str]) -> dict[str, bool]:
-    """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this."""
+def jobs_to_run(lanes: Iterable[str], policy: str = "stable") -> dict[str, bool]:
+    """Whether each lane-controlled job runs. Every ``if`` in the workflow reads this.
+
+    ``policy`` only removes the other policy's publication job (POLICY_JOBS); it never adds or
+    removes a build or test job, so a canary and a stable release with the same lanes run the
+    same graph."""
+    if policy not in POLICIES:
+        raise ValueError(f"unknown release policy {policy!r}")
     on = effective(lanes)
-    return {job: needs <= on for job, needs in JOB_LANES.items()}
+    return {job: needs <= on and POLICY_JOBS.get(job, policy) == policy
+            for job, needs in JOB_LANES.items()}
 
 
 def handoffs(lanes: Iterable[str], names: Iterable[str]) -> tuple[str, ...]:

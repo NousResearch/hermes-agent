@@ -67,18 +67,17 @@ def list_remotes() -> list[str]:
 def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     """Dispatch the release pipeline after its draft exists.
 
-    Both channels run the default-branch workflow with the tag as an input, so
-    caches share one scope and scripts come from main. A stable run resolves its
-    claim tag to the commit under test. Its gate owns artifact publication and
-    channel promotion. Explicit dispatch also works for tags created by GITHUB_TOKEN.
+    Both channels run the same default-branch Stable Release workflow with the tag
+    as an input, so a canary runs exactly the jobs a stable release does (every
+    lane on), caches share one scope and scripts come from main. Admission resolves
+    the tag to the commit under test and picks the policy that decides where the
+    release publishes. Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
     canary = _CANARY_TAG_RE.fullmatch(tag) is not None
     if not canary and not STABLE_TAG_RE.fullmatch(tag):
         raise ValueError("Expected an exact stable or canary release tag")
-    workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
+    workflow = "stable-release.yml"
     cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
-    if canary:
-        cmd += ["-f", "upload_release=true"]
     if gh_repo:
         cmd += ["--repo", gh_repo]
 
@@ -488,8 +487,9 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     if not dispatch_desktop_build(tag, repository):
         raise SystemExit(1)
     print(f"Resumed canary publication for {tag}.")
-    print(f"Workflow: https://github.com/{repository}/actions/workflows/desktop-bundled-release.yml")
-    print("Wait for that workflow to finish. It builds this canary and publishes the draft when the build is green.")
+    print(f"Workflow: https://github.com/{repository}/actions/workflows/stable-release.yml")
+    print("Wait for that run to finish. It runs the full release pipeline on this canary and publishes it "
+          "once its candidate is built and smoked; the other suites report in the same run.")
     print(f"The draft is at {draft_url}.")
 
 
@@ -503,11 +503,10 @@ def cmd_canary(args) -> None:
 
     Created as a DRAFT prerelease, for the same reason the stable path
     drafts: a published release with no installers attached is a release
-    users can reach and cannot use. The desktop matrix attaches the
-    installers to this draft by tag, and the canary workflow's publish
-    job flips it to published only after that matrix is green. A failed
-    bundle therefore leaves an inspectable draft rather than a broken
-    canary.
+    users can reach and cannot use. Stable Release runs on this tag with
+    every lane on, and its publish-canary job flips the draft to published
+    only after the accepted candidate is built and smoked. A failed bundle
+    therefore leaves an inspectable draft rather than a broken canary.
 
     Exits 0 with "nothing to do" when HEAD is already tagged by the last
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow

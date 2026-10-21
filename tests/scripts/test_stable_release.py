@@ -450,7 +450,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         # A claim cut before lanes existed reads as the lane set that gated the same jobs.
         "autopublish": False, "lanes": lane_set.DEFAULT,
-        "claim_epoch": 1_790_000_000,
+        "claim_epoch": 1_790_000_000, "policy": "stable",
     }
     # The metadata binds the attempt its ref names.
     for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
@@ -548,11 +548,13 @@ def test_a_default_claim_builds_no_termux_and_lanes_restore_it(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    off = {"candidates-termux", "termux-checks"}
+    # A stable release never runs the canary's publication job.
+    off = {"candidates-termux", "termux-checks", "publish-canary"}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
-    assert set(stable.gate_expectations(required, lane_set.NAMES).values()) == {"success"}
+    everything = stable.gate_expectations(required, lane_set.NAMES)
+    assert {name for name, result in everything.items() if result == "skipped"} == {"publish-canary"}
     # A lane that is off removes its jobs even when its test lane is on.
     assert stable.gate_expectations(["candidates-termux", "termux-checks"],
                                     lane_set.select(without=["termux"])) == \

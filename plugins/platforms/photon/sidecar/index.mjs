@@ -143,6 +143,7 @@ const staleness = {
   zombieSuspected: false,
   lastHeartbeatAt: 0,
   heartbeatCount: 0,
+  inboundCount: 0, // stream yields since this sidecar started (heartbeatStall needs one)
 };
 
 // Called by patch-spectrum-stream-heartbeat.mjs for every server heartbeat on
@@ -155,6 +156,7 @@ globalThis.__hermesPhotonStreamHeartbeat = () => {
 
 function noteInboundYield() {
   staleness.lastInboundAt = Date.now();
+  staleness.inboundCount += 1;
   staleness.zombieSuspected = false;
 }
 
@@ -174,6 +176,7 @@ function stalenessSnapshot(now) {
         ? new Date(staleness.lastHeartbeatAt).toISOString()
         : null,
     heartbeatCount: staleness.heartbeatCount,
+    inboundCount: staleness.inboundCount,
     heartbeatStallThresholdMs: STREAM_HEARTBEAT_STALL_MS,
   };
 }
@@ -823,9 +826,11 @@ async function zombieWatchdogTick() {
   if (watchdogProbeInFlight) return;
   const now = Date.now();
   const silentForMs = now - staleness.lastInboundAt;
-  // Heartbeats prove the subscription itself, so a quiet line is never
-  // restarted; only a missing heartbeat is. Until the first heartbeat (or if
-  // the SDK patch is absent) the silence probe below remains the fallback.
+  // Once this stream has delivered a message, heartbeats show a quiet line is
+  // still connected, so it is never restarted; only a missing heartbeat is.
+  // Until the first heartbeat and the first message (or if the SDK patch is
+  // absent) the silence probe below remains the fallback: heartbeats alone
+  // never prove a fresh subscription delivers (#124010).
   const stall = heartbeatStall(now, staleness, STREAM_HEARTBEAT_STALL_MS);
   if (stall) {
     if (stall.stalled && streamHealth.state !== "degraded") {

@@ -461,6 +461,32 @@ def test_promoted_reasoning_detector_ignores_stated_answers():
         assert not promoted_reasoning_announces_action(text), text
 
 
+def test_plan_tail_detectors_read_past_dotted_tokens():
+    """A '.' inside a file name or version is not a sentence end: a plan tail that names one is
+    still a plan tail, on both the promoted-reasoning and the visible-content detector."""
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for tail in (
+        "I should verify the release notes are sufficient and check the llama.cpp latest build information.",
+        "Now I need to read config.yaml and the .env file.",
+        "First I will pin v0.31.0 and rerun the suite.",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail
+    assert trailing_continue_intent("Got it. I'll now update config.yaml.")
+
+
+def test_plan_tail_detectors_still_stop_at_real_sentence_ends():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "Let me check llama.cpp first. It is faster, so use it.",
+        "I need to compare v0.27.0 and v0.31.0. The newer one passes all checks.",
+        "The build uses v0.31.0 and passes.",
+    ):
+        assert not promoted_reasoning_announces_action(text), text
+    assert not trailing_continue_intent("I'll now update config.yaml. Done, it is saved.")
+
+
 def test_promoted_reasoning_detector_catches_thai_plan_tails():
     from agent.agent_runtime_helpers import promoted_reasoning_announces_action
 

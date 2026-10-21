@@ -220,6 +220,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | Fork bomb patterns | Fork bombs |
 | `bash -c` / `sh -c` / `zsh -c` / `ksh -c` | Shell command execution via `-c` flag (including combined flags like `-lc`) |
 | `python -e` / `perl -e` / `ruby -e` / `node -c` | Script execution via `-e`/`-c` flag |
+| Interpreter one-liners or heredocs whose code references a network API (`urllib`, `requests`, `socket`, `smtplib`, Node `http`/`https`/`net`/`fetch`, Perl `LWP`/`IO::Socket`, ...) | Network-capable script via `-e`/`-c` flag or heredoc (its own rule key, see [Permanent Allowlist](#permanent-allowlist)) |
 | `curl ... \| sh` / `wget ... \| sh` | Pipe remote content to shell |
 | `bash <(curl ...)` / `sh <(wget ...)` | Execute remote script via process substitution |
 | `tee` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via tee |
@@ -297,6 +298,13 @@ in the approval prompt). Rule keys are honored on every surface, including
 unattended ones: a cron job, `hermes chat -q` run or webhook session under
 `cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
 detected rule key is in `command_allowlist`.
+
+Inline interpreter code that references a network API is reported under its own keys,
+`network-capable script via -e/-c flag` and `network-capable script via heredoc`, so
+allowlisting `script execution via -e/-c flag` or `script execution via heredoc` does
+not also approve a one-liner that can open a connection. When one command contains both
+kinds, the network-capable key is the one reported. This is a text heuristic on the inline
+code, not an analysis of a script file the interpreter is asked to run.
 
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to

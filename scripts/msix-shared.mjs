@@ -180,10 +180,13 @@ function releaseEpoch(tag, gitRoot) {
   return Number(timestamp)
 }
 
-/** @param {string} tag @param {string} gitRoot */
+/** The Store package version: the Store reserves revision zero, so every Store package uses the
+ * stable ``year.hourOfYear.secondOfHour.0`` scheme of its build time. A canary's Store bundle is
+ * built and staged to prove its packaging but never submitted; it still carries a Store-valid quad.
+ * @param {string} tag @param {string} gitRoot */
 export function storePackageVersion(tag, gitRoot) {
   if (!CANARY_TAG_RE.test(tag) && !STABLE_TAG_RE.test(tag)) throw new Error('A Store build requires an exact release tag')
-  return nativeQuad(tag, releaseEpoch(tag, gitRoot))
+  return storePackageVersionAt(releaseEpoch(tag, gitRoot))
 }
 
 /** The custom template controls package identity, not executable VERSIONINFO.
@@ -259,7 +262,7 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
     return { identity, version: `${version}.0`, fileVersion: version, name: identity.artifactNamePascal }
   }
   if (identity.store) {
-    return { identity, version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),
+    return { identity, version: storePackageVersion(String(tag), repoRoot),
       fileVersion: String(tag).slice(1), name: identity.artifactNamePascal }
   }
   if (CANARY_TAG_RE.test(String(tag)) || (tag && STABLE_TAG_RE.test(tag))) {

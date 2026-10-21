@@ -967,6 +967,17 @@ def prune(
         for reference in darwin_module.mac_feed_references(text):
             protected.add(reference)
 
+    # The live canary's own objects (its archive, which its upgrade baseline points into, and its
+    # Termux pool) stay while it is live however old it is: releases/canary/release-candidates.json
+    # names its archive ref, which is in every one of those keys.
+    pointer_key = "releases/canary/release-candidates.json"
+    if pointer_key in keys:
+        text = get_object(creds, base, bucket, pointer_key, now, fetcher=fetcher)
+        live = json.loads(text).get("archive") if text is not None else None
+        if not isinstance(live, str) or not live:
+            raise RuntimeError(f"Cannot read the live canary from {pointer_key}; refusing to prune")
+        protected.update(key for key in keys if live in key)
+
     doomed = [
         key
         for key in [

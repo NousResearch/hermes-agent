@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from datetime import datetime, timezone, UTC
 
 from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
@@ -108,13 +107,24 @@ def match_accepted_packages(manifest: dict, accepted: dict) -> None:
 
 
 def canary_windows_version(tag: str) -> str:
-    from hermes_cli.update_channel import canary_timestamp
+    try:
+        return stable.canary_windows_version(tag)
+    except ValueError as error:
+        raise ChannelError("Invalid canary release identity") from error
 
-    stamp = canary_timestamp(tag)
-    if stamp is None:
-        raise ChannelError("Invalid canary release identity")
-    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
-    return f"{instant.year % 100}.{int(f'{instant.month:02d}{instant.day:02d}')}.{instant.hour}.{int(f'{instant.minute:02d}{instant.second:02d}')}"
+
+# The canary's controller is stable-release.yml: its publish-canary job runs after the accepted
+# candidate manifest, so only admission and that manifest stand between the build and the head.
+# Every other suite still runs in the same run and turns it red; a canary does not wait for them.
+CANARY_CONTROLLER_NEEDS = ("admit", "candidate-manifest")
+
+
+def canary_from_controller(env: dict) -> bool:
+    """Whether this canary publication runs in the stable-release.yml controller (accepted
+    candidate) rather than the legacy direct desktop-bundled-release dispatch (native build legs).
+    admit_transaction has already pinned GITHUB_WORKFLOW_REF to one of the two."""
+    workflow = (env.get("GITHUB_WORKFLOW_REF") or "").split("@", 1)[0]
+    return workflow.endswith(f"/.github/workflows/{stable.CONTROLLER_WORKFLOW}")
 
 
 def admit_transaction(policy: str, env: dict, *, require_published: bool = False,
@@ -159,8 +169,12 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
             raise ChannelError("Protected heads require the accepted release workflow")
         default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
-        expected = f"{repository}/.github/workflows/desktop-bundled-release.yml@refs/heads/{default}"
-        required = CANARY_NEEDS
+        controller = f"{repository}/.github/workflows/{stable.CONTROLLER_WORKFLOW}@refs/heads/{default}"
+        if env.get("GITHUB_WORKFLOW_REF") == controller:
+            expected, required = controller, CANARY_CONTROLLER_NEEDS
+        else:
+            expected = f"{repository}/.github/workflows/desktop-bundled-release.yml@refs/heads/{default}"
+            required = CANARY_NEEDS
     else:
         raise ChannelError("Invalid protected release policy")
     if env.get("GITHUB_WORKFLOW_REF") != expected:
@@ -363,10 +377,17 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     if final_claim is not None and not lane_set.advances_desktop(final_claim["lanes"]):
         raise ChannelError("A release that did not build every desktop package the channel serves "
                            "cannot advance a protected head")
-    release_epoch = final_claim["claim_epoch"] if final_claim is not None else None
-    accepted = accepted_stable(publisher, env, tag, commit, release_epoch,
-                               lanes=final_claim["lanes"]) \
-        if final_claim is not None else None
+    # A controller canary publishes the accepted candidate exactly as stable does: every lane
+    # (lanes.CANARY), its tag stamp as its epoch, and the feeds promoted from that manifest.
+    controller_canary = policy == "canary-release" and canary_from_controller(env)
+    if final_claim is not None:
+        release_epoch, accepted_lanes = final_claim["claim_epoch"], final_claim["lanes"]
+    elif controller_canary:
+        release_epoch, accepted_lanes = stable.canary_epoch(tag), lane_set.CANARY
+    else:
+        release_epoch, accepted_lanes = None, None
+    accepted = accepted_stable(publisher, env, tag, commit, release_epoch, lanes=accepted_lanes) \
+        if accepted_lanes is not None else None
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
     # Stable trusts the receipt sha256s of an accepted candidate: only metadata and
@@ -393,11 +414,11 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     def release_gate(request: dict) -> bool:
         if admit_transaction(policy, env, require_published=True) != (tag, commit):
             return False
-        if policy == "stable-release":
+        if accepted is not None:
             if release_epoch is None:
-                raise ChannelError("Stable release epoch is unavailable")
+                raise ChannelError("Release epoch is unavailable")
             return accepted_stable(publisher, env, tag, commit, release_epoch,
-                                   lanes=final_claim["lanes"]) == accepted
+                                   lanes=accepted_lanes) == accepted
         return True
 
     source_version = payload_tag[1:].split("+", 1)[0]
@@ -431,13 +452,16 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     publisher.verify_build = qualified
     if accepted is not None:
-        log("Writing releases/stable/release-candidates.json and promoting the stable feeds")
+        # The accepted manifest is also the next release's upgrade baseline (stable._published_baseline).
+        channel = "canary" if policy == "canary-release" else "stable"
+        pointer = f"releases/{channel}/release-candidates.json"
+        log(f"Writing {pointer} and promoting the {channel} feeds")
         # The head already names the previous release after the first bundled one: replace it
         # under its current ETag, since a create-only write refuses an existing object.
-        head = publisher.store.get("releases/stable/release-candidates.json")
-        publisher._write("releases/stable/release-candidates.json", accepted, head[1] if head else None)
-        if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
-            raise ChannelError("Stable candidate pointer read-back differs")
+        head = publisher.store.get(pointer)
+        publisher._write(pointer, accepted, head[1] if head else None)
+        if publisher.reader.read_bytes(pointer) != canonical_json(accepted):
+            raise ChannelError(f"{channel.capitalize()} candidate pointer read-back differs")
         promote_stable_feeds(accepted, root, publisher.public_base)
     log(f"Promoting build {request['buildId']} to the {name} head")
     result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)

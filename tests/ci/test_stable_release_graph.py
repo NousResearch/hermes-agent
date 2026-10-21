@@ -9,7 +9,7 @@ from ruamel.yaml import YAML
 
 from scripts.releases import lanes as lane_set
 
-from tests.ci.desktop_release_roles import gate
+from tests.ci.desktop_release_roles import evaluate, gate
 from tests.ci.workflow_steps import is_checkout
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -117,13 +117,14 @@ LANE_SETS = {
 }
 
 
+@pytest.mark.parametrize("policy", lane_set.POLICIES)
 @pytest.mark.parametrize("lanes", LANE_SETS.values(), ids=LANE_SETS)
-def test_every_lane_controlled_job_runs_exactly_when_the_lane_table_says(lanes):
+def test_every_lane_controlled_job_runs_exactly_when_the_lane_table_says(lanes, policy):
     """The workflow's `if` conditions and the gate's expectations describe the same graph."""
     jobs = workflow("stable-release.yml")["jobs"]
-    runs = lane_set.jobs_to_run(lanes)
+    runs = lane_set.jobs_to_run(lanes, policy)
     admit = {"result": "success", "outputs": {"lanes": json.dumps(lane_set.flags(lanes)),
-                                              "jobs": json.dumps(runs)}}
+                                              "jobs": json.dumps(runs), "policy": policy}}
 
     def result(name):
         if name == "admit":
@@ -140,6 +141,83 @@ def test_every_lane_controlled_job_runs_exactly_when_the_lane_table_says(lanes):
     for name in set(jobs) - set(runs) - {"admit", "acceptance", "publication", "complete",
                                          "candidate-manifest", "publish-bundles"}:
         assert "outputs.jobs" not in str(jobs[name].get("if", "")), name
+
+
+def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publication():
+    """canary-release.yml runs this same workflow: nothing to keep in sync. With the canary's lanes
+    (every lane, no opt-outs) the canary runs exactly the jobs a stable release with every lane
+    runs, except that each policy runs only its own publication job."""
+    jobs = workflow("stable-release.yml")["jobs"]
+    assert lane_set.CANARY == frozenset(lane_set.NAMES)
+    canary = lane_set.jobs_to_run(lane_set.CANARY, "canary")
+    assert set(canary) <= set(jobs)
+    stable_all = lane_set.jobs_to_run(lane_set.NAMES, "stable")
+    assert {job for job in canary if canary[job] != stable_all[job]} == set(lane_set.POLICY_JOBS)
+    # Every build and test job runs: Termux included, which a default claim leaves out.
+    assert {job for job, runs in canary.items() if not runs} == {"publish-bundles"}
+    for opted_out in ("candidates-termux", "termux-checks"):
+        assert canary[opted_out] and not lane_set.jobs_to_run(lane_set.DEFAULT)[opted_out], opted_out
+    with pytest.raises(ValueError, match="policy"):
+        lane_set.jobs_to_run(lane_set.CANARY, "preview")
+    # The run is titled by policy; stable keeps the title the sequencer matches runs by.
+    from scripts.releases.stable import claim_run_title
+    title = workflow("stable-release.yml")["run-name"]
+    prefix, rest = title.split(" release ", 1)
+    assert rest == "${{ inputs.tag }}"
+    assert evaluate(prefix, {"tag": "rc.1-v1.2.3"}, {}) == "Stable"
+    assert evaluate(prefix, {"tag": "v1.2.3+canary.20261021T064100Z"}, {}) == "Canary"
+    assert claim_run_title("rc.1-v1.2.3") == "Stable release rc.1-v1.2.3"
+
+
+def test_canary_publication_waits_for_its_candidate_never_for_acceptance_and_never_touches_stable():
+    jobs = workflow("stable-release.yml")["jobs"]
+    canary = lane_set.jobs_to_run(lane_set.CANARY, "canary")
+    publish = jobs["publish-canary"]
+    assert publish["needs"] == ["admit", "candidate-manifest"]
+    assert "acceptance" not in ancestors(jobs, "publish-canary")
+    admit = {"result": "success", "outputs": {"jobs": json.dumps(canary), "policy": "canary"}}
+    manifest = {"result": "success"}
+    # A red suite reports in the same run; it does not hold the canary back.
+    assert gate(publish["if"], {}, {"admit": admit, "candidate-manifest": manifest})
+    # A failed or skipped candidate (a build or smoke went red) publishes nothing.
+    for result in ("failure", "skipped", "cancelled"):
+        assert not gate(publish["if"], {}, {"admit": admit, "candidate-manifest": {"result": result}}), result
+    assert not gate(publish["if"], {}, {"admit": admit, "candidate-manifest": manifest}, cancelled=True)
+    # A stable release never runs it, and a canary never runs stable publication (Store included).
+    stable_admit = {"result": "success", "outputs": {"jobs": json.dumps(lane_set.jobs_to_run(lane_set.NAMES))}}
+    assert not gate(publish["if"], {}, {"admit": stable_admit, "candidate-manifest": manifest})
+    bundles = jobs["publish-bundles"]
+    accepted = {"admit": admit, "acceptance": {"result": "success"}, "candidate-manifest": manifest}
+    assert not gate(bundles["if"], {}, accepted)
+    store = workflow("desktop-bundled-release.yml")["jobs"]["stable-store"]["if"]
+    publish_phase = {"release-phase": "publish", "skip-store": False}
+    assert gate(store, {**publish_phase, "tag": "rc.1-v1.2.3"}, {"validate": {"result": "success"}})
+    assert not gate(store, {**publish_phase, "tag": "v1.2.3+canary.20261021T064100Z"},
+                    {"validate": {"result": "success"}})
+    # Publication runs the canary controller under the job's own needs, with the pinned candidate.
+    steps = publish["steps"]
+    assert any("release_artifacts publish" in step.get("run", "") for step in steps)
+    advance = next(step for step in steps if "channel_releases canary" in step.get("run", ""))
+    assert publish["env"]["RELEASE_NEEDS"] == "${{ toJSON(needs) }}"
+    assert publish["env"]["CANDIDATE_MANIFEST_SHA256"] == "${{ needs.candidate-manifest.outputs.manifest-sha256 }}"
+    assert publish["env"]["RELEASE_TAG_OBJECT"] == "${{ needs.admit.outputs.claim-object }}"
+    assert advance["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert publish["permissions"] == {"contents": "write"}
+    # The stable publication pass (stable heads, stable/latest aliases, Store commit) is stable-only;
+    # the canary aliases move only for a canary whose image was pushed.
+    complete = jobs["complete"]["steps"]
+    canary_needs = {"admit": admit, "publish-docker": {"result": "success"}}
+    for step in complete:
+        name = step.get("name", "")
+        if name.startswith(("Reconcile ordered", "Set up Docker Buildx for ordered", "Log in to Docker Hub for ordered")):
+            assert not gate(step["if"], {}, canary_needs, job_if=False), name
+            assert gate(step["if"], {}, {"admit": {"result": "success", "outputs": {"policy": "stable"}}},
+                        job_if=False), name
+        if "canary aliases" in name or "canary Docker aliases" in name:
+            # Like the bundles, they follow the canary whatever the gate step said.
+            assert gate(step["if"], {}, canary_needs, job_if=False, failed=True), name
+            assert not gate(step["if"], {}, {**canary_needs, "publish-docker": {"result": "failure"}},
+                            job_if=False), name
 
 
 def test_lane_inputs_reach_the_workflows_they_configure():
@@ -165,7 +243,8 @@ def test_lane_inputs_reach_the_workflows_they_configure():
         gate_step = next(step for step in jobs[name]["steps"]
                          if "scripts.releases.stable gate" in step.get("run", ""))
         assert gate_step["env"] == {"RELEASE_NEEDS": "${{ toJSON(needs) }}",
-                                    "LANES": "${{ needs.admit.outputs.lanes }}"}
+                                    "LANES": "${{ needs.admit.outputs.lanes }}",
+                                    "POLICY": "${{ needs.admit.outputs.policy }}"}
         gated = gate_step["run"].split(" gate ", 1)[1].split()
         assert set(gated) <= set(direct_needs(jobs, name)), name
 
@@ -189,7 +268,7 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     summary = tmp_path / "summary"
     admitted = {"claim_tag": "rc.1-v1.2.3", "claim_object": "a" * 40, "tag": "v1.2.3", "commit": "b" * 40,
                 "version": "1.2.3", "attempt": 1, "claim_epoch": 1, "autopublish": False,
-                "lanes": lane_set.select(only=["windows", "docker"])}
+                "lanes": lane_set.select(only=["windows", "docker"]), "policy": "stable"}
     env = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_REPOSITORY": "o/r"}
     from unittest import mock
     with mock.patch.object(stable, "check_claim", return_value=admitted), \
@@ -199,6 +278,7 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == admitted["lanes"]
     assert json.loads(emitted["jobs"]) == lane_set.jobs_to_run(admitted["lanes"])
+    assert emitted["policy"] == "stable" and emitted["docker-tag"] == "rc.1-v1.2.3"
     assert "on: docker, windows" in summary.read_text(encoding="utf-8")
 
 
@@ -313,7 +393,8 @@ def test_release_gates_extract_consumer_facing_versions():
         step["run"] for step in docker["build"]["steps"]
         if step.get("name") == "Verify release image identity"
     )
-    assert '["baseVersion"]' in image_check and "$RELEASE_VERSION" in image_check
+    # baseVersion is the stable core: a canary's +canary.<stamp> lives only in displayVersion.
+    assert '["baseVersion"]' in image_check and '"${RELEASE_VERSION%%+*}"' in image_check
 
     nix = workflow("nix.yml")["jobs"]
     nix_check = next(
@@ -333,8 +414,9 @@ def test_versioned_docker_images_belong_to_one_attempt():
     # The final vX.Y.Z does not exist until publish; a second attempt pushing
     # under it collides with the first attempt's immutable manifest list.
     jobs = workflow("stable-release.yml")["jobs"]
+    # docker-tag is the claim tag for stable (stable.docker_tag); a canary's `+` becomes `-`.
     for name in ("docker", "publish-docker"):
-        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.claim-tag }}"
+        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.docker-tag }}"
 
 
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():
@@ -352,9 +434,12 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     stable = workflow("stable-release.yml")
     publication = workflow("stable-release-publication.yml")
 
-    assert stable["concurrency"] == publication["concurrency"] == {
-        "group": "stable-release", "cancel-in-progress": "false",
-    }
+    assert publication["concurrency"] == {"group": "stable-release", "cancel-in-progress": "false"}
+    # A stable run shares the reconciler's lock; a canary run of the same workflow never does.
+    group = stable["concurrency"]["group"]
+    assert stable["concurrency"]["cancel-in-progress"] == "false"
+    assert evaluate(group, {"tag": "rc.1-v1.2.3"}, {}) == "stable-release"
+    assert evaluate(group, {"tag": "v1.2.3+canary.20261021T064100Z"}, {}) == "canary-release-pipeline"
     assert {"workflow_dispatch", "workflow_run"} <= set(publication["on"])
     assert publication["on"]["workflow_run"] == {
         "workflows": ["Stable Release"], "types": ["completed"],
@@ -371,8 +456,11 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
 
     assert gate(reconcile["if"], {}, {}, github=run_of())
     assert gate(reconcile["if"], {}, {}, github={"event_name": "workflow_dispatch"})
-    for refused in ({"conclusion": "success"}, {"event": "push"}, {"head_repository": {"full_name": "fork/r"}}):
+    for refused in ({"conclusion": "success"}, {"event": "push"}, {"head_repository": {"full_name": "fork/r"}},
+                    # A red canary is a Stable Release run too; it must never be reconciled or rerun.
+                    {"display_title": "Canary release v1.2.3+canary.20261021T064100Z"}):
         assert not gate(reconcile["if"], {}, {}, github=run_of(**refused)), refused
+    assert gate(reconcile["if"], {}, {}, github=run_of(display_title="Stable release rc.1-v1.2.3"))
     checkout = reconcile["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     assert checkout["with"]["persist-credentials"] == "false"

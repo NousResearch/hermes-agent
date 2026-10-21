@@ -55,8 +55,10 @@ const displayName = buildCommit
 const kebabSuffix = buildCommit ? `-${buildCommit}` : canary ? '-canary' : ''
 const pascalSuffix = buildCommit ? `Commit${buildCommit}` : canary ? 'Canary' : ''
 const cliName = `${light ? 'hermes-light' : 'hermes'}${kebabSuffix}`
-if (store && (canary || buildCommit)) {
-  throw new Error('Store packaging is only eligible for stable releases')
+// A canary builds the Store package too (the canary runs every stable lane), but only stable
+// releases ever submit one: canary publication never reaches the Store job.
+if (store && buildCommit) {
+  throw new Error('Store packaging is only eligible for release tags')
 }
 
 /** @typedef {import("./product-identity.d.cts")} ProductIdentity */

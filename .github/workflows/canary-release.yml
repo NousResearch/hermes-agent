@@ -10,6 +10,13 @@ name: Canary Release
 # the protected R2 canary head moves subscribers. A dispatch queued behind a
 # running canary has conclusion=cancelled if a newer one supersedes it; only
 # conclusion=failure is a canary failure signal.
+#
+# The canary build itself is a Stable Release run (stable-release.yml) on the
+# canary tag: the exact job graph a stable release runs, with every lane on
+# (Termux included; scripts/releases/lanes.py CANARY), so the
+# two never drift. It differs only in where it publishes (the canary channels,
+# never the Store or a stable head) and in that only the built, smoked
+# candidate gates publication; every other suite reports in the same run.
 
 on:
   schedule:
@@ -18,7 +25,7 @@ on:
 
 permissions:
   contents: write # tag push + release create/delete for prune
-  actions: write # release.py dispatches the desktop build
+  actions: write # release.py dispatches the Stable Release pipeline on the canary tag
 
 concurrency:
   group: canary-release
@@ -51,7 +58,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: tag
     environment: release-signing
-    # Prune even when this run had nothing new to tag. The desktop build
+    # Prune even when this run had nothing new to tag. The release pipeline
     # runs in its own workflow run, so this does not wait on it — the
     # window is 14 days, far wider than any build.
     if: always() && needs.tag.result != 'cancelled' && needs.tag.result != 'skipped'

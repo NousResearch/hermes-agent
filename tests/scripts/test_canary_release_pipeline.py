@@ -1,0 +1,350 @@
+"""A canary is a Stable Release run on its own tag: every lane, canary destinations.
+
+canary-release.yml dispatches stable-release.yml with ``vX.Y.Z+canary.<stamp>``. These tests pin
+the parts of the stable controller that branch on that tag: admission (every lane, the tag stamp as
+the epoch, main only), candidate validation (canary package versions), the upgrade baseline (the
+previous canary), the Docker tag, and publication to the canary channels only.
+"""
+from __future__ import annotations
+
+import copy
+import json
+from datetime import UTC, datetime
+
+import pytest
+
+from scripts.releases import lanes as lane_set
+from scripts.releases import stable
+
+BASE = "https://releases.example"
+CANARY = "v1.2.3+canary.20261021T064100Z"
+EARLIER = "v1.2.3+canary.20261020T064100Z"
+COMMIT = "a" * 40
+TAG_OBJECT = "b" * 40
+CONTROLLER_ENV = {
+    "GITHUB_REPOSITORY": "example/hermes-agent",
+    "GITHUB_EVENT_NAME": "workflow_dispatch",
+    "GITHUB_REF": "refs/heads/main",
+    "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/heads/main",
+    "GITHUB_SHA": "e" * 40,
+}
+
+
+def _git(*, branches="refs/remotes/origin/main", kind="tag"):
+    ref = f"refs/tags/{CANARY}"
+
+    def git(argv):
+        if argv[1] == "ls-remote":
+            return f"{TAG_OBJECT}\t{ref}\n{COMMIT}\t{ref}^{{}}"
+        if argv[1:3] == ["cat-file", "-t"]:
+            return kind
+        if argv[1] == "rev-parse":
+            return TAG_OBJECT if argv[-1] == ref else COMMIT
+        if argv[1] == "for-each-ref":
+            return branches if argv[-1] == "refs/remotes/origin/main" else ""
+        if argv[1] == "tag":
+            raise AssertionError("a canary has no claim message to read")
+        return ""
+
+    return git
+
+
+def test_a_canary_claim_runs_every_lane_from_its_tag_stamp_on_main_only():
+    env = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": CANARY, "RELEASE_CLAIM_OBJECT": TAG_OBJECT}
+    epoch = int(datetime(2026, 10, 21, 6, 41, tzinfo=UTC).timestamp())
+    assert stable.check_claim(env, _git()) == {
+        "claim_tag": CANARY, "tag": CANARY, "version": CANARY[1:], "attempt": None, "commit": COMMIT,
+        "claim_object": TAG_OBJECT, "autopublish": True, "lanes": lane_set.CANARY,
+        "claim_epoch": epoch, "policy": "canary",
+    }
+    # The canary's tag is its payload tag and archive alike.
+    assert stable.stable_context({**env, "RELEASE_TAG": CANARY}, _git())[:2] == (CANARY, COMMIT)
+    # A release branch may cut a stable release, never a canary.
+    with pytest.raises(ValueError, match="not on main"):
+        stable.check_claim(env, _git(branches=""))
+    with pytest.raises(ValueError, match="annotated"):
+        stable.check_claim(env, _git(kind="commit"))
+    with pytest.raises(ValueError, match="tag moved"):
+        stable.check_claim({**env, "RELEASE_CLAIM_OBJECT": "c" * 40}, _git())
+    # Only the default-branch controller may admit one.
+    with pytest.raises(ValueError, match="controller"):
+        stable.check_claim({**env, "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace(
+            "stable-release", "desktop-bundled-release")}, _git())
+    with pytest.raises(ValueError, match="calendar"):
+        stable.canary_epoch("v1.2.3+canary.20260231T000000Z")
+
+
+def _admitted():
+    return {"claim_tag": CANARY, "tag": CANARY, "version": CANARY[1:], "attempt": None, "commit": COMMIT,
+            "claim_object": TAG_OBJECT, "autopublish": True, "lanes": lane_set.CANARY,
+            "claim_epoch": stable.canary_epoch(CANARY), "policy": "canary"}
+
+
+@pytest.mark.parametrize("draft", [True, False])
+def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_path, monkeypatch, draft):
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    env = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_REPOSITORY": "o/r"}
+    monkeypatch.setattr(stable, "check_claim", lambda _env: _admitted())
+    release = {"tagName": CANARY, "isDraft": draft, "isPrerelease": True, "databaseId": 7}
+    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
+    stable.admit(env)
+    emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert emitted["policy"] == "canary"
+    assert emitted["docker-tag"] == "v1.2.3-canary.20261021T064100Z"
+    assert lane_set.from_flags(json.loads(emitted["lanes"])) == frozenset(lane_set.NAMES)
+    jobs = json.loads(emitted["jobs"])
+    assert jobs == lane_set.jobs_to_run(lane_set.NAMES, "canary")
+    assert jobs["publish-canary"] and not jobs["publish-bundles"]
+    assert jobs["candidates-termux"] and jobs["termux-checks"]
+    assert "## Canary candidate" in summary.read_text(encoding="utf-8")
+    # A canary owns a prerelease; a non-prerelease would be stable's draft.
+    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps({**release, "isPrerelease": False}))
+    with pytest.raises(ValueError, match="prerelease"):
+        stable.admit(env)
+
+
+def test_privileged_phases_see_the_canary_channel(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    monkeypatch.setattr(stable, "stable_context", lambda _env: (CANARY, COMMIT, _admitted()))
+    stable.verify({"GITHUB_OUTPUT": str(output)})
+    emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert emitted == {"tag": CANARY, "sha": COMMIT, "channel": "canary", "payload-version": CANARY[1:],
+                       "release-epoch": str(stable.canary_epoch(CANARY))}
+
+
+def canary_candidates(tag=CANARY, *, digest="2" * 64):
+    from scripts.releases.desktop_targets import MANIFEST_TARGETS
+    from scripts.termux.deb_version import deb_version_for_tag
+
+    quad = stable.canary_windows_version(tag)
+    packages = []
+    for platform, arch in MANIFEST_TARGETS:
+        suffix = ".msixbundle" if platform == "windows" else ".zip"
+        packages.append({
+            "platform": platform, "arch": arch, "tag": tag, "commit": COMMIT,
+            "identity": "NousResearch.HermesBundledCanary",
+            "version": quad if platform == "windows" else tag[1:],
+            **({"executableVersion": quad, "publisher": "CN=Test", "applicationId": "HermesBundledCanary"}
+               if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
+            "artifact": {"sha256": digest, "url": f"{BASE}/releases/tag/{tag}/{arch}{suffix}"},
+        })
+    packages.append({"platform": "termux", "arch": "aarch64", "tag": tag, "commit": COMMIT,
+                     "identity": "hermes-agent", "version": deb_version_for_tag(tag),
+                     "artifact": {"sha256": digest, "url": f"{BASE}/releases/tag/{tag}/deb/hermes.deb"}})
+    return {"schema": 2, "tag": tag, "commit": COMMIT, "releaseEpoch": stable.canary_epoch(tag),
+            "archive": tag, "packages": packages,
+            "smoke_results": {job: {"result": "success"} for job in stable.SMOKE_JOBS}}
+
+
+def test_canary_candidates_carry_the_canary_package_versions():
+    from scripts.releases import channel_releases
+
+    # yy.mmdd.hh.mmss, the quad scripts/msix-shared.mjs canaryPackageVersionAt stamps.
+    assert stable.canary_windows_version(CANARY) == "26.1021.6.4100"
+    assert channel_releases.canary_windows_version(CANARY) == "26.1021.6.4100"
+    manifest = canary_candidates()
+    rows = stable.validate_candidates(manifest, CANARY, COMMIT, BASE, stable.canary_epoch(CANARY), archive=CANARY)
+    assert set(rows) == set(lane_set.TARGET_LANE)
+    stable.require_targets_match_claim(manifest, lane_set.CANARY)
+    stable.require_smokes_match_claim(manifest, lane_set.CANARY)
+    # A canary stamped with stable's quad, or a Termux package without its ~canary version, is refused.
+    wrong = copy.deepcopy(manifest)
+    for row in wrong["packages"]:
+        if row["platform"] == "windows":
+            row["version"] = row["executableVersion"] = stable.stable_windows_version(wrong["releaseEpoch"])
+    with pytest.raises(ValueError, match="Windows candidate version"):
+        stable.validate_candidates(wrong, CANARY, COMMIT, BASE, archive=CANARY)
+    plain = copy.deepcopy(manifest)
+    plain["packages"][-1]["version"] = f"{CANARY[1:]}-1"
+    with pytest.raises(ValueError, match="Termux"):
+        stable.validate_candidates(plain, CANARY, COMMIT, BASE, archive=CANARY)
+    # Only the stable shape may ever take a final receipt tag.
+    stable.require_release_identity(CANARY, COMMIT)
+    with pytest.raises(ValueError, match="stable payload"):
+        stable.require_stable_identity(CANARY, COMMIT)
+
+
+def test_a_canary_upgrades_from_the_previous_canary_and_never_backwards():
+    old, new = canary_candidates(EARLIER, digest="1" * 64), canary_candidates()
+    for row in old["packages"]:
+        row["commit"] = "9" * 40
+    old["commit"] = "9" * 40
+    rows = stable.plan_transitions(old, new, BASE)
+    assert {row["target"] for row in rows} == {"windows-x64", "windows-arm64", "macos-arm64"}
+    # Both canaries share the 1.2.3 core: the macOS order comes from the tag stamps.
+    mac = next(row for row in rows if row["target"] == "macos-arm64")["transition"]
+    assert (mac["old"]["version"], mac["new"]["version"]) == (EARLIER[1:], CANARY[1:])
+    with pytest.raises(ValueError, match="must increase"):
+        stable.plan_transitions(new, old, BASE)
+
+
+def test_the_canary_upgrade_baseline_is_the_last_published_canary(monkeypatch):
+    previous = canary_candidates(EARLIER)
+    read = []
+    monkeypatch.setattr(stable, "read_manifest", lambda url, **_kw: read.append(url) or previous)
+    release = {"tagName": EARLIER, "isDraft": False, "isPrerelease": True}
+    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
+    env = {"GITHUB_REPOSITORY": "o/r"}
+    assert stable._published_baseline(env, BASE, "canary") is previous
+    assert read == [f"{BASE}/releases/canary/release-candidates.json"]
+    # A stable release is never a canary's OLD, and a canary is never stable's.
+    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps({**release, "isPrerelease": False}))
+    with pytest.raises(ValueError, match="published canary"):
+        stable._published_baseline(env, BASE, "canary")
+    monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
+    with pytest.raises(ValueError, match="published stable"):
+        stable._published_baseline(env, BASE, "stable")
+    assert read[-1] == f"{BASE}/releases/stable/release-candidates.json"
+
+
+def test_the_canary_gate_expects_its_own_publication_job():
+    required = ["acceptance", "publish-docker", "publish-bundles", "publish-canary"]
+    assert stable.gate_expectations(required, lane_set.CANARY, "canary") == {
+        "acceptance": "success", "publish-docker": "success",
+        "publish-bundles": "skipped", "publish-canary": "success"}
+    assert stable.gate_expectations(required, lane_set.NAMES, "stable") == {
+        "acceptance": "success", "publish-docker": "success",
+        "publish-bundles": "success", "publish-canary": "skipped"}
+    canary_needs = {"acceptance": {"result": "success"}, "publish-docker": {"result": "success"},
+                    "publish-bundles": {"result": "skipped"}, "publish-canary": {"result": "success"}}
+    stable.require_gate(canary_needs, required, lanes=lane_set.CANARY, policy="canary")
+    # Read as stable (a missing POLICY), the same canary run fails closed.
+    with pytest.raises(ValueError, match="publish-bundles=skipped"):
+        stable.require_gate(canary_needs, required, lanes=lane_set.CANARY)
+
+
+def test_canary_images_get_their_own_tag_and_aliases_and_never_stable_ones():
+    from scripts.releases import docker
+
+    tag = stable.docker_tag(CANARY)
+    assert tag == "v1.2.3-canary.20261021T064100Z" and stable.docker_tag("rc.2-v1.2.3") == "rc.2-v1.2.3"
+    assert docker.is_canary_image_tag(tag) and not docker.is_canary_image_tag(CANARY)
+    assert docker.require_release_image_tag(tag) == tag
+    assert docker.build_manifest(tag, COMMIT, {"amd64": "1" * 64, "arm64": "2" * 64})["tag"] == tag
+    with pytest.raises(docker.DockerReleaseError):
+        docker.require_stable_tag(tag)
+    with pytest.raises(docker.DockerReleaseError):
+        docker.promote_stable(tag, "sha256:" + "1" * 64, "v1.2.3", run=lambda _argv: "")
+    with pytest.raises(docker.DockerReleaseError):
+        docker.promote_canary("rc.2-v1.2.3", run=lambda _argv: "")
+
+    digests = {"": "sha256:" + "1" * 64, "-desktop": "sha256:" + "2" * 64}
+    aliases = dict(digests)
+    created = []
+
+    def run(argv):
+        if argv[3] == "inspect":
+            reference = argv[4].split(":", 1)[1]
+            for suffix in ("-desktop", ""):
+                if reference.endswith(suffix):
+                    name = reference[: len(reference) - len(suffix)] if suffix else reference
+                    break
+            return digests[suffix] if name == tag else aliases.get(suffix) if name == "canary" else "missing"
+        created.append(argv)
+        return ""
+
+    docker.promote_canary(tag, run=run, sleep=lambda _seconds: None)
+    targets = [argv[argv.index("-t") + 1] for argv in created]
+    assert targets == [f"{docker.IMAGE}:canary", f"{docker.IMAGE}:canary-desktop"]
+    assert not any("stable" in target or "latest" in target for target in targets)
+
+
+def test_canary_promotion_writes_only_canary_feeds(tmp_path, monkeypatch):
+    from scripts.bundles import release_artifacts
+    from scripts.releases import r2
+
+    manifest = canary_candidates()
+    manifest["files"] = [{"path": row["artifact"]["url"].rsplit(f"/{CANARY}/", 1)[1],
+                          "url": row["artifact"]["url"], "sha256": row["artifact"]["sha256"]}
+                         for row in manifest["packages"]]
+    materialized, appinstallers, pointers, finalized = [], [], [], []
+    monkeypatch.setattr(release_artifacts, "materialize", lambda _m, root, **kw: materialized.append(kw))
+    monkeypatch.setattr(r2, "finalize", lambda **kw: finalized.append(kw))
+
+    def appinstaller(root, **kw):
+        appinstallers.append(kw)
+        (root / "canary.appinstaller").write_text("<AppInstaller/>", encoding="utf-8")
+
+    monkeypatch.setattr(release_artifacts, "publish_canary_appinstaller", appinstaller)
+    monkeypatch.setattr(release_artifacts, "_pointer_publisher", lambda tag, base: (
+        lambda key, file, upload=True: pointers.append((key, upload))))
+    apt = tmp_path / "apt" / "dists" / "hermes-canary"
+    apt.mkdir(parents=True)
+    (apt / "InRelease").write_text("signed", encoding="utf-8")
+    release_artifacts.promote(manifest, tmp_path, BASE)
+
+    assert release_artifacts.release_channel(CANARY) == "canary"
+    assert release_artifacts.release_channel("v1.2.3") == "stable"
+    assert finalized == [{"tag": CANARY, "dir": tmp_path, "archive": CANARY, "verify_bytes": False}]
+    # The canary feed keeps its accepted bundle beside it; the descriptor is read back, not re-uploaded.
+    assert materialized[1]["only"] == {"arm64.msixbundle"}
+    assert appinstallers[0]["tag"] == CANARY and appinstallers[0]["version"] == "26.1021.6.4100"
+    assert pointers == [("releases/win32/canary/canary.appinstaller", False),
+                        ("releases/termux/canary/dists/hermes-canary/InRelease", True)]
+    assert not any("stable" in key for key, _upload in pointers)
+
+
+def _custody_run(*, default="main"):
+    ref = f"refs/tags/{CANARY}"
+
+    def run(argv):
+        if argv[:2] == ["gh", "api"]:
+            return default
+        if argv[:3] == ["gh", "release", "view"]:
+            return json.dumps({"tagName": CANARY, "isDraft": True, "isPrerelease": True})
+        if argv[1] == "rev-parse":
+            return TAG_OBJECT if argv[-1].endswith("^{tag}") else COMMIT
+        if argv[1] == "ls-remote":
+            return f"{TAG_OBJECT}\t{ref}\n{COMMIT}\t{ref}^{{}}"
+        return ""
+
+    return run
+
+
+def test_the_canary_controller_custody_is_the_stable_pipeline_after_its_accepted_candidate():
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases import channel_releases
+
+    needs = {"admit": {"result": "success"}, "candidate-manifest": {"result": "success"},
+             # acceptance is not a need of publish-canary: a red suite never blocks it.
+             }
+    env = {**CONTROLLER_ENV, "RELEASE_TAG": CANARY, "RELEASE_TAG_OBJECT": TAG_OBJECT,
+           "RELEASE_COMMIT": COMMIT, "RELEASE_NEEDS": json.dumps(needs), "GITHUB_ACTIONS": "true"}
+    assert channel_releases.admit_transaction("canary-release", env, run=_custody_run()) == (CANARY, COMMIT)
+    assert channel_releases.canary_from_controller(env)
+    failed = {**needs, "candidate-manifest": {"result": "failure"}}
+    with pytest.raises(ValueError, match="candidate-manifest=failure"):
+        channel_releases.admit_transaction("canary-release", {**env, "RELEASE_NEEDS": json.dumps(failed)},
+                                           run=_custody_run())
+    # The controller ref of another branch is neither the controller nor the legacy workflow.
+    with pytest.raises(ChannelError, match="existing release workflow"):
+        channel_releases.admit_transaction("canary-release", env, run=_custody_run(default="develop"))
+    # The legacy direct dispatch keeps its own native-leg requirements.
+    legacy = {**env, "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace(
+        "stable-release", "desktop-bundled-release")}
+    assert not channel_releases.canary_from_controller(legacy)
+    with pytest.raises(ValueError, match="build-win32-x64=missing"):
+        channel_releases.admit_transaction("canary-release", legacy, run=_custody_run())
+    # A stable tag can never ride the canary policy.
+    with pytest.raises(ChannelError, match="policy/tag mismatch"):
+        channel_releases.admit_transaction("canary-release", {**env, "RELEASE_TAG": "v1.2.3"},
+                                           run=_custody_run())
+
+
+def test_the_pruner_keeps_the_live_canary_however_old(monkeypatch, capsys):
+    from scripts.releases import r2
+
+    live, stale = "v1.2.3+canary.20260101T000000Z", "v1.2.2+canary.20251201T000000Z"
+    keys = [f"releases/tag/{live}/x64.msixbundle", f"releases/termux/canary/pool/{live}/hermes.deb",
+            f"releases/tag/{stale}/x64.msixbundle", "releases/canary/release-candidates.json"]
+    monkeypatch.setattr(r2, "credentials", lambda: (None, "https://r2.example", "bucket"))
+    monkeypatch.setattr(r2, "list_objects", lambda **_kw: {"keys": keys, "lastModified": {}})
+    pointer = json.dumps({"archive": live})
+    monkeypatch.setattr(r2, "get_object", lambda *_args, **_kw: pointer)
+    r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())
+    doomed = capsys.readouterr().out
+    assert stale in doomed and live not in doomed
+    # An unreadable pointer could hide the live canary: refuse to prune at all.
+    monkeypatch.setattr(r2, "get_object", lambda *_args, **_kw: None)
+    with pytest.raises(RuntimeError, match="live canary"):
+        r2.prune(14, dry_run=True, now_epoch=datetime(2026, 10, 21, tzinfo=UTC).timestamp())

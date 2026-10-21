@@ -279,12 +279,17 @@ test('store inherits the bundled app identity (shared userData) but swaps the MS
   assert.equal(store.channel, null)
 })
 
-test('nonstable builds cannot claim the official Store package', async (): Promise<void> => {
+test('commit builds cannot claim the official Store package; a canary builds one it never submits', async (): Promise<void> => {
   process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
-  await assert.rejects(identityForVariant('store'), /Store.*stable/)
+  const canary: ProductIdentity = await identityForVariant('store')
+  // The canary runs every stable lane, so it packages the Store bundle too; it keeps its
+  // canary app name so the staged package can never pass for a stable one.
+  assert.equal(canary.store, true)
+  assert.equal(canary.channel, null)
+  assert.match(canary.displayName, /Canary$/)
   delete process.env.HERMES_PAYLOAD_TAG
   process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
-  await assert.rejects(identityForVariant('store'), /Store.*stable/)
+  await assert.rejects(identityForVariant('store'), /Store.*release tags/)
 })
 
 test('store carries the Partner Center MSIX identity and no other variant does', async (): Promise<void> => {

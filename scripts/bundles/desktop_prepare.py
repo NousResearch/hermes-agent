@@ -120,7 +120,8 @@ class BuildRequest:
                 raise ValueError("bundle defaults conflict with channel request")
             commit = channel_request["commit"]
             bundle_env = channel_request["bundleEnv"]
-        if variant == "store" and (commit or not tag or channel_for_tag(tag) != "stable"):
+        # A canary builds the Store package as stable does (it runs every lane); it never submits it.
+        if variant == "store" and (commit or not tag or channel_for_tag(tag) not in ("stable", "canary")):
             raise ValueError("Store packaging requires a stable release tag")
         if variant not in {"bundled", "store", "light"}:
             raise ValueError("invalid desktop variant")

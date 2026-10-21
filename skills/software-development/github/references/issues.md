@@ -95,37 +95,52 @@ for i in json.load(sys.stdin)['items']:
 
 **With gh:**
 
+Write the body to a file first — with the **write_file tool**, not with echo/heredoc
+inside a shell string — then hand it to gh as a file:
+
 ```bash
+# issue-body.md holds the Markdown body (## Description, ## Steps to Reproduce,
+# ## Expected Behavior, ...). Write it into the working directory with the
+# write_file tool and pass the same relative path — the file tool and the shell
+# resolve it against that one directory. Delete it when the call is done.
 gh issue create \
   --title "Login redirect ignores ?next= parameter" \
-  --body "## Description
-After logging in, users always land on /dashboard.
-
-## Steps to Reproduce
-1. Navigate to /settings while logged out
-2. Get redirected to /login?next=/settings
-3. Log in
-4. Actual: redirected to /dashboard (should go to /settings)
-
-## Expected Behavior
-Respect the ?next= query parameter." \
+  --body-file issue-body.md \
   --label "bug,backend" \
   --assignee "username"
 ```
 
 **With curl:**
 
+Write the JSON body to a file the same way, then post the file:
+
 ```bash
+# issue-body.json holds the whole request payload ({ "title": ..., "body": ...,
+# "labels": [...] }), written with the write_file tool.
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "Authorization: token ***" \
   https://api.github.com/repos/$OWNER/$REPO/issues \
-  -d '{
-    "title": "Login redirect ignores ?next= parameter",
-    "body": "## Description\nAfter logging in, users always land on /dashboard.\n\n## Steps to Reproduce\n1. Navigate to /settings while logged out\n2. Get redirected to /login?next=/settings\n3. Log in\n4. Actual: redirected to /dashboard\n\n## Expected Behavior\nRespect the ?next= query parameter.",
-    "labels": ["bug", "backend"],
-    "assignees": ["username"]
-  }'
+  --data-binary @issue-body.json
 ```
+
+`--data-binary`, not `-d @file`: `-d` strips newlines from a file's contents.
+
+### Long bodies: hand off via a file
+
+Any long natural-language body embedded inline in generated source — `--body "..."`,
+inline Python, a shell wrapper — risks the payload's punctuation colliding with the
+script's or shell's own quoting: an apostrophe closes a single-quoted literal
+(`SyntaxError: unterminated string literal`) or a shell quote (`unexpected EOF while
+looking for matching '`), and the action dies before it runs. The rule: write the body
+to a file with write_file, then pass the file — `gh issue create --body-file <file>`,
+`gh pr create --body-file <file>`, or `gh api -F body=@<file>` (`-` reads stdin). Both
+steps have to resolve the path the same way, so prefer a relative path in the working
+directory: a bare `/tmp/...` is not one on Windows, where a native tool never sees bash's
+`/tmp` and the path resolves against the current drive instead. Never
+ASCII-normalize the payload: typographic punctuation (apostrophes, smart quotes, em
+dashes) is legitimate content — moving it out of the source *is* the fix. Acceptable
+inline fallback when a file isn't practical: the quoted-heredoc form
+`--body "$(cat <<'EOF' ... EOF)"` (see `code-review.md`).
 
 ### Bug Report Template
 
@@ -224,6 +239,9 @@ curl -s -X POST \
 ```bash
 gh issue comment 42 --body "Investigated — root cause is in auth middleware. Working on a fix."
 ```
+
+Short one-line bodies like this are fine inline; for anything longer, hand the body off
+via a file (see "Long bodies: hand off via a file" above).
 
 **With curl:**
 

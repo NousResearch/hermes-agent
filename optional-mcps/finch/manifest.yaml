@@ -32,4 +32,4 @@ post_install: |
   approve the request with `finch mcp authorize`. Restart your Hermes
   session so the Finch tools are loaded.
 
-  Each listed agent includes 10 free runs per account until Nov 17, 2026.
+  Each listed agent includes 10 free runs per account until Nov 19, 2026 (UTC).

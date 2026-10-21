@@ -36,5 +36,16 @@ export const ruNotices = {
     message:
       'Hermes может не давать компьютеру засыпать, пока выполняется задача. Экран по-прежнему выключается, а от батареи компьютер всё равно может уснуть.',
     action: 'Не засыпать во время работы'
+  },
+  billingBlock: {
+    titleNous: 'Кредиты Nous закончились',
+    titleProvider: provider => `Кредиты закончились — ${provider}`,
+    fallbackMessage: 'В вашем аккаунте закончились кредиты. Пополните баланс, чтобы продолжить.',
+    openBilling: 'Открыть биллинг',
+    addCredits: 'Пополнить кредиты',
+    dismiss: 'Скрыть'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

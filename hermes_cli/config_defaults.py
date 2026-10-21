@@ -311,7 +311,7 @@ DEFAULT_CONFIG = {
         # monospace"). Empty = built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono',
         # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
         "font_family": "",
-        "timeout": 180,
+        "timeout": 180, "max_foreground_timeout": 600,  # cap on a foreground timeout=; above it -> tracked background
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,

@@ -245,7 +245,7 @@ auxiliary:
     model: google/gemini-3-flash-preview
 ```
 
-The judge call is small (~200 output tokens) and runs once per turn, so a cheap fast model is usually the right call.
+The judge call is small (~200 output tokens) and runs once per turn, so a cheap fast model is usually the right call. A slow local judge can take longer than the default 60s request timeout; raise it with `auxiliary.goal_judge.timeout` (seconds).
 
 ## Example walkthrough
 

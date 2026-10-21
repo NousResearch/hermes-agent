@@ -41,9 +41,11 @@ def find_or_start_operation(
     profile_home: str | None,
     alias: str | None = None,
     repair_id: str | None = None,
+    initiator: str | None = None,
 ) -> AccountOperationStart:
     """``alias`` names the one account of ``names[0]`` to connect; ``repair_id`` names the existing
-    account a reconnect repairs. The caller passes one name with either."""
+    account a reconnect repairs. The caller passes one name with either. ``initiator`` goes on the
+    connect request; none leaves the gateway to record it as unknown."""
     with _start_lock:
         if operation := _matching_open_operation(names, alias=alias, repair_id=repair_id, profile_home=profile_home):
             return AccountOperationStart(operation=operation, started=False)
@@ -54,7 +56,7 @@ def find_or_start_operation(
         started = AccountOperationStart(operation=operation, started=True)
         context = contextvars.copy_context()
         thread = threading.Thread(
-            target=lambda: context.run(_run, started, action),
+            target=lambda: context.run(_run, started, action, initiator),
             daemon=True,
             name="connector-account-operation",
         )
@@ -67,11 +69,15 @@ def find_or_start_operation(
     return started
 
 
-def _run(start: AccountOperationStart, action: str) -> None:
+def _run(start: AccountOperationStart, action: str, initiator: str | None) -> None:
+    from hermes_logging import clear_session_context, set_session_context
+
+    # Tag this thread's log lines with the operation, the way a turn thread carries its session.
+    set_session_context(start.operation.session_key)
     try:
         drive_operation(
             start.operation,
-            managed.managed_kind(managed.managed_client(), action, force=False),
+            managed.managed_kind(managed.managed_client(initiator=initiator), action, force=False),
             connection_callback=lambda _payload: start.done.set(),
             tick_seconds=managed.WATCH_TICK_SECONDS,
             with_urls_in_result=False,
@@ -81,6 +87,7 @@ def _run(start: AccountOperationStart, action: str) -> None:
         start.failed = True
     finally:
         start.done.set()
+        clear_session_context()
 
 
 def wait_for_prepare(start: AccountOperationStart) -> bool:

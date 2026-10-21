@@ -23,7 +23,7 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """True when the running gateway ``pid`` was launched for an external supervisor.
 
     The supervisor is SELF-declared by the gateway from its launch context: the control socket
-    ``identify`` answer (any ``supervisor`` other than ``"manual"`` — a custom systemd unit or
+    ``identify`` answer (any launch supervisor other than ``"manual"`` — a custom systemd unit or
     launchd agent sets INVOCATION_ID / the XPC name, so the gateway answers ``systemd``/``launchd``
     even though ``_installed_service_kind_for`` saw no canonical unit, and the same supervisor owns
     the respawn), OR the ``--external-supervisor`` argv marker read live (same marker
@@ -32,13 +32,14 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """
     if not pid or pid <= 1:
         return False
-    from gateway.control_socket import identify_gateway
+    from gateway.control_socket import identify_gateway, launch_supervisor
     from gateway.status import _get_process_hermes_home, read_runtime_status
     from hermes_cli.gateway import _capture_gateway_argv
 
     home = home or _get_process_hermes_home()
     identity = identify_gateway(home) or {}
-    if identity.get("pid") == pid and identity.get("supervisor") not in (None, "", "manual"):
+    # Not ``identity["supervisor"]``: the runtime protocol reports a manual gateway as "none".
+    if identity.get("pid") == pid and launch_supervisor(identity) not in (None, "manual"):
         return True
     argv = _capture_gateway_argv(pid)
     if argv is None:
@@ -99,5 +100,38 @@ def restart_externally_supervised_gateway(supervised_pid: int) -> None:
         "✗ Not stopping or foreground-running a supervisor-owned gateway.",
         "  Check the supervisor (it may be unloaded, wedged, or stopped retrying),",
         "  then rerun once it is healthy: hermes gateway restart",
+    )
+    sys.exit(1)
+
+
+def refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+    """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
+
+    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the fallback's
+    stop + in-process ``run_gateway`` SIGKILLed a live service-managed gateway and spawned an
+    unsupervised orphan in the caller's cgroup while the unit flapped against the stolen lock
+    (#126474). Reuses the dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone
+    (the caller itself started under some unit) never proves ownership.
+    """
+    if not pid or pid <= 1:
+        return
+    from hermes_cli import main_dashboard as _dash
+
+    owner = _dash._systemd_owner_for_pid(pid)
+    if owner is None:
+        return
+    unit, scope = owner
+    cmds = _dash._systemd_restart_commands(unit, scope)
+    from hermes_cli.gateway import _print_lines
+    _print_lines(
+        "",
+        f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
+        "  `hermes gateway restart` cannot restart it from here: the fallback would",
+        "  kill a live gateway and spawn an unsupervised replacement in this shell's",
+        "  cgroup while the unit keeps failing against the stolen lock.",
+        "  Restart it through its unit instead:",
+        *(f"    {c}" for c in cmds),
+        "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
+        "  removes the legacy unit so the canonical one can own the gateway.)",
     )
     sys.exit(1)

@@ -42,7 +42,8 @@ def _entry(*, origin=True) -> SessionEntry:
 
 def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
-    runner.session_store = SimpleNamespace()
+    # The scheduler's synchronous profile check reads the store; dispatch reads the async facade.
+    runner.session_store = SimpleNamespace(lookup_by_session_key=lambda _key: None)
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )
@@ -454,3 +455,31 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     assert manager.has_gateway_message_injector is True
     assert manager.inject_gateway_message(value="kept") is True
     newer_injector.assert_called_once_with(value="kept")
+
+
+@pytest.mark.asyncio
+async def test_under_a_session_authority_injection_enters_the_durable_fifo(monkeypatch):
+    """With an authority serving the scope, a plugin turn is committed as a trusted producer
+    admission into the session's FIFO; it never runs on the in-process adapter lane, and a
+    refused admission is reported as not routed instead of falling back to that lane."""
+    import gateway.session_authorities as authorities
+    from hermes_state_runtime import RuntimeStoreError
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    entry = _entry()
+    runner = _runner(entry, adapter)
+    authority = SimpleNamespace(admit_automation=AsyncMock())
+    monkeypatch.setattr(authorities, "active_authority", lambda _runner: authority)
+
+    assert await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="check the deployment", plugin_id="notify-plugin") is True
+    adapter.handle_message.assert_not_awaited()
+    admitted_adapter, event, identity = authority.admit_automation.await_args.args
+    assert admitted_adapter is adapter and event.internal is True and event.message_id == identity
+    assert event.metadata == {"gateway_session_key": entry.session_key, "gateway_session_id": entry.session_id}
+    assert event.text == "check the deployment" and "notify-plugin" in identity
+
+    authority.admit_automation.side_effect = RuntimeStoreError("not_found")
+    assert await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key, content="again", plugin_id="notify-plugin") is False
+    adapter.handle_message.assert_not_awaited()

@@ -78,6 +78,7 @@ ICLOUD_DIRS: Final[Tuple[Path, ...]] = (
     Path.home() / "Library/Mobile Documents/iCloud~com~hermes~HermesCompanion",
     Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/HermesCompanion",
     Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/Hermes Companion",
+    Path.home() / ".hermes/hermes-companion/data",
 )
 
 
@@ -369,6 +370,9 @@ def icloud_directories(override: Optional[str]) -> List[Path]:
     env = os.environ.get("HERMES_COMPANION_ICLOUD_DIR", "").strip()
     if env:
         return [expand(env)]
+    storage_env = os.environ.get("HERMES_COMPANION_STORAGE_DIR", "").strip()
+    if storage_env:
+        return [expand(storage_env)]
     return list(ICLOUD_DIRS)
 
 
@@ -3232,11 +3236,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lon", type=float)
     parser.add_argument("--radius", type=float, default=150.0)
     parser.add_argument("--notes", default="")
+    parser.add_argument("--serve", action="store_true", help="Start the Direct Connection HTTP daemon (Linux, Windows, macOS)")
+    parser.add_argument("--pair", action="store_true", help="Display pairing URL, auth token, and QR code for iOS Direct Connection")
+    parser.add_argument("--host", default="0.0.0.0", help="Host address to bind HTTP daemon (default 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8787, help="Port to listen on for HTTP daemon (default 8787)")
+    parser.add_argument("--token", help="Bearer token for HTTP daemon (generated if missing)")
+    parser.add_argument("--storage-dir", type=Path, help="Storage directory for HTTP daemon telemetry")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -> int:
-    args = build_parser().parse_args(argv)
+    if argv is None:
+        argv_list = list(sys.argv[1:])
+    else:
+        argv_list = list(argv)
+
+    if argv_list and argv_list[0] in ("serve", "pair"):
+        argv_list[0] = f"--{argv_list[0]}"
+
+    args = build_parser().parse_args(argv_list)
+
+    if getattr(args, "serve", False):
+        try:
+            from companion_server import run_server
+        except ImportError:
+            from server.companion_server import run_server
+        run_server(host=args.host, port=args.port, token=args.token, storage_dir=args.storage_dir)
+        return 0
+
+    if getattr(args, "pair", False):
+        try:
+            from companion_server import run_pairing_assistant
+        except ImportError:
+            from server.companion_server import run_pairing_assistant
+        run_pairing_assistant(port=args.port, token=args.token)
+        return 0
     if args.places is None:
         args.places = default_places_file()
     else:

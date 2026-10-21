@@ -43,14 +43,17 @@ Do not use this skill for a generic map, a route, or weather. Do not invent a pl
 
 ## Prerequisites
 
-- **macOS host required**: The Hermes agent must run directly on macOS under the user's account. Non-macOS environments (Linux, Windows, WSL, Docker/containerized runtimes) cannot access Apple's local iCloud Drive (`~/Library/Mobile Documents/`).
-- **Same Apple ID**: Both iPhone and Mac must be signed into the same Apple ID with iCloud Drive turned on.
-- **Hermes CLI (`hermes`) in PATH**: Required for autonomous background replies via LaunchAgent (`/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, or `/Applications/Hermes.app/Contents/MacOS`).
+- **macOS host or Direct Connection**:
+  - **Apple iCloud (Default on macOS)**: Syncs seamlessly via the private iCloud Drive container (`~/Library/Mobile Documents/`). Requires macOS signed into the same Apple ID.
+  - **Direct Connection (Linux, Windows, WSL, macOS)**: iPhone pushes telemetry and Post letters directly over HTTP(S) to the host daemon (`companion.py --serve`). No iCloud or Apple ID required on the host.
+- **Hermes CLI (`hermes`) in PATH**: Required for autonomous background replies via LaunchAgent or systemd (`/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, or `/Applications/Hermes.app/Contents/MacOS`).
 - **The Hermes Companion iPhone app**: Product page: [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
-- **First-run sequence**: Open the iPhone app once and allow Location (upgrade to Always) so it seeds the iCloud container. Apple creates the local container on your Mac only after the phone writes its first file.
-- **Diagnostic tool**: Run `python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --doctor` to verify OS, iCloud access, CLI discovery, and permissions in seconds.
+- **First-run sequence**:
+  - **iCloud**: Open the iPhone app once and allow Location (upgrade to Always) so it seeds the iCloud container. Apple creates the local container on your Mac only after the phone writes its first file.
+  - **Direct Connection**: Run `companion.py --pair` on the host to output the server URL, Bearer token, and ASCII QR code. In the iPhone app, switch Settings -> Sync Provider to Direct Connection and scan the QR code.
+- **Diagnostic tool**: Run `python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --doctor` to verify OS, storage access, CLI discovery, and permissions in seconds.
 
-If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including an existing Hermes profile `state/places.json` when exactly one profile has that file. Places added in the iOS app (`Places` tab) synchronize directly into the iCloud container (`Documents/places.json`) and are automatically merged with any profile places.
+If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including `~/.hermes/hermes-companion/data` or an existing Hermes profile `state/places.json`. Places added in the iOS app (`Places` tab) synchronize directly into the data container (`places.json`) and are automatically merged with any profile places.
 
 ## How to Run
 
@@ -119,6 +122,18 @@ Structured, timestamped logs land in `~/.hermes/logs/companion-inbox.error.log` 
 
 The sweep never skips a letter silently. Its heartbeat carries what it saw (`heartbeat: N cycles, last sweep took Xs, 2 pending, 1 unreadable`), and a `meta.json` or letter file that exists but cannot be read is reported with the reason (iCloud had not materialised its content, `EDEADLK` mid-sync) and re-requested for download, at most one line per 5 minutes per file. A letter the agent cannot answer is marked `status: failed` with `last_error`, `failed_at` and `dispatch_retries`; the iOS inbox shows that banner and its Retry resets the thread to `pending_agent`.
 
+### Direct Connection daemon & pairing (Linux, Windows, macOS)
+
+For users running on Linux, Windows, WSL, or preferring direct local network communication over iCloud:
+
+```bash
+# Display pairing ASCII QR code, endpoint URL, and Bearer token:
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --pair
+
+# Run the direct connection HTTP daemon in the foreground:
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --serve --port 8787
+```
+
 ## Quick Reference
 
 | Question | Command | Fields to trust |
@@ -132,6 +147,8 @@ The sweep never skips a letter silently. Its heartbeat carries what it saw (`hea
 | Check Hermes Post / Inbox | `companion.py --inbox --pending` | `thread_count`, `thread_id`, `subject`, `status` |
 | Read/reply to thread | `companion.py --thread ID` / `--reply ID` | chronological messages, `body`, `updated_at` |
 | Archive/delete thread | `companion.py --archive ID` / `--delete-thread ID` | `thread_id`, status confirmation |
+| Direct sync daemon | `companion.py --serve` | Starts HTTP sync daemon for non-iCloud hosts |
+| Direct sync pairing | `companion.py --pair` | Terminal QR code and JSON pairing token |
 | System diagnostics | `companion.py --doctor` | OS, iCloud container, permissions, CLI paths |
 
 `movement_reason` is why the phone accepted the last write: `moved`, `distance`, or `no_motion_reading`. `absent` means an older file from before that field existed.

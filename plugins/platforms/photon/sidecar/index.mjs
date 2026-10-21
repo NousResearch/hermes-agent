@@ -1040,9 +1040,9 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/probe") {
       // Upstream liveness probe. Drives a cheap unary read over the SAME gRPC
       // channel the inbound stream uses. STRICT semantics: only a completed
-      // round-trip (resolution, or a not-found rejection for our synthetic
-      // id) counts as alive; any other rejection or a timeout is
-      // INCONCLUSIVE — never reported as alive.
+      // round-trip (resolution, a not-found rejection for our synthetic id,
+      // or a server-answered policy rejection) counts as alive; any other
+      // rejection or a timeout is INCONCLUSIVE — never reported as alive.
       const outcome = await probeUpstream();
       if (outcome.alive) {
         return ok(res, { alive: true, outcome: "alive" });

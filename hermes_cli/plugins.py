@@ -930,6 +930,29 @@ class PluginContext:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
 
+    def register_inbound_origin_projector(
+        self, *, platform: str, capture: Callable, validate: Callable,
+    ) -> PluginRegistration:
+        """Persist one bounded, plugin-validated claim from an admitted platform event.
+
+        ``capture(MessageEvent)`` returns a JSON object or None; ``validate(claim,
+        SessionSource)`` must accept it at capture and recovery. The gateway owns
+        identity, admission and size limits. A platform/profile has one projector
+        so plugins cannot silently replace another plugin's trust boundary.
+        """
+        if self._load_abandoned:
+            raise self._refuse("an inbound origin projector after load timed out")
+        if not isinstance(platform, str) or not platform or not callable(capture) or not callable(validate):
+            raise self._refuse("an invalid inbound origin projector")
+        key = platform.lower()
+        if key != platform or key in self._manager._inbound_origin_projectors:
+            raise self._refuse(f"a duplicate or invalid inbound origin projector for {platform!r}")
+        entry = (self.plugin_id, capture, validate)
+        return self._register_entry(
+            "inbound_origin_projector", key, self._manager._inbound_origin_projectors,
+            entry, "Plugin %s registered inbound origin projector: %s", key,
+        )
+
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
@@ -1190,6 +1213,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._approval_transports: dict[str, Any] = {}
         self._slack_action_handlers: list[tuple] = []
         self._platform_handler_factories: dict[str, list[tuple]] = {}
+        self._inbound_origin_projectors: dict[str, tuple[str, Callable, Callable]] = {}
         # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
         self._plugin_loaded_listeners: list[Callable] = []
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps

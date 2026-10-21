@@ -364,16 +364,17 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
         return None
     if not unresolved:
         return built_in
-    try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
-        from hermes_cli.config import read_raw_config
+    try:  # Share the platform resolver's MCP names (portable plugins included); a native config entry
+        from hermes_cli.config import read_raw_config  # wins on a collision, so a disabled native one still disables.
+        from hermes_cli.tools_config import enabled_mcp_server_names
         from tools.mcp_tool_common import mcp_server_enabled
         raw_cfg = read_raw_config()
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
-        mcp_names, mcp_disabled = set(), set()
-        for name, server_cfg in mcp_servers.items():
-            if isinstance(server_cfg, dict):
-                on = mcp_server_enabled(server_cfg)
-                (mcp_names if on else mcp_disabled).add(str(name))
+        mcp_names = enabled_mcp_server_names(raw_cfg)
+        mcp_disabled = {
+            str(name) for name, server_cfg in mcp_servers.items()
+            if isinstance(server_cfg, dict) and not mcp_server_enabled(server_cfg)
+        }
     except Exception:
         mcp_names, mcp_disabled = set(), set()
     mcp_valid = [name for name in unresolved if name in mcp_names]

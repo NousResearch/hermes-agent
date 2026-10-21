@@ -142,20 +142,19 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
 
 
 def _configured_mcp_servers() -> tuple[set[str], set[str]]:
-    """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
+    """``(enabled, disabled)`` MCP names — enabled includes portable plugins; both empty on any error."""
     try:
         from hermes_cli.config import read_raw_config
+        from hermes_cli.tools_config import enabled_mcp_server_names
         from tools.mcp_tool_common import mcp_server_enabled
 
         cfg = read_raw_config()
         mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-        enabled: set[str] = set()
-        disabled: set[str] = set()
-        for name, server_cfg in mcp_servers.items():
-            if not isinstance(server_cfg, dict):
-                continue
-            target = enabled if mcp_server_enabled(server_cfg) else disabled
-            target.add(str(name))
+        enabled = enabled_mcp_server_names(cfg)
+        disabled = {
+            str(name) for name, server_cfg in mcp_servers.items()
+            if isinstance(server_cfg, dict) and not mcp_server_enabled(server_cfg)
+        }
         return enabled, disabled
     except Exception:
         return set(), set()

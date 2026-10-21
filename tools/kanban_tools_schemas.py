@@ -290,6 +290,12 @@ KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
                 "Specific, actionable changes the implementer must make "
                 "before requesting another review."
         )),
+        "metadata": _prop("object", (
+                "Free-form dict of structured facts about this review — "
+                "e.g. {\"verdicts\": [{\"ac\": \"AC2\", \"head\": \"<sha>\", "
+                "\"verdict\": \"FAIL\", \"evidence\": \"<path>::<symbol>\"}]}. "
+                "Stored on the closed review run like kanban_complete's metadata."
+        )),
     },
     ["reason"],
 )

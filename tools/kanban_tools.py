@@ -922,9 +922,14 @@ def _handle_request_changes(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_request_changes", args)
     reason = _redact(
         _require_text(args, "reason", "reason is required — describe the changes needed"))
+    metadata = args.get("metadata")
+    _require_dict_metadata(metadata)
+    if metadata is not None:
+        metadata = _redact_metadata(metadata)
+        _check(metadata is not None, "metadata could not be safely serialized")
     with _board(args.get("board")) as (kb, conn):
         ok, detail = kb.request_changes(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid), metadata=metadata)
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 

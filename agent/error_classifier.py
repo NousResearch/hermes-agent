@@ -93,6 +93,11 @@ class ClassifiedError:
         """True when a ``billing`` verdict rests on an ambiguous body (#82154)."""
         return bool(self.error_context.get("billing_unverified"))
 
+    @property
+    def console_credit_wall(self) -> bool:
+        """True when a ``billing`` verdict carries Anthropic's Console credit wording (#133856)."""
+        return bool(self.error_context.get("console_credit_wall"))
+
 
 # ── Pattern tables (lowercased substrings) ──────────────────────────────
 
@@ -122,6 +127,11 @@ _BILLING_PATTERNS = (
 # for a content-filter rejection (#82154). Verdict stays ``billing`` but is
 # marked unverified so surfaces hedge and the pool uses a short cooldown.
 _UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
+
+# Anthropic's Console (API-credit) wording. On a request sent as an OAuth token it is what a Console
+# API key misread as OAuth gets (#133856); a genuine OAuth login has been seen getting it too, so the
+# guidance names the misread as a possibility, never as a verdict.
+_CONSOLE_CREDIT_WALL_PATTERNS = ("credit balance is too low",)
 
 # xAI's Grok credit-exhaustion code arrives as HTTP 403, not 402. Provider-
 # scoped on purpose: other providers' billing codes on a 403 stay auth failures.
@@ -599,10 +609,12 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
 
 
 def _billing_hints(error_msg: str) -> Verdict:
-    """Billing verdict carrying the #82154 ambiguity marker when applicable."""
+    """Billing verdict carrying the #82154 ambiguity marker or the #133856 Console-credit marker."""
     ctx: dict[str, Any] = {}
     if any(p in error_msg for p in _UNVERIFIED_BILLING_PATTERNS):
         ctx = {"billing_unverified": True, "possible_content_filter": True}
+    elif any(p in error_msg for p in _CONSOLE_CREDIT_WALL_PATTERNS):
+        ctx = {"console_credit_wall": True}
     return {**_V_BILLING, "error_context": ctx}
 
 

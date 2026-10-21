@@ -116,16 +116,25 @@ class _BackgroundLoop:
 
     @staticmethod
     def _drain_pending(loop: asyncio.AbstractEventLoop) -> None:
-        """Cancel tasks still queued on a stopped loop and let it run their cleanup to completion."""
+        """Cancel tasks still queued on a stopped loop and let it run their cleanup to completion.
+
+        A cancelled task's ``finally`` needs the loop running to make progress (``_cleanup_process``
+        reaps the server from there), so this has to happen before ``loop.close()``, not after.
+        """
         try:
             pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
             for task in pending:
                 task.cancel()
             if pending:
-                # The cap keeps a task that swallows CancelledError from wedging exit.
+                # Bounded: a task that swallows CancelledError would otherwise wedge exit.  One
+                # that outlives the cap is still reported by ``loop.close()`` as "Task was
+                # destroyed but it is pending!" -- the cap trades that warning for a guaranteed
+                # exit.  Work already handed to a worker thread (Windows' ``taskkill /T /F``, up
+                # to 15s) keeps running there once its await is cancelled; only the reaping
+                # bookkeeping after it is skipped.
                 loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
-        except Exception:
-            pass
+        except Exception:  # loop already closed, or run_until_complete refused to restart it
+            logger.debug("LSP background loop: draining pending tasks failed", exc_info=True)
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
         """Submit a coroutine to the loop and block for its result (or raise)."""

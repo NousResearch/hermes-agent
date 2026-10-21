@@ -1,3 +1,5 @@
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
 import type { StatusResponse } from "@/lib/api";
 import { ApiError } from "@/lib/api-error";
 
@@ -11,9 +13,7 @@ export function sharedGatewayProfiles(
   if (!Array.isArray(shared)) return null;
   const names = [...new Set(shared.map((n) => String(n).trim()).filter(Boolean))];
   if (names.length < 2) return null;
-  return names.sort((a, b) =>
-    a === "default" ? -1 : b === "default" ? 1 : a.localeCompare(b),
-  );
+  return names.sort((a, b) => (a === "default" ? -1 : b === "default" ? 1 : a.localeCompare(b)));
 }
 
 export function sharedGatewayRestartDescription(profiles: string[]): string {
@@ -25,25 +25,29 @@ export function sharedGatewayRestartedMessage(count: number): string {
 }
 
 /** Raw `gateway_state` values (gateway/status.py) → what they mean for the user. */
-const GATEWAY_STATE_COPY: Record<string, string> = {
-  running: "Running — messaging channels are online",
-  starting: "Starting up",
-  degraded: "Running with some channels offline — see Logs",
-  stopped: "Stopped — messaging channels are offline",
-  startup_failed: "Failed to start — see Logs",
+const GATEWAY_STATE_COPY: Record<
+  string,
+  "gatewayRunning" | "gatewayStarting" | "gatewayDegraded" | "gatewayStopped" | "gatewayStartupFailed"
+> = {
+  running: "gatewayRunning",
+  starting: "gatewayStarting",
+  degraded: "gatewayDegraded",
+  stopped: "gatewayStopped",
+  startup_failed: "gatewayStartupFailed",
 };
 
 /** A `degraded` record of a dead process is a watchdog exit, not a live gateway with channels down. */
-const GATEWAY_EXITED_DEGRADED_COPY = "Exited: a watchdog stopped a wedged gateway — see Logs";
+const GATEWAY_EXITED_DEGRADED_COPY = "gatewayExitedDegraded";
 
 /** Plain description of the gateway's state; null/unknown falls back to running/stopped. */
 export function gatewayStateDescription(
   state: string | null | undefined,
   running: boolean | undefined,
+  copy: Translations["systemPage"] = en.systemPage,
 ): string {
-  if (state === "degraded" && running === false) return GATEWAY_EXITED_DEGRADED_COPY;
-  if (state && GATEWAY_STATE_COPY[state]) return GATEWAY_STATE_COPY[state];
-  return running ? GATEWAY_STATE_COPY.running : GATEWAY_STATE_COPY.stopped;
+  if (state === "degraded" && running === false) return copy[GATEWAY_EXITED_DEGRADED_COPY];
+  if (state && GATEWAY_STATE_COPY[state]) return copy[GATEWAY_STATE_COPY[state]];
+  return copy[running ? GATEWAY_STATE_COPY.running : GATEWAY_STATE_COPY.stopped];
 }
 
 /** True when the state points at Logs as the next step. */
@@ -51,10 +55,13 @@ export function gatewayStateNeedsLogs(state: string | null | undefined): boolean
   return state === "startup_failed" || state === "degraded";
 }
 
-const GATEWAY_VERB_COPY: Record<"start" | "stop" | "restart", string> = {
-  start: "Could not start the gateway",
-  stop: "Could not stop the gateway",
-  restart: "Could not restart the gateway",
+const GATEWAY_VERB_COPY: Record<
+  "start" | "stop" | "restart",
+  "gatewayStartFailed" | "gatewayStopFailed" | "gatewayRestartFailed"
+> = {
+  start: "gatewayStartFailed",
+  stop: "gatewayStopFailed",
+  restart: "gatewayRestartFailed",
 };
 
 /** Toast for a failed Start/Stop/Restart: lead with the outcome, then the detail, then the fix.
@@ -64,14 +71,15 @@ export function gatewayActionFailedMessage(
   verb: "start" | "stop" | "restart",
   detail: string,
   error?: unknown,
+  copy: Translations["systemPage"] = en.systemPage,
 ): string {
   const trimmed = detail.trim().replace(/\.+$/, "");
   const ended = /[!?]$/.test(trimmed);
   const head = trimmed
-    ? `${GATEWAY_VERB_COPY[verb]}: ${trimmed}${ended ? "" : "."}`
-    : `${GATEWAY_VERB_COPY[verb]}.`;
+    ? `${copy[GATEWAY_VERB_COPY[verb]]}: ${trimmed}${ended ? "" : "."}`
+    : `${copy[GATEWAY_VERB_COPY[verb]]}.`;
   const unreachable = error instanceof ApiError && error.status === 0;
-  return unreachable ? head : `${head} Open Logs for details.`;
+  return unreachable ? head : `${head} ${copy.gatewayLogsHint}`;
 }
 
 /** A 409 on gateway start/stop for a served profile carries the multiplexer explanation in

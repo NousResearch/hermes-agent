@@ -1,8 +1,12 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const info = { model: 'old', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 4 }
@@ -164,7 +168,12 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
 
       return params.payload.confirm === 'tok-1'
         ? { model: 'pricey', execution_generation: 5 }
-        : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+        : {
+            status: 'confirmation_required',
+            confirm: 'tok-1',
+            confirm_message: 'pricey IS EXPENSIVE',
+            target_model: 'pricey'
+          }
     })
     slash('/model pricey')
     await flush()
@@ -178,7 +187,10 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
       await flush()
     }
 
-    const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
+    const sends = request.mock.calls
+      .filter(([method]) => method === 'session.mutate')
+      .map(([, params]) => params.payload)
+
     expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
     expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
   }
@@ -218,9 +230,14 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
     }
 
     return {
-      session_id: 'owner', operation: 'compress', status: 'noop',
-      summary: { headline: 'No changes from compression: 2 messages', noop: true,
-                 token_line: 'Approx request size: ~6,547 tokens (unchanged)' }
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'noop',
+      summary: {
+        headline: 'No changes from compression: 2 messages',
+        noop: true,
+        token_line: 'Approx request size: ~6,547 tokens (unchanged)'
+      }
     } as any
   })
 
@@ -239,7 +256,8 @@ it('a pick deferred by a running turn says it applies from the next turn', async
   request.mockImplementation(async (method: string) =>
     method === 'session.mutate'
       ? { model: 'picked', operation: 'model', status: 'deferred', execution_generation: 4 }
-      : { session_id: 'owner', revision: 8, execution_generation: 4, info })
+      : { session_id: 'owner', revision: 8, execution_generation: 4, info }
+  )
 
   slash('/model picked --tui-session')
   await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
@@ -284,7 +302,12 @@ it('a guarded switch re-asks with the effort riding the confirmed re-send', asyn
 
     return params.payload.confirm === 'tok-1'
       ? { model: 'pricey', execution_generation: 5 }
-      : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+      : {
+          status: 'confirmation_required',
+          confirm: 'tok-1',
+          confirm_message: 'pricey IS EXPENSIVE',
+          target_model: 'pricey'
+        }
   })
   slash('/model pricey --reasoning max --tui-session')
   await flush()
@@ -297,4 +320,32 @@ it('a guarded switch re-asks with the effort riding the confirmed re-send', asyn
     { model: 'pricey', reasoning: 'max', confirm: 'tok-1' }
   ])
   expect(getUiState().info?.model).toBe('pricey')
+})
+
+it('canonical compression localizes structured refusal feedback without changing the transcript', async () => {
+  activateZh()
+  const { ctx, request, slash } = harness()
+  request.mockImplementation(async (method: string) =>
+    method === 'session.resume'
+      ? ({ revision: 8, execution_generation: 4, info, messages: [] } as any)
+      : ({
+          operation: 'compress',
+          status: 'noop',
+          summary: {
+            headline: 'Compression refused',
+            before_count: 12,
+            after_count: 12,
+            before_tokens: 120000,
+            after_tokens: 130000,
+            noop: true,
+            aborted: true,
+            refused_would_grow: true
+          }
+        } as any)
+  )
+  slash('/compress')
+  await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('已拒绝压缩（摘要会使对话变大）：保留了 12 条消息')
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('  预计请求大小：约 120000 个 token（未变化）')
+  expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
 })

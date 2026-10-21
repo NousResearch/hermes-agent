@@ -42,14 +42,10 @@ const DISK_LIVE_TRIGGERS = ["disk_critical", "disk_elevated"];
 
 function readDismissed(): string[] {
   try {
-    const parsed: unknown = JSON.parse(
-      sessionStorage.getItem(STORAGE_KEY) ?? "[]",
-    );
+    const parsed: unknown = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? "[]");
     // Pre-incident-key builds stored a bare trigger string; JSON.parse
     // throws on those, landing in the catch — a clean reset, not a crash.
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is string => typeof entry === "string")
-      : [];
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
   } catch {
     return [];
   }
@@ -64,15 +60,10 @@ function writeDismissed(entries: string[]) {
 }
 
 function entryMatches(triggers: string[]) {
-  return (entry: string) =>
-    triggers.some((sev) => entry === sev || entry.startsWith(`${sev}:`));
+  return (entry: string) => triggers.some((sev) => entry === sev || entry.startsWith(`${sev}:`));
 }
 
-export function MemoryPressureBanner({
-  status,
-}: {
-  status: StatusResponse | null;
-}) {
+export function MemoryPressureBanner({ status }: { status: StatusResponse | null }) {
   const { t } = useI18n();
   const memory = status?.memory;
   const disk = status?.disk;
@@ -99,8 +90,7 @@ export function MemoryPressureBanner({
     if (pressure === "ok") recovered.push(entryMatches(MEMORY_LIVE_TRIGGERS));
     if (diskPressure === "ok") recovered.push(entryMatches(DISK_LIVE_TRIGGERS));
     if (recovered.length > 0) {
-      const isRecovered = (entry: string) =>
-        recovered.some((match) => match(entry));
+      const isRecovered = (entry: string) => recovered.some((match) => match(entry));
       if (dismissed.some(isRecovered)) {
         const next = dismissed.filter((entry) => !isRecovered(entry));
         writeDismissed(next);
@@ -124,8 +114,7 @@ export function MemoryPressureBanner({
   // A missing boot_id (degraded payload / pre-NS-656 image) degrades to a
   // shared per-severity bucket — old behavior, never a crash.
   const keyFor = (trig: string) => `${trig}:${memory?.boot_id ?? "unknown"}`;
-  const trigger =
-    activeTriggers.find((trig) => !dismissed.includes(keyFor(trig))) ?? null;
+  const trigger = activeTriggers.find((trig) => !dismissed.includes(keyFor(trig))) ?? null;
   const dismissKey = trigger ? keyFor(trigger) : null;
 
   if (!trigger || !dismissKey) return null;
@@ -139,43 +128,31 @@ export function MemoryPressureBanner({
   };
 
   const critical = trigger === "critical" || trigger === "disk_critical";
-  const diskFreeLabel =
-    disk?.free_mb != null ? ` (${Math.round(disk.free_mb)} MB free)` : "";
+  const diskFreeLabel = disk?.free_mb != null ? ` (${Math.round(disk.free_mb)} MB free)` : "";
   const message =
     trigger === "disk_critical"
-      ? `${
-          t.app.diskCriticalBanner ??
-          "Your agent's disk is almost full. New messages, memories, and settings may fail to save."
-        }${diskFreeLabel}`
+      ? `${t.app.diskCriticalBanner}${diskFreeLabel}`
       : trigger === "disk_elevated"
-        ? `${
-            t.app.diskElevatedBanner ??
-            "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage."
-          }${diskFreeLabel}`
+        ? `${t.app.diskElevatedBanner}${diskFreeLabel}`
         : trigger === "oom_restart"
-          ? (t.app.memoryOomRestartBanner ??
-            "Your agent restarted unexpectedly, most likely because it ran out of memory. Long sessions and many concurrent tasks increase memory use.")
+          ? t.app.memoryOomRestartBanner
           : critical
-            ? (t.app.memoryCriticalBanner ??
-              "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory.")
-            : (t.app.memoryElevatedBanner ??
-              "Your agent is running low on memory.");
+            ? t.app.memoryCriticalBanner
+            : t.app.memoryElevatedBanner;
 
   return (
     <div
       role="alert"
       data-testid="memory-pressure-banner"
       className={`flex items-center gap-2 border-b px-4 py-1.5 text-xs ${
-        critical
-          ? "border-red-500/40 bg-red-500/10 text-red-300"
-          : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+        critical ? "border-red-500/40 bg-red-500/10 text-red-300" : "border-amber-500/40 bg-amber-500/10 text-amber-300"
       }`}
     >
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1">{message}</span>
       <button
         type="button"
-        aria-label={t.app.dismiss ?? "Dismiss"}
+        aria-label={t.app.dismiss}
         onClick={dismiss}
         className="shrink-0 opacity-70 hover:opacity-100"
       >

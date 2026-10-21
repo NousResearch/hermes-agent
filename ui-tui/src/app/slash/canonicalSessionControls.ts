@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
+import type { SessionCompressResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { getUiState, patchUiState } from '../uiStore.js'
 
+import { printCompressionSummary } from './compressionSummary.js'
 import type { SlashRunCtx } from './types.js'
 
 interface MutationGateway {
@@ -206,8 +208,10 @@ function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: Slas
     throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
   }
 
-  openModelConfirmation(refusal.confirm_message, refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '', () =>
-    void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
+  openModelConfirmation(
+    refusal.confirm_message,
+    refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '',
+    () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
   )
 }
 
@@ -294,11 +298,17 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
   }
 }
 
-type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
+type CompressSummary = SessionCompressResponse['summary']
 
 /** The authority's report (headline, token line, note), as the native /compress prints it. */
 function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
-  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
+  if (printCompressionSummary(summary, ctx.transcript.sys)) {
+    return
+  }
+
+  ctx.transcript.sys(
+    summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed')
+  )
 
   for (const line of [summary?.token_line, summary?.note]) {
     if (line) {

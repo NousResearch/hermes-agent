@@ -22,6 +22,7 @@ export const loadSlashCatalog = (rpc: GatewayRpc, sid: null | string, setCatalog
       }
 
       setCatalog({
+        descriptionKeys: r.description_keys ?? {},
         canon: r.canon ?? {},
         categories: r.categories ?? [],
         pairs: r.pairs,

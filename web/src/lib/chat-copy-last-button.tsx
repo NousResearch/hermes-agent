@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -15,12 +16,13 @@ export function CopyLastButton({
   copied: boolean;
   color: string;
 }) {
+  const { t } = useI18n();
   return (
     <Button
       ghost
       onClick={onClick}
-      title="Copy last assistant response as raw markdown"
-      aria-label="Copy last assistant response"
+      title={t.app.copyLastResponseTitle}
+      aria-label={t.app.copyLastResponseAria}
       className={cn(
         "absolute z-10",
         "normal-case tracking-normal font-normal",
@@ -36,7 +38,7 @@ export function CopyLastButton({
       <span className="inline-flex items-center gap-1.5">
         <Copy className="h-3 w-3 shrink-0" />
         <span className="hidden min-[400px]:inline tracking-wide">
-          {copied ? "copied" : "copy last response"}
+          {copied ? t.app.copied : t.app.copyLastResponse}
         </span>
       </span>
     </Button>

@@ -2,6 +2,7 @@ import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
+import { t as tr } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
@@ -90,7 +91,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
     const guardedErr = (e: unknown) => {
       if (!stale()) {
-        sys(isUnsupportedCommand(e) ? describeSlashExecError(parsed.name, e) : `error: ${rpcErrorMessage(e)}`)
+        sys(isUnsupportedCommand(e) ? describeSlashExecError(parsed.name, e) : tr('errors.rpc', rpcErrorMessage(e)))
       }
     }
 
@@ -148,7 +149,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         }
 
         if (matches.length > 1) {
-          sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+          sys(tr('command.ambiguous', `${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`))
 
           return true
         }
@@ -166,13 +167,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       const d = parseCommandDispatch(raw)
 
       if (!d) {
-        return sys('error: invalid response: command.dispatch')
+        return sys(tr('errors.invalidResponse', 'command.dispatch'))
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
         // The shared owner answers its slash.exec reads as `{type: 'exec'}`; they page like
         // main's bare `{output}` did. command.dispatch output keeps its system line.
-        return fromExec && d.output ? showOutput(d.output) : sys(d.output || '(no output)')
+        return fromExec && d.output ? showOutput(d.output) : sys(d.output || tr('command.noOutputParen'))
       }
 
       if (d.type === 'alias') {
@@ -198,7 +199,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       if (d.type === 'skill') {
         return d.message?.trim()
           ? sendDispatch(d.display, d.message)
-          : sys(`/${parsed.name}: skill payload missing message`)
+          : sys(tr('command.skillPayloadMissing', parsed.name))
       }
 
       if (d.type === 'send') {
@@ -206,7 +207,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
           sys(d.notice)
         }
 
-        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(`/${parsed.name}: empty message`)
+        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(tr('command.emptyMessage', parsed.name))
       }
 
       if (d.type === 'prefill') {
@@ -234,9 +235,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
           return handleDispatch(r, true)
         }
 
-        const body = r?.output || `/${parsed.name}: no output`
+        const body = r?.output || tr('command.noOutput', parsed.name)
 
-        showOutput(r?.warning ? `warning: ${r.warning}\n${body}` : body)
+        showOutput(r?.warning ? `${tr('common.warning')}: ${r.warning}\n${body}` : body)
       })
       .catch((execErr: unknown) => {
         if (stale()) {
@@ -253,7 +254,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         }
 
         if (!shouldFallbackToDispatch(execErr)) {
-          sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
+          sys(tr('errors.rpc', describeSlashExecError(parsed.name, execErr)))
 
           return
         }

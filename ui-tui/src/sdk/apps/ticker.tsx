@@ -68,8 +68,10 @@ function Chart({ symbol, t }: { symbol: string; t: Theme }) {
 export const tickerApp = defineWidgetApp<TickerState>({
   id: 'ticker',
   help: 'fake 1-pip chart with a live sparkline',
+  helpKey: 'widget.ticker.help',
   mode: 'ambient',
   usage: USAGE,
+  usageKey: 'widget.ticker.usage',
 
   init(arg) {
     const symbol = (arg.trim().split(/\s+/)[0] || 'HRMS').toUpperCase().slice(0, 8)

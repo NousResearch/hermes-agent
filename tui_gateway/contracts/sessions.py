@@ -479,8 +479,22 @@ class SessionStatusParams(SessionParams):
     pass
 
 
+class SessionStatusDetails(Result):
+    session_id: str
+    path: str
+    title: str
+    model: str
+    provider: str
+    created: str
+    last_activity: str
+    tokens: int
+    agent_running: bool
+    project: str
+
+
 class SessionStatusResult(Result):
     output: str
+    details: SessionStatusDetails | None = None
 
 
 method("session.status", params=SessionStatusParams, result=SessionStatusResult,
@@ -563,6 +577,12 @@ class CompressionSummary(OpenModel):
     aborted: bool = False
     refused_would_grow: bool | None = None
     fallback_used: bool | None = None
+    before_count: int | None = None
+    after_count: int | None = None
+    before_tokens: int | None = None
+    after_tokens: int | None = None
+    dropped_count: int | None = None
+    failure_reason: str | None = None
     headline: str = ""
     token_line: str = ""
     note: str | None = None

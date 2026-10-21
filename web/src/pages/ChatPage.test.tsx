@@ -4,11 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  PTY_RECONNECT_MAX_ATTEMPTS,
-  PTY_RECONNECT_MAX_MS,
-  PTY_TICKET_TIMEOUT_MS,
-} from "@/lib/pty-reconnect";
+import { PTY_RECONNECT_MAX_ATTEMPTS, PTY_RECONNECT_MAX_MS, PTY_TICKET_TIMEOUT_MS } from "@/lib/pty-reconnect";
 
 class FakeFitAddon {
   fit() {}
@@ -97,9 +93,7 @@ const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
 }));
-const uploadChatImage = vi.hoisted(() =>
-  vi.fn(async () => ({ path: "/tmp/pasted.png" })),
-);
+const uploadChatImage = vi.hoisted(() => vi.fn(async () => ({ path: "/tmp/pasted.png" })));
 
 vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
@@ -130,17 +124,19 @@ vi.mock("@/contexts/useProfileScope", () => ({
 vi.mock("@/themes", () => ({
   useTheme: () => ({ theme: { terminalBackground: "#000000" } }),
 }));
-vi.mock("@/i18n", () => ({
-  useI18n: () => ({
-    t: {
-      app: {
-        closeModelTools: "Close model tools",
-        modelToolsSheetSubtitle: "Tools",
-        modelToolsSheetTitle: "Model",
-      },
-    },
-  }),
-}));
+vi.mock("@/i18n", async () => {
+  const actual = await vi.importActual<typeof import("@/i18n")>("@/i18n");
+  const { en } = await import("@/i18n/en");
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: en,
+      locale: "en",
+      format: (template: string, values: Record<string, string | number>) =>
+        template.replace(/\{(\w+)\}/g, (match, key: string) => (key in values ? String(values[key]) : match)),
+    }),
+  };
+});
 vi.mock("@/lib/dashboard-auth-reload", () => ({
   maybeReloadForLoopbackWsAuthFailure,
 }));
@@ -202,8 +198,7 @@ const localStorageMock = (() => {
 
 // React only routes updates through act() when this flag is set; without it
 // the isActive re-renders in the keyboard-inset gate test warn.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function render(ui: ReactNode) {
   container = document.createElement("div");
@@ -437,9 +432,7 @@ describe("ChatPage", () => {
     await act(async () => {
       host!.dispatchEvent(paste);
     });
-    await vi.waitFor(() =>
-      expect(container.textContent).toContain("Image upload failed"),
-    );
+    await vi.waitFor(() => expect(container.textContent).toContain("Image upload failed"));
 
     // The socket dies while the tab is hidden: the reconnect is deferred.
     Object.defineProperty(document, "visibilityState", {
@@ -617,10 +610,7 @@ describe("ChatPage", () => {
         </MemoryRouter>,
       ),
     );
-    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
-      "resize",
-      "scroll",
-    ]);
+    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual(["resize", "scroll"]);
     expect(removeEventListener).not.toHaveBeenCalled();
 
     await act(async () =>
@@ -630,10 +620,7 @@ describe("ChatPage", () => {
         </MemoryRouter>,
       ),
     );
-    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
-      "resize",
-      "scroll",
-    ]);
+    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual(["resize", "scroll"]);
   });
 });
 
@@ -652,24 +639,16 @@ describe("ChatPage side panel collapse", () => {
     await renderChat();
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
 
-    const collapseButton = container.querySelector(
-      '[aria-label="Collapse chat side panel"]',
-    );
+    const collapseButton = container.querySelector('[aria-label="Collapse chat side panel"]');
     expect(collapseButton).not.toBeNull();
 
     await act(async () => {
-      collapseButton!.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      collapseButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
-    expect(
-      container.querySelector('[aria-label="Collapse chat side panel"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[aria-label="Show chat side panel"]'),
-    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="Collapse chat side panel"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Show chat side panel"]')).not.toBeNull();
 
     // Reopening restores the panel and clears the persisted flag.
     await act(async () => {
@@ -679,9 +658,7 @@ describe("ChatPage side panel collapse", () => {
     });
 
     expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
-    expect(
-      container.querySelector('[aria-label="Collapse chat side panel"]'),
-    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="Collapse chat side panel"]')).not.toBeNull();
   });
 });
 
@@ -756,9 +733,7 @@ describe("ChatPage PTY ticket connect deadline", () => {
   }
 
   it("retries when the ticket request rejects", async () => {
-    apiMocks.buildWsUrl.mockRejectedValueOnce(
-      new Error("ticket endpoint unavailable"),
-    );
+    apiMocks.buildWsUrl.mockRejectedValueOnce(new Error("ticket endpoint unavailable"));
 
     await renderChat();
     await advance(0);

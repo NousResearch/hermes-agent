@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const es: Translations = {
+export const es: TranslationOverlay = {
   common: {
     save: "Guardar",
     saving: "Guardando...",
@@ -144,8 +144,7 @@ export const es: Translations = {
     untitledSession: "Sesión sin título",
     deleteSession: "Eliminar sesión",
     confirmDeleteTitle: "¿Eliminar sesión?",
-    confirmDeleteMessage:
-      "Esto elimina permanentemente la conversación y todos sus mensajes. No se puede deshacer.",
+    confirmDeleteMessage: "Esto elimina permanentemente la conversación y todos sus mensajes. No se puede deshacer.",
     sessionDeleted: "Sesión eliminada",
     failedToDelete: "No se pudo eliminar la sesión",
     deleteEmpty: "Eliminar vacías",
@@ -230,8 +229,7 @@ export const es: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Esto elimina la tarea de la programación. No se puede deshacer.",
+    confirmDeleteMessage: "Esto elimina la tarea de la programación. No se puede deshacer.",
     confirmDeleteTitle: "¿Eliminar tarea programada?",
     newJob: "Nueva tarea Cron",
     nameOptional: "Nombre (opcional)",
@@ -260,8 +258,7 @@ export const es: Translations = {
       onceAt: "Ejecutar el",
       customLabel: "Expresión cron",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Expresión cron de cinco campos (minuto, hora, día, mes, día de la semana).",
+      customHint: "Expresión cron de cinco campos (minuto, hora, día, mes, día de la semana).",
       preview: "Se envía como",
       previewEmpty: "(incompleta)",
     },
@@ -297,8 +294,7 @@ export const es: Translations = {
     name: "Nombre",
     namePlaceholder: "p. ej. coder, writer, etc.",
     nameRequired: "El nombre es obligatorio",
-    nameRule:
-      "Solo letras minúsculas, dígitos, _ y -; debe comenzar con una letra o dígito; hasta 64 caracteres.",
+    nameRule: "Solo letras minúsculas, dígitos, _ y -; debe comenzar con una letra o dígito; hasta 64 caracteres.",
     invalidName: "Nombre de perfil no válido",
     cloneFrom: "Clonar desde el perfil",
     cloneFromNone: "Ninguno (vacío)",
@@ -331,11 +327,9 @@ export const es: Translations = {
     disableRuntime: "Deshabilitar",
     enableAfterInstall: "Habilitar tras instalar",
     enableRuntime: "Habilitar",
-    toggleTakesEffectAfterRestart:
-      "Guardado: reinicia el gateway para aplicar el cambio.",
+    toggleTakesEffectAfterRestart: "Guardado: reinicia el gateway para aplicar el cambio.",
     forceReinstall: "Forzar reinstalación (eliminar carpeta existente primero)",
-    headline:
-      "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",
+    headline: "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",
     identifierLabel: "URL de Git u owner/repo",
     inactive: "inactivo",
     installBtn: "Instalar",
@@ -355,7 +349,8 @@ export const es: Translations = {
     removeConfirm: "¿Eliminar este complemento de ~/.hermes/plugins/?",
     removeHint: "Solo se pueden eliminar complementos instalados por el usuario en ~/.hermes/plugins.",
     rescanHeading: "Registro de complementos SPA",
-    rescanHint: "Vuelve a escanear tras añadir archivos en disco para que la barra lateral del panel detecte nuevos manifiestos.",
+    rescanHint:
+      "Vuelve a escanear tras añadir archivos en disco para que la barra lateral del panel detecte nuevos manifiestos.",
     runtimeHeading: "Tiempo de ejecución del Gateway (complementos YAML)",
     saveProviders: "Guardar configuración del proveedor",
     savedProviders: "Configuración del proveedor guardada.",
@@ -396,7 +391,8 @@ export const es: Translations = {
     importConfig: "Importar configuración desde JSON",
     resetDefaults: "Restablecer valores predeterminados",
     resetScopeTooltip: "Restablecer {scope} a los valores predeterminados",
-    confirmResetScope: "¿Restablecer todos los ajustes de {scope} a sus valores predeterminados? Esto solo actualiza el formulario — los cambios no se escriben en config.yaml hasta que pulses Guardar.",
+    confirmResetScope:
+      "¿Restablecer todos los ajustes de {scope} a sus valores predeterminados? Esto solo actualiza el formulario — los cambios no se escriben en config.yaml hasta que pulses Guardar.",
     resetScopeToast: "{scope} restablecido a los valores predeterminados — revisa y guarda para que persista",
     rawYaml: "Configuración YAML en bruto",
     searchResults: "Resultados de búsqueda",
@@ -429,7 +425,8 @@ export const es: Translations = {
   },
 
   env: {
-    changesNote: "Los cambios se guardan en disco inmediatamente. Las sesiones activas adoptan las nuevas claves automáticamente.",
+    changesNote:
+      "Los cambios se guardan en disco inmediatamente. Las sesiones activas adoptan las nuevas claves automáticamente.",
     confirmClearMessage:
       "El valor almacenado para esta variable se eliminará de tu archivo .env. Esto no se puede deshacer desde la UI.",
     confirmClearTitle: "¿Limpiar esta clave?",
@@ -449,7 +446,8 @@ export const es: Translations = {
     showValue: "Mostrar valor real",
     hideValue: "Ocultar valor",
     customTitle: "Claves personalizadas",
-    customHint: "Variables de entorno arbitrarias almacenadas en tu .env que Hermes no reconoce. Úsalas para inyectar variables de entorno para skills, servidores MCP o tus propias herramientas.",
+    customHint:
+      "Variables de entorno arbitrarias almacenadas en tu .env que Hermes no reconoce. Úsalas para inyectar variables de entorno para skills, servidores MCP o tus propias herramientas.",
     customConfigured: "{count} clave(s) personalizada(s) configurada(s)",
     addCustomKey: "Añadir una clave personalizada",
     customKeyName: "Nombre de la variable",
@@ -551,8 +549,7 @@ export const es: Translations = {
     },
     scan: {
       building_headline: "Construyendo perfil de logros…",
-      building_detail:
-        "Leyendo sesiones, llamadas a herramientas, metadatos del modelo y estado de desbloqueo.",
+      building_detail: "Leyendo sesiones, llamadas a herramientas, metadatos del modelo y estado de desbloqueo.",
       starting_headline: "Iniciando escaneo de logros…",
       progress_detail:
         "Escaneadas {scanned} de {total} sesiones · {pct}%. Las insignias se desbloquean a medida que se procesa más historial.",
@@ -609,11 +606,9 @@ export const es: Translations = {
       copy_button: "Copiar imagen",
       copied: "Copiado ✓",
       download_button: "Descargar PNG",
-      hint:
-        "Compartir en X abre una publicación predefinida en una nueva pestaña. Haz clic primero en Copiar imagen si quieres adjuntar la insignia 1200×630: X te permite pegarla directamente en el redactor del tuit. Descargar PNG guarda el archivo para usarlo en cualquier lugar.",
-      clipboard_unsupported:
-        "Este navegador no admite copiar imágenes al portapapeles: usa Descargar en su lugar.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "Compartir en X abre una publicación predefinida en una nueva pestaña. Haz clic primero en Copiar imagen si quieres adjuntar la insignia 1200×630: X te permite pegarla directamente en el redactor del tuit. Descargar PNG guarda el archivo para usarlo en cualquier lugar.",
+      clipboard_unsupported: "Este navegador no admite copiar imágenes al portapapeles: usa Descargar en su lugar.",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -628,12 +623,6 @@ export const es: Translations = {
       "Los tableros te permiten separar flujos de trabajo no relacionados — uno por proyecto, repositorio o dominio. Los workers de un tablero nunca ven las tareas de otro.",
     slug: "Slug",
     slugHint: "— minúsculas, guiones, p. ej. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nombre visible",
     displayNameHint: "(opcional)",
     description: "Descripción",
@@ -676,8 +665,7 @@ export const es: Translations = {
     runHistory: "Historial de ejecuciones",
     workerLog: "Registro del worker",
     loadingLog: "Cargando registro…",
-    noWorkerLog:
-      "— aún no hay registro del worker (la tarea no se ha lanzado o el registro fue rotado) —",
+    noWorkerLog: "— aún no hay registro del worker (la tarea no se ha lanzado o el registro fue rotado) —",
     noDescription: "— sin descripción —",
     noComments: "— sin comentarios —",
     edit: "editar",
@@ -708,8 +696,7 @@ export const es: Translations = {
     reassign: "Reasignar",
     renderingError: "La pestaña Kanban tuvo un error de renderizado",
     reloadView: "Recargar vista",
-    wsAuthFailed:
-      "Error de autenticación de WebSocket — recarga la página para refrescar el token de sesión.",
+    wsAuthFailed: "Error de autenticación de WebSocket — recarga la página para refrescar el token de sesión.",
     markDone: "¿Marcar {n} tarea(s) como hechas?",
     markArchived: "¿Archivar {n} tarea(s)?",
     warning: "Advertencia",
@@ -762,25 +749,19 @@ export const es: Translations = {
     },
     confirmDone:
       "¿Marcar esta tarea como hecha? Se libera el reclamo del worker y los hijos dependientes pasan a estar listos.",
-    confirmArchive:
-      "¿Archivar esta tarea? Desaparecerá de la vista por defecto del tablero.",
-    confirmBlocked:
-      "¿Marcar esta tarea como bloqueada? Se libera el reclamo del worker.",
-    completionSummary:
-      "Resumen de finalización para {label}. Se almacena como el result de la tarea.",
-    completionSummaryRequired:
-      "El resumen de finalización es obligatorio antes de marcar una tarea como hecha.",
+    confirmArchive: "¿Archivar esta tarea? Desaparecerá de la vista por defecto del tablero.",
+    confirmBlocked: "¿Marcar esta tarea como bloqueada? Se libera el reclamo del worker.",
+    completionSummary: "Resumen de finalización para {label}. Se almacena como el result de la tarea.",
+    completionSummaryRequired: "El resumen de finalización es obligatorio antes de marcar una tarea como hecha.",
     triagePlaceholder: "Idea aproximada — la IA la especificará…",
     taskTitlePlaceholder: "Título de la nueva tarea…",
     specifier: "specifier",
     assigneePlaceholder: "asignado",
     priority: "Prioridad",
-    skillsPlaceholder:
-      "habilidades (opcional, separadas por comas): translation, github-code-review",
+    skillsPlaceholder: "habilidades (opcional, separadas por comas): translation, github-code-review",
     noParent: "— sin padre —",
     workspacePathDir: "ruta del workspace (obligatoria, p. ej. ~/projects/my-app)",
-    workspacePathOptional:
-      "ruta del workspace (opcional, derivada del asignado si está vacía)",
+    workspacePathOptional: "ruta del workspace (opcional, derivada del asignado si está vacía)",
     logTruncated: "(mostrando los últimos 100 KB — registro completo en ",
     logAt: ")",
   },

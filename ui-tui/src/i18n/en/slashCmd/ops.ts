@@ -8,6 +8,8 @@ export const slashCmdOpsEn = {
       stoppedOther: (count: string) => `stopped ${count} background processes`
     },
     reloadMcp: {
+      profileConfirm:
+        'Reloading MCP refreshes every chat in this profile and may invalidate prompt caches. Run /reload-mcp now to confirm.',
       confirmRequired: '/reload-mcp requires confirmation',
       reloaded: 'MCP servers reloaded',
       reloadedAlways: 'MCP servers reloaded · future /reload-mcp will run without confirmation',
@@ -49,7 +51,8 @@ export const slashCmdOpsEn = {
       // {0}=target (file path or "workspace"), {1}=detail
       restored: (target: string, detail: string) => `rollback restored ${target}: ${detail}`,
       // {0}=summarized paths; main's CLI lines for what a safe whole-tree restore left alone
-      keptUserEdits: (files: string) => `↷ Kept your hand-edits: ${files}\nUse /rollback <N> --all to restore those too.`,
+      keptUserEdits: (files: string) =>
+        `↷ Kept your hand-edits: ${files}\nUse /rollback <N> --all to restore those too.`,
       keptOversize: (files: string) => `↷ Kept (too large for checkpoints, no stored copy to revert to): ${files}`,
       failedDeletes: (files: string) => `⚠️ Could not remove (left in place): ${files}`,
       // {0}=count of paths not listed

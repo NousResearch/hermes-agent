@@ -1,3 +1,4 @@
+import type { Translations } from "@/i18n";
 import type { AuxiliaryTaskAssignment } from "./api";
 
 export interface AuxTaskMeta {
@@ -54,4 +55,13 @@ export function auxTaskLabel(
   key: string,
 ): string {
   return auxTaskRows(tasks).find((t) => t.key === key)?.label ?? key;
+}
+
+/** 内置任务使用界面译文，插件任务保留插件提供的名称。 */
+export function localizedAuxTaskLabel(
+  tasks: readonly AuxiliaryTaskAssignment[] | null | undefined,
+  key: string,
+  translations: Translations["modelSettings"],
+): string {
+  return translations.auxTasks[key]?.label ?? auxTaskLabel(tasks, key);
 }

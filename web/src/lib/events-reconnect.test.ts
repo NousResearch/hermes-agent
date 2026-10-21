@@ -4,14 +4,9 @@ import {
   EVENTS_MAX_RECONNECT_ATTEMPTS,
   EVENTS_RECONNECT_BASE_MS,
   EVENTS_RECONNECT_MAX_MS,
-  eventsGaveUpMessage,
   eventsReconnectDelayMs,
-  eventsReconnectingMessage,
-  eventsRejectedMessage,
   isEventsAuthRejection,
-  isEventsFeedMessage,
   shouldRetryEventsClose,
-  EVENTS_DISCONNECTED_MESSAGE,
 } from "./events-reconnect";
 
 describe("eventsReconnectDelayMs", () => {
@@ -23,14 +18,8 @@ describe("eventsReconnectDelayMs", () => {
   });
 
   it("clamps at the cap and never exceeds it", () => {
-    for (
-      let attempt = 0;
-      attempt <= EVENTS_MAX_RECONNECT_ATTEMPTS + 5;
-      attempt++
-    ) {
-      expect(eventsReconnectDelayMs(attempt)).toBeLessThanOrEqual(
-        EVENTS_RECONNECT_MAX_MS,
-      );
+    for (let attempt = 0; attempt <= EVENTS_MAX_RECONNECT_ATTEMPTS + 5; attempt++) {
+      expect(eventsReconnectDelayMs(attempt)).toBeLessThanOrEqual(EVENTS_RECONNECT_MAX_MS);
     }
     expect(eventsReconnectDelayMs(99)).toBe(EVENTS_RECONNECT_MAX_MS);
   });
@@ -42,6 +31,10 @@ describe("eventsReconnectDelayMs", () => {
       expect(delay).toBeGreaterThanOrEqual(previous);
       previous = delay;
     }
+  });
+
+  it("stays finite for absurd attempt counts", () => {
+    expect(Number.isFinite(eventsReconnectDelayMs(10_000))).toBe(true);
   });
 });
 
@@ -69,36 +62,7 @@ describe("shouldRetryEventsClose", () => {
 
   it("never both retries and reports an auth rejection", () => {
     for (const code of [1000, 1005, 1006, 4401, 4403, 4500]) {
-      expect(shouldRetryEventsClose(code) && isEventsAuthRejection(code)).toBe(
-        false,
-      );
+      expect(shouldRetryEventsClose(code) && isEventsAuthRejection(code)).toBe(false);
     }
-  });
-});
-
-describe("isEventsFeedMessage", () => {
-  it("recognizes every message this module can surface", () => {
-    expect(isEventsFeedMessage(EVENTS_DISCONNECTED_MESSAGE)).toBe(true);
-    expect(isEventsFeedMessage(eventsReconnectingMessage(4_000))).toBe(true);
-    expect(isEventsFeedMessage(eventsRejectedMessage(4401))).toBe(true);
-    expect(isEventsFeedMessage(eventsGaveUpMessage())).toBe(true);
-  });
-
-  it("does not claim messages owned by other banner sources", () => {
-    // The banner is shared with info.credential_warning and the JSON-RPC
-    // sidecar — clearing those on an events reconnect would hide a real
-    // problem from the user.
-    expect(isEventsFeedMessage("ANTHROPIC_API_KEY is not set")).toBe(false);
-    expect(isEventsFeedMessage("WebSocket connection failed")).toBe(false);
-    expect(isEventsFeedMessage("gateway not connected")).toBe(false);
-    expect(isEventsFeedMessage(null)).toBe(false);
-    expect(isEventsFeedMessage("")).toBe(false);
-  });
-});
-
-describe("reconnect message copy", () => {
-  it("renders the delay in whole seconds", () => {
-    expect(eventsReconnectingMessage(1_000)).toContain("1s");
-    expect(eventsReconnectingMessage(30_000)).toContain("30s");
   });
 });

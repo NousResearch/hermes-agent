@@ -1,3 +1,4 @@
+import { useI18n } from '@/i18n'
 import { useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { Button } from '@nous-research/ui/ui/components/button'
@@ -42,6 +43,7 @@ export function AllowlistInput({
   onChange: (value: string) => void
   invalid?: boolean
 }) {
+  const { t } = useI18n()
   const [rows, setRows] = useState<Row[]>(() => toRows(value))
   const [focusId, setFocusId] = useState<number | null>(null)
 
@@ -84,7 +86,7 @@ export function AllowlistInput({
             autoFocus={row.id === focusId}
             type="text"
             className="text-base leading-6 sm:text-xs sm:leading-4"
-            placeholder="Enter an ID"
+            placeholder={t.channels.allowlistIdPlaceholder}
             value={row.value}
             onChange={e => change(row.id, e.target.value)}
             onKeyDown={e => {
@@ -94,14 +96,21 @@ export function AllowlistInput({
               }
             }}
           />
-          <Button ghost size="icon" aria-label="Remove" title="Remove" disabled={lone} onClick={() => remove(row.id)}>
+          <Button
+            ghost
+            size="icon"
+            aria-label={t.common.delete}
+            title={t.common.delete}
+            disabled={lone}
+            onClick={() => remove(row.id)}
+          >
             <X className="h-3.5 w-3.5" />
           </Button>
         </div>
       ))}
       <div>
         <Button ghost size="sm" onClick={add} prefix={<Plus className="h-3.5 w-3.5" />}>
-          Add another
+          {t.channels.addAnotherAllowlistId}
         </Button>
       </div>
     </div>

@@ -16,12 +16,7 @@ export function ProfileScopeBanner() {
   return (
     <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-300">
       <Users className="h-3.5 w-3.5 shrink-0" />
-      <span>
-        {(
-          t.app.managingProfileBanner ??
-          "Managing profile “{name}” — config, keys, skills, MCPs, model, and new chats apply to that profile."
-        ).replace("{name}", profile)}
-      </span>
+      <span>{t.app.managingProfileBanner.replace("{name}", profile)}</span>
     </div>
   );
 }

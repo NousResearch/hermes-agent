@@ -17,13 +17,13 @@ import {
   estimateTokensRough,
   formatToolCall,
   formatToolLabel,
-  isTransientTrailLine,
+  isTransientToolProgress,
   sameToolTrailGroup,
   toolTrailLabel,
   toolTrailLine,
   verboseToolTrailLine
 } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem, ToolTrailEntry } from '../types.js'
 
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
@@ -125,7 +125,11 @@ const finalTail = (finalText: string, segments: Msg[]) => {
   return tail
 }
 
-const interruptedText = (partial: string) => (partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*')
+const interruptedText = (partial: string) => {
+  const marker = `*[${t('session.turn.interrupted')}]*`
+
+  return partial ? `${partial}\n\n${marker}` : marker
+}
 
 // What interruptTurn sealed into the transcript: `text` is the bubble it
 // appended (null when it only wrote a sys note), `partial` the reply text in it.
@@ -183,7 +187,7 @@ class TurnController {
   pendingSegmentTools: string[] = []
   statusTimer: Timer = null
   toolTokenAcc = 0
-  turnTools: string[] = []
+  turnTools: ToolTrailEntry[] = []
 
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
@@ -460,9 +464,9 @@ class TurnController {
   }
 
   pruneTransient() {
-    this.turnTools = this.turnTools.filter(line => !isTransientTrailLine(line))
+    this.turnTools = this.turnTools.filter(line => !isTransientToolProgress(line))
     patchTurnState(state => {
-      const next = state.turnTrail.filter(line => !isTransientTrailLine(line))
+      const next = state.turnTrail.filter(line => !isTransientToolProgress(line))
 
       return next.length === state.turnTrail.length ? state : { ...state, turnTrail: next }
     })
@@ -634,7 +638,7 @@ class TurnController {
     })
   }
 
-  pushTrail(line: string) {
+  pushTrail(line: ToolTrailEntry) {
     if (this.interrupted) {
       return
     }
@@ -644,7 +648,7 @@ class TurnController {
         return state
       }
 
-      const next = [...state.turnTrail.filter(item => !isTransientTrailLine(item)), line].slice(-TRAIL_LIMIT)
+      const next = [...state.turnTrail.filter(item => !isTransientToolProgress(item)), line].slice(-TRAIL_LIMIT)
 
       this.turnTools = next
 
@@ -971,7 +975,7 @@ class TurnController {
     const next = this.turnTools.filter(item => !sameToolTrailGroup(label, item))
 
     if (!this.activeTools.length) {
-      next.push('analyzing tool output…')
+      next.push({ kind: 'analyze' })
     }
 
     this.turnTools = next.slice(-TRAIL_LIMIT)

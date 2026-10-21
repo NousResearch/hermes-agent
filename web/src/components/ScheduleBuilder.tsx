@@ -52,9 +52,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
     (day: Weekday) => {
       const present = value.weekdays.includes(day);
       update({
-        weekdays: present
-          ? value.weekdays.filter((d) => d !== day)
-          : [...value.weekdays, day],
+        weekdays: present ? value.weekdays.filter((d) => d !== day) : [...value.weekdays, day],
       });
     },
     [update, value.weekdays],
@@ -63,14 +61,8 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
   return (
     <div className="grid gap-3">
       <div className="grid gap-2">
-        <Label htmlFor="cron-schedule-mode">
-          {cronStrings.scheduleMode ?? "Schedule"}
-        </Label>
-        <Select
-          id="cron-schedule-mode"
-          value={value.mode}
-          onValueChange={(v) => update({ mode: v as ScheduleMode })}
-        >
+        <Label htmlFor="cron-schedule-mode">{cronStrings.scheduleMode}</Label>
+        <Select id="cron-schedule-mode" value={value.mode} onValueChange={(v) => update({ mode: v as ScheduleMode })}>
           <SelectOption value="interval">{modeStrings.interval}</SelectOption>
           <SelectOption value="daily">{modeStrings.daily}</SelectOption>
           <SelectOption value="weekly">{modeStrings.weekly}</SelectOption>
@@ -83,9 +75,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
       {value.mode === "interval" && (
         <div className="grid grid-cols-[1fr_1.4fr] gap-3">
           <div className="grid gap-2">
-            <Label htmlFor="cron-interval-value">
-              {modeStrings.intervalEvery}
-            </Label>
+            <Label htmlFor="cron-interval-value">{modeStrings.intervalEvery}</Label>
             <Input
               id="cron-interval-value"
               type="number"
@@ -107,9 +97,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
               value={value.intervalUnit}
               onValueChange={(v) => update({ intervalUnit: v as IntervalUnit })}
             >
-              <SelectOption value="minutes">
-                {modeStrings.unitMinutes}
-              </SelectOption>
+              <SelectOption value="minutes">{modeStrings.unitMinutes}</SelectOption>
               <SelectOption value="hours">{modeStrings.unitHours}</SelectOption>
               <SelectOption value="days">{modeStrings.unitDays}</SelectOption>
             </Select>
@@ -130,11 +118,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
         <>
           <div className="grid gap-2">
             <Label>{modeStrings.weekdays}</Label>
-            <div
-              className="flex flex-wrap gap-1.5"
-              role="group"
-              aria-label={modeStrings.weekdays}
-            >
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label={modeStrings.weekdays}>
               {WEEKDAY_INDEXES.map((d) => {
                 const isOn = value.weekdays.includes(d);
                 return (
@@ -175,8 +159,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
               onChange={(e) => {
                 const n = parseInt(e.target.value, 10);
                 update({
-                  dayOfMonth:
-                    Number.isFinite(n) && n >= 1 && n <= 31 ? n : 1,
+                  dayOfMonth: Number.isFinite(n) && n >= 1 && n <= 31 ? n : 1,
                 });
               }}
             />
@@ -215,9 +198,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
             onChange={(e) => update({ custom: e.target.value })}
             className="font-mono-ui"
           />
-          <p className="text-xs text-muted-foreground">
-            {modeStrings.customHint}
-          </p>
+          <p className="text-xs text-muted-foreground">{modeStrings.customHint}</p>
         </div>
       )}
 
@@ -226,20 +207,13 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
           schedule grammar discoverable for the custom mode. */}
       <p className="text-xs text-muted-foreground">
         <span className="opacity-70">{modeStrings.preview}: </span>
-        <span className="font-mono-ui text-foreground">
-          {buildScheduleString(value) || modeStrings.previewEmpty}
-        </span>
+        <span className="font-mono-ui text-foreground">{buildScheduleString(value) || modeStrings.previewEmpty}</span>
       </p>
     </div>
   );
 }
 
-function TimeOfDayField({
-  id,
-  label,
-  onChange,
-  value,
-}: TimeOfDayFieldProps) {
+function TimeOfDayField({ id, label, onChange, value }: TimeOfDayFieldProps) {
   return (
     <div className="grid gap-2">
       <Label htmlFor={id}>{label}</Label>

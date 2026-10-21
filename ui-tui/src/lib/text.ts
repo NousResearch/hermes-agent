@@ -11,6 +11,7 @@ import {
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
 import { t } from '../i18n/runtime.js'
+import type { ToolTrailEntry } from '../types.js'
 import type { ThinkingMode } from '../types.js'
 
 const WS_RE = /\s+/g
@@ -280,14 +281,15 @@ export const splitToolDuration = (call: string) => {
   return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
-export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
+export const isTransientToolProgress = (entry: ToolTrailEntry) => typeof entry !== 'string'
 
-export const sameToolTrailGroup = (label: string, entry: string) =>
-  entry === `${label} ✓` ||
-  entry === `${label} ✗` ||
-  entry.startsWith(`${label}(`) ||
-  entry.startsWith(`${label} ::`) ||
-  entry.startsWith(`${label}:`)
+export const sameToolTrailGroup = (label: string, entry: ToolTrailEntry) =>
+  typeof entry === 'string' &&
+  (entry === `${label} ✓` ||
+    entry === `${label} ✗` ||
+    entry.startsWith(`${label}(`) ||
+    entry.startsWith(`${label} ::`) ||
+    entry.startsWith(`${label}:`))
 
 export const lastCotTrailIndex = (trail: readonly string[]) => {
   for (let i = trail.length - 1; i >= 0; i--) {

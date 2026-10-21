@@ -1,13 +1,23 @@
 // @vitest-environment jsdom
+import { resolveTranslations } from "@/i18n/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchJSON } from "./api";
-import { API_UNREACHABLE_MESSAGE, ApiError, errorMessage, extractDetail } from "./api-error";
+import {
+  API_UNREACHABLE_MESSAGE,
+  ApiError,
+  apiErrorFromNetworkFailure,
+  apiErrorFromResponse,
+  errorMessage,
+  extractDetail,
+} from "./api-error";
 
 vi.mock("./dashboard-auth-reload", () => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
   clearDashboardTokenReloadAttempt: vi.fn(),
 }));
+
+const zh = resolveTranslations("zh");
 
 beforeEach(() => {
   Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
@@ -98,10 +108,20 @@ describe("fetchJSON error contract", () => {
 
 describe("extractDetail", () => {
   it("joins FastAPI validation errors and ignores HTML bodies", () => {
-    expect(
-      extractDetail(JSON.stringify({ detail: [{ msg: "field required", loc: ["body", "x"] }] })),
-    ).toBe("field required");
+    expect(extractDetail(JSON.stringify({ detail: [{ msg: "field required", loc: ["body", "x"] }] }))).toBe(
+      "field required",
+    );
     expect(extractDetail("<html><body>502 Bad Gateway</body></html>")).toBeNull();
     expect(extractDetail("")).toBeNull();
   });
+});
+
+it("localizes known transport/status errors without changing server details or diagnostics", () => {
+  const network = apiErrorFromNetworkFailure(new TypeError("socket gone"), "/api/status");
+  expect(errorMessage(network, zh.common)).toBe(zh.common.apiError0);
+  expect(network.details).toContain("socket gone");
+  const expired = apiErrorFromResponse(401, "<html>error</html>", "/api/status");
+  expect(errorMessage(expired, zh.common)).toBe(zh.common.apiError401);
+  const provider = apiErrorFromResponse(400, JSON.stringify({ detail: "provider detail $&" }), "/api/model");
+  expect(errorMessage(provider, zh.common)).toBe("provider detail $&");
 });

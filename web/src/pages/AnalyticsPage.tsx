@@ -1,22 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  BarChart3,
-  Brain,
-  Cpu,
-  RefreshCw,
-  TrendingUp,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, BarChart3, Brain, Cpu, RefreshCw, TrendingUp } from "lucide-react";
 import { api } from "@/lib/api";
-import type {
-  AnalyticsResponse,
-  AnalyticsDailyEntry,
-  AnalyticsModelEntry,
-  AnalyticsSkillEntry,
-} from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, AnalyticsSkillEntry } from "@/lib/api";
+import { formatDateTime, timeAgo } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -40,10 +26,12 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatDate(day: string): string {
+function formatDate(day: string, locale: ReturnType<typeof useI18n>["locale"]): string {
   try {
-    const d = new Date(day + "T00:00:00");
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return formatDateTime(day + "T00:00:00", locale, {
+      month: "short",
+      day: "numeric",
+    });
   } catch {
     return day;
   }
@@ -53,11 +41,7 @@ function formatDate(day: string): string {
 // Sorting
 // ---------------------------------------------------------------------------
 
-function useTableSort<T>(
-  data: T[],
-  defaultKey: keyof T & string,
-  defaultDir: "asc" | "desc" = "desc",
-) {
+function useTableSort<T>(data: T[], defaultKey: keyof T & string, defaultDir: "asc" | "desc" = "desc") {
   const [sortKey, setSortKey] = useState<string>(defaultKey);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(defaultDir);
 
@@ -106,10 +90,7 @@ function SortHeader({
 }) {
   const active = col === sortKey;
   return (
-    <th
-      onClick={() => toggle(col)}
-      className={`cursor-pointer select-none ${className ?? ""}`}
-    >
+    <th onClick={() => toggle(col)} className={`cursor-pointer select-none ${className ?? ""}`}>
       <span className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 hover:bg-muted/40 transition-colors">
         {label}
         {active ? (
@@ -126,56 +107,36 @@ function SortHeader({
   );
 }
 
-
-
 function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   if (daily.length === 0) return null;
 
-  const maxTokens = Math.max(
-    ...daily.map((d) => d.input_tokens + d.output_tokens),
-    1,
-  );
+  const maxTokens = Math.max(...daily.map((d) => d.input_tokens + d.output_tokens), 1);
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.analytics.dailyTokenUsage}
-          </CardTitle>
+          <CardTitle className="text-base">{t.analytics.dailyTokenUsage}</CardTitle>
         </div>
         <div className="flex items-center gap-4 font-mondwest normal-case text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
-            <div
-              className="h-2.5 w-2.5"
-              style={{ backgroundColor: "var(--series-input-token)" }}
-            />
+            <div className="h-2.5 w-2.5" style={{ backgroundColor: "var(--series-input-token)" }} />
             {t.analytics.input}
           </div>
           <div className="flex items-center gap-1.5">
-            <div
-              className="h-2.5 w-2.5"
-              style={{ backgroundColor: "var(--series-output-token)" }}
-            />
+            <div className="h-2.5 w-2.5" style={{ backgroundColor: "var(--series-output-token)" }} />
             {t.analytics.output}
           </div>
         </div>
       </CardHeader>
       <CardContent>
-        <div
-          className="flex items-end gap-[2px]"
-          style={{ height: CHART_HEIGHT_PX }}
-        >
+        <div className="flex items-end gap-[2px]" style={{ height: CHART_HEIGHT_PX }}>
           {daily.map((d) => {
             const total = d.input_tokens + d.output_tokens;
-            const inputH = Math.round(
-              (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
-            );
-            const outputH = Math.round(
-              (d.output_tokens / maxTokens) * CHART_HEIGHT_PX,
-            );
+            const inputH = Math.round((d.input_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const outputH = Math.round((d.output_tokens / maxTokens) * CHART_HEIGHT_PX);
             return (
               <div
                 key={d.day}
@@ -184,7 +145,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
               >
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
                   <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
-                    <div className="font-medium">{formatDate(d.day)}</div>
+                    <div className="font-medium">{formatDate(d.day, locale)}</div>
                     <div>
                       {t.analytics.input}: {formatTokens(d.input_tokens)}
                     </div>
@@ -200,8 +161,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <div
                   className="w-full"
                   style={{
-                    backgroundColor:
-                      "color-mix(in srgb, var(--series-input-token) 70%, transparent)",
+                    backgroundColor: "color-mix(in srgb, var(--series-input-token) 70%, transparent)",
                     height: Math.max(inputH, total > 0 ? 1 : 0),
                   }}
                 />
@@ -209,8 +169,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <div
                   className="w-full"
                   style={{
-                    backgroundColor:
-                      "color-mix(in srgb, var(--series-output-token) 70%, transparent)",
+                    backgroundColor: "color-mix(in srgb, var(--series-output-token) 70%, transparent)",
                     height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0),
                   }}
                 />
@@ -220,13 +179,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
         </div>
 
         <div className="flex justify-between mt-2 font-mondwest normal-case text-xs text-text-tertiary">
-          <span>{daily.length > 0 ? formatDate(daily[0].day) : ""}</span>
-          {daily.length > 2 && (
-            <span>{formatDate(daily[Math.floor(daily.length / 2)].day)}</span>
-          )}
-          <span>
-            {daily.length > 1 ? formatDate(daily[daily.length - 1].day) : ""}
-          </span>
+          <span>{daily.length > 0 ? formatDate(daily[0].day, locale) : ""}</span>
+          {daily.length > 2 && <span>{formatDate(daily[Math.floor(daily.length / 2)].day, locale)}</span>}
+          <span>{daily.length > 1 ? formatDate(daily[daily.length - 1].day, locale) : ""}</span>
         </div>
       </CardContent>
     </Card>
@@ -234,7 +189,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
 }
 
 function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(daily, "day", "desc");
 
   if (daily.length === 0) return null;
@@ -244,9 +199,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <TrendingUp className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.analytics.dailyBreakdown}
-          </CardTitle>
+          <CardTitle className="text-base">{t.analytics.dailyBreakdown}</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -254,33 +207,50 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader
+                  label={t.analytics.date}
+                  col="day"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-left py-2 pr-4 font-medium"
+                />
+                <SortHeader
+                  label={t.sessions.title}
+                  col="sessions"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.input}
+                  col="input_tokens"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.output}
+                  col="output_tokens"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 pl-4 font-medium"
+                />
               </tr>
             </thead>
             <tbody>
               {sorted.map((d) => (
-                <tr
-                    key={d.day}
-                    className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
-                  >
-                  <td className="py-2 pr-4 font-medium">
-                      {formatDate(d.day)}
-                    </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
-                      {d.sessions}
-                    </td>
+                <tr key={d.day} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                  <td className="py-2 pr-4 font-medium">{formatDate(d.day, locale)}</td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{d.sessions}</td>
                   <td className="text-right py-2 px-4">
-                    <span style={{ color: "var(--series-input-token)" }}>
-                        {formatTokens(d.input_tokens)}
-                      </span>
+                    <span style={{ color: "var(--series-input-token)" }}>{formatTokens(d.input_tokens)}</span>
                   </td>
                   <td className="text-right py-2 pl-4">
-                    <span style={{ color: "var(--series-output-token)" }}>
-                        {formatTokens(d.output_tokens)}
-                      </span>
+                    <span style={{ color: "var(--series-output-token)" }}>{formatTokens(d.output_tokens)}</span>
                   </td>
                 </tr>
               ))}
@@ -303,9 +273,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.analytics.perModelBreakdown}
-          </CardTitle>
+          <CardTitle className="text-base">{t.analytics.perModelBreakdown}</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -313,31 +281,43 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader
+                  label={t.analytics.model}
+                  col="model"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-left py-2 pr-4 font-medium"
+                />
+                <SortHeader
+                  label={t.sessions.title}
+                  col="sessions"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.tokens}
+                  col="input_tokens"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 pl-4 font-medium"
+                />
               </tr>
             </thead>
             <tbody>
               {sorted.map((m) => (
-                <tr
-                  key={m.model}
-                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
-                >
+                <tr key={m.model} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                   <td className="py-2 pr-4">
                     <span className="font-mono-ui text-xs">{m.model}</span>
                   </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
-                    {m.sessions}
-                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{m.sessions}</td>
                   <td className="text-right py-2 pl-4">
-                    <span style={{ color: "var(--series-input-token)" }}>
-                      {formatTokens(m.input_tokens)}
-                    </span>
+                    <span style={{ color: "var(--series-input-token)" }}>{formatTokens(m.input_tokens)}</span>
                     {" / "}
-                    <span style={{ color: "var(--series-output-token)" }}>
-                      {formatTokens(m.output_tokens)}
-                    </span>
+                    <span style={{ color: "var(--series-output-token)" }}>{formatTokens(m.output_tokens)}</span>
                   </td>
                 </tr>
               ))}
@@ -350,7 +330,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
 }
 
 function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { sorted, sortKey, sortDir, toggle } = useTableSort(skills, "total_count", "desc");
 
   if (skills.length === 0) return null;
@@ -368,31 +348,59 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.skill} col="skill" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.analytics.loads} col="view_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.edits} col="manage_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.total} col="total_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.lastUsed} col="last_used_at" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader
+                  label={t.analytics.skill}
+                  col="skill"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-left py-2 pr-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.loads}
+                  col="view_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.edits}
+                  col="manage_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.total}
+                  col="total_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.lastUsed}
+                  col="last_used_at"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 pl-4 font-medium"
+                />
               </tr>
             </thead>
             <tbody>
               {sorted.map((skill) => (
-                <tr
-                  key={skill.skill}
-                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
-                >
+                <tr key={skill.skill} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                   <td className="py-2 pr-4">
                     <span className="font-mono-ui text-xs">{skill.skill}</span>
                   </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
-                    {skill.view_count}
-                  </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
-                    {skill.manage_count}
-                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{skill.view_count}</td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{skill.manage_count}</td>
                   <td className="text-right py-2 px-4">{skill.total_count}</td>
                   <td className="text-right py-2 pl-4 text-muted-foreground">
-                    {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
+                    {skill.last_used_at ? timeAgo(skill.last_used_at, locale) : "—"}
                   </td>
                 </tr>
               ))}
@@ -434,7 +442,7 @@ export default function AnalyticsPage() {
     api
       .getAnalytics(days)
       .then(setData)
-      .catch((err) => setError(errorMessage(err)))
+      .catch((err) => setError(errorMessage(err, t.common)))
       .finally(() => setLoading(false));
   }, [days, showTokens]);
 
@@ -447,13 +455,7 @@ export default function AnalyticsPage() {
       showTokens === false ? null : (
         <div className="flex flex-wrap items-center gap-1.5">
           {PERIODS.map((p) => (
-            <Button
-              key={p.label}
-              type="button"
-              size="sm"
-              outlined={days !== p.days}
-              onClick={() => setDays(p.days)}
-            >
+            <Button key={p.label} type="button" size="sm" outlined={days !== p.days} onClick={() => setDays(p.days)}>
               {p.label}
             </Button>
           ))}
@@ -491,33 +493,11 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
+                {t.analytics.hiddenTitle}
               </h2>
-              <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
-              </p>
-              <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
-              </p>
-              <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
-                <span className="font-mono">
-                  dashboard.show_token_analytics: true
-                </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
-              </p>
+              <p>{t.analytics.hiddenEstimateWarning}</p>
+              <p>{t.analytics.hiddenBillingWarning}</p>
+              <p>{t.analytics.hiddenEnableHint}</p>
             </div>
           </CardContent>
         </Card>
@@ -546,9 +526,7 @@ export default function AnalyticsPage() {
                   items={[
                     {
                       label: t.analytics.totalTokens,
-                      value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
-                      ),
+                      value: formatTokens(data.totals.total_input + data.totals.total_output),
                     },
                     {
                       label: t.analytics.input,
@@ -564,10 +542,7 @@ export default function AnalyticsPage() {
                     },
                     {
                       label: t.analytics.apiCalls,
-                      value: String(
-                        data.totals.total_api_calls ??
-                          data.daily.reduce((sum, d) => sum + d.sessions, 0),
-                      ),
+                      value: String(data.totals.total_api_calls ?? data.daily.reduce((sum, d) => sum + d.sessions, 0)),
                     },
                   ]}
                 />
@@ -583,22 +558,17 @@ export default function AnalyticsPage() {
         </>
       )}
 
-      {data &&
-        data.daily.length === 0 &&
-        data.by_model.length === 0 &&
-        data.skills.top_skills.length === 0 && (
-          <Card>
-            <CardContent className="py-12">
-              <div className="flex flex-col items-center text-muted-foreground">
-                <BarChart3 className="h-8 w-8 mb-3 opacity-40" />
-                <p className="text-sm font-medium">{t.analytics.noUsageData}</p>
-                <p className="text-xs mt-1 text-text-tertiary">
-                  {t.analytics.startSession}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+      {data && data.daily.length === 0 && data.by_model.length === 0 && data.skills.top_skills.length === 0 && (
+        <Card>
+          <CardContent className="py-12">
+            <div className="flex flex-col items-center text-muted-foreground">
+              <BarChart3 className="h-8 w-8 mb-3 opacity-40" />
+              <p className="text-sm font-medium">{t.analytics.noUsageData}</p>
+              <p className="text-xs mt-1 text-text-tertiary">{t.analytics.startSession}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       <PluginSlot name="analytics:bottom" />
     </div>
   );

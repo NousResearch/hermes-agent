@@ -440,6 +440,7 @@ export interface PetSpritePayload {
   framesByRow?: Record<string, number> | null
   loopMs?: number | null
   scale?: number | null
+  marginRight?: number
   stateRows?: string[] | null
 }
 export interface ProjectFactsParams {
@@ -2629,6 +2630,7 @@ export interface PetInfoResult {
   framesByRow?: Record<string, number> | null
   loopMs?: number | null
   scale?: number | null
+  marginRight?: number
   stateRows?: string[] | null
   [key: string]: unknown
 }
@@ -2638,6 +2640,7 @@ export interface PetInfoMetaResult {
   displayName?: string | null
   scale?: number | null
   spritesheetRevision?: string | null
+  marginRight?: number
 }
 /** ``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width. */
 export interface PetCellsParams {
@@ -2656,6 +2659,7 @@ export interface PetCellsResult {
   frameMs?: number | null
   frames?: number[][][][] | string[] | null
   scale?: number | null
+  marginRight?: number
   graphics?: string | null
   imageId?: number | null
   color?: string | null
@@ -5954,6 +5958,7 @@ export interface PetChangedPayload {
   displayName?: string | null
   scale?: number | null
   spritesheetRevision?: string | null
+  marginRight?: number
   [key: string]: unknown
 }
 /** ``methods_session`` pet.generate: token-only init frame, then one per draft. */

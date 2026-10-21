@@ -53,7 +53,6 @@ const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: 
 
 const PET_BOTTOM = 3 // rows the pet floats above the screen bottom (over the composer)
 const PET_PAD_LEFT = 2
-const PET_RIGHT = 1
 const PET_GUTTER_GAP = 1
 const KITTY_PLACEHOLDER = '\u{10eeee}'
 // Below this many columns of remaining text width, the right gutter is too
@@ -67,7 +66,7 @@ const MIN_GUTTER_BODY_COLS = 72
 // wide terminals, reserved bottom rows on narrow ones). Renders nothing unless
 // a pet is installed + enabled.
 export const PetPane = memo(function PetPane() {
-  const { enabled, grid, kitty } = usePet()
+  const { enabled, grid, kitty, marginRight = 1 } = usePet()
 
   // Footprint in cells. For kitty we count real placeholder cells (zero-width
   // diacritics make string length lie); for half-blocks it's the grid shape.
@@ -95,13 +94,13 @@ export const PetPane = memo(function PetPane() {
             // Bottom PET_BOTTOM rows sit over the composer, so the transcript
             // only needs to clear the rest in the row-reservation (band) mode.
             height: Math.max(0, height - PET_BOTTOM),
-            width: width + PET_PAD_LEFT + PET_RIGHT + PET_GUTTER_GAP
+            width: width + PET_PAD_LEFT + marginRight + PET_GUTTER_GAP
           }
         : null
     )
 
     return () => $petBox.set(null)
-  }, [active, height, width])
+  }, [active, height, width, marginRight])
 
   if (!active) {
     return null
@@ -114,7 +113,7 @@ export const PetPane = memo(function PetPane() {
       paddingLeft={PET_PAD_LEFT}
       paddingTop={1}
       position="absolute"
-      right={PET_RIGHT}
+      right={marginRight}
     >
       {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
       {!kitty && grid ? <PetSprite grid={grid} /> : null}

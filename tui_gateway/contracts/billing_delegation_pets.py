@@ -575,6 +575,7 @@ class PetSpritePayload(Result):
     framesByRow: dict[str, int] | None = None
     loopMs: int | None = None
     scale: float | None = None
+    marginRight: int = 1
     stateRows: list[str] | None = None
 
 

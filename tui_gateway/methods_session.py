@@ -1494,14 +1494,13 @@ def _(rid, params: dict, session: dict) -> dict:
 # ── pet ──────────────────────────────────────────────────────────────
 _PET_OFF = {"enabled": False}
 
-
 @_pet_method("pet.info", fail_open=_PET_OFF)
 def _(rid, params: dict) -> dict:
     """Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy."""
     if (active := _active_pet()) is None:
         return _ok(rid, {"enabled": False})
     pet, scale = active
-    payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+    payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale), "marginRight": _pet_config_margin_right()}
     # Send-once for the multi-MB sheet: same revision → metadata only.
     if (known := str(params.get("knownRevision", "") or "")) and known == payload.get("spritesheetRevision"):
         # Send-once semantics for the multi-MB spritesheet (#54730): a caller that already holds the sheet
@@ -1519,7 +1518,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"enabled": False})
     pet, scale = active
     return _ok(rid, {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "scale": scale,
-                     "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)})
+                     "spritesheetRevision": _pet_sheet_revision(pet.spritesheet), "marginRight": _pet_config_margin_right()})
 
 
 def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
@@ -1554,7 +1553,8 @@ def _(rid, params: dict) -> dict:
     state = str(params.get("state") or constants.PetState.IDLE.value)
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
-    base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
+    base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state,
+            "marginRight": constants.resolve_margin_right(pet_cfg.get("margin_right"))}
     if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)):
         return _ok(rid, {**base, **kitty})
     renderer = PetRenderer(str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols)

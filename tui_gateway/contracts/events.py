@@ -804,6 +804,7 @@ class PetChangedPayload(OpenPayload):
     displayName: str | None = None
     scale: float | None = None
     spritesheetRevision: str | None = None
+    marginRight: int = 1
 
 
 class PetGenerateProgressPayload(OpenPayload):

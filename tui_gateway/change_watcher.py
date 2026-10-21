@@ -160,6 +160,12 @@ def _active_pet():
     return (pet, scale) if enabled and pet is not None and pet.exists else None
 
 
+def _pet_config_margin_right() -> int:
+    """Resolve the live profile's TUI pet right margin."""
+    from agent.pet.constants import resolve_margin_right
+    return resolve_margin_right(_pet_cfg().get("margin_right"))
+
+
 def _pet_sig() -> tuple:
     """(slug, spritesheet revision, scale) of the active pet — ("off",) when none."""
     display = _load_cfg().get("display") or {}
@@ -169,7 +175,7 @@ def _pet_sig() -> tuple:
     try:
         if active := _active_pet():
             pet, scale = active
-            return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale)
+            return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale, _pet_config_margin_right())
     except Exception:
         pass
     return ("off",)
@@ -181,7 +187,8 @@ def _pet_changed_payload() -> dict:
         if active := _active_pet():
             pet, scale = active
             return {"enabled": True, "slug": pet.slug, "displayName": pet.display_name,
-                    "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)}
+                    "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+                    "marginRight": _pet_config_margin_right()}
     except Exception:
         pass
     return {"enabled": False}

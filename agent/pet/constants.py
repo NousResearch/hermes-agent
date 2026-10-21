@@ -28,10 +28,27 @@ DEFAULT_SCALE = 0.33
 MIN_SCALE = 0.1
 MAX_SCALE = 3.0
 
+# Right margin bounds (terminal columns) for TUI pet mascot.
+DEFAULT_MARGIN_RIGHT = 1
+MIN_MARGIN_RIGHT = 0
+MAX_MARGIN_RIGHT = 10
+
 
 def clamp_scale(scale: float) -> float:
     """Clamp *scale* to ``[MIN_SCALE, MAX_SCALE]`` (the single validation point)."""
     return max(MIN_SCALE, min(MAX_SCALE, scale))
+
+
+def clamp_margin_right(margin: int) -> int:
+    """Clamp *margin* to ``[MIN_MARGIN_RIGHT, MAX_MARGIN_RIGHT]``."""
+    return max(MIN_MARGIN_RIGHT, min(MAX_MARGIN_RIGHT, margin))
+
+
+def resolve_margin_right(margin: int | None = None) -> int:
+    """Resolve right margin for TUI mascot, defaulting to DEFAULT_MARGIN_RIGHT and clamped to bounds."""
+    if type(margin) is not int:
+        return DEFAULT_MARGIN_RIGHT
+    return clamp_margin_right(margin)
 
 
 # Cells one native frame spans at ``scale == 1.0`` (~8px cells → 24); mirrors the

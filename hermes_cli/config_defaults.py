@@ -1009,9 +1009,9 @@ DEFAULT_CONFIG = {
             # column width. Half-block fallback clamps to a legibility floor.
             "scale": 0.33,
             "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
+            "margin_right": 1,  # TUI right margin in columns (0-10).
         },
     },
-
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",

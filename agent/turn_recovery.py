@@ -451,6 +451,24 @@ def _refresh_credentials_after_401(
     return False
 
 
+def _rejects_ollama_options(api_error: BaseException) -> bool:
+    """A 400/422 whose body names ``options`` as an unknown request field.
+
+    ``options`` is Ollama's own request extension (``options.num_ctx``). A backend that
+    validates its schema strictly - Gemini relayed through a local gateway - rejects the whole
+    request, so the field has to go (#142239). Mirrors ``_rejects_stream_options`` (#9705), the
+    same bug shape for the usage extension."""
+    if getattr(api_error, "status_code", None) not in (400, 422):
+        return False
+    body = f"{getattr(api_error, 'body', '') or ''} {api_error}".lower()
+    return "options" in body and any(
+        k in body for k in (
+            "extra", "not supported", "unrecognized", "unexpected", "unknown",
+            "cannot find field", "not permitted", "unsupported",
+        )
+    )
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: list[dict[str, Any]], api_messages: Any,
@@ -538,6 +556,23 @@ def _recover_format_errors(
             "keywords to strip — falling through to normal retry",
             agent.log_prefix,
         )
+
+    # A 400 naming ``options``: the endpoint is not Ollama (or relays to an upstream that is
+    # not), and ``options`` is Ollama's own request extension. Drop it for this session and
+    # retry, so a wrong injection heals instead of failing every request (#142239).
+    if not _retry.ollama_options_rejected_retry_attempted and _rejects_ollama_options(api_error):
+        _retry.ollama_options_rejected_retry_attempted = True
+        if getattr(agent, "_ollama_num_ctx", None):
+            agent._ollama_num_ctx = None
+            _vlines(
+                agent,
+                "⚠️  Endpoint rejected the options field — dropped Ollama's num_ctx for this session, retrying...",
+            )
+            logger.warning(
+                "%sOllama options rejection recovery: dropped num_ctx and retrying",
+                agent.log_prefix,
+            )
+            return True
     return False
 
 

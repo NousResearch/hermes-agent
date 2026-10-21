@@ -120,6 +120,64 @@ class TestQueryOllamaSupportsVision:
         assert result is None
 
 
+class TestGatewayShapedPayloadIsNotOllama:
+    """A local gateway that proxies models can answer /api/show in an Ollama-ish shape. Believing
+    it made Hermes send Ollama's own ``options.num_ctx`` to a backend that validates its schema
+    strictly and rejects the field - every request 400s (#142239)."""
+
+    def test_a_gateway_shaped_payload_yields_no_num_ctx(self):
+        show_data = {
+            "details": {"context_length": 131072},
+            "model_info": {"context_length": 131072},
+        }
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_num_ctx("gemini-3-pro", "http://127.0.0.1:8080/v1")
+
+        assert result is None
+
+    def test_a_real_ollama_payload_still_yields_the_window(self):
+        """The control: Ollama's own payload (a Modelfile parameter block) is believed."""
+        show_data = {
+            "parameters": "num_ctx 32768\n",
+            "model_info": {"llama.context_length": 131072},
+        }
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_num_ctx("llama3.1:8b", "http://127.0.0.1:11434/v1")
+
+        assert result == 32768
+
+    def test_the_agent_keeps_num_ctx_unset_so_no_options_are_injected(self):
+        """The injection contract: no num_ctx -> no ``extra_body.options`` -> no upstream 400."""
+        show_data = {
+            "details": {"context_length": 131072},
+            "model_info": {"context_length": 131072},
+        }
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with (
+            patch("agent.model_metadata.detect_local_server_type", return_value="ollama"),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                agent = _build_agent(
+                    {"agent": {}, "model": {}}, probed_ctx=131072,
+                    base_url="http://127.0.0.1:8080/v1",
+                )
+
+        assert agent._ollama_num_ctx is None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Level 3: init-order — compressor window must clamp to effective num_ctx
 # (#57275 residual claim 3 / #60103 init-order half)

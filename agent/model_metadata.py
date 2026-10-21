@@ -20,6 +20,7 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.ollama_probe import is_ollama_show_payload, ollama_show_context
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -564,29 +565,6 @@ def _longest_key_match(table: dict[str, int], model_lower: str) -> Optional[tupl
     for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
         if _catalog_key_matches(key, model_lower):
             return key, value
-    return None
-
-
-def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Optional[int] = None) -> Optional[int]:
-    """Context length from an Ollama ``/api/show`` payload. ``parameters.num_ctx`` is the RUNTIME
-    window (Modelfile override), ``model_info.*.context_length`` the GGUF training max. Local users
-    control num_ctx (prefer it); hosted operators may cap it arbitrarily (``gguf_first``)."""
-    def _num_ctx():
-        for line in data.get("parameters", "").split("\n"):
-            parts = line.strip().split()
-            if "num_ctx" in line and len(parts) >= 2:
-                try:
-                    yield int(parts[-1])
-                except ValueError:
-                    continue
-    def _gguf():
-        for key, value in data.get("model_info", {}).items():
-            if "context_length" in key and isinstance(value, (int, float)):
-                yield int(value)
-    for reader in ((_gguf, _num_ctx) if gguf_first else (_num_ctx, _gguf)):
-        for ctx in reader():
-            if minimum is None or ctx >= minimum:
-                return ctx
     return None
 
 
@@ -1432,18 +1410,29 @@ def _is_ollama_server(base_url: str, api_key: str) -> bool:
 
 
 def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
-    """Ollama ``/api/show`` context (Modelfile num_ctx, else GGUF max); the value to send as ``num_ctx``."""
+    """Ollama ``/api/show`` context (Modelfile num_ctx, else GGUF max); the value to send as ``num_ctx``.
+
+    Only an Ollama-shaped payload counts. A local gateway that proxies models answers
+    ``/api/show`` with a summary of its own, and believing it made Hermes send Ollama's
+    ``options.num_ctx`` to a backend that rejects the field (#142239)."""
     bare_model, server_url = _strip_provider_prefix(model), _server_root(base_url)
     if not _is_ollama_server(base_url, api_key):
         return None
     _disk_key = f"{server_url}|{bare_model}"
     disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
-    if isinstance(disk_hit, int) and disk_hit > 0:
-        return disk_hit
+    # The cached value carries the shape verdict: an entry written before the verdict existed
+    # (or by a build that believed any Ollama-ish payload) is re-probed instead of reused, so a
+    # poisoned num_ctx cannot keep the ``options`` injection alive after the upgrade (#142239).
+    if isinstance(disk_hit, dict) and disk_hit.get("ollama_shaped"):
+        ctx = disk_hit.get("ctx")
+        if isinstance(ctx, int) and ctx > 0:
+            return ctx
     data = _ollama_show(server_url, api_key, bare_model)
-    ctx = _ollama_show_context(data, gguf_first=False) if data is not None else None
+    if not is_ollama_show_payload(data):
+        return None
+    ctx = ollama_show_context(data, gguf_first=False)
     if ctx is not None:
-        _local_probe_disk_put("ollama_num_ctx", _disk_key, ctx)
+        _local_probe_disk_put("ollama_num_ctx", _disk_key, {"ollama_shaped": True, "ctx": ctx})
     return ctx
 
 
@@ -1491,7 +1480,7 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
         return None
     data = _ollama_show(server_url, api_key, model, timeout=5.0, note_blackhole=True)
     # Hosted Ollama: the GGUF max is authoritative (the operator may have capped num_ctx arbitrarily).
-    return _ollama_show_context(data, gguf_first=True, minimum=1024) if data is not None else None
+    return ollama_show_context(data, gguf_first=True, minimum=1024) if data is not None else None
 
 
 def _model_name_suggests_kimi(model: str) -> bool:
@@ -1604,7 +1593,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         # Ollama: num_ctx (runtime window) before the GGUF training max, or conversations
         # grow past what Ollama allocated and silently truncate. Matches query_ollama_num_ctx().
         resp = client.post(f"{server_url}/api/show", json={"name": model})
-        return _ollama_show_context(resp.json(), gguf_first=False) if resp.status_code == 200 else None
+        return ollama_show_context(resp.json(), gguf_first=False) if resp.status_code == 200 else None
     def _model_detail_ctx(client) -> Optional[int]:
         # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}.
         # Skipped for unrecognised servers (server_type None, e.g. LiteLLM proxies): they commonly

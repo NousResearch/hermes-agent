@@ -101,3 +101,52 @@ jobs:
         # every earlier step passed: a step that failed midway can leave its own temp files
         # (a half-extracted download, a worktree its later cleanup never removed).
         uses: ./.github/actions/check-clean-worktree
+
+  # The ticket path on Windows: the native pipe tickets that the Store/bundled build and the
+  # packaged app take. Those tests are Windows-only by construction, and this job was the only
+  # place they could run - the Linux job above never reaches them (#134889 CI-2).
+  #
+  # The file list is explicit because the whole electron suite does not pass on Windows yet
+  # (24 files / 36 tests fail on a Windows host), so a blanket Windows leg would be red. Each
+  # file that is fixed moves out of the list and into the suite.
+  electron-windows-tickets:
+    name: Electron ticket-path tests (Windows)
+    runs-on: blacksmith-32vcpu-windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+      - name: Set up the locked JS build toolchain
+        id: node
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
+
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            tests-js/node_modules
+            web/node_modules
+          key: node-modules-scripts-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
+
+      - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          command: npm ci
+
+      - name: Run the Windows ticket-path electron tests
+        working-directory: apps/desktop
+        shell: pwsh
+        run: npx vitest run --project electron electron/local-gateway-python-native.test.ts electron/local-gateway-ticket-identity.test.ts
+
+      - name: Check the checkout is clean
+        uses: ./.github/actions/check-clean-worktree

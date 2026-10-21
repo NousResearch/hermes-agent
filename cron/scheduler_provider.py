@@ -555,7 +555,14 @@ class InProcessCronScheduler(CronScheduler):
             " (re-enumerated every cycle)" if callable(profile_homes) else "",
         )
 
+        # Routes are resolved at most once per cycle and shared by every satellite profile: the
+        # lookup re-parses the primary home's config.yaml, and doing it per profile made ticker
+        # cost scale with profile count (71 profiles ≈ 2s of parsing per 60s cycle, starving the
+        # Discord heartbeat under the GIL — #138105). Reset to None at the top of each cycle.
+        _cycle_primary_routes: list | None = None
+
         def tick_adapters_for(profile_name):
+            nonlocal _cycle_primary_routes
             # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
             # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
             # an exact enabled route maps here; else fail closed (delivery skipped this tick).
@@ -563,7 +570,9 @@ class InProcessCronScheduler(CronScheduler):
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
             if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                if _cycle_primary_routes is None:
+                    _cycle_primary_routes = _primary_profile_routes_for_current_home()
+                return SharedRouteAdapters(adapters, _cycle_primary_routes)
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
@@ -590,6 +599,7 @@ class InProcessCronScheduler(CronScheduler):
         while not stop_event.is_set():
             ok = False
             _tick_error = None
+            _cycle_primary_routes = None  # re-resolve each cycle; only the per-profile repeats were the cost (#138105)
             _profile_errors: dict[str, str] = {}
             # Worst failure this cycle (fd exhaustion wins); backoff applied once per cycle.
             # See #87644.

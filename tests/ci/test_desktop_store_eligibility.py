@@ -17,8 +17,8 @@ from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _work
 
 @pytest.mark.parametrize('tag,commit,store', [
     ('v0.28.0', '', True),
-    ('v0.28.0+canary.20260818T000000Z', '', False),
-    ('v0.28.0+canary.20260818T000000Z', '', True),
+    ('canary.20260818T000000Z-v0.28.0', '', False),
+    ('canary.20260818T000000Z-v0.28.0', '', True),
     ('', 'a' * 40, False),
 ])
 def test_bundle_only_requests_store_for_release_candidates(tmp_path, tag, commit, store):
@@ -65,7 +65,7 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     }
     cases = [
         ('v0.28.0', '', True, 'release'),
-        ('v0.28.0+canary.20260818T000000Z', '', False, 'release'),
+        ('canary.20260818T000000Z-v0.28.0', '', False, 'release'),
         ('', 'a' * 40, False, 'commit'),
     ]
     wrapper = tmp_path / 'run.ps1'

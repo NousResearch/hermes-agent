@@ -148,9 +148,11 @@ class BuildRequest:
                 git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         release_epoch = None
         if tag:
-            canary = re.fullmatch(r"v\d+\.\d+\.\d+\+canary\.(20\d{6}T\d{6}Z)", tag)
+            from hermes_cli.update_channel import canary_timestamp
+
+            canary = canary_timestamp(tag)
             if canary:
-                release_epoch = int(datetime.strptime(canary.group(1), "%Y%m%dT%H%M%SZ")
+                release_epoch = int(datetime.strptime(canary, "%Y%m%dT%H%M%SZ")
                                     .replace(tzinfo=UTC).timestamp())
             else:
                 claim_tag = os.environ.get("RELEASE_CLAIM_TAG", "")

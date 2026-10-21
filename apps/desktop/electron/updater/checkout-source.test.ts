@@ -238,7 +238,7 @@ it('carries each install channel from Python publication checks into the source 
       commits.push(git(['rev-parse', 'HEAD']))
     }
 
-    const tags: Record<'stable' | 'canary', string> = { stable: 'v1.2.3', canary: 'v1.2.3+canary.20260911T123456Z' }
+    const tags: Record<'stable' | 'canary', string> = { stable: 'v1.2.3', canary: 'canary.20260911T123456Z-v1.2.3' }
 
     for (const channel of ['stable', 'canary'] as const) {
       const sha: string = commits[channel === 'stable' ? 1 : 2]

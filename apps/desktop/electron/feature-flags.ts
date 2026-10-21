@@ -9,8 +9,18 @@ const featureFlags = {
 
 export type FeatureFlags = { [K in keyof typeof featureFlags]: boolean }
 
+/** A canary tag: canary.<UTC stamp>-vX.Y.Z (hermes_cli/update_channel.py _CANARY_TAG_RE). */
 export function isCanaryTag(tag: string | null | undefined): boolean {
-  return /\+canary\.20\d{6}T\d{6}Z$/.test(tag || '')
+  return /^canary\.20\d{6}T\d{6}Z-v\d+\.\d+\.\d+$/.test(tag || '')
+}
+
+/** The version a stable or canary tag publishes: X.Y.Z, or X.Y.Z+canary.<stamp> for a canary
+ * (hermes_cli/update_channel.py release_version). Never strip a leading `v`: a canary tag starts
+ * with its kind. */
+export function releaseTagVersion(tag: string | null | undefined): string | null {
+  const match = /^(?:canary\.(20\d{6}T\d{6}Z)-)?v(\d+\.\d+\.\d+)$/.exec(tag || '')
+  if (!match) return null
+  return match[1] ? `${match[2]}+canary.${match[1]}` : match[2]
 }
 
 export interface FeatureFlagInput {

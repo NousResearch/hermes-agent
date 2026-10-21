@@ -1,13 +1,13 @@
 name: Stable Release
 # The stable title is what the sequencer and release.py match runs by (stable.claim_run_title).
-run-name: ${{ contains(inputs.tag, '+canary.') && 'Canary' || 'Stable' }} release ${{ inputs.tag }}
+run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || 'Stable' }} release ${{ inputs.tag }}
 
 # Dispatch on the default branch: workflows and scripts come from main and Actions caches
 # live in main's scope. The claim tag is an input. Admission resolves it to a commit and
 # every lane that tests or builds the payload is passed that commit.
 #
 # This one workflow is also the canary pipeline (canary-release.yml dispatches it with a
-# vX.Y.Z+canary.<stamp> tag), so a canary runs exactly the jobs a stable release does, with
+# canary.<stamp>-vX.Y.Z tag), so a canary runs exactly the jobs a stable release does, with
 # every lane on except the signed-package upgrade arms (scripts/releases/lanes.py CANARY;
 # install-e2e covers old stable -> this commit). Admission emits the policy, and a canary
 # differs only in two ways:
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact annotated claim tag (rc.N-vX.Y.Z), or a canary tag (vX.Y.Z+canary.<stamp>). Admission resolves it to the commit under test
+        description: Exact annotated claim tag (rc.N-vX.Y.Z), or a canary tag (canary.<stamp>-vX.Y.Z). Admission resolves it to the commit under test
         required: true
         type: string
       baseline-manifest:
@@ -41,7 +41,7 @@ permissions:
 # A canary takes hours; it must never queue a stable release behind it, nor share the stable
 # publication reconciler's lock.
 concurrency:
-  group: ${{ contains(inputs.tag, '+canary.') && 'canary-release-pipeline' || 'stable-release' }}
+  group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || 'stable-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -70,6 +70,9 @@ jobs:
       # lane table alone decides what runs and what the gates expect to have skipped.
       lanes: ${{ steps.admit.outputs.lanes }}
       jobs: ${{ steps.admit.outputs.jobs }}
+      # Whether the policy's publication job also waits for acceptance (every suite green).
+      # Always true for a stable release; a canary claim chooses (release.py --[no-]require-green).
+      require-green: ${{ steps.admit.outputs.require-green }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -534,13 +537,16 @@ jobs:
     # Canary policy only (lanes.POLICY_JOBS). It publishes the same accepted candidate
     # publish-bundles would, to the canary channels: verified bytes and the Termux pool
     # (release_artifacts publish), then the GitHub prerelease, the canary feeds, the canary
-    # upgrade baseline and the protected R2 canary head (channel_releases canary). It waits
-    # only for the accepted candidate, never for acceptance: a red suite reports, it does not
-    # hold the canary back. The Store bundle is staged in the archive and never submitted.
-    needs: [admit, candidate-manifest]
+    # candidate pointer and the protected R2 canary head (channel_releases canary). Its claim
+    # decides what it waits for: with require-green it publishes only once acceptance passes
+    # (every suite green), like a stable release; without it, only the accepted candidate
+    # (built and smoked) gates it and a red suite reports without holding the canary back. The
+    # Store bundle is staged in the archive and never submitted.
+    needs: [admit, candidate-manifest, acceptance]
     if: >-
       !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-canary']
       && needs.candidate-manifest.result == 'success'
+      && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
     runs-on: blacksmith-32vcpu-ubuntu-2404
     environment: release-signing
     timeout-minutes: 120
@@ -558,6 +564,8 @@ jobs:
       CANDIDATE_MANIFEST_URL: ${{ needs.candidate-manifest.outputs.manifest-url }}
       CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
       RELEASE_NEEDS: ${{ toJSON(needs) }}
+      # channel_releases custody re-requires acceptance when the claim requires green.
+      REQUIRE_GREEN: ${{ needs.admit.outputs.require-green }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}

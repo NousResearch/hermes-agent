@@ -434,8 +434,8 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
     kanban_home, monkeypatch,
 ):
     """Within the cooldown after a rate-limit requeue, the guard defers the
-    respawn; after the cooldown it allows a probe — and crucially does NOT
-    fall into ``blocker_auth`` (which would defer forever)."""
+    respawn; after the cooldown it allows a probe regardless of the stamped
+    ``last_failure_error`` text."""
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
@@ -463,37 +463,28 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
         assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
 
-        # Past cooldown → allowed (None), NOT trapped by blocker_auth even
-        # though last_failure_error contains "rate-limited".
+        # Past cooldown → allowed (None) even though last_failure_error
+        # contains "rate-limited".
         monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
 @pytest.mark.parametrize(
-    "error_text, expected",
+    "error_text",
     [
-        # Worker progress prose talking about *writing*, not an auth failure
-        # (#117009): must NOT trip the guard.
-        ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
-        ("docs authored by the previous cycle", None),
-        ("relying on an authoritative source", None),
-        # Genuine auth failures must still trip the guard, one row per
-        # curated stem family (bare, -ate, -ize, -ise).
-        ("401 auth failed", "blocker_auth"),
-        ("authentication error from provider", "blocker_auth"),
-        ("still authorizing the request", "blocker_auth"),
-        ("still authorising the request", "blocker_auth"),
+        # Worker progress prose (#117009) and genuine-looking auth/quota text
+        # alike: ``last_failure_error`` is context for operators and the retry
+        # worker, never a dispatch input. Provider conditions reach the guard
+        # structurally (run outcome), see test_kanban_respawn_guard_structured.
+        "Workstream C items C-3 and C-4: author t  (90.59s)",
+        "relying on an authoritative source",
+        "401 auth failed",
+        "authentication error from provider",
+        "429 quota exceeded",
+        "claude-subscription-directsdk-experimental did not answer in time",
     ],
 )
-def test_respawn_guard_blocker_auth_curated_not_open_stem(
-    kanban_home, monkeypatch, error_text, expected,
-):
-    """``_RESPAWN_BLOCKER_RE`` used to use an open ``auth\\w*`` stem that matched
-    ordinary English words like "author"/"authored"/"authoring"/"authoritative"
-    in worker progress prose, parking a healthy ``ready`` card forever (#117009).
-    The auth family must be a curated set of real auth-failure tokens."""
-    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
-
+def test_respawn_guard_never_reads_last_failure_error(kanban_home, error_text):
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="prose", assignee="a")
         conn.execute(
@@ -501,16 +492,13 @@ def test_respawn_guard_blocker_auth_curated_not_open_stem(
             (error_text, tid),
         )
         conn.commit()
-        assert kbd.check_respawn_guard(conn, tid) == expected
+        assert kbd.check_respawn_guard(conn, tid) is None
 
 
-def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
-    """A plain crash's captured stdout is context, not a diagnosis.
-
-    ``_classify_dead_worker`` appends the worker's last output to the persisted
-    failure text.  A benign command such as ``claude auth status`` must not turn
-    an unrelated crash into a permanent auth guard on the next dispatch.
-    """
+def test_respawn_guard_ignores_auth_words_in_crashed_or_spawn_failed_text(kanban_home):
+    """Neither a crash's captured stdout nor a spawn failure's exception text
+    is a provider diagnosis; both cards remain dispatchable and the breaker,
+    not the guard, bounds them."""
     with kbc.connect() as conn:
         crashed_id = kb.create_task(conn, title="crashed", assignee="a")
         kb.claim_task(conn, crashed_id)
@@ -548,7 +536,7 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         conn.commit()
 
         assert kbd.check_respawn_guard(conn, crashed_id) is None
-        assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
+        assert kbd.check_respawn_guard(conn, spawn_failed_id) is None
 
 
 def test_infrastructure_spawn_refusal_never_charges_the_card(

@@ -99,5 +99,5 @@ def test_respawn_guard_survives_blob_comment_body_and_failure_error(board):
                 "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                 (sqlite3.Binary(b"429 quota exceeded"), tid),
             )
-        # BLOB last_failure_error still matches the quota/auth blocker pattern.
-        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+        # A BLOB last_failure_error is never read by the guard and never aborts it.
+        assert kbd.check_respawn_guard(conn, tid) is None

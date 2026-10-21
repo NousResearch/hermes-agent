@@ -29,6 +29,10 @@ VIDEO_MAX_BYTES = 10 * 1024 * 1024
 VOICE_MAX_BYTES = 2 * 1024 * 1024
 FILE_MAX_BYTES = 20 * 1024 * 1024
 ABSOLUTE_MAX_BYTES = FILE_MAX_BYTES
+# Inbound is bounded by what WeCom's AI-bot callback supports, not by our outbound upload caps:
+# docs (developer.work.weixin.qq.com path/100719) allow file/video callbacks up to 100MB, so an
+# inbound-only 100MB ceiling keeps a 25MB phone video from tripping the size guard.
+INBOUND_MEDIA_MAX_BYTES = 100 * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 512 * 1024
 MAX_UPLOAD_CHUNKS = 100
 VOICE_SUPPORTED_MIMES = {"audio/amr"}
@@ -71,17 +75,24 @@ class WeComMediaMixin:
         if msgtype == "mixed":
             mixed = _dict_at(body, "mixed")
             for item in mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []:
-                if isinstance(item, dict) and str(item.get("msgtype") or "").lower() == "image":
-                    _ref("image", item)
+                if isinstance(item, dict) and str(item.get("msgtype") or "").lower() in ("image", "video", "voice"):
+                    _ref(str(item.get("msgtype")).lower(), item)
         else:
             _ref("image", body)
             if msgtype == "file":
                 _ref("file", body)
+            # Inbound video/voice callbacks carry their own container ({"video": {...}} /
+            # {"voice": {...}}); without these branches the message hits the adapter's
+            # "empty message" drop path and the media never reaches the agent.
+            if msgtype == "video":
+                _ref("video", body)
+            if msgtype == "voice":
+                _ref("voice", body)
             if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):  # AI Bot attachments (PDF/Word/Excel)
                 _ref("file", body["appmsg"]) or _ref("image", body["appmsg"])
         quote = _dict_at(body, "quote")
         quote_type = str(quote.get("msgtype") or "").lower()
-        if quote_type in ("image", "file"):
+        if quote_type in ("image", "file", "video", "voice"):
             _ref(quote_type, quote)
         cached = [c for c in [await self._cache_media(kind, ref) for kind, ref in refs] if c]
         return [c[0] for c in cached], [c[1] for c in cached]
@@ -92,24 +103,44 @@ class WeComMediaMixin:
             try:
                 raw = self._decode_base64(media["base64"])
             except Exception as exc:
-                logger.debug("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
+                logger.info("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
                 return None
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
-            return await self._store_media(kind, raw, self._detect_image_ext(raw), "", filename, mimetypes.guess_type(filename)[0] or "application/octet-stream", "")
+            doc_mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            ext = self._detect_image_ext(raw)
+            if kind in ("video", "voice") and doc_mime == "application/octet-stream":
+                detected = self._detect_av_mime(raw)
+                if detected:
+                    doc_mime, av_ext = detected
+                    if "." not in Path(filename).name:
+                        filename += av_ext
+                    ext = av_ext
+            return await self._store_media(kind, raw, ext, "", filename, doc_mime, "")
+        # Voice callbacks carry only the platform's STT transcript ({"content": ...}, WeCom doc
+        # path/100719) — no media to cache; the transcript is already routed via _extract_text.
+        if kind == "voice" and not (media.get("url") or media.get("base64")):
+            return None
         url = str(media.get("url") or "").strip()
         if not url:
+            logger.info("[%s] %s media has neither base64 nor url; container_keys=%s", self.name, kind, sorted(media.keys()))
             return None
         # The key arrives URL-encoded in some payloads (%2F, %3D); base64-decode the real value.
         aes_key = unquote(str(media.get("aeskey") or "").strip())
         try:
             step = "download"
-            raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
+            raw, headers = await self._download_remote_bytes(url, max_bytes=INBOUND_MEDIA_MAX_BYTES)
             step = "decrypt"
             raw = self._decrypt_file_bytes(raw, aes_key) if aes_key else raw
         except Exception as exc:
-            logger.debug("[%s] Failed to %s %s from %s: %s", self.name, step, kind, url, exc)
+            logger.warning("[%s] Failed to %s %s (host=%s): %s (media_keys=%s)", self.name, step, kind, urlparse(url).hostname, exc, sorted(media.keys()))
             return None
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
+        if kind in ("video", "voice") and content_type == "application/octet-stream":
+            # WeCom's CDN labels A/V like images (generic octet-stream); sniff container magic
+            # so downstream routing (video_paths / STT) sees a real video/audio MIME.
+            detected = self._detect_av_mime(raw)
+            if detected:
+                content_type = detected[0]
         ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
         # Images: never forward the CDN's generic octet-stream label — downstream classifiers
         # reject non-image MIMEs; derive it from the resolved extension instead.
@@ -134,6 +165,23 @@ class WeComMediaMixin:
     def _detect_image_ext(data: bytes) -> str:
         webp = ".webp" if data.startswith(b"RIFF") and data[8:12] == b"WEBP" else ".jpg"
         return next((ext for magic, ext in _IMAGE_MAGIC if data.startswith(magic)), webp)
+
+    @staticmethod
+    def _detect_av_mime(data: bytes) -> Optional[tuple[str, str]]:
+        """Magic-byte sniff for common inbound A/V containers → (mime, ext); None when unknown."""
+        if len(data) > 12 and data[4:8] == b"ftyp":
+            return "video/mp4", ".mp4"
+        if data.startswith(b"#!AMR"):
+            return "audio/amr", ".amr"
+        if data.startswith(b"\x02#!") or data[1:7] == b"#!SILK":
+            return "audio/silk", ".silk"
+        if data.startswith(b"OggS"):
+            return "audio/ogg", ".ogg"
+        if data.startswith(b"RIFF") and data[8:12] == b"WAVE":
+            return "audio/wav", ".wav"
+        if data.startswith(b"\x1aE\xdf\xa3"):
+            return "video/webm", ".webm"
+        return None
 
     @staticmethod
     def _mime_for_ext(ext: str, fallback: str = "application/octet-stream") -> str:

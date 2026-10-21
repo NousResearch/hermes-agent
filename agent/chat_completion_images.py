@@ -93,14 +93,21 @@ def materialize_chat_images(message: Any, seen: set[str] | None = None, *, save:
             marker = f"MEDIA:{path}"
         except Exception as exc:
             # Provider URLs/data and download exceptions can contain secrets. Log only the class.
-            logger.warning("Chat image materialization failed (%s)", type(exc).__name__)
-            marker = "[Provider image could not be saved.]"
+            import traceback
+            frames = traceback.extract_tb(exc.__traceback__)
+            location = " -> ".join(f"{f.filename}:{f.lineno}:{f.name}" for f in frames)
+            # Never log exception text, source lines, URLs or image payloads.
+            missing = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+            safe_missing = missing if isinstance(missing, str) and all(c.isalnum() or c in "._" for c in missing) else None
+            logger.error("Chat image materialization failed: type=%s missing_module=%s frames=%s", type(exc).__name__, safe_missing, location)
+            detail = f"{type(exc).__name__}" + (f"; module={safe_missing}" if safe_missing else "")
+            marker = f"[Provider image could not be saved: {detail}. See agent.log.]"
         seen.add(key)
         markers.append(marker)
     clear_chat_images(message)
     if markers:
         content = flatten_message_text(_field(message, "content"), sep="") or ""
-        content = content + ("\n" if content else "") + "\n".join(markers)
+        content = content + ("\n" if content else "") + "\n".join(markers) + "\n"
         if isinstance(message, dict):
             message["content"] = content
         else:

@@ -4,7 +4,8 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { TabDropdown } from '@/components/ui/tab-dropdown'
 import type { HermesReviewScope } from '@/global'
 import { useI18n } from '@/i18n'
-import { $reviewScope, clearReviewSelection, refreshReview } from '@/store/review'
+import { displayPath } from '@/lib/display-path'
+import { $reviewCwd, $reviewScope, clearReviewSelection, refreshReview } from '@/store/review'
 
 function selectScope(id: HermesReviewScope) {
   $reviewScope.set(id)
@@ -20,6 +21,7 @@ export function ReviewScopeRow() {
   const { t } = useI18n()
   const c = t.statusStack.coding
   const scope = useStore($reviewScope)
+  const cwd = useStore($reviewCwd)
 
   const options: { id: HermesReviewScope; label: string }[] = [
     { id: 'uncommitted', label: c.scopeUncommitted },
@@ -29,6 +31,11 @@ export function ReviewScopeRow() {
 
   return (
     <div className="@container shrink-0 px-2 pb-1.5" data-suppress-pane-reveal-side="">
+      {cwd && (
+        <div className="truncate pb-1.5 font-mono text-[0.64rem] text-(--ui-text-secondary)" title={cwd}>
+          {displayPath(cwd)}
+        </div>
+      )}
       <SegmentedControl<HermesReviewScope>
         className="hidden w-full auto-cols-[minmax(0,auto)] @[13.5rem]:grid [&>button]:px-2"
         onChange={selectScope}

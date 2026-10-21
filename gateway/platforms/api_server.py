@@ -2855,9 +2855,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "font-size:min(560px,58vw);line-height:.78;color:rgba(5,5,232,.13)}"
             ".pane-statue{position:relative;inset:auto;display:block;height:auto;opacity:.85}"
             ".pane-statue-fill{display:block;position:absolute;left:0;right:0;bottom:0;width:100%;height:auto}}"
-            # Phones: session and extension already appear in the prompt.
-            "@media(max-width:600px){.rail-row:not(.rail-row-status){display:none}"
-            ".rail-mid{text-align:right}.rail-value{font-size:11px}}"
+            # Session and extension already appear in the prompt, so the
+            # header band keeps only the status.
+            "@media(max-width:860px){.rail-row:not(.rail-row-status){display:none}.rail-mid{text-align:right}}"
+            "@media(max-width:600px){.rail-value{font-size:11px}}"
+            # Tablets have room to centre the figure itself (it sits left of
+            # the image's centre, with the staff on the right) and to keep
+            # HERMES inside the frame, low across his waist.
+            "@media(min-width:601px) and (max-width:860px){.pane-art{transform:translateX(12%)}"
+            ".pane-mark{left:38%;top:72%;font-size:min(56vw,420px)}}"
             "@media(max-width:860px) and (max-height:500px){.display{font-size:52px;margin-bottom:14px}"
             ".rail-row:not(.rail-row-status){display:none}.rail-inner{gap:12px 16px;padding:16px 20px}"
             ".pane-inner{padding-top:20px}}"

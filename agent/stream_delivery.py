@@ -333,7 +333,7 @@ class StreamDeliveryMixin:
         if delivered:
             self._record_streamed_assistant_text(text)
 
-    def _fire_reasoning_delta(self, text: str, *, inline: bool = False) -> None:
+    def _fire_reasoning_delta(self, text: str, *, inline: bool = False, source_id: str | None = None) -> None:
         """Fire reasoning callback if registered; superseded writers are fenced like content deltas.
 
         ``inline`` marks text recovered from ``<think>`` blocks in content; any other call is a native
@@ -345,7 +345,11 @@ class StreamDeliveryMixin:
             # content deltas.
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
-        self._call_quietly(self.reasoning_callback, text)
+        identified = source_id and self._call_quietly(
+            getattr(self, "reasoning_event_callback", None), "delta", source_id, text
+        )
+        if not identified:
+            self._call_quietly(getattr(self, "reasoning_callback", None), text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
         # serialized every streaming thread in the process behind a config cache hit.
         enabled = getattr(self, "_stream_reasoning_hooks_enabled", None)
@@ -360,6 +364,19 @@ class StreamDeliveryMixin:
             self._stream_reasoning_hooks_enabled = enabled
         if enabled:
             self._enqueue_stream_hook("on_stream_delta", label="reasoning on_stream_delta", delta=text, kind="reasoning")
+
+    def _fire_reasoning_event(self, phase: str, source_id: str, text: str = "") -> None:
+        """Preserve native summary identity without bypassing writer fences or stream observers."""
+        if phase not in {"start", "delta", "end"} or not isinstance(source_id, str) or not source_id:
+            return
+        if phase == "delta":
+            if isinstance(text, str) and text:
+                self._fire_reasoning_delta(text, source_id=source_id)
+            return
+        if self._stream_writer_superseded():
+            self._note_dropped_stream_writer("_fire_reasoning_event")
+            return
+        self._call_quietly(getattr(self, "reasoning_event_callback", None), phase, source_id, "")
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify the display layer that the model is generating tool call arguments (spinner for large payloads)."""

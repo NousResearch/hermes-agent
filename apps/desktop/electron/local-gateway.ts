@@ -86,6 +86,20 @@ export function gatewayOwnerProfile(endpoint: GatewayEndpoint): string {
   return path.basename(path.dirname(home)) === 'profiles' ? path.basename(home) : 'default'
 }
 
+/** `hermes --profile P gateway restart --detach`: without a service, the CLI would otherwise run the
+ *  replacement as this bounded client, a child its timeout kills. A runtime older than `--detach`
+ *  names the flag argparse rejects (exit 2); it gets its old restart, which still works wherever a
+ *  service owns the gateway, instead of no restart at all. */
+export async function runGatewayOwnerRestart(
+  run: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>,
+  ownerProfile: string
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const args = ['--profile', ownerProfile, 'gateway', 'restart']
+  const result = await run([...args, '--detach'])
+
+  return result.code === 2 && /unrecognized arguments:.*--detach/.test(result.stderr) ? run(args) : result
+}
+
 /** One restart per (owner process, stale gateway, client) per Desktop process. An owner a restart cannot move
  *  (a service unit pinned to another checkout) is then attached as-is instead of being restarted
  *  on every dial. */

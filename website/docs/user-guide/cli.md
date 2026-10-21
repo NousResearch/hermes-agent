@@ -207,7 +207,7 @@ Added multiply; pytest isn't installed here, so I ran the tests directly: 2 pass
  gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · tab queue · ctrl+c stop
 ```
 
-- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
+- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code; a refused `skill_manage` write keeps its emoji and shows the reason dim, since the agent retries it itself), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
 - The composer's top rule carries the live activity (spinner, what's running, elapsed time, streamed tokens) on the left and the session title on the right; no spinner row is printed into the scrollback.
 - The status line sits under the composer: the same fields as the classic status bar (model, context, cache hit, latency, tokens/s, background work, goal, duration, YOLO…) plus the working directory (with git branch) on the left; the keys that do something right now on the right.
 - The welcome banner is the same in both layouts.

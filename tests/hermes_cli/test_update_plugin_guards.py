@@ -87,6 +87,34 @@ def test_enabled_plugin_declaration_runs_and_checker_path_cannot_escape(guarded_
         update_plugin_guards.prepare_update_guards()
 
 
+def test_required_plugin_disabled_veto_refuses_before_checkout_move(guarded_profile):
+    _, profile, _ = guarded_profile
+    profile.joinpath("config.yaml").write_text(
+        "plugins:\n  enabled: [context-check]\n  disabled: [context-check]\n"
+        "  update_guards: [context-check]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="but it is disabled"):
+        update_plugin_guards.prepare_update_guards()
+
+
+def test_same_head_update_checks_before_dependency_completion(guarded_profile, tmp_path, monkeypatch):
+    source = tmp_path / "checkout"
+    source.mkdir()
+    (source / "compatible.txt").write_text("broken", encoding="utf-8")
+    monkeypatch.setattr(main, "PROJECT_ROOT", source)
+    guards = update_plugin_guards.prepare_update_guards()
+
+    def no_completion(_request):
+        raise AssertionError("dependency completion must not start")
+
+    monkeypatch.setattr(update_cmd, "_complete_source_update", no_completion)
+    plan = SimpleNamespace(auto_stash_ref=None, parked_branch_switched=False)
+    with pytest.raises(SystemExit) as stopped:
+        update_cmd._finish_already_up_to_date(
+            ["git"], "main", "main", plan, gw_input_fn=None,
+            completion_request={}, plugin_update_guards=guards)
+    assert stopped.value.code == 1
+
+
 def test_failed_guard_rolls_git_source_back_and_fixed_retry_succeeds(
         guarded_profile, tmp_path, monkeypatch, capsys):
     home, _, _ = guarded_profile

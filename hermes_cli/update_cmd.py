@@ -1749,7 +1749,7 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None) -> None:
+    _windows_gateway_resume=None, plugin_update_guards=()) -> None:
     """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     # A parked branch the update switched off stays on the target: re-parking on the stale branch
@@ -1767,6 +1767,14 @@ def _finish_already_up_to_date(
                 f"{_count} unmerged commit(s) kept on '{current_branch}'.")
         else:
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
+
+    if refusal := _plugin_guards.check_pulled_plugin_compatibility(
+            Path(_m().PROJECT_ROOT), plugin_update_guards):
+        print(f"✗ Required plugin update check failed on the current checkout: {refusal}")
+        print("  No dependency sync or gateway restart was attempted.")
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        _record_stop("plugin_update_guard_noop_refused")
+        sys.exit(1)
 
     if completion_request is not None:
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
@@ -1955,7 +1963,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
-                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume)
+                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume,
+                plugin_update_guards=plugin_update_guards)
             return
 
         if release_sha:

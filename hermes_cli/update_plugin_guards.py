@@ -43,64 +43,84 @@ def _profile_home(home: Path):
         reset_hermes_home_override(token)
 
 
+def _profile_plugin_lists(profile: str, home: Path) -> tuple[list[str], list[str], list[str]]:
+    """Read the profile-owned requirement and effective selection."""
+    from hermes_cli.config import FailedConfigRead, load_config_readonly
+    with _profile_home(home):
+        config = load_config_readonly()
+    if isinstance(config, FailedConfigRead):
+        raise ValueError(f"profile {profile!r} has an unreadable config.yaml")
+    plugins = config.get("plugins") or {}
+    if not isinstance(plugins, dict):
+        raise ValueError(f"profile {profile!r} has invalid plugins configuration")
+    required, enabled, disabled = (plugins.get(key, []) for key in ("update_guards", "enabled", "disabled"))
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        raise ValueError(f"profile {profile!r} plugins.update_guards must be a list of plugin ids")
+    for key, value in (("enabled", enabled), ("disabled", disabled)):
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            if required:
+                raise ValueError(f"profile {profile!r} plugins.{key} must be a list of plugin ids")
+    valid_enabled = isinstance(enabled, list) and all(isinstance(item, str) for item in enabled)
+    valid_disabled = isinstance(disabled, list) and all(isinstance(item, str) for item in disabled)
+    return required, enabled if valid_enabled else [], disabled if valid_disabled else []
+
+
+def _declared_guard(profile: str, home: Path, plugin_id: str, *, required: bool,
+                    enabled: list[str], disabled: list[str]) -> UpdateGuard | None:
+    from pm.plugin_declarations import native_manifest_file, read_native_manifest
+
+    if not _PLUGIN_ID.fullmatch(plugin_id):
+        if required:
+            raise ValueError(f"profile {profile!r} has an invalid guarded plugin id")
+        return None  # other plugin kinds use namespaced IDs outside native plugins/<id>
+    if required and plugin_id not in enabled:
+        raise ValueError(f"profile {profile!r} requires plugin {plugin_id!r}, but it is not enabled")
+    if plugin_id in disabled:
+        if required:
+            raise ValueError(f"profile {profile!r} requires plugin {plugin_id!r}, but it is disabled")
+        return None
+    plugin_dir = home / "plugins" / plugin_id
+    if not plugin_dir.is_dir():
+        if required:
+            raise ValueError(f"profile {profile!r} requires missing plugin {plugin_id!r}")
+        return None
+    manifest_file = native_manifest_file(plugin_dir)
+    if manifest_file is None:
+        if required:
+            raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has no native manifest")
+        return None
+    manifest = read_native_manifest(manifest_file)
+    if manifest.get("name") != plugin_id:
+        raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has a mismatched manifest name")
+    relative = manifest.get("post_update_check")
+    if relative is None and not required:
+        return None
+    if not isinstance(relative, str) or not relative.endswith(".py"):
+        raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has no Python post_update_check")
+    relpath = Path(relative)
+    if relpath.is_absolute() or not relpath.parts or any(part in {".", ".."} for part in relpath.parts):
+        raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has an unsafe post_update_check path")
+    script = plugin_dir / relpath
+    if script.is_symlink() or not script.is_file() or plugin_dir.resolve() not in script.resolve().parents:
+        raise ValueError(f"profile {profile!r} plugin {plugin_id!r} post_update_check is missing or unsafe")
+    return UpdateGuard(profile, plugin_id, script, hashlib.sha256(script.read_bytes()).hexdigest())
+
+
 def prepare_update_guards() -> tuple[UpdateGuard, ...]:
     """Resolve every installed profile's required checks without importing plugin code."""
-    from hermes_cli.config import FailedConfigRead, load_config_readonly
     from hermes_cli.profiles import profiles_to_serve
-    from pm.plugin_declarations import native_manifest_file, read_native_manifest
 
     checks: list[UpdateGuard] = []
     # Updating a shared checkout can restart standalone and parked profiles too.
     for profile, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
-        with _profile_home(home):
-            config = load_config_readonly()
-        if isinstance(config, FailedConfigRead):
-            raise ValueError(f"profile {profile!r} has an unreadable config.yaml")
-        plugins = config.get("plugins") or {}
-        if not isinstance(plugins, dict):
-            raise ValueError(f"profile {profile!r} has invalid plugins configuration")
-        required = plugins.get("update_guards", [])
-        enabled = plugins.get("enabled", [])
-        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
-            raise ValueError(f"profile {profile!r} plugins.update_guards must be a list of plugin ids")
-        if not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled):
-            if required:
-                raise ValueError(f"profile {profile!r} plugins.enabled must be a list of plugin ids")
-            enabled = []
+        required, enabled, disabled = _profile_plugin_lists(profile, home)
         # An enabled plugin's declaration is enough to run a check. The profile-owned list
         # additionally makes a missing/disabled plugin a hard refusal.
         for plugin_id in dict.fromkeys([*required, *enabled]):
-            if plugin_id not in required and not _PLUGIN_ID.fullmatch(plugin_id):
-                continue  # other plugin kinds use namespaced IDs outside native plugins/<id>
-            if not _PLUGIN_ID.fullmatch(plugin_id):
-                raise ValueError(f"profile {profile!r} has an invalid guarded plugin id")
-            if plugin_id in required and plugin_id not in enabled:
-                raise ValueError(f"profile {profile!r} requires plugin {plugin_id!r}, but it is not enabled")
-            plugin_dir = home / "plugins" / plugin_id
-            if not plugin_dir.is_dir():
-                if plugin_id in required:
-                    raise ValueError(f"profile {profile!r} requires missing plugin {plugin_id!r}")
-                continue
-            manifest_file = native_manifest_file(plugin_dir)
-            if manifest_file is None:
-                if plugin_id in required:
-                    raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has no native manifest")
-                continue
-            manifest = read_native_manifest(manifest_file)
-            if manifest.get("name") != plugin_id:
-                raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has a mismatched manifest name")
-            relative = manifest.get("post_update_check")
-            if relative is None and plugin_id not in required:
-                continue
-            if not isinstance(relative, str) or not relative.endswith(".py"):
-                raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has no Python post_update_check")
-            relpath = Path(relative)
-            if relpath.is_absolute() or not relpath.parts or any(part in {".", ".."} for part in relpath.parts):
-                raise ValueError(f"profile {profile!r} plugin {plugin_id!r} has an unsafe post_update_check path")
-            script = plugin_dir / relpath
-            if script.is_symlink() or not script.is_file() or plugin_dir.resolve() not in script.resolve().parents:
-                raise ValueError(f"profile {profile!r} plugin {plugin_id!r} post_update_check is missing or unsafe")
-            checks.append(UpdateGuard(profile, plugin_id, script, hashlib.sha256(script.read_bytes()).hexdigest()))
+            check = _declared_guard(profile, home, plugin_id, required=plugin_id in required,
+                                    enabled=enabled, disabled=disabled)
+            if check is not None:
+                checks.append(check)
     return tuple(checks)
 
 

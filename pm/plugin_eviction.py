@@ -1,11 +1,10 @@
 """Keep an update alive when an enabled plugin no longer fits the new core.
 
 Admission refuses a plugin that does not fit, because the user is choosing and can
-choose again. An update has nobody to ask and must never fail because of a plugin:
-core moved (a newer Python, a bumped pin, a newer manifest contract) under a plugin
-that was admitted against the old core. Such a plugin is disabled in every home that
-enables it, the reason reaches the operator and the receipt, and the update continues
-with the rest. Only a core that cannot build on its own still fails.
+choose again. An ordinary update disables a plugin that no longer fits the new core;
+the reason reaches the operator and the receipt, and the update continues. A profile
+can explicitly require a plugin to survive the update. In that case an incompatible
+plugin fails dependency preparation before the reduced selection is published.
 
 Disabling needs evidence about the plugin itself: its requires-python against the pinned
 interpreter, its manifest contract, a resolver proof, or its build failing. A fetch or
@@ -140,6 +139,31 @@ def _trial(package, enabled, explicit: bool, plugin_dirs: list[Path]) -> str | N
     return f"its dependencies could not be prepared, twice: {cause[-400:]}"
 
 
+def _protected_entries(entries: list[Entry]) -> dict[Path, str]:
+    """Profile-owned update guards that the dependency update must keep active."""
+    from pm.plugins_state import dependency_homes, read_home_selection
+
+    selected = {(plugins_dir.parent.resolve(), name): plugin_dir.resolve()
+                for plugins_dir, name, plugin_dir in entries}
+    protected: dict[Path, str] = {}
+    for home in dependency_homes():
+        try:
+            config = read_home_selection(home) or {}
+        except ValueError:
+            continue  # source-update preflight rejects this profile; PM's ordinary skip stays intact
+        plugins = config.get("plugins") or {}
+        required = plugins.get("update_guards", [])
+        if not isinstance(required, list) or any(not isinstance(name, str) for name in required):
+            raise InstallError("venv", f"plugins.update_guards must be a list of names in {home}")
+        for name in required:
+            key = selected.get((home.resolve(), name))
+            if key is None:
+                raise InstallError("venv", f"required plugin '{name}' in {home} is not enabled and available",
+                                   "restore or enable it before retrying the source update")
+            protected[key] = f"'{name}' in {home}"
+    return protected
+
+
 def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explicit: bool) -> None:
     """Build the discovered selection, disabling whatever plugin keeps it from building.
 
@@ -160,6 +184,16 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
             notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
     reasons, waiting = static_verdicts(entries, _interpreter_version())
+    protected = _protected_entries(entries)
+
+    def require_survival() -> None:
+        for key, label in protected.items():
+            reason = reasons.get(key) or waiting.get(key)
+            if reason:
+                raise InstallError("venv", f"required plugin {label} cannot remain active: {reason}",
+                                   "resolve the compatibility issue before retrying the source update")
+
+    require_survival()  # before a static misfit can publish a smaller selection
 
     def members() -> list[Path]:
         return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
@@ -167,6 +201,7 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
                                   and _is_member_candidate(plugin_dir)))
 
     def commit() -> None:
+        require_survival()  # the resolver fallback may have found a dynamic misfit
         enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": members()},
                                                    repair=False, shipped=shipped, frozen=frozen)
         receipt.record_feature_list(enabled)

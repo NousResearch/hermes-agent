@@ -349,7 +349,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
-            # An update never fails because of a plugin: misfits are disabled and reported.
+            # Ordinary plugin misfits are disabled and reported. A profile-owned
+            # update guard prevents its plugin from being silently evicted; PM
+            # records the failed sync and the committed source gets an owed tail.
             pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
             collect_superseded_generations(root)
         finally:

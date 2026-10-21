@@ -393,6 +393,64 @@ def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+@pytest.mark.parametrize("misfit", ["python", "hermes"])
+def test_required_plugin_cannot_be_evicted_or_sit_out(admission_env, monkeypatch, misfit):
+    """A protected plugin blocks publication, with a failed PM receipt and untouched config."""
+    from hermes_cli import plugins_manifest
+    from pm.environments import selected_venv
+    from pm.install import sync_venv
+    from pm.package import InstallError
+
+    tmp_path, home = admission_env
+    plugin = home / "plugins" / "required"
+    plugin.mkdir(parents=True)
+    requires = (f"<{sys.version_info[0]}.{sys.version_info[1]}" if misfit == "python" else ">=3.11")
+    (plugin / "pyproject.toml").write_text(
+        f'[project]\nname="required"\nversion="1"\nrequires-python="{requires}"\n'
+        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    if misfit == "hermes":
+        monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
+        (plugin / "plugin.yaml").write_text(
+            "name: required\nrequires_hermes: '>=999'\n", encoding="utf-8")
+    config = home / "config.yaml"
+    config.write_text("plugins:\n  enabled: [required]\n  update_guards: [required]\n", encoding="utf-8")
+    before = config.read_bytes()
+    prior_selection = selected_venv(tmp_path / "core")
+
+    with pytest.raises(InstallError, match="required plugin.*cannot remain active"):
+        sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    assert config.read_bytes() == before
+    assert selected_venv(tmp_path / "core") == prior_selection
+    receipt = _latest_receipt(home)
+    assert receipt["outcome"] == "failed" and "required" in json.dumps(receipt)
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_required_plugin_cannot_be_dynamically_evicted(admission_env):
+    """Resolver fallback cannot publish a smaller selection that drops a required member."""
+    from pm.environments import selected_venv
+    from pm.install import sync_venv
+    from pm.package import InstallError
+
+    tmp_path, home = admission_env
+    _local_conflict_members(home)
+    config = home / "config.yaml"
+    config.write_text("plugins:\n  enabled: [plug-a, plug-b]\n  update_guards: [plug-b]\n",
+                      encoding="utf-8")
+    before = config.read_bytes()
+    prior_selection = selected_venv(tmp_path / "core")
+
+    with pytest.raises(InstallError, match="required plugin.*cannot remain active"):
+        sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    assert config.read_bytes() == before
+    assert selected_venv(tmp_path / "core") == prior_selection
+    receipt = _latest_receipt(home)
+    assert receipt["outcome"] == "failed" and "plug-b" in json.dumps(receipt)
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_update_sync_survives_unreadable_secondary_profile(admission_env):
     """A secondary profile's broken config.yaml cannot fail an update: its plugins sit out
     (reported), the rest build, and the next boot sees a current venv."""

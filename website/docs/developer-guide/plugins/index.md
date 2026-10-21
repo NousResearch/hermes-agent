@@ -244,6 +244,14 @@ checker an update refusal rather than silently dropping the requirement. A
 shared source update examines the default and every installed named profile,
 including standalone and parked profiles.
 
+A same-revision `hermes update` runs the check again before dependency repair.
+During dependency preparation, a plugin named in `plugins.update_guards` cannot
+be automatically disabled or left out because its Python, manifest, Hermes
+version, build, or dependency requirements no longer fit. PM records a failed
+sync rather than publishing a smaller selection. If this happens after the
+source revision changed, the update records an owed dependency follow-up;
+automatic source-and-environment rollback is not provided at that stage.
+
 During a Git source update Hermes runs each required script with
 `--hermes-root <pulled-checkout>` and `--profile <name>` after the checkout move
 but before dependency changes or gateway restart. Exit zero admits the update;
@@ -256,7 +264,9 @@ standard library and packages; it cannot rely on the target's new dependencies
 being installed yet. The script is trusted installed plugin code, not a sandbox
 for an adversarial plugin. On the ZIP update path, guarded installations refuse
 the update before download because that path cannot offer this rollback point.
-Normal plugins need no update check.
+Normal plugins need no update check. Installations that require uninterrupted
+plugin service should verify the new source and dependency environment in a
+separate checkout before updating their running installation.
 
 Native `plugin.yaml` plus `register(ctx)` plugins are protected by behavior,
 not by one global plugin API number. Hermes does not expose a

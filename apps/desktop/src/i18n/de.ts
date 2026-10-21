@@ -3929,43 +3929,6 @@ export const deOverrides = {
     snippetsDesc: 'Wählen Sie einen Start-Prompt, um ihn in den Composer einzufügen.',
     dropFiles: 'Dateien zum Anhängen ablegen',
     dropSession: 'Ablegen, um diesen Chat zu verlinken',
-    mcpSuggestions: {
-      label: server => `${server} hinzufügen`,
-      tip: keyword => `Vorgeschlagen, weil Sie „${keyword}“ erwähnt haben – zum Verbinden klicken`,
-      connecting: server => `${server} wird verbunden…`,
-      cancelTip: 'Klicken zum Abbrechen',
-      added: server => `${server} hinzugefügt`,
-      addedTip: 'Verbunden — seine Tools sind in diesem Chat bereit',
-      connectFailed: server => `${server} konnte nicht verbunden werden`
-    },
-    skillSuggestions: {
-      label: skill => `Fähigkeit verwenden: ${skill}`,
-      tip: skill => `Sie haben „${skill}“ erwähnt – klicken, um mit diesem Skill zu beginnen`,
-      done: skill => `/skill hinzugefügt: ${skill}`,
-      doneTip: 'Die Fähigkeit wird beim Senden geladen'
-    },
-    githubSuggestions: {
-      label: 'GitHub einrichten',
-      tip: 'GitHub funktioniert hier über die gh-CLI-Skills – klicken, um Ihr Konto zu verbinden',
-      done: '/github-auth hinzugefügt',
-      doneTip: 'Senden Sie die Nachricht, und der Agent führt Sie durch die GitHub-Anmeldung'
-    },
-    repairSuggestions: {
-      label: server => `${server} erneut verbinden`,
-      tip: server => `Ein ${server}-Aufruf ist gerade mit einem Verbindungsfehler fehlgeschlagen`,
-      working: server => `${server} wird erneut verbunden…`,
-      workingTip: 'Klicken zum Abbrechen',
-      done: server => `${server} erneut verbunden`,
-      doneTip: 'Frische Anmeldedaten sind in diesem Chat aktiv',
-      failed: server => `${server} konnte nicht erneut verbunden werden`
-    },
-    cronSuggestions: {
-      label: 'Dies planen',
-      tip: phrase => `„${phrase}“ klingt wiederkehrend — führen Sie es stattdessen nach Zeitplan aus`,
-      prefix: 'Als geplanten Job einrichten:',
-      done: 'Für Planung markiert',
-      doneTip: 'Senden Sie die Nachricht, und der Agent erstellt den Job'
-    },
     snippets: {
       codeReview: {
         label: 'Code-Review',

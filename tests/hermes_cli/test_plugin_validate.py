@@ -271,7 +271,8 @@ class TestRequiresHermesSpec:
 
 class TestDesktopSurface:
     """Catalog-listed desktop plugins must stay inside the SDK surface: the renderer loader gives
-    plugin.js full app authority, so prototype patching / app-chunk imports are refused at admission."""
+    plugin.js full app authority, so app-chunk imports and the like are refused at admission. Prototype
+    writes are not linted (review reads them by hand): a bundled library's own classes look the same."""
 
     def _desktop_plugin(self, tmp_path, js: str) -> Path:
         d = tmp_path / "desk"
@@ -327,10 +328,9 @@ class TestDesktopSurface:
         assert desktop_surface_hits(d) == [
             "app DOM reach (desktop/plugin.js:2)",
             "app DOM reach (desktop/plugin.js:3)",
-            "prototype patching (desktop/plugin.js:4)",
         ]
 
-    def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
+    def test_chunk_import_fails_and_prototype_writes_are_left_to_review(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (
             "const raw = Storage.prototype.setItem\n"
             "Storage.prototype.setItem = function (k, v) { return raw.call(this, k, v) }\n"
@@ -340,64 +340,9 @@ class TestDesktopSurface:
         report = validate_plugin_dir(d)
         failed = {name: detail for name, ok, detail in report.checks if not ok}
         assert "desktop surface" in failed
-        assert "prototype patching (desktop/plugin.js:2)" in failed["desktop surface"]
+        assert "prototype patching" not in failed["desktop surface"]
         assert "dynamic import outside the SDK (desktop/plugin.js:3)" in failed["desktop surface"]
         assert ":4)" not in failed["desktop surface"]
-
-    def test_bundled_library_own_class_prototypes_pass_but_renderer_globals_still_fail(self, tmp_path):
-        """A bundled library setting fields on classes it declares (three.js: ``var Vector2 = class
-        _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }``, ``function Track(){}``)
-        is not prototype patching. A write to a renderer global or an undeclared receiver still is,
-        including a global the file shadows with a same-named class elsewhere, and an alias of a
-        global (any spelling: assigned, bracketed, destructured) whose name some unrelated scope
-        also declares as a class, including a minifier-reused one-letter name, and a parameter
-        shadowing the class, a destructuring assignment, and writes hidden in a template ``${}`` or
-        between divisions. Passing the class around (``register(Q)``, ``{ Array: Q }``,
-        ``registry[F.name] = F``) or text in a string, template or regex literal is not a
-        rebinding, nor is a class name used only as a destructuring key. Ambiguous text never hides
-        code: where a ``/`` could open a regex or be division, both readings are followed."""
-        d = self._desktop_plugin(tmp_path, (
-            "var Vector2 = class _Vector2 { constructor() { _Vector2.prototype.isVector2 = true } }\n"
-            "function Track() {}\nTrack.prototype.ValueTypeName = 'vector'\n"
-            "const S = window.Storage\nS.prototype.setItem = noop\n"
-            "class Storage {}\nStorage.prototype.setItem = noop\n"
-            "HTMLElement.prototype.click = spy\n"
-            "function unused() { class H {} }\nconst H = window.Storage\nH.prototype.setItem = noop\n"
-            "function K() {}\nK.prototype.ValueTypeName = 'v'\nconst types = { Array: K }\n"
-            "function unused2() { class W {} }\nconst { Storage: W } = window\nW.prototype.setItem = noop\n"
-            "function unused3() { class B {} }\nconst B = window['Storage']\nB.prototype.setItem = noop\n"
-            "var Mv=class s{constructor(){s.prototype.isMv=!0}};var s=window.Storage;s.prototype.setItem=noop\n"
-            "function Q() {}\nregister(Q); const label = \"Q = vector\"\nQ.prototype.ValueTypeName = 'v'\n"
-            "function R() {}\nfunction patch(R) { R.prototype.setItem = noop }\n"
-            "function D() {}\n({D} = {D: window.Storage}); D.prototype.setItem = spy\n"
-            "const label = `${Storage.prototype.setItem = spy}`\n"
-            "const n = 1 / (Storage.prototype.setItem = spy, 2) / 3\n"
-            "function E() {}\nconst re = /E = x/, t = `E = ${1}`; E.prototype.isE = 1\n"
-            "function F() {}\nregistry[F.name] = F; F.prototype.isF = 1\n"
-            "function G() {}\nlet {a: G} = window; G.prototype.setItem = spy\n"
-            "function J() {}\ntrue ? [J] = [window.Storage] : null; J.prototype.setItem = spy\n"
-            "const m = Number(\"if (\") / (Storage.prototype.setItem = spy, 2) / 3\n"
-            "if (false) /\"/.test(label); Storage.prototype.setItem = spy; const tail = \"/\"\n"
-            "function L() {}\nlet v; true ? {L: v} = options : null; L.prototype.isL = 1\n"
-            "function U() {}\nfunction matcher() { return /U = vector/ } U.prototype.isU = 1\n"
-        ))
-        assert desktop_surface_hits(d) == [
-            "prototype patching (desktop/plugin.js:5)",
-            "prototype patching (desktop/plugin.js:7)",
-            "prototype patching (desktop/plugin.js:8)",
-            "prototype patching (desktop/plugin.js:11)",
-            "prototype patching (desktop/plugin.js:17)",
-            "prototype patching (desktop/plugin.js:20)",
-            "prototype patching (desktop/plugin.js:21)",
-            "prototype patching (desktop/plugin.js:26)",
-            "prototype patching (desktop/plugin.js:28)",
-            "prototype patching (desktop/plugin.js:29)",
-            "prototype patching (desktop/plugin.js:30)",
-            "prototype patching (desktop/plugin.js:36)",
-            "prototype patching (desktop/plugin.js:38)",
-            "prototype patching (desktop/plugin.js:39)",
-            "prototype patching (desktop/plugin.js:40)",
-        ]
 
     def test_node_sidecar_and_test_mjs_outside_desktop_are_not_the_surface(self, tmp_path):
         """A tools plugin with a Node sidecar (``sidecar/*.mjs`` lazily importing a lockfile-pinned

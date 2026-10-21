@@ -3937,43 +3937,6 @@ export const frOverrides = {
     snippetsDesc: 'Choisissez une invite de démarrage à insérer dans le compositeur.',
     dropFiles: 'Déposez des fichiers pour les attacher',
     dropSession: 'Déposez pour lier cette conversation',
-    mcpSuggestions: {
-      label: server => `Ajouter ${server}`,
-      tip: keyword => `Suggéré car vous avez mentionné « ${keyword} » — cliquez pour vous connecter`,
-      connecting: server => `Connexion à ${server}…`,
-      cancelTip: 'Cliquez pour annuler',
-      added: server => `${server} ajouté`,
-      addedTip: 'Connecté — ses outils sont prêts dans cette conversation',
-      connectFailed: server => `Impossible de se connecter à ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Utiliser le skill : ${skill}`,
-      tip: skill => `Vous avez mentionné « ${skill} » — cliquez pour commencer avec ce skill`,
-      done: skill => `/${skill} ajouté`,
-      doneTip: "Le skill se charge lors de l'envoi"
-    },
-    githubSuggestions: {
-      label: 'Configurer GitHub',
-      tip: 'GitHub fonctionne ici grâce aux skills de la CLI gh ; cliquez pour connecter votre compte',
-      done: 'Ajout de /github-auth',
-      doneTip: "Envoyez le message et l'agent vous guidera dans la connexion à GitHub"
-    },
-    repairSuggestions: {
-      label: server => `Reconnecter ${server}`,
-      tip: server => `Un appel à ${server} vient d'échouer à cause d'une erreur de connexion`,
-      working: server => `Reconnexion à ${server}…`,
-      workingTip: 'Cliquez pour annuler',
-      done: server => `${server} reconnecté`,
-      doneTip: 'Les nouveaux identifiants sont actifs dans cette conversation',
-      failed: server => `Impossible de reconnecter ${server}`
-    },
-    cronSuggestions: {
-      label: 'Planifier ceci',
-      tip: phrase => `« ${phrase} » semble récurrent — exécutez-le plutôt selon une planification`,
-      prefix: 'Configurer ceci comme tâche planifiée :',
-      done: 'Marqué pour planification',
-      doneTip: "Envoyez-le pour que l'agent crée la tâche"
-    },
     snippets: {
       codeReview: {
         label: 'Revue de code',

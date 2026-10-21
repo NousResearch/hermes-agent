@@ -90,7 +90,7 @@ def _install_plugin_python_deps(
         deps = declaration.install_requirements
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
-    has_python = declaration.is_member
+    has_python = declaration.installs_packages
     has_package_json = (target / "package.json").is_file()
     if not has_python and not has_package_json:
         return True, None  # no declared deps at all

@@ -3922,43 +3922,6 @@ export const esOverrides = {
     snippetsDesc: 'Elige un prompt inicial para insertarlo en el compositor.',
     dropFiles: 'Suelta archivos para adjuntarlos',
     dropSession: 'Suelta para enlazar este chat',
-    mcpSuggestions: {
-      label: server => `Añadir ${server}`,
-      tip: keyword => `Sugerido porque mencionaste "${keyword}" — haz clic para conectar`,
-      connecting: server => `Conectando ${server}…`,
-      cancelTip: 'Haz clic para cancelar',
-      added: server => `${server} añadido`,
-      addedTip: 'Conectado — sus herramientas están listas en este chat',
-      connectFailed: server => `No se pudo conectar ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Usar habilidad: ${skill}`,
-      tip: skill => `Mencionaste "${skill}" — haz clic para empezar con esa habilidad`,
-      done: skill => `Añadido /${skill}`,
-      doneTip: 'La habilidad se carga cuando envíes'
-    },
-    githubSuggestions: {
-      label: 'Configurar GitHub',
-      tip: 'GitHub funciona aquí mediante las skills de la CLI gh: haz clic para conectar tu cuenta',
-      done: 'Se añadió /github-auth',
-      doneTip: 'Envía el mensaje y el agente te guiará para iniciar sesión en GitHub'
-    },
-    repairSuggestions: {
-      label: server => `Reconectar ${server}`,
-      tip: server => `Una llamada a ${server} acaba de fallar con un error de conexión`,
-      working: server => `Reconectando ${server}…`,
-      workingTip: 'Haz clic para cancelar',
-      done: server => `${server} reconectado`,
-      doneTip: 'Las credenciales nuevas están activas en este chat',
-      failed: server => `No se pudo reconectar ${server}`
-    },
-    cronSuggestions: {
-      label: 'Programar esto',
-      tip: phrase => `"${phrase}" suena recurrente — ejecútalo con un horario en su lugar`,
-      prefix: 'Configúralo como tarea programada:',
-      done: 'Marcado para programar',
-      doneTip: 'Envíalo y el agente creará la tarea'
-    },
     snippets: {
       codeReview: {
         label: 'Revisión de código',

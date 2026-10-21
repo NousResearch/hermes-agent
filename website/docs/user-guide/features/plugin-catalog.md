@@ -88,8 +88,8 @@ The catalog is designed so you know exactly what you're installing:
   bridge, storage of other plugins). What protects you is the trust model
   above — a human read the exact pinned commit, and the install is that
   commit — plus two tripwires: admission's `desktop surface` lint refuses
-  the obvious moves outside the plugin SDK (patching built-in prototypes,
-  `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
+  the obvious moves outside the plugin SDK (`eval`, importing anything
+  other than `@hermes/plugin-sdk`/`react`,
   including remote scripts), and the app's loader refuses every non-SDK
   import again at load time. The lint reads a `<script` regex — a literal, or
   the pattern string of a `new RegExp(...)` passed straight to

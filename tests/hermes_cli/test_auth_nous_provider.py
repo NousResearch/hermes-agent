@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import httpx
@@ -83,6 +83,39 @@ class TestResolveVerifyFallback:
         result = _resolve_verify(auth_state={"tls": {"insecure": "true"}})
         assert result is False
 
+
+class TestDefaultVerifyAfterAnInstallRotation:
+    """The Nous credential exchange can be the first TLS client a long-lived gateway builds
+    after the package manager replaced the environment certifi was imported from (#137255).
+
+    It must never hand httpx a bundle path that no longer exists.
+    """
+
+    @pytest.mark.platforms("macos")
+    def test_credential_verify_re_derives_the_rotated_bundle(self, tmp_path, monkeypatch):
+        import ssl
+
+        from hermes_cli.auth import _resolve_verify
+
+        for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            monkeypatch.delenv(var, raising=False)
+        from tests.agent.test_ssl_verify import _rotated_certifi
+
+        _rotated_certifi(tmp_path, monkeypatch, replacement=True)
+
+        verify = _resolve_verify(auth_state={"tls": {"insecure": False}})
+
+        # Nothing in the process points at the deleted environment, and httpx builds a client.
+        import certifi
+
+        assert Path(certifi.where()).is_file()
+        with httpx.Client(verify=verify) as client:
+            from typing import Any, cast
+
+            transport = cast(Any, client._transport)
+            assert transport._pool._ssl_context.verify_mode == ssl.CERT_REQUIRED
+
+
 def _setup_nous_auth(
     hermes_home: Path,
     *,
@@ -130,7 +163,7 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 def _future_iso(seconds: int = 3600) -> str:
-    return datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(time.time() + seconds, tz=UTC).isoformat()
 
 def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke") -> str:
     return _jwt_with_claims({
@@ -177,12 +210,12 @@ def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
     monkeypatch,
 ):
     import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     exp = int(time.time() + 3600)
-    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    expires_at = datetime.fromtimestamp(exp, tz=UTC).isoformat()
     token = _jwt_with_claims({
         "sub": "test-user",
         "scope": auth_mod.DEFAULT_NOUS_SCOPE,
@@ -290,7 +323,7 @@ def test_nous_inference_auth_logs_do_not_include_secret_values(
     caplog,
 ):
     import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     hermes_home = tmp_path / "hermes"
     token = _invoke_jwt(seconds=3600)
@@ -432,7 +465,7 @@ class TestLoginNousSkipKeepsCurrent:
     def _patch_login_internals(self, monkeypatch, *, prompt_returns):
         """Patch OAuth + model-list + prompt so _login_nous doesn't hit network."""
         import hermes_cli.auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
+        from hermes_cli import auth_nous
         import hermes_cli.models as models_mod
         from hermes_cli import models_pricing
         import hermes_cli.nous_subscription as ns
@@ -462,7 +495,6 @@ class TestLoginNousSkipKeepsCurrent:
 
         def _check_nous_free_tier(**kwargs):
             free_tier_calls.append(kwargs)
-            return None
 
         monkeypatch.setattr(models_mod, "check_nous_free_tier", _check_nous_free_tier)
         monkeypatch.setattr(
@@ -478,7 +510,7 @@ class TestLoginNousSkipKeepsCurrent:
         import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
-        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+        _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
         self._patch_login_internals(monkeypatch, prompt_returns=None)
@@ -509,7 +541,7 @@ class TestLoginNousSkipKeepsCurrent:
         import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
-        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+        _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
         self._patch_login_internals(
@@ -754,7 +786,7 @@ def test_runtime_refresh_503_preserves_nous_oauth_credentials(
     re-login during a Portal outage (#120976) or a Vercel Security Checkpoint deny/challenge on
     the token endpoint (#120602)."""
     import hermes_cli.auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     hermes_home = tmp_path / "hermes"
     access_token = _invoke_jwt(seconds=3600)
@@ -944,7 +976,7 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     every field persist_nous_credentials() needs.
     """
     from hermes_cli import auth as auth_mod
-    import hermes_cli.auth_nous as auth_nous
+    from hermes_cli import auth_nous
 
     auth_mod._write_shared_nous_state(_full_state_fixture())
     fresh_jwt = _invoke_jwt(seconds=7200)
@@ -1002,7 +1034,7 @@ class TestStalePortalBaseUrlMigration:
     ):
         """An allowlisted production host is still unsafe over plain HTTP."""
         from hermes_cli import auth as auth_mod
-        import hermes_cli.auth_nous as auth_nous
+        from hermes_cli import auth_nous
 
         hermes_home = tmp_path / "hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))

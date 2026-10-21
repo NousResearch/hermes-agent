@@ -17,7 +17,7 @@ Two files make up the agent's memory:
 | **MEMORY.md** | Agent's personal notes — environment facts, conventions, things learned | 2,200 chars (~800 tokens) |
 | **USER.md** | User profile — your preferences, communication style, expectations | 1,375 chars (~500 tokens) |
 
-Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
+Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, patch, or remove entries.
 
 :::caution One agent per Hermes home
 Don't point two agent processes at the same Hermes home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](../profiles.md) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](./memory-providers.md) instead.
@@ -28,9 +28,9 @@ Character limits keep memory focused. Memory does **not** auto-compact: when a
 write would exceed the limit, the `memory` tool returns an error instead of
 silently dropping entries. The agent then makes room itself — consolidating or
 removing entries in the same turn before retrying (see [What Happens When Memory
-is Full](#what-happens-when-memory-is-full)). Note that `replace` is also bound
-by the limit: swapping an entry for a longer one can still overflow, so the new
-content must be shortened (or another entry removed) to fit.
+is Full](#what-happens-when-memory-is-full)). Note that `patch` is also bound
+by the limit: a patch that lengthens an entry can still overflow, so the new
+text must be shortened (or another entry removed) to fit.
 :::
 
 ## How Memory Appears in the System Prompt
@@ -92,25 +92,43 @@ Two things that do **not** make the agent remember: variables in `.env` (those a
 The agent uses the `memory` tool with these actions:
 
 - **add** — Add a new memory entry
-- **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
+- **patch** — Replace one span inside an existing entry and keep the rest (`old_text` is the span, `content` its replacement)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
 
+Every tool call requires a top-level `target`: `"memory"` for agent notes or `"user"`
+for the user profile. A batch uses that one target for every operation:
+
+```json
+{"target": "user", "operations": [{"action": "add", "content": "User prefers metric units"}]}
+```
+
+Missing or null targets, and a target inside an operation that differs from the top-level
+one, return an error before writing or staging approval. Correct the payload and retry; use separate calls to update both stores.
+
 ### Substring Matching
 
-The `replace` and `remove` actions use short unique substring matching — you don't need the full entry text. The `old_text` parameter just needs to be a unique substring that identifies exactly one entry:
+The `patch` and `remove` actions use short unique substring matching — you don't need the full entry text. The `old_text` parameter just needs to be a unique substring that identifies exactly one entry:
 
 ```python
 # If memory contains "User prefers dark mode in all editors"
-memory(action="replace", target="memory",
-       old_text="dark mode",
-       content="User prefers light mode in VS Code, dark mode in terminal")
+memory(action="patch", target="memory",
+       old_text="dark mode in all editors",
+       content="light mode in VS Code, dark mode in terminal")
+# -> "User prefers light mode in VS Code, dark mode in terminal"
 ```
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
 
-`replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
+`patch` replaces only the `old_text` span inside the matched entry and keeps everything else. The span must
+occur once in that entry; if it appears more than once, the call is rejected and the agent retries with more
+surrounding text. To drop text from an entry, patch a longer span that contains it. To rewrite a whole entry,
+pass the whole entry as `old_text` (an exact whole-entry match wins over substring matches).
+
+There is no `replace` action. It overwrote the whole matched entry, and models used it as a find-and-swap,
+which wiped the other facts in multi-fact entries. A `replace` call now returns an error pointing at `patch`;
+writes staged for approval before this change still apply as staged.
 
 ## Two Targets Explained
 
@@ -171,15 +189,15 @@ When you try to add an entry that would exceed the limit, the tool returns an er
 ```json
 {
   "success": false,
-  "error": "Memory at 2,100/2,200 chars; adding this entry (250 chars) would exceed the limit by 153 chars. Retry as ONE 'operations' batch that removes or shortens (replace) stale entries from current_entries below to free at least 153 chars AND adds this entry — the limit is checked only on the batch result.",
+  "error": "Memory at 2,100/2,200 chars; adding this entry (250 chars) would exceed the limit by 153 chars. Retry as ONE 'operations' batch that removes or shortens (patch) stale entries from current_entries below to free at least 153 chars AND adds this entry — the limit is checked only on the batch result.",
   "current_entries": ["..."],
   "usage": "2,100/2,200"
 }
 ```
 
 The agent then reissues one `operations` batch that frees at least the stated number of
-characters (removes, or `replace`s with shorter versions) and adds the new entry; the limit
-is checked only on the batch's final result. A `replace`/`remove` whose `old_text` matches no
+characters (removes, or shortening `patch`es) and adds the new entry; the limit
+is checked only on the batch's final result. A `patch`/`remove` whose `old_text` matches no
 entry fails the same way, with the entries it most resembles under `closest_entries`.
 
 **Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
@@ -272,6 +290,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  prefetch_spill_enabled: false  # external recall stays intact unless explicitly enabled
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
@@ -288,6 +307,24 @@ it backs the profile store — but the system prompt swaps the full memory
 guidance for a narrower profile-only block. The tool schema advertises only the
 `user` target, and direct or staged writes to disabled `MEMORY.md` are rejected.
 The inverse configuration advertises only `memory` and rejects `USER.md` writes.
+
+### External recall size
+
+External memory providers return their full prefetched context by default,
+up to a safety ceiling of 10× `hooks.output_spill.max_chars` (at least 100,000
+characters); recall above that still spills so a runaway provider can't overflow
+the context window.
+`memory.prefetch_spill_enabled: true` opts the active profile into replacing
+oversized recall with a head/tail preview and a file path. This can reduce
+replayed context, but the relevance-ranked middle is no longer immediately
+visible to the model. Prefer your provider's own recall budget when available.
+
+The opt-in uses the shared `hooks.output_spill` threshold, preview lengths, and
+directory; `hooks.output_spill.enabled: false` still disables it. Normal plugin
+hooks continue to spill by default, independently of the memory opt-in. Settings
+are captured at provider registration: restart Hermes after changing them.
+See [oversized prefetch results](../../developer-guide/memory-provider-plugin.md#oversized-prefetch-results)
+for the configuration details.
 
 ## Controlling memory writes (`write_approval`)
 
@@ -316,10 +353,10 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
-A staged `replace` or `remove` (the background review stages these even with the
+A staged `patch` or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.
 Approval applies to exactly that entry: if it changed after the write was staged,
-the write is refused and stays pending for you to reject. A `replace`/`remove`
+the write is refused and stays pending for you to reject. A `replace`/`patch`/`remove`
 staged before this pinning existed has no verifiable target and is refused too:
 reject it and recreate the change. `/memory approve` lists the full text of
 every entry it overwrote or removed.
@@ -506,7 +543,7 @@ Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-write
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 4 external memory provider plugins — OpenViking, Holographic, RetainDB and ByteRover — and more, such as Honcho, Hindsight, Supermemory and Mem0, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 2 external memory provider plugins — RetainDB and ByteRover — and more, such as Honcho, Hindsight, Supermemory, Mem0, OpenViking and Holographic, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 

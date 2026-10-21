@@ -9,8 +9,8 @@ import pytest
 
 from pm import paths
 from pm.lock import Facts
-from tests.pm._fixtures import client as client, isolated_python as isolated_python
-from tests.pm._range_server import dl_server as dl_server
+from tests.pm._fixtures import client as client, isolated_python as isolated_python  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 from tests.pm.test_worker import _node_archive
 
 

@@ -35,7 +35,7 @@ class _SshFsConfig:
 
 
 _CACHE_LOCK = threading.RLock()
-_BACKENDS: dict[str, tuple[_SshFsConfig, "SshWorkspaceFs"]] = {}
+_BACKENDS: dict[str, tuple[_SshFsConfig, SshWorkspaceFs]] = {}
 
 
 class SshWorkspaceFs:

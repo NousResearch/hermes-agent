@@ -18,7 +18,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -128,10 +128,12 @@ def start_loop_liveness_watchdog(
                     "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
                     "stacks and exiting with code %d so the service supervisor can restart it.",
                     strikes, exit_code)
-            try:
-                faulthandler.dump_traceback(all_threads=True)
-            except Exception:
-                logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+            # File + stderr: a console-less launcher (Windows .vbs login item) discards stderr, so a
+            # liveness death used to leave no stack anywhere (#120356, #91097).
+            _write_watchdog_dump(
+                get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
+                snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
+                event="loop_liveness_watchdog_fired")
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
@@ -207,12 +209,12 @@ def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
 
 def write_loop_heartbeat(
     *, pid: Optional[int] = None, start_time: Optional[float] = None,
-    home: Optional[Path] = None, extra: Optional[Dict[str, Any]] = None) -> Path:
+    home: Optional[Path] = None, extra: Optional[dict[str, Any]] = None) -> Path:
     """Atomically rewrite the loop-liveness heartbeat file; never raises.
     ``start_time`` (process start, epoch seconds) lets supervisors detect PID reuse."""
     path = get_loop_heartbeat_path(home)
-    payload: Dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
-                               "updated_at": datetime.now(timezone.utc).isoformat(),
+    payload: dict[str, Any] = {"pid": int(pid if pid is not None else os.getpid()),
+                               "updated_at": datetime.now(UTC).isoformat(),
                                "monotonic": time.monotonic()}
     if start_time is not None:
         payload["start_time"] = float(start_time)
@@ -236,15 +238,13 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
-def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit."""
-    try:
+def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
+                         event: str = "shutdown_watchdog_fired") -> None:
+    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr)."""
+    header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
+              "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+    with contextlib.suppress(OSError):  # unwritable dir: skip only the file copy, stderr still runs
         dump_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return
-    header = {"event": "shutdown_watchdog_fired", "pid": os.getpid(), "delay_s": delay_s,
-              "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}}
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
         fh.flush()
@@ -255,7 +255,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
         fh.write("--- end dump ---\n")
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
-        sys.stderr.write(f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
+        sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
                          f"(pid={os.getpid()}); dumping all thread stacks.\n")
         sys.stderr.flush()
         faulthandler.dump_traceback(all_threads=True)
@@ -263,7 +263,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
 
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
-    snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None, exit_code: int = 1,
+    snapshot_fn: Optional[Callable[[], dict[str, Any]]] = None, exit_code: int = 1,
     dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.
@@ -355,14 +355,15 @@ async def loop_heartbeat_forever(
     loop-scheduling witness (``_tick_socket_handler``, flagged as ``loop_tick_socket``); probes must
     require the witness to agree before classifying WEDGED."""
     interval = _coerce_float(interval_s, DEFAULT_HEARTBEAT_INTERVAL_S, floor=1.0)
-    # Arm the witness, best-effort: a failed bind only disables it and the payload flag makes
-    # probes classify UNKNOWN, never WEDGED (drain backstop stays). asyncio AF_UNIX is POSIX-only
-    # (ungated it raised AttributeError on native Windows), so non-POSIX binds TCP loopback and
-    # publishes ``loop_tick_tcp_port``.
+    # The witness exposes only a scheduling ping, not control/auth operations. Reuse its
+    # loopback transport when AF_UNIX is unavailable or the encoded address will not fit;
+    # consumers already discover this port in the heartbeat, independent of their TMPDIR.
+    from gateway.control_socket import _fits_sun_path
     tick_server = tick_socket_path = tick_tcp_port = None
     try:
-        if os.name == "posix":
-            tick_socket_path = get_loop_tick_socket_path(home)
+        unix_path = get_loop_tick_socket_path(home) if os.name == "posix" else None
+        if unix_path is not None and _fits_sun_path(unix_path):
+            tick_socket_path = unix_path
             tick_socket_path.parent.mkdir(parents=True, exist_ok=True)
             _sweep_stale_tick_sockets(tick_socket_path)
             tick_server = await asyncio.start_unix_server(_tick_socket_handler,

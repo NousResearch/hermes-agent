@@ -107,13 +107,15 @@ def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     import hermes_cli.update_cmd_fleet as fleet_mod
     import hermes_cli.update_cmd_fleet_verify as fleet_verify
     import hermes_cli.update_cmd_stale_survivors as surv
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
     from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
 
     stale_fleet = [{"profile": "default", "pid": 4242, "state": "stale", "code_sha": "a" * 40}]
     seen = {}
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
+    # The live post-update dashboard pass restarts a managed hermes-dashboard unit.
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda restart, expected: stale_fleet)
     monkeypatch.setattr(surv, "signal_stale_fleet_survivors",

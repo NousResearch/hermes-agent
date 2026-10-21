@@ -37,7 +37,7 @@ class _LoopbackProvider:
             def log_message(self, *args):
                 pass
 
-            def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 provider.requests.append(body)
                 spec = provider.script.pop(0)
@@ -94,8 +94,8 @@ def acp(tmp_path, monkeypatch):
 
     import acp_adapter.session as acp_session
     import hermes_cli.config as cli_config
-    import hermes_cli.mcp_startup as mcp_startup
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import mcp_startup
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(cli_config, "load_config", lambda *a, **k: {
         "model": {"provider": "openai-compat", "default": _MODEL, "context_length": 131072},

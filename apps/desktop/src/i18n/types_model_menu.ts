@@ -1,4 +1,6 @@
 export interface ModelMenuTranslations {
+  /** A pick made while a turn runs: the owner records it for the next turn. */
+  pickDeferred: (model: string) => string
   search: string
   noModels: string
   editModels: string
@@ -12,6 +14,7 @@ export interface ModelMenuTranslations {
   free: string
   cacheRead: string
   priceTitle: (input: string, output: string, cache: string) => string
+  localSetup: { title: string; text: (model: string, size: string) => string; action: string }
   limited: string
   limitedUntil: (time: string) => string
   limitedTip: (provider: string, time: null | string) => string

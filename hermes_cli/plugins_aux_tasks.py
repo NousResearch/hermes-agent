@@ -10,8 +10,8 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 def build_auxiliary_task_entry(
     me: str, owner_id: str, key: str, *, display_name: str, description: str,
-    defaults: Optional[Dict[str, Any]], inherit_from: Optional[str], registered: Dict[str, Dict[str, Any]],
-) -> Dict[str, Any]:
+    defaults: Optional[dict[str, Any]], inherit_from: Optional[str], registered: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     """Registry entry for a plugin auxiliary task, or ``ValueError`` for a bad key.
 
     ``me`` is the manifest name (for messages); ``owner_id`` is the canonical id ``ctx.llm`` is

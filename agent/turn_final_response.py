@@ -50,7 +50,7 @@ class FinalResponseVerdict:
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
     api_call_count: int
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def finish_text_response(
@@ -71,7 +71,7 @@ def finish_text_response(
         _join_truncated_parts
     )
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> FinalResponseVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
         return FinalResponseVerdict(
             action=action, active_system_prompt=active_system_prompt, final_response=final_response,
             _turn_exit_reason=_turn_exit_reason,

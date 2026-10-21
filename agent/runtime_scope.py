@@ -76,18 +76,20 @@ def bind_state(
     home_override: bool = True,
     terminal: bool = True,
     terminal_policy: Any = None,
+    defer_terminal: bool = False,
 ) -> StateToken:
     """Bind *scope* and the profile state derived from its home as one change; return its token
     (``reset()`` or use it as a context manager).
 
     A hosted scope binds the scope with no home, secrets or terminal policy: its state lives
     behind the storage ports, not in a directory. For a local scope: the home override names the
-    agent's home; the secret scope is *secrets*, or a build of the profile's ``.env`` plus
-    external sources (hydrated first unless ``hydrate_secrets=False``), stamped with the home
-    unless ``stamp_home=False`` (unstamped marks the process's own profile); the terminal policy
+    agent's home; the secret scope is *secrets*, or ``owner_secret_scope`` (the launch home's
+    frozen env plus ``.env``, any other home's own files) with external sources hydrated first
+    unless ``hydrate_secrets=False``, stamped with the home unless ``stamp_home=False`` (unstamped marks the process's own profile); the terminal policy
     is built from the profile's config over *env_overlay* (the refusal scope if it cannot be
     read), or *terminal_policy* when the caller already built it off the event loop
-    (``tools.terminal_scope.prepare_profile_terminal_scope``). ``home_override=False`` /
+    (``tools.terminal_scope.prepare_profile_terminal_scope``), or built on its first read with
+    ``defer_terminal=True`` (a legacy setter's switch: see ``DeferredTerminalPolicy``). ``home_override=False`` /
     ``terminal=False`` keep that piece as currently bound, for the
     one host that deliberately binds less (a single-profile launch turn keeps a routed request's
     home override, as it always has). The kept value is copied into this bind, so the bind is whole
@@ -100,17 +102,20 @@ def bind_state(
     home = scope.home()
     if home is None:
         return push_state(scope=scope, home=None, secrets=None, terminal=None)
-    from agent.secret_scope import build_profile_secret_scope
     from tools.terminal_scope import prepare_profile_terminal_scope
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     if secrets is None:
         if hydrate_secrets:
             from hermes_cli.env_loader import hydrate_profile_secret_sources
             hydrate_profile_secret_sources(Path(home))
-        secrets = build_profile_secret_scope(Path(home))
+        secrets = owner_secret_scope(Path(home))
     kept = current_state()
     if terminal_policy is not None:
         policy = terminal_policy
+    elif terminal and defer_terminal:
+        from tools.terminal_scope import DeferredTerminalPolicy
+        policy = DeferredTerminalPolicy(lambda: prepare_profile_terminal_scope(Path(home), env_overlay=env_overlay))
     elif terminal:
         policy = prepare_profile_terminal_scope(Path(home), env_overlay=env_overlay)
     else:
@@ -121,18 +126,20 @@ def bind_state(
 
 def _bind_whole_profile(
     scope: Scope, *, secrets: Optional[Mapping[str, str]] = None, hydrate_secrets: bool = True,
-    env_overlay: Optional[dict[str, str]] = None,
+    env_overlay: Optional[dict[str, str]] = None, defer_terminal: bool = False,
 ) -> StateToken:
     """Home, secrets and terminal policy for local *scope*, together. The process's own home keeps
     its launch semantics (environment over ``.env``, the frozen launch ``TERMINAL_*`` overlay,
     unstamped), so systemd / ``op run`` injection still resolves; any other home gets its own
     ``.env`` and sources only, stamped as routed. A caller's *env_overlay* replaces the default."""
-    from hermes_constants import get_process_hermes_home
-    if _same_home(scope.agent, get_process_hermes_home()):
+    from agent.secret_scope import _is_process_home
+    if _is_process_home(Path(scope.agent)):  # the pinned launch identity, not a mirrored HERMES_HOME
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         return bind_state(scope, secrets=launch_secret_scope(Path(scope.agent)) if secrets is None else secrets,
-                          stamp_home=False, env_overlay=launch_terminal_env() if env_overlay is None else env_overlay)
-    return bind_state(scope, secrets=secrets, hydrate_secrets=hydrate_secrets, env_overlay=env_overlay)
+                          stamp_home=False, env_overlay=launch_terminal_env() if env_overlay is None else env_overlay,
+                          defer_terminal=defer_terminal)
+    return bind_state(scope, secrets=secrets, hydrate_secrets=hydrate_secrets, env_overlay=env_overlay,
+                      defer_terminal=defer_terminal)
 
 
 @contextmanager
@@ -181,8 +188,10 @@ def legacy_switch(
     target = home if home is not None else get_process_hermes_home()
     if _same_home(current.agent, target):
         return None
+    # The policy is built on first read: most legacy callers only redirect file paths, and one that
+    # is part of the target's first config load must not read that config here.
     return _bind_whole_profile(Scope(LOCAL_TENANT, str(target), current.actor), secrets=secrets,
-                               hydrate_secrets=False, env_overlay=env_overlay)
+                               hydrate_secrets=False, env_overlay=env_overlay, defer_terminal=True)
 
 
 def owns_bound_scope(home: str | Path | None) -> bool:

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +70,34 @@ def reset_terminal_scope(token) -> None:
     token.reset()
 
 
+class DeferredTerminalPolicy:
+    """A profile's terminal policy built on its first read, not when the scope is bound.
+
+    A legacy setter that names another profile moves the whole scope there
+    (``agent.runtime_scope.legacy_switch``). Most such callers only redirect file paths: a credential
+    reader selecting the profile's ``auth.json``, a migration step, a log-routing probe. Building the
+    policy at the switch reads that profile's config, and when the caller is itself part of that
+    config's first load (Remote Config resolves the plane credential inside the fetch), the read
+    waits on its own load. Built on first read, the policy is the same, and a caller that never runs
+    a terminal never reads config. Never raises: a policy that cannot be resolved is the refusal."""
+
+    __slots__ = ("_build", "_lock", "_value")
+
+    def __init__(self, build: Callable[[], Any]) -> None:
+        self._build, self._lock, self._value = build, threading.Lock(), None
+
+    def resolve(self) -> Any:
+        with self._lock:
+            if self._value is None:
+                self._value = self._build()
+            return self._value
+
+
 def get_terminal_scope() -> Optional[dict[str, str]]:
     """The active scope mapping/refusal, or ``None`` when no scope is bound."""
     from hermes_scope import current_state
-    return current_state().terminal
+    policy = current_state().terminal
+    return policy.resolve() if isinstance(policy, DeferredTerminalPolicy) else policy
 
 
 def enforce_no_refusal() -> None:

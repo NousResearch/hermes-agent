@@ -350,3 +350,78 @@ def test_a_reset_cannot_leave_a_hosted_agent_from_inside_it(two_profiles):
     assert current_scope() == Scope("local", str(a), LOCAL_OWNER)
     local.reset()
     assert current_scope() is None
+
+
+def test_a_mirrored_hermes_home_is_not_mistaken_for_the_launch_profile(tmp_path, monkeypatch):
+    """An embedding host pins the launch home and mirrors the served profile into ``HERMES_HOME``:
+    binding that profile must give it its own secrets, never the launch profile's env-only keys."""
+    from hermes_constants import pin_process_hermes_home
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    launch, served = tmp_path / "launch", _profile(tmp_path, "b", "local")
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("OPENAI_API_KEY", "launch-only-key")
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    pin_process_hermes_home(launch)
+    try:
+        activate_multi_profile_hosting()
+        monkeypatch.setenv("HERMES_HOME", str(served))
+        with bind_profile_scope(served, hydrate_secrets=False):
+            assert (current_secret_scope() or {}).get("OPENAI_API_KEY") is None
+            assert current_secret_scope_home() == str(served)
+    finally:
+        pin_process_hermes_home(None)
+
+
+def test_home_reads_during_another_threads_first_scope_import_see_no_override(monkeypatch):
+    """``hermes_scope`` is in ``sys.modules`` before its body has run; a home read in that window is
+    an unbound read, not an AttributeError."""
+    import sys
+    import types
+    from hermes_constants import get_hermes_home_override
+    monkeypatch.setitem(sys.modules, "hermes_scope", types.ModuleType("hermes_scope"))
+    assert get_hermes_home_override() is None
+
+
+def test_a_reassigned_token_variable_does_not_grow_the_state(two_profiles):
+    import contextvars
+    import hermes_scope
+    a, _b = two_profiles
+
+    def run() -> int:
+        token = None
+        for _ in range(500):
+            token = set_hermes_home_override(str(a))
+        node, depth = hermes_scope._STATE.get(), 0
+        while node is not None:
+            node, depth = node.parent, depth + 1
+        del token
+        return depth
+
+    assert contextvars.copy_context().run(run) <= 3
+
+
+def test_legacy_switch_builds_the_target_policy_on_first_read_only(two_profiles, monkeypatch):
+    """A legacy setter naming another profile moves the whole scope there, but builds that profile's
+    terminal policy on its first read: a caller that only redirects file paths (a credential reader
+    inside the profile's first config load) never reads the profile's config. The policy, once
+    read, is the same one an eager bind builds."""
+    from tools import terminal_scope
+
+    a, b = two_profiles
+    built = []
+    real = terminal_scope.prepare_profile_terminal_scope
+    monkeypatch.setattr(terminal_scope, "prepare_profile_terminal_scope",
+                        lambda home, **kw: built.append(Path(home)) or real(home, **kw))
+    with bind_profile_scope(a):
+        built.clear()
+        token = set_hermes_home_override(str(b))
+        try:
+            assert current_scope() == Scope("local", str(b), LOCAL_OWNER)
+            assert built == [], "the switch built the target's terminal policy before anything read it"
+            assert _state() == _expect(b, "b", "docker")
+            get_terminal_scope()
+            assert built == [b], "the policy is built once, on its first read"
+        finally:
+            reset_hermes_home_override(token)
+        assert _state() == _expect(a, "a", "local")

@@ -252,6 +252,26 @@ class TestPairApprovePage:
             assert 'class="rail"' in html
             assert 'class="pane"' in html
 
+    def test_pairing_page_assets_all_ship(self, tmp_path, monkeypatch):
+        """Every asset the page asks for ships in gateway/assets/browser_pairing/.
+
+        A missing asset only degrades the page (fallback fonts, no artwork),
+        so a renamed or dropped file would otherwise go unnoticed.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter()
+        load = adapter._browser_pairing_asset
+        requested = []
+
+        def record(name):
+            requested.append(name)
+            return load(name)
+
+        adapter._browser_pairing_asset = record
+        adapter._pairing_page("Approve connection", "", rail_rows=[("STATUS", "PENDING APPROVAL")])
+        assert requested
+        assert [name for name in requested if not load(name)] == []
+
     @pytest.mark.asyncio
     async def test_approve_unknown_pairing_404(self, pair_client):
         async with pair_client:

@@ -2704,17 +2704,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         Split layout in the portal's design language: cobalt rail with a white
         dithered Hermes bust and session metadata, off-white pane with the
         dithered Hermes as a full-bleed background, the small animated cobalt
-        globe over the Hermes Browser wordmark, Didone display headline, and
+        globe over the Hermes Browser wordmark, Rules display headline, and
         portal-style approve/deny buttons. Content is vertically centered.
+
+        Type follows hermes-agent.nousresearch.com: compressed Rules caps for
+        the portal brand, headline and buttons, Rules for UI copy, and a tracked
+        mono for labels. The site's own cuts (Rules Gothic, Rules Variable)
+        are licensed and not redistributed, so the page embeds the Rules
+        Compressed / Rules Expanded files the web dashboard already ships in
+        ``web/public/fonts/``.
         """
         import html
 
         safe_title = html.escape(title)
         safe_message = html.escape(message)
         asset = self._browser_pairing_asset
-        sigurd = asset("sigurd.woff2")
-        jbm = asset("jbm.woff2")
-        jbmb = asset("jbmb.woff2")
         statue = asset("statue.png")
         railstatue = asset("railstatue.png")
         badge = asset("badge.png")
@@ -2722,12 +2726,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         hbelogo = asset("hbe-logo.svg")
 
         font_faces = ""
-        if sigurd:
-            font_faces += "@font-face{font-family:'Sigurd';src:url('" + sigurd + "') format('woff2')}"
-        if jbm:
-            font_faces += "@font-face{font-family:'JBM';src:url('" + jbm + "') format('woff2')}"
-        if jbmb:
-            font_faces += "@font-face{font-family:'JBM';font-weight:700;src:url('" + jbmb + "') format('woff2')}"
+        for family, weight, filename in (
+            ("Rules Compressed", 500, "RulesCompressed-Medium.woff2"),
+            ("Rules Expanded", 400, "RulesExpanded-Regular.woff2"),
+            ("Rules Expanded", 700, "RulesExpanded-Bold.woff2"),
+            ("JBM", 400, "jbm.woff2"),
+        ):
+            src = asset(filename)
+            if src:
+                font_faces += (
+                    f"@font-face{{font-family:'{family}';font-weight:{weight};"
+                    f"src:url('{src}') format('woff2')}}"
+                )
 
         rail_statue_html = f'<img class="rail-statue" src="{railstatue}" alt="" aria-hidden="true">' if railstatue else ""
         brand_chip_html = f'<span class="brand-chip"><img src="{badge}" alt=""></span>' if badge else ""
@@ -2746,11 +2756,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             f"<title>Hermes Browser · {safe_title}</title>"
             "<style>"
             + font_faces
-            + ":root{color-scheme:light}"
+            + ":root{color-scheme:light;"
+            "--display:'Rules Compressed','Rules Gothic Compressed','Bahnschrift Condensed','Arial Narrow',sans-serif;"
+            "--ui:'Rules Expanded',-apple-system,'Segoe UI',system-ui,sans-serif;"
+            "--mono:'JBM','JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
             "*{box-sizing:border-box}"
             "html,body{height:100%}"
-            "body{margin:0;background:#0505e8;-webkit-font-smoothing:antialiased;"
-            "font-family:'JBM',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+            "body{margin:0;background:#0505e8;-webkit-font-smoothing:antialiased;font-family:var(--mono)}"
             ".frame{display:grid;grid-template-columns:320px 1fr;min-height:100vh}"
             ".rail{position:relative;background:#0505e8;color:#fff;overflow:hidden}"
             ".rail-statue{position:absolute;right:-70px;bottom:-14%;height:118%;opacity:.38;pointer-events:none}"
@@ -2759,7 +2771,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ".brand{display:flex;gap:14px;align-items:center}"
             ".brand-chip{flex:0 0 auto;width:54px;height:66px;border-radius:8px;overflow:hidden}"
             ".brand-chip img{width:100%;height:100%;object-fit:cover;display:block}"
-            ".brand-text{font-family:'Sigurd',Didot,'Bodoni MT',serif;font-size:27px;line-height:1.04}"
+            ".brand-text{font-family:var(--display);font-weight:500;text-transform:uppercase;"
+            "font-size:37px;line-height:.88;letter-spacing:.01em}"
             ".rail-sub{font-size:10px;letter-spacing:.34em;margin:14px 0 0;opacity:.85}"
             ".rail-mid{margin:34px 0}"
             ".rail-label{font-size:9px;letter-spacing:.3em;opacity:.6;margin:0 0 5px}"
@@ -2773,18 +2786,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ".pane-inner{position:relative;z-index:1;padding:56px 72px;max-width:780px;width:100%}"
             ".rail-globe{width:64px;height:auto;display:block;margin:0 0 12px;background:#f6f7fb;border-radius:50%;padding:7px}"
             ".rail-logo{width:170px;max-width:100%;height:auto;display:block;margin:0 0 18px}"
-            ".display{font-family:'Sigurd',Didot,'Bodoni MT',serif;text-transform:uppercase;color:#0505e8;"
-            "font-weight:500;font-size:clamp(34px,4.6vw,58px);line-height:1.05;letter-spacing:.005em;margin:0 0 18px}"
-            ".lede{font-family:-apple-system,'Segoe UI',system-ui,sans-serif;color:#3c4254;"
-            "font-size:14px;line-height:1.7;max-width:54ch;margin:0 0 26px}"
-            ".prompt{font-family:-apple-system,'Segoe UI',system-ui,sans-serif;color:#3c4254;"
-            "font-size:14px;line-height:1.7;max-width:54ch;margin:0 0 14px}"
-            ".prompt strong{color:#111}"
+            ".display{font-family:var(--display);text-transform:uppercase;color:#0505e8;"
+            "font-weight:500;font-size:clamp(52px,7.4vw,104px);line-height:.9;margin:0 0 22px}"
+            ".lede{font-family:var(--ui);color:#3c4254;"
+            "font-size:14px;line-height:1.7;max-width:48ch;text-wrap:pretty;margin:0 0 26px}"
+            ".prompt{font-family:var(--ui);color:#3c4254;"
+            "font-size:14px;line-height:1.7;max-width:48ch;text-wrap:pretty;margin:0 0 14px}"
+            ".prompt strong{color:#111;font-weight:700}"
             ".code{display:block;padding:10px 13px;border:1px solid rgba(5,5,232,.25);background:#edeff8;"
-            "color:#333;font-size:11px;letter-spacing:.05em;word-break:break-all;margin:0 0 26px}"
+            "color:#333;font-family:var(--mono);font-size:11px;letter-spacing:.05em;word-break:break-all;margin:0 0 26px}"
             ".actions{display:flex;gap:16px;flex-wrap:wrap}"
-            "button{font-family:'JBM',ui-monospace,Menlo,Consolas,monospace;font-weight:700;font-size:12px;"
-            "letter-spacing:.22em;text-transform:uppercase;padding:14px 30px;cursor:pointer;"
+            "button{font-family:var(--display);font-weight:500;font-size:21px;line-height:1;"
+            "letter-spacing:.08em;text-transform:uppercase;padding:12px 30px 11px;cursor:pointer;"
             "border-radius:0;border:2px solid #0505e8}"
             ".approve{background:#0505e8;color:#fff;box-shadow:4px 4px 0 #b3b5f7}"
             ".deny{background:#fff;color:#0505e8;box-shadow:4px 4px 0 #c9cbf9}"

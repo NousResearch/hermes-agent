@@ -199,6 +199,7 @@ class _WhatsAppOnboardingSession:
     account_name: str | None = None
     account_phone: str | None = None
     error: str | None = None
+    starting_process: bool = False
 
 
 _whatsapp_onboarding_sessions: dict[str, _WhatsAppOnboardingSession] = {}

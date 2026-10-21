@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -503,14 +504,18 @@ def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> Non
         if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
             return
         record.status = "installing"
+        record.starting_process = True
 
     try:
         proc = _spawn_whatsapp_pairing_process(session_path, mode)
     except Exception as exc:
+        with _whatsapp_onboarding_lock:
+            record.starting_process = False
         _fail_whatsapp_pairing(pairing_id, str(exc))
         return
 
     with _whatsapp_onboarding_lock:
+        record.starting_process = False
         record = _whatsapp_onboarding_sessions.get(pairing_id)
         if not record or record.status in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES:
             _terminate_whatsapp_pairing(proc)
@@ -555,26 +560,78 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
     return pairing_id
 
 
+def _backup_whatsapp_session(session_path: Path) -> None:
+    """Explicit re-pair preserves the old auth state and refuses an active writer.
+
+    Called with the onboarding lock held, before registering a new pairing.
+    The gateway's session lock also prevents a concurrent adapter startup.
+    """
+    from gateway.status import _pid_exists, acquire_scoped_lock
+    from gateway.status_scoped_locks import release_scoped_lock
+
+    busy = "WhatsApp is in use. Disable WhatsApp and restart the gateway, then try re-pairing again."
+    for record in _whatsapp_onboarding_sessions.values():
+        if record.session_path == str(session_path) and (
+            record.status not in _WHATSAPP_ONBOARDING_TERMINAL_STATUSES
+            or record.starting_process
+            or (record.proc is not None and record.proc.poll() is None)
+        ):
+            raise HTTPException(status_code=409, detail="Cancel the current WhatsApp QR setup before re-pairing.")
+    acquired, previous = acquire_scoped_lock("whatsapp-session", str(session_path))
+    if not acquired or previous and previous.get("pid") == os.getpid():
+        # Self-reacquisition is allowed for gateway reconnects. Reset must not
+        # borrow or release a lock already held by this process.
+        raise HTTPException(status_code=409, detail=busy)
+    backup = None
+    try:
+        pid_file = session_path / "bridge.pid"
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8-sig").splitlines()[0])
+            except (OSError, ValueError, IndexError) as exc:
+                raise HTTPException(status_code=409, detail="Cannot verify the WhatsApp bridge is stopped. Check its bridge.pid before re-pairing.") from exc
+            # Only refusing a move, never signalling this PID. Conservatively
+            # refuse even a legacy pidfile whose process identity is unknown.
+            if pid <= 0 or _pid_exists(pid):
+                raise HTTPException(status_code=409, detail="The WhatsApp bridge is still running. Stop it before re-pairing.")
+        if session_path.is_symlink():
+            raise HTTPException(status_code=409, detail="The WhatsApp session is a symbolic link. Back it up manually before re-pairing.")
+        if session_path.exists():
+            backup = Path(tempfile.mkdtemp(prefix="session-backup-", dir=session_path.parent)) / "session"
+            session_path.rename(backup)
+            session_path.mkdir(mode=0o700)
+    except OSError as exc:
+        detail = f"Could not back up the WhatsApp session: {exc}. Pairing was not started."
+        if backup is not None and backup.exists():
+            detail += f" The previous session is preserved at {backup}."
+        raise HTTPException(status_code=500, detail=detail) from exc
+    finally:
+        release_scoped_lock("whatsapp-session", str(session_path))
+
+
 @router.post("/api/messaging/whatsapp/onboarding/start")
-async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart, profile: Optional[str] = None):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
 
-    with _config_profile_scope(body.profile):
+    target_profile = body.profile or profile
+    with _config_profile_scope(target_profile), _whatsapp_onboarding_lock:
         session_path = _whatsapp_session_path()
+        if body.reset_session:
+            _backup_whatsapp_session(session_path)
         expires_at_ts = time.time() + _WHATSAPP_ONBOARDING_TTL_SECONDS
-        fields = dict(
+        fields: dict[str, Any] = dict(
             proc=None, mode=mode, allowed_users=allowed_users, session_path=str(session_path),
             expires_at=datetime.fromtimestamp(expires_at_ts, UTC).isoformat().replace("+00:00", "Z"),
-            expires_at_ts=expires_at_ts, profile=body.profile,
+            expires_at_ts=expires_at_ts, profile=target_profile,
         )
         already_linked = (session_path / "creds.json").exists()
         if already_linked:  # creds on disk: report connected without pairing
             account_id, account_name, account_phone = _whatsapp_linked_account_from_session(session_path)
             fields.update(status="connected", account_id=account_id, account_name=account_name, account_phone=account_phone)
 
-    record = _WhatsAppOnboardingSession(**fields)
-    pairing_id = _register_whatsapp_session(session_path, record)
+        record = _WhatsAppOnboardingSession(**fields)
+        pairing_id = _register_whatsapp_session(session_path, record)
     if not already_linked:
         threading.Thread(target=_run_whatsapp_pairing, args=(pairing_id, session_path, mode), daemon=True).start()
     return _whatsapp_onboarding_payload(pairing_id, record)
@@ -623,7 +680,10 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
             _write_platform_enabled("whatsapp", True)
 
     with _whatsapp_onboarding_lock:
-        _whatsapp_onboarding_sessions.pop(pairing_id, None)
+        # A connected pair-only bridge may still be flushing credentials.
+        # Retain it for reset's writer guard until that process has exited.
+        if record.proc is None or record.proc.poll() is not None:
+            _whatsapp_onboarding_sessions.pop(pairing_id, None)
 
     restart_result = _restart_gateway_after_whatsapp_onboarding(effective_profile)
     return {"ok": True, "platform": "whatsapp", "needs_restart": not restart_result["restart_started"], **restart_result}
@@ -632,10 +692,14 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
 @router.delete("/api/messaging/whatsapp/onboarding/{pairing_id}")
 async def cancel_whatsapp_onboarding(pairing_id: str):
     with _whatsapp_onboarding_lock:
-        record = _whatsapp_onboarding_sessions.pop(pairing_id, None)
-    if record:
-        record.status = "cancelled"
-        _terminate_whatsapp_pairing(record.proc)
+        record = _whatsapp_onboarding_sessions.get(pairing_id)
+        if record:
+            record.status = "cancelled"
+            _terminate_whatsapp_pairing(record.proc)
+            # Keep a cancelled worker visible until its process launch has
+            # finished. It may still be opening the session directory.
+            if not record.starting_process and (record.proc is None or record.proc.poll() is not None):
+                _whatsapp_onboarding_sessions.pop(pairing_id, None)
     return {"ok": True}
 
 

@@ -711,20 +711,6 @@ async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) ->
     return None
 
 
-def _start_gateway_early_environment_probe() -> None:
-    """Background-start the host toolchain probe the warm-up and first prompt read (idempotent;
-    honours ``agent.environment_probe: false``). Never raises: the warm-up still runs it lazily."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        agent_cfg = load_config_readonly().get("agent")
-        if isinstance(agent_cfg, dict) and not agent_cfg.get("environment_probe", True):
-            return
-        from tools.env_probe import warm_environment_probe_async
-        warm_environment_probe_async()
-    except Exception:
-        logger.debug("early environment probe did not start", exc_info=True)
-
-
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
@@ -764,7 +750,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     resolved_config = config if config is not None else load_gateway_config_for_runner()
     # The first turn's prompt needs the host toolchain probe (five subprocess calls); start it now
     # so it runs beside the boot imports instead of serially inside the pre-READY warm-up.
-    _start_gateway_early_environment_probe()
+    try:
+        from tools.env_probe import warm_environment_probe_at_boot
+        warm_environment_probe_at_boot()
+    except Exception:
+        logger.debug("early environment probe did not start", exc_info=True)
     profile_homes = (_multiplex_profile_homes(resolved_config)
                      if getattr(resolved_config, 'multiplex_profiles', False) else [])
     if profile_homes and not _launch_home_may_multiplex(resolved_config):

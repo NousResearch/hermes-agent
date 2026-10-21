@@ -347,6 +347,14 @@ def _serve():
     # Live-apply skins Hermes activates mid-conversation.
     server._ensure_skin_watcher()
 
+    # The first chat's prompt build needs the host toolchain probe (~0.5 s of subprocesses); run it
+    # while the user types instead of on that turn's critical path.
+    try:
+        from tools.env_probe import warm_environment_probe_at_boot
+        warm_environment_probe_at_boot()
+    except Exception:
+        logger.debug("early environment probe did not start (tui)", exc_info=True)
+
     # Warm the /model picker's provider-models cache in this idle window (fire-and-forget).
     try:
         from hermes_cli.model_switch_providers import prewarm_picker_cache_async

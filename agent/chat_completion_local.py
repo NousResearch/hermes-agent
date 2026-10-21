@@ -67,6 +67,37 @@ def retry_recovered_local_server(agent) -> bool:
     return True
 
 
+def _targets_managed_server(agent) -> bool:
+    """True when *agent* talks to the managed router (the state file's endpoint), not an external one."""
+    from hermes_cli.local_runtime.recovery import read_state
+
+    managed = urlparse(str(read_state().get("base_url", ""))).netloc.lower()
+    return bool(managed) and urlparse(str(getattr(agent, "base_url", "") or "")).netloc.lower() == managed
+
+
+def refuse_unfitting_local_load(agent, api_kwargs: dict) -> None:
+    """Raise before the request when it would make the managed router cold-load a model that does
+    not fit in the memory free right now (#142082). The router would load it anyway and, on
+    Windows, page the whole machine to a halt; an external llama-server is not ours to judge."""
+    if not _targets_managed_server(agent):
+        return
+    from hermes_cli.local_runtime.admission import check_load_admission
+
+    refusal = check_load_admission(str(api_kwargs.get("model", "")))
+    if refusal:
+        from agent.errors import LocalModelAdmissionError
+
+        raise LocalModelAdmissionError(refusal)
+
+
+def local_stream_kwargs(agent, api_kwargs: dict) -> dict:
+    """The streamed llama-server request: refused when its cold load won't fit, else with prompt progress."""
+    from agent.local_prompt_progress import with_prompt_progress
+
+    refuse_unfitting_local_load(agent, api_kwargs)
+    return with_prompt_progress(api_kwargs)
+
+
 def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
     """Live phase notice ("⏳ loading <model> into memory — N%" / "⚙ processing
     prompt — P%") while the managed local server works before the first token;

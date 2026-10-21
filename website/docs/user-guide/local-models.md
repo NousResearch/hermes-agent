@@ -199,6 +199,11 @@ Selecting a local model as your main model uses the standard
   other programs hold on it; an integrated GPU shares system RAM and is sized
   from that. Quickstart installs the engine before choosing the model, so the
   pick reflects the card.
+- Before a message makes the managed server load a model that isn't loaded
+  yet, Hermes checks it against the GPU memory and RAM free right now
+  (crediting the model the server unloads to make room). If it would not fit,
+  for example because another model server or a game holds the memory, the
+  turn stops with a message instead of loading it and paging the machine.
 - A GPU with 8 GB+ of memory runs the small catalog models comfortably;
   16 GB+ runs the 27–35B models at high quality.
 - Model completeness is checked against the server's response, not catalog

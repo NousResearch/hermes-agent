@@ -967,6 +967,7 @@ _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
+    FailoverReason.local_memory_insufficient: "Not enough free memory to load the local model",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
 }

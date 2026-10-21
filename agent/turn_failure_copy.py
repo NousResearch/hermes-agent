@@ -221,6 +221,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.local_memory_insufficient.value: (
+        "Hermes didn't load '{model}': it would not fit in the memory free on this computer right "
+        "now, and loading it anyway can freeze the system. Close programs holding RAM or GPU memory "
+        "(another model server, a game, a VM) and send the message again, or pick a smaller model "
+        "with /model."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
@@ -256,6 +262,8 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
+    FailoverReason.local_memory_insufficient.value: (
+        "the local model was not loaded because it would not fit in the free memory"),
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (

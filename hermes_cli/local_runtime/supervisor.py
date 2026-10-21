@@ -234,7 +234,9 @@ class LlamaServerSupervisor:
                        "start_time": get_process_start_time(proc.pid),
                        "executable": proc.exe(), "owner_pid": os.getpid(),
                        "owner_create_time": psutil.Process().create_time(),
-                       "owner_start_time": get_process_start_time(os.getpid())}
+                       "owner_start_time": get_process_start_time(os.getpid()),
+                       # The residency cap the router evicts at; load admission credits that eviction.
+                       "models_max": self.models_max}
         path = state_path()
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)

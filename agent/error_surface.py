@@ -55,7 +55,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
     "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
-    "context_overflow", "interpreter_shutdown", "upstream_blocked",
+    "context_overflow", "interpreter_shutdown", "upstream_blocked", "local_memory_insufficient",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.

@@ -4,3 +4,7 @@ class EmptyStreamError(RuntimeError):
 
 class MoAPresetNotFoundError(ValueError):
     """Raised when a persisted MoA preset no longer exists in config."""
+
+
+class LocalModelAdmissionError(RuntimeError):
+    """Raised before a request when loading the managed local model would over-commit memory."""

@@ -114,12 +114,14 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             except TimeoutError:
                 # The socket is still up: an owner busy with a wave of delegated children can answer
                 # one poll past the RPC budget while its run is alive (#142414). Only silence past the
-                # job's own inactivity budget leaves the run unverified; a hang-up is never retried.
+                # job's own inactivity budget (0: unlimited) leaves the run unverified; a hang-up is
+                # never retried.
                 from cron.scheduler import _cron_inactivity_seconds
                 budget = _cron_inactivity_seconds()
                 if 0 < budget <= time.monotonic() - answered:
                     raise
                 await asyncio.sleep(delay)
+                delay = min(delay * 2, 2.0)
                 continue
             answered = time.monotonic()
             if state.get('progress_at') not in (None, progress):

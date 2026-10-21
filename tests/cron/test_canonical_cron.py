@@ -94,7 +94,7 @@ def _observe_with_status(monkeypatch, status, *, inactivity='600'):
             calls.append(method)
             if method == 'cron.submit':
                 return {'session_id': 'cron-fire', 'admission_id': 'admit'}
-            return status(len([m for m in calls if m == 'cron.status']), now)
+            return status(calls.count('cron.status'), now)
 
     @asynccontextmanager
     async def connected():
@@ -102,7 +102,7 @@ def _observe_with_status(monkeypatch, status, *, inactivity='600'):
 
     real_sleep = asyncio.sleep
 
-    async def no_wait(delay, *args, **kwargs):
+    async def no_wait(delay):
         await real_sleep(0)
 
     monkeypatch.setenv('HERMES_CRON_TIMEOUT', inactivity)
@@ -153,3 +153,45 @@ def test_owner_gone_during_status_poll_is_not_retried(monkeypatch):
     with pytest.raises(CronExecutionUnknown):
         run_canonical_job({'id': 'job'}, execution_id='fire')
     assert calls.count('cron.status') == 1
+
+
+def test_real_client_rpc_timeout_on_a_slow_status_is_waited_out(monkeypatch):
+    """The exception ``GatewayClient.rpc`` raises when an answer misses its budget is the one the
+    observer waits out: the first status poll is never answered, the next one is."""
+    import json
+    from hermes_cli import gateway_client
+    from cron.scheduler_authority import run_canonical_job
+
+    class Socket:
+        def __init__(self):
+            self.inbox = asyncio.Queue()
+            self.polls = 0
+
+        async def send(self, raw):
+            request = json.loads(raw)
+            if request['method'] == 'cron.submit':
+                result = {'session_id': 'cron-fire', 'admission_id': 'admit'}
+            else:
+                self.polls += 1
+                if self.polls == 1:
+                    return
+                result = {'status': 'terminal', 'result': [True, 'document', 'answer', None]}
+            await self.inbox.put(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.inbox.get()
+
+    socket = Socket()
+
+    @asynccontextmanager
+    async def connected():
+        async with gateway_client.GatewayClient(socket) as client:
+            yield client
+
+    monkeypatch.setattr(gateway_client, 'connect_gateway', connected)
+    monkeypatch.setattr(gateway_client, 'DEFAULT_RPC_TIMEOUT', 0.01)
+    assert run_canonical_job({'id': 'job'}, execution_id='fire') == (True, 'document', 'answer', None)
+    assert socket.polls == 2

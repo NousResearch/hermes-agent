@@ -91,7 +91,7 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
-                               'approval.respond', 'clarify.respond'})
+                               'approval.respond', 'clarify.respond', 'clarify.presentation'})
 
 
 def display_projection(history, profile_home):
@@ -211,6 +211,8 @@ class AuthorityConnection:
         handlers.update(oneshot_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
+        from gateway.session_pending_controls import clarify_presentation
+        handlers['clarify.presentation'] = partial(clarify_presentation, self)
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
         from gateway.session_complete_path import complete_path
         handlers['complete.path'] = partial(complete_path, self)

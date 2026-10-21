@@ -572,6 +572,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # inactivity, which is the misreport #112684 describes for an undelivered card.
                 undelivered = raw in (UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE)
                 reply.update(outcome="undelivered" if undelivered else "timed_out", notice=raw)
+                if self._approval_owner is not None and platform == Platform.LOCAL:
+                    reply['notice'] += f" Question {index + 1} ({entry['qid']}) was the first unanswered question."
+                    if index < last:
+                        reply['notice'] += " Later questions were not attempted."
                 break
             answers[entry["qid"]] = None if raw == SKIPPED else raw
         return reply
@@ -631,6 +635,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         response, answered = _clarify_send_then_wait(
             fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
             fallback=_text_fallback)
+        if (self._approval_owner is not None and getattr(ctx.source, 'platform', None) == Platform.LOCAL
+                and not answered and entry.response is None
+                and entry.wait_duration is not None and entry.event.is_set()):
+            # A send ACK is not a display receipt, and an unanswered timeout is not consent.
+            fact = "presentation unknown"
+            if entry.presentation_invalidated:
+                fact = "presentation invalidated"
+            elif entry.full_wait_elapsed:
+                fact = f"host recorded presentation; full native wait of {entry.wait_duration:g} seconds elapsed"
+            response += f" Software evidence: {fact}; no human answer recorded. This is not authorization."
         if self._approval_owner is not None:
             authority, session_id, generation = self._approval_owner
             authority.sessions[session_id].controls.snapshot(session_id, generation)

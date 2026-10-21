@@ -63,6 +63,25 @@ class PendingControls:
                         'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
             return tuple(deepcopy(prompt) for _, prompt in self.pending.values())
 
+    def presentation(self, generation, prompt_id, route_key, viewer, state):
+        from tools.clarify_gateway import record_presentation
+        with self.events.lock:
+            pending = self.pending.get(prompt_id)
+            if pending is None:
+                return 'already_resolved'
+            entry, prompt = pending
+            if (prompt['kind'] != 'clarify' or prompt['execution_generation'] != generation
+                    or prompt_id in self.remote_responders or entry.session_key != route_key):
+                return 'ineligible'
+            return record_presentation(entry, viewer, state)
+
+    def withdraw_presenter(self, viewer):
+        from tools.clarify_gateway import record_presentation
+        with self.events.lock:
+            for prompt_id, (entry, prompt) in self.pending.items():
+                if prompt['kind'] == 'clarify' and prompt_id not in self.remote_responders:
+                    record_presentation(entry, viewer, 'hidden')
+
     def respond(self, session_id, generation, prompt_id, response, *, kind="approval"):
         with self.events.lock:
             self.snapshot(session_id, generation)
@@ -99,3 +118,26 @@ class PendingControls:
             resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id)
             self.snapshot(session_id, generation)
             return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
+
+
+async def clarify_presentation(connection, ref, params):
+    """Accept UI evidence only from the exact current local viewer and prompt."""
+    from gateway.config import Platform
+    authority, actor = connection.authority, connection.actor
+    authority.authorize(actor, ref, 'session:respond')
+    live = authority.sessions[ref.session_id]
+    with live.event_stream.lock:
+        if (actor not in live.subscribers.values()
+                or authority.events.get(actor.transport_id) is not connection.transport):
+            raise RuntimeStoreError('permission_denied')
+        generation = params['execution_generation']
+        if type(generation) is not int:
+            raise RuntimeStoreError('stale_generation')
+        authority.check_approval_generation(ref.session_id, generation)
+        if params['state'] not in {'presented', 'interaction', 'hidden'}:
+            raise RuntimeStoreError('invalid_params')
+        status = 'ineligible'
+        if live.source is not None and live.source.platform == Platform.LOCAL:
+            status = live.controls.presentation(generation, params['prompt_id'], live.route,
+                                                actor.transport_id, params['state'])
+        return {'status': status, 'prompt_id': params['prompt_id']}

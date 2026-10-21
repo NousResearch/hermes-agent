@@ -11713,6 +11713,66 @@
         "title": "ClarifyLockStatus",
         "type": "string"
       },
+      "ClarifyPresentationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "presented",
+              "interaction",
+              "hidden"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "execution_generation",
+          "prompt_id",
+          "state"
+        ],
+        "title": "ClarifyPresentationParams",
+        "type": "object"
+      },
+      "ClarifyPresentationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "prompt_id": {
+            "title": "Prompt Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "recorded",
+              "already_recorded",
+              "invalidated",
+              "ineligible",
+              "already_resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt_id",
+          "status"
+        ],
+        "title": "ClarifyPresentationResult",
+        "type": "object"
+      },
       "ClarifyQuestion": {
         "additionalProperties": false,
         "properties": {
@@ -47308,6 +47368,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ClarifyLockResult"
+        }
+      }
+    },
+    {
+      "name": "clarify.presentation",
+      "summary": "Record authenticated software presentation facts without answering a question.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyPresentationParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarifyPresentationResult"
         }
       }
     },

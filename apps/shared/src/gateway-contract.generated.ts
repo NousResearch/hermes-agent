@@ -4752,6 +4752,16 @@ export interface SkinPayload {
   help_header?: string
   [key: string]: unknown
 }
+export interface ClarifyPresentationParams {
+  session_id: string
+  execution_generation: number
+  prompt_id: string
+  state: 'presented' | 'interaction' | 'hidden'
+}
+export interface ClarifyPresentationResult {
+  prompt_id: string
+  status: 'recorded' | 'already_recorded' | 'invalidated' | 'ineligible' | 'already_resolved'
+}
 export interface ClarifyRespondParams {
   session_id: string
   execution_generation: number
@@ -6764,6 +6774,8 @@ export interface CanonicalRpcMethods {
   'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
+  /** Record authenticated software presentation facts without answering a question. */
+  'clarify.presentation': { params: ClarifyPresentationParams; result: ClarifyPresentationResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
   /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
@@ -6843,6 +6855,7 @@ export const CANONICAL_RPC_METHODS = [
   'bot_relay.deliver',
   'bot_relay.settle',
   'clarify.lock',
+  'clarify.presentation',
   'clarify.respond',
   'command.observe',
   'config.get',

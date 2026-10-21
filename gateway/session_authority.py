@@ -358,6 +358,7 @@ class SessionAuthority:
         live = self.sessions[session_id]
         for subscription, member in list(live.subscribers.items()):
             if self.events.get(member.transport_id) is transport:
+                live.controls.withdraw_presenter(member.transport_id)
                 del live.subscribers[subscription]
 
     async def detach(self, actor, subscription_id, *, end_reason=None):
@@ -366,6 +367,7 @@ class SessionAuthority:
                 if live.subscribers[subscription_id] != actor:
                     raise RuntimeStoreError('permission_denied')
                 del live.subscribers[subscription_id]
+                live.controls.withdraw_presenter(actor.transport_id)
                 transport = self.events.get(actor.transport_id)
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)

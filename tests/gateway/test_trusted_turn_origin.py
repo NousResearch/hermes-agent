@@ -146,25 +146,25 @@ async def test_origin_scopes_first_queued_concurrent_missing_and_internal_turns(
 
 def test_receiving_bot_remains_distinct_from_routed_runtime_on_queued_and_restore(tmp_path, monkeypatch):
     runner, event, registration, _ = _setup(tmp_path, monkeypatch)
-    source = replace(event.source, profile="brain")
+    source = replace(event.source, profile="routed")
     source._identity = RoutingIdentity(
-        transport_profile="peppy", runtime_profile="brain", authorization_home=tmp_path,
+        transport_profile="relay-bot", runtime_profile="routed", authorization_home=tmp_path,
         runtime_home=tmp_path, multiplexed=True)
     queued = replace(event, source=source)
     queued._gateway_accepted = True
     projected = capture_origin_claim(runner, queued, native=True,
-                                     provenance={"transport_profile": "peppy"})
-    assert projected["transport_profile"] == "peppy"
-    assert projected["binding"][1] == "brain"
+                                     provenance={"transport_profile": "relay-bot"})
+    assert projected["transport_profile"] == "relay-bot"
+    assert projected["binding"][1] == "routed"
 
     restored_source = replace(source)
     restored_source._identity = source._identity
     restored = replace(queued, source=restored_source)
-    restore_origin_claim(runner, restored, projected, provenance={"transport_profile": "peppy"})
+    restore_origin_claim(runner, restored, projected, provenance={"transport_profile": "relay-bot"})
     restored._native_origin_restored = True
     restored._gateway_accepted = True
     origin = origin_for_event(runner, restored, restored.source)
-    assert (origin.profile, origin.transport_profile) == ("brain", "peppy")
+    assert (origin.profile, origin.transport_profile) == ("routed", "relay-bot")
 
     # Runtime route remains the same, but a later different receiving bot cannot
     # borrow the first bot's projection or its plugin privileges.
@@ -184,7 +184,7 @@ async def test_native_restore_pins_secondary_receiving_bot_across_runtime_route(
     root = tmp_path / ".hermes"
     root.mkdir(mode=0o700)
     homes = [("default", root)]
-    for name in ("peppy", "brain"):
+    for name in ("relay-bot", "routed"):
         home = root / "profiles" / name
         home.mkdir(parents=True, mode=0o700)
         (home / "config.yaml").write_text("{}")
@@ -197,7 +197,7 @@ async def test_native_restore_pins_secondary_receiving_bot_across_runtime_route(
     config._runtime_profile_homes = tuple(homes)
     config.profile_routes = parse_profile_routes([
         {"name": "test-channel", "platform": "slack", "chat_id": "C1",
-         "bot_profile": "peppy", "profile": "brain"}])
+         "bot_profile": "relay-bot", "profile": "routed"}])
     runner = GatewayRunner(config)
     process_ownership.reserve([home for _, home in homes])
     try:
@@ -208,24 +208,24 @@ async def test_native_restore_pins_secondary_receiving_bot_across_runtime_route(
             pass
 
         adapter = Adapter()
-        runner._profile_adapters["peppy"] = {Platform.SLACK: adapter}
+        runner._profile_adapters["relay-bot"] = {Platform.SLACK: adapter}
         runner._is_user_authorized_for_source = lambda *args, **kwargs: True
-        register_transport_home(runner, "peppy", dict(homes)["peppy"])
+        register_transport_home(runner, "relay-bot", dict(homes)["relay-bot"])
         source = SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="channel",
                                user_id="U1", scope_id="T1")
         source._transport_adapter_ref = weakref.ref(adapter)
         source.profile = runner._profile_name_for_source(source)
-        assert source.profile == "brain"
+        assert source.profile == "routed"
         event = MessageEvent(text="hello", source=source, message_id="m1",
                              raw_message={"user": "U1", "channel": "C1", "team": "T1"})
-        with native_callback(runner, event, dict(homes)["peppy"], "peppy"):
+        with native_callback(runner, event, dict(homes)["relay-bot"], "relay-bot"):
             payload = snapshot_native(runner, event)
         claim = payload["native_text_v1"]["origin_claim_v1"]
-        assert (claim["binding"][1], claim["transport_profile"]) == ("brain", "peppy")
+        assert (claim["binding"][1], claim["transport_profile"]) == ("routed", "relay-bot")
         restored = restore_native(payload, runner)
         restored._gateway_accepted = True
         origin = origin_for_event(runner, restored, restored.source)
-        assert (origin.profile, origin.transport_profile) == ("brain", "peppy")
+        assert (origin.profile, origin.transport_profile) == ("routed", "relay-bot")
 
         forged = dict(payload)
         forged["native_text_v1"] = dict(payload["native_text_v1"])
@@ -245,15 +245,15 @@ async def test_recursive_queued_turn_uses_its_own_receiving_bot(tmp_path, monkey
     runner, event, registration, _ = _setup(tmp_path, monkeypatch)
 
     def routed(message_id, transport):
-        source = replace(event.source, profile="brain")
+        source = replace(event.source, profile="routed")
         source._identity = RoutingIdentity(
-            transport_profile=transport, runtime_profile="brain", authorization_home=tmp_path,
+            transport_profile=transport, runtime_profile="routed", authorization_home=tmp_path,
             runtime_home=tmp_path, multiplexed=True)
         turn = replace(event, message_id=message_id, source=source)
         turn._gateway_accepted = True
         return turn
 
-    first, queued = routed("m1", "peppy"), routed("m2", "other-bot")
+    first, queued = routed("m1", "relay-bot"), routed("m2", "other-bot")
     seen = []
 
     async def inner(*args, **kwargs):
@@ -266,7 +266,7 @@ async def test_recursive_queued_turn_uses_its_own_receiving_bot(tmp_path, monkey
     monkeypatch.setattr(runner, "_run_agent_inner", inner)
     await runner._run_agent("first", "", [], first.source, "s", turn_event=first)
     assert [(origin.profile, origin.transport_profile, origin.message_ts) for origin in seen] == [
-        ("brain", "peppy", "m1"), ("brain", "other-bot", "m2")]
+        ("routed", "relay-bot", "m1"), ("routed", "other-bot", "m2")]
     assert current_origin() is None
     registration.dispose()
 

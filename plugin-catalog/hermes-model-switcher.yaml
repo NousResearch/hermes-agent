@@ -27,6 +27,9 @@ description: >-
   It runs no shell commands or background processes and reports nothing. The
   private undo journal stores a full pre-change snapshot of each config it
   edits, which can contain sensitive fields including embedded credentials.
+  Saved presets also persist reviewed change values, potentially including
+  inline credentials or credential-bearing base URLs, in presets.json (0600)
+  under get_hermes_home()/state/hermes-model-switcher/ (0700).
   The host write route has no expected-revision check: readback surfaces many
   foreign edits as recovery_required, but a concurrent same-key edit can be
   overwritten undetected and full-state deletions retain an unrelated-write

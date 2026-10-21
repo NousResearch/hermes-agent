@@ -3760,7 +3760,7 @@ def apply_pending_kanban_note_to_tool_results(agent, messages: list, num_tool_ms
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
     target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
     if target is None:
-        with getattr(agent, "_pending_kanban_note_lock"):
+        with agent._pending_kanban_note_lock:
             existing = getattr(agent, "_pending_kanban_note", None)
             agent._pending_kanban_note = (existing + "\n" + note_text) if existing else note_text
         return

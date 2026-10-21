@@ -8,7 +8,6 @@ test patches on ``update_cmd`` stay effective).
 import logging
 from contextlib import suppress
 import os
-import shutil
 import subprocess
 import sys
 import time as _time
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.update_cmd_common import _best_effort
+from datetime import UTC
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -142,7 +142,7 @@ def _print_fts_optimize_available_notice() -> None:
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
-        needs_upgrade = bool(row) and getattr(db, "_db_needs_fts_storage_upgrade")(db._conn)
+        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -238,10 +238,10 @@ def _format_time_ago(iso_ts: str) -> str:
     """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
     try:
         from datetime import datetime, timezone
-        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(iso_ts)
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        secs = int((datetime.now(timezone.utc) - ts).total_seconds())
+            ts = ts.replace(tzinfo=UTC)
+        secs = int((datetime.now(UTC) - ts).total_seconds())
         if secs < 60:
             return "just now"
         if secs < 3600:
@@ -260,7 +260,7 @@ def _reload_process_scan_modules() -> None:
 
 
 def _finish_dashboard_update_cleanup(
-    node_failures: list[str], already_restarted_units: "set[str] | None" = None
+    node_failures: list[str], already_restarted_units: set[str] | None = None
 ) -> None:
     """Historical updater hook; do not continue a pre-PM update after the swap."""
     from hermes_cli._old_updater import stop_for_relaunch
@@ -273,7 +273,8 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
-    already restarted, so a Serve-only install isn't restarted a second time here.
+    already handled (restarted, declined, or failed; each already reported), so a Serve-only
+    install isn't restarted a second time here and a declined or failed unit isn't retried (#141021).
 
     See #83595.
     """
@@ -394,19 +395,6 @@ def _print_verified_update_completion(message: str) -> bool:
     return False
 
 
-def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
-    """Delete -wal/-shm/-journal next to *db_path*, immediately before overwriting it with a
-    snapshot image.
-
-    Snapshots are checkpointed ``sqlite3.backup()`` images with no WAL; copying replaces only
-    the main file, so a leftover WAL from the OLD database would be replayed over the fresh
-    image on next open (passes integrity_check while serving old contents). Safe because the
-    caller has already declared that database corrupt.
-    """
-    for suffix in ("-wal", "-shm", "-journal"):
-        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
-
-
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
     """Historical updater hook; old soft-build results cannot establish completion."""
     from hermes_cli._old_updater import stop_for_relaunch
@@ -415,37 +403,23 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
-    """Replace *state_path* with the snapshot image; True when the result passes integrity.
+    """Restore through backup's authority reservation and pre-publication epoch floor.
 
-    Stale sidecars are cleared first so the corrupt DB's WAL can't replay over the image.
-    Refuses (False) while another process — or a live connection in THIS process — holds the
-    DB: copying over a live writer's inode desyncs its page cache and its next checkpoint
-    clobbers pages. Holder scan ``None`` proceeds (gateways drained; refusing on unknown would
-    disable auto-restore on non-Linux). Raises OSError if the copy fails.
+    Use the single-database primitive, not whole-profile restore: post-update config
+    and unrelated files must not roll back with a damaged transcript store.
     """
     from hermes_cli.backup import verify_sqlite_integrity
-    from hermes_cli.backup_restore import _foreign_db_holder_pids
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-    holders = _foreign_db_holder_pids(state_path)
-    if holders:
-        print(
-            f"  ✗ Auto-restore refused: process(es) {holders} still hold "
-            "state.db or its WAL open. Stop them (hermes gateway stop), "
-            "then restore manually with /snapshot restore."
-        )
+    from hermes_cli.backup_restore import _safe_restore_db
+
+    snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
+    if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
         return False
-    # The foreign-pid scan excludes THIS process; an in-process SessionDB handle is just as
-    # live (it would checkpoint through deleted-inode sidecars). offline_file_access fails
-    # CLOSED on any tracked connection and holds the lock across clear + copy.
-    try:
-        with offline_file_access(state_path, what="restore a snapshot over"):
-            _clear_stale_sqlite_sidecars(state_path)
-            shutil.copy2(snap_state, state_path)
-    except LiveConnectionError as exc:
-        print(
-            f"  ✗ Auto-restore refused: {exc} Close the in-process database "
-            "handles (or restart Hermes) and retry."
-        )
+    if not _safe_restore_db(snap_state, state_path):
+        print("  ✗ Auto-restore refused or failed; state.db was not restored.")
+        print("    Stop the owning runtime and close database handles before retrying.")
+        print("    If the canonical runtime epoch is unreadable, do not restore in place:")
+        print("    use `hermes sessions recover --source <snapshot> --output <separate-path>`")
+        print("    to salvage transcripts into a separate output.")
         return False
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
     return bool(restored.get("valid"))
@@ -479,7 +453,7 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
                 if _restore_state_db_from_snapshot(state_path, snap_state):
                     print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
                 else:
-                    print("  ✗ Auto-restore FAILED — restored copy also failed integrity")
+                    print("  ✗ Auto-restore did not complete; see the restore diagnostic above.")
             except OSError as exc:
                 print(f"  ✗ Auto-restore file copy failed: {exc}")
             return
@@ -583,6 +557,7 @@ def _ensure_fhs_path_guard() -> None:
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return  # no bash or probe hung — don't block update on this
@@ -702,7 +677,7 @@ def _run_quick_snapshots() -> Optional[str]:
             keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
         if _sibling_snaps:
-            print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
+            print("◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
             _record_update_step(
                 "sibling_profile_snapshots",
                 True,
@@ -1002,6 +977,8 @@ def _run_post_update_maintenance(
                 followups.append((name, reason))
 
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
+    from hermes_cli.update_windows_acl import repair_windows_home_acl
+    owed_step("windows_home_acl", repair_windows_home_acl)
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
     # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix

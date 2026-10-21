@@ -799,10 +799,15 @@ export async function moveSessionToProject(
     throw new Error(translateNow('sidebar.projects.moveNoFolder'))
   }
 
+  // The shared owner refuses a move while a turn runs (its frozen policy would change under it).
   const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
     cwd,
     session_key: sessionId,
     ...(profile ? { profile } : {})
+  }).catch((err: unknown) => {
+    throw (err as { data?: { reason?: string } })?.data?.reason === 'session_busy'
+      ? new Error(translateNow('sidebar.projects.moveBusy'))
+      : err
   })
 
   const moved = res.cwd || cwd
@@ -1655,7 +1660,12 @@ export async function pickProjectFolders(): Promise<string[]> {
 // project already has — or repeats within the pick itself — are skipped, so
 // a multi-select never writes duplicate rows (#68741).
 export async function addProjectFolders(id: string, paths: string[]): Promise<void> {
-  const existing = new Set($projects.get().find(proj => proj.id === id)?.folders?.map(folder => folder.path) ?? [])
+  const existing = new Set(
+    $projects
+      .get()
+      .find(proj => proj.id === id)
+      ?.folders?.map(folder => folder.path) ?? []
+  )
 
   for (const path of new Set(paths.map(path => path.trim()).filter(Boolean))) {
     if (existing.has(path)) {

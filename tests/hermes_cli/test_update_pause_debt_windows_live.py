@@ -235,7 +235,7 @@ def test_a_launch_recovering_an_unready_service_keeps_the_debt_without_stalling(
         for _ in range(2):
             done = subprocess.run([sys.executable, "-c", _RECOVERING_LAUNCH], cwd=REPO, capture_output=True,
                                   text=True, encoding="utf-8", errors="replace", timeout=300,
-                                  env={**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(REPO)})
+                                  env={**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(REPO)}, check=False)
             assert done.returncode == 0, done.stdout + done.stderr
             launches.append(json.loads(done.stdout.strip().splitlines()[-1]))
     finally:

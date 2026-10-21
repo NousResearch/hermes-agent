@@ -30,10 +30,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_install.add_argument(
         "--allow-removed", action="store_true",
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
-    plugins_install.add_argument(
-        "--allow-live-gateway", action="store_true",
-        help="DANGEROUS: allow a forced reinstall while the messaging gateway is running "
-             "(loaded plugin callbacks may break until it restarts)")
     _install_deps_group = plugins_install.add_mutually_exclusive_group()
     _install_deps_group.add_argument(
         "--no-deps", action="store_true",
@@ -70,12 +66,16 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     add_json_flag(plugins_validate, "Print machine-readable JSON (for CI)")
 
     plugins_update = plugins_subparsers.add_parser(
-        "update", help="Pull latest changes for an installed plugin")
-    plugins_update.add_argument("name", help="Plugin name to update")
+        "update", help="Update an installed plugin, or with no name every plugin that has an update")
     plugins_update.add_argument(
-        "--allow-live-gateway", action="store_true",
-        help="DANGEROUS: update while the messaging gateway is running "
-             "(loaded plugin callbacks may break until it restarts)")
+        "name", nargs="?", help="Plugin name to update (default: list every plugin with an update and offer them all)")
+    plugins_update.add_argument(
+        "--yes", "-y", action="store_true",
+        help="With no name: update everything listed without the confirmation question (required without a terminal)")
+    plugins_update.add_argument(
+        "--force", "-f", action="store_true",
+        help="Apply the update even when the security scan returns a caution verdict (a dangerous verdict "
+             "still blocks). Without it, a terminal asks first")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",
@@ -121,10 +121,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
-    plugins_remove.add_argument(
-        "--allow-live-gateway", action="store_true",
-        help="DANGEROUS: remove while the messaging gateway is running "
-             "(loaded plugin callbacks may break until it restarts)")
 
     plugins_list = plugins_subparsers.add_parser(
         "list", aliases=["ls"], help="List installed plugins")

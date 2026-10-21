@@ -183,7 +183,6 @@ export type DesktopNoticeId =
   | 'install_method'
   | 'mcp_health'
   | 'model_warning'
-  | 'onboarding_handoff'
   | 'other'
   | 'restored_draft'
   | 'runtime_not_ready'
@@ -204,7 +203,6 @@ const NOTICE_IDS: Record<string, DesktopNoticeId> = {
   'desktop-update-available': 'update_available',
   'gui-contract-skew': 'gui_skew',
   'install-method-not-supported': 'install_method',
-  'onboarding-handoff': 'onboarding_handoff',
   'runtime-not-ready': 'runtime_not_ready',
   'terminal-backend-unavailable': 'terminal_backend',
   'voice-live-unavailable': 'voice_live_unavailable',
@@ -253,10 +251,6 @@ export type DesktopOnboardingStep =
   | 'first_message'
   | 'free_tier_ready'
   | 'guide'
-  | 'guide_connectors'
-  | 'guide_first_build'
-  | 'guide_layout'
-  | 'guide_look'
   | 'guide_skip'
   | 'model_pick'
   | 'provider_api_key'

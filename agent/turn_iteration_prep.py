@@ -2,7 +2,7 @@
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
 standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
-argument sanitization, interrupt-scaffold ghost-row drop, role-alternation repair),
+argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
 imports ``agent.conversation_loop`` at module level (cycle)."""
@@ -14,7 +14,7 @@ import random
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from agent.display import KawaiiSpinner
 from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
@@ -110,15 +110,44 @@ class IterationPrep:
     current_turn_user_idx: Any
 
 
+# Retire hidden interrupt placeholders whose text the model echoes on replay
+# (#81841 for the scaffold, #132949 for the placeholder). A hidden row still
+# reaches the provider as assistant content; a natural-language phrase in that
+# position is reproduced verbatim. The row is never dropped: removal can form
+# ``tool -> user`` (#48879) or ``user -> user``, which repair then merges —
+# losing the second row's checkpoint ``api_content``. Neutralise a copy instead.
+def _neutralise_replay_echo_ghosts(seq: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """(new list, neutralised); never mutates ``seq`` or its row dicts."""
+    from agent.agent_runtime_helpers_placeholders import (
+        _INTERRUPTED_PLACEHOLDER,
+        _LEGACY_INTERRUPTED_PLACEHOLDER,
+    )
+    from agent.conversation_loop import _INTERRUPT_SCAFFOLD_MARKER
+    # Retire only spellings that predate the #132949 wording change: the scaffold
+    # (#81841) and the old placeholder, both reproduced verbatim. The current
+    # placeholder is the post-fix value — it stays (this is also what
+    # neutralisation rewrites to, so the rewrite does not retrigger the filter).
+    hazards = {_INTERRUPT_SCAFFOLD_MARKER, _LEGACY_INTERRUPTED_PLACEHOLDER}
+    neutralised = 0
+    out: list[dict[str, Any]] = []
+    for m in seq:
+        if (
+            m.get("display_kind") == "hidden" and m.get("role") == "assistant"
+            and any(isinstance(m.get(k), str) and m[k].strip() in hazards for k in ("content", "api_content"))
+        ):
+            m = {**m, "content": "", "api_content": _INTERRUPTED_PLACEHOLDER}
+            neutralised += 1
+        out.append(m)
+    return (out if neutralised else seq), neutralised
+
+
 def prepare_iteration(
     agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None, current_turn_user_idx: Any = None,
 ) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
-    filter only drops hidden scaffold placeholders, and repair runs BEFORE the request build."""
-    from agent.conversation_loop import (
-        _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
-    )
+    filter neutralises copies of hidden interrupt placeholders, and repair runs BEFORE the request build."""
+    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
 
     # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
     # before this iteration's request is built and with nothing in flight.
@@ -180,19 +209,12 @@ def prepare_iteration(
             agent.session_id or "-",
         )
 
-    # Drop legacy hidden assistant placeholders carrying the raw interrupt scaffold
-    # before repair: replayed, the model echoes/self-replicates.
-    def _is_scaffold_ghost(msg: Dict[str, Any]) -> bool:
-        return (
-            msg.get("display_kind") == "hidden"
-            and msg.get("role") == "assistant"
-            and any(
-                isinstance(msg.get(k), str) and msg[k].strip() == _INTERRUPT_SCAFFOLD_MARKER
-                for k in ("content", "api_content")
-            )
+    messages, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
+    if _echo_neutralised:
+        request_logger.info(
+            "Neutralised %d interrupt-placeholder row(s) before request (session=%s)",
+            _echo_neutralised, agent.session_id or "-",
         )
-
-    messages = [msg for msg in messages if not _is_scaffold_ghost(msg)]
 
     # Repair malformed role alternation (tool→user / user→user tails): providers
     # return empty content on them and the empty-retry loop spins. The _with_cursor

@@ -57,6 +57,7 @@ def test_standalone_without_hermes_reports_setup_not_ambient_installs(command, t
         capture_output=True,
         text=True,
         timeout=15,
+        check=False,
     )
     assert result.returncode == 1
     assert "Hermes environment" in result.stdout

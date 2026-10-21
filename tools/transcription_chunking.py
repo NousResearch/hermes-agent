@@ -49,7 +49,7 @@ _SEGMENT_HEADROOM = 0.9
 _MAX_SILENCE_LOOKBACK_SECONDS = 60.0
 
 
-def upload_limit(provider: str, model: Optional[str]) -> Tuple[int, Optional[float]]:
+def upload_limit(provider: str, model: Optional[str]) -> tuple[int, Optional[float]]:
     """``(max_bytes, max_seconds or None)`` for one request to *provider* with *model*."""
     max_seconds = _PROVIDER_MAX_SECONDS.get(provider)
     if provider == "openai":
@@ -57,7 +57,7 @@ def upload_limit(provider: str, model: Optional[str]) -> Tuple[int, Optional[flo
     return _PROVIDER_MAX_BYTES.get(provider, MAX_FILE_SIZE), max_seconds
 
 
-def _fits(path: str, limit: Tuple[int, Optional[float]], duration: Optional[float]) -> bool:
+def _fits(path: str, limit: tuple[int, Optional[float]], duration: Optional[float]) -> bool:
     max_bytes, max_seconds = limit
     if os.path.getsize(path) > max_bytes:
         return False
@@ -65,20 +65,20 @@ def _fits(path: str, limit: Tuple[int, Optional[float]], duration: Optional[floa
     return max_seconds is None or duration is None or duration <= max_seconds
 
 
-def exceeds_upload_limit(path: str, limit: Tuple[int, Optional[float]]) -> bool:
+def exceeds_upload_limit(path: str, limit: tuple[int, Optional[float]]) -> bool:
     """True when *path* is over the byte cap, or over a duration cap ffprobe can measure."""
     if os.path.getsize(path) > limit[0]:
         return True
     return limit[1] is not None and not _fits(path, limit, _probe_audio_duration(path))
 
 
-def _too_large(path: str, max_bytes: int, reason: str) -> Dict[str, Any]:
+def _too_large(path: str, max_bytes: int, reason: str) -> dict[str, Any]:
     size_mb = os.path.getsize(path) / _MB
     return _error_result(
         f"File too large: {size_mb:.1f}MB (max {max_bytes / _MB:.0f}MB) and it could not be split: {reason}")
 
 
-def _silence_midpoints(ffmpeg: str, path: str) -> List[float]:
+def _silence_midpoints(ffmpeg: str, path: str) -> list[float]:
     """Midpoints (seconds) of the pauses ffmpeg's silencedetect finds; [] on any failure."""
     try:
         result = _run_quiet([ffmpeg, "-hide_banner", "-nostats", "-i", path,
@@ -91,9 +91,9 @@ def _silence_midpoints(ffmpeg: str, path: str) -> List[float]:
     return [(max(start, 0.0) + end) / 2 for start, end in zip(starts, ends)]
 
 
-def _cut_points(duration: float, target: float, silences: List[float]) -> List[float]:
+def _cut_points(duration: float, target: float, silences: list[float]) -> list[float]:
     """Cut times giving segments no longer than *target*, each at the latest pause before the ideal cut."""
-    cuts: List[float] = []
+    cuts: list[float] = []
     position = 0.0
     lookback = min(_MAX_SILENCE_LOOKBACK_SECONDS, target / 4)
     while duration - position > target:
@@ -104,7 +104,7 @@ def _cut_points(duration: float, target: float, silences: List[float]) -> List[f
     return cuts
 
 
-def _split(ffmpeg: str, path: str, work_dir: str, cuts: List[float]) -> List[str]:
+def _split(ffmpeg: str, path: str, work_dir: str, cuts: list[float]) -> list[str]:
     pattern = os.path.join(work_dir, "part%03d.m4a")
     _run_quiet([ffmpeg, "-y", "-loglevel", "error", "-i", path, "-vn", "-c", "copy", "-f", "segment",
                 "-segment_times", ",".join(f"{c:.3f}" for c in cuts), "-reset_timestamps", "1", pattern],
@@ -113,8 +113,8 @@ def _split(ffmpeg: str, path: str, work_dir: str, cuts: List[float]) -> List[str
 
 
 def transcribe_oversized(
-    path: str, limit: Tuple[int, Optional[float]], dispatch: Callable[[str], Dict[str, Any]],
-) -> Dict[str, Any]:
+    path: str, limit: tuple[int, Optional[float]], dispatch: Callable[[str], dict[str, Any]],
+) -> dict[str, Any]:
     """Fit *path* under *limit* (re-encode, else split at silences) and run *dispatch* per piece."""
     from tools.voice_mode_transcript import is_whisper_hallucination
 
@@ -139,7 +139,7 @@ def transcribe_oversized(
         parts = _split(ffmpeg, compact, work_dir, _cut_points(duration, target, _silence_midpoints(ffmpeg, compact)))
         logger.info("Transcribing %s (%.0fs) in %d segments of <= %.0fs",
                     os.path.basename(path), duration, len(parts), math.ceil(target))
-        transcripts: List[str] = []
+        transcripts: list[str] = []
         provider = ""
         for index, part in enumerate(parts, start=1):
             result = dispatch(part)

@@ -58,7 +58,7 @@ class TestFatalNotifyIsDetached:
         monkeypatch.setattr(adapter, "_notify_fatal_error", fake_notify)
         monkeypatch.setattr(adapter, "_stop_sidecar", lambda: _noop())
 
-        async def degraded(_path: str, _payload: Dict[str, Any]) -> Dict[str, Any]:
+        async def degraded(_path: str, _payload: dict[str, Any]) -> dict[str, Any]:
             return {"stream": {"ok": False, "state": "degraded", "degradedForMs": 4000,
                                "lastIssue": "stream persistently failing"}}
 

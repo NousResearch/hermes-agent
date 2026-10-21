@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.context_compressor import ContextCompressor  # noqa: E402
+from agent.context_compressor import ContextCompressor
 
 HEAD_SENTINEL = "HEADSENTINEL_zq81"
 MID_SENTINEL = "MIDSENTINEL_kv93"

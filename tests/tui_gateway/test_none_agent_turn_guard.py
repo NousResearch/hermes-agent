@@ -101,7 +101,7 @@ def test_replaced_record_build_records_reason_and_leaves_agent_unset(monkeypatch
 def test_build_finishing_after_close_records_reason_and_closes_orphan(monkeypatch, tmp_path):
     """A build that finishes after ``session.close`` popped its record closes the late agent and
     records why nothing attached, exactly like the replaced-before-attach exit (#49852)."""
-    import tui_gateway.entry as entry
+    from tui_gateway import entry
 
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)

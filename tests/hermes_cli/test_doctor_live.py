@@ -60,7 +60,7 @@ def _clean_env(monkeypatch):
                 "ELEVENLABS_API_KEY", "GROQ_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     # Default: empty config, no MCP servers, local tts/stt.
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
     # Default: browser not installed.
     monkeypatch.setattr(doctor_live, "_browser_available", lambda: False)
 

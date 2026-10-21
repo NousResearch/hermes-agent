@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.web_tools as web_tools
+from tools import web_tools
 from agent import web_search_registry as registry
 from plugins.web import keyless_mcp
 from plugins.web.exa.provider import ExaWebSearchProvider
@@ -101,7 +101,7 @@ class TestParseMcpBody:
         response.status_code = 200
         response.headers["Content-Type"] = "text/event-stream"
         response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
-        response._content = f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        response._content = f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
         assert "\x85" in response.text  # the vendor body really does decode to mojibake via .text
         with patch.object(requests, "post", return_value=response):
             text = keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": title})
@@ -140,7 +140,7 @@ class TestParseMcpBody:
         response.status_code = 429
         response.headers["Content-Type"] = "text/plain"
         response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
-        response._content = "请求过多".encode("utf-8")
+        response._content = "请求过多".encode()
         with patch.object(requests, "post", return_value=response), patch.object(requests, "get", return_value=response):
             with pytest.raises(keyless_mcp.KeylessMCPError, match="请求过多"):
                 if call == "mcp":

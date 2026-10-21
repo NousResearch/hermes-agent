@@ -140,5 +140,6 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+                check=False,
             )
             process.wait(timeout=15)

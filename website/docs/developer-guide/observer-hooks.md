@@ -99,6 +99,7 @@ Session hooks describe conversation boundaries and resets:
 | `on_session_end` | A `run_conversation` call ends, including interrupted or incomplete turns. |
 | `on_session_finalize` | CLI or gateway tears down an active session identity. |
 | `on_session_reset` | CLI or gateway moves from an old session identity to a new one. |
+| `on_session_delete` | A session delete or deliberate archive committed (`reason` says which). |
 
 Common fields include `session_id`, `completed`, `interrupted`, `reason`,
 `old_session_id`, and `new_session_id` where available.
@@ -334,8 +335,8 @@ nested agent work or security lifecycle events.
 
 ## Existing Consumers
 
-The bundled Langfuse plugin demonstrates direct hook-based observability for
-turns, provider requests, and tool calls.
+The official [Langfuse catalog plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse) demonstrates direct hook-based
+observability for turns, provider requests, and tool calls.
 
 The native NeMo Relay SDK integration maps Hermes session, turn, LLM, and tool
 lifecycles to Relay. Relay's discovered user and system configuration, or an

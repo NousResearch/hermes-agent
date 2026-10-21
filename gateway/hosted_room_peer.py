@@ -206,7 +206,7 @@ class GatewayRoomCatalog:
     transport_security: TransportSecurity | None = None
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "GatewayRoomCatalog":
+    def from_mapping(cls, value: Mapping[str, Any]) -> GatewayRoomCatalog:
         _exact_fields(value, required=_CATALOG_FIELDS, optional={"endpoint"}, label="capability catalog")
         installation_id = _identifier(value["installation_id"], field="installation_id")
         versions = tuple(_protocol_versions(_non_empty_list(value["protocol_versions"], field="protocol_versions")))
@@ -379,7 +379,7 @@ class HostedMemberDispatch:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
+    def from_mapping(cls, value: Mapping[str, Any]) -> HostedMemberDispatch:
         _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")

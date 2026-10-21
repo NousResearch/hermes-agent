@@ -34,15 +34,15 @@ class FirecrawlBrowserProvider(CloudBrowserProvider):
         # Per-profile like the key: the scoped key must not be sent to the default profile's endpoint.
         return get_secret("FIRECRAWL_API_URL", "") or _BASE_URL
 
-    def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self) -> Optional[dict[str, Any]]:
         return {"base_url": self._api_url()} if get_secret("FIRECRAWL_API_KEY") else None
 
-    def _get_config(self) -> Dict[str, Any]:
+    def _get_config(self) -> dict[str, Any]:
         # Never raises: a missing key surfaces from _headers() inside the request try-block, so
         # close_session logs it as an exception (legacy behaviour).
         return {"base_url": self._api_url()}
 
-    def _headers(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    def _headers(self, config: Optional[dict[str, Any]] = None) -> dict[str, str]:
         api_key = get_secret("FIRECRAWL_API_KEY")
         if not api_key:
             raise ValueError(
@@ -50,7 +50,7 @@ class FirecrawlBrowserProvider(CloudBrowserProvider):
                 "Get your key at https://firecrawl.dev")
         return {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         try:
             ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
         except (ValueError, TypeError):

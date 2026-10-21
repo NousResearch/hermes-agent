@@ -16,14 +16,14 @@ from typing import Any, Dict, List
 
 from evals.postmortem.forensics.common import Run
 
-_WAITING = re.compile(r"\b(waiting|wait(s)? on|nothing (else |new )?to dispatch|no action needed|standing by|until .* (finish|return|complete)|in flight|still running)\b", re.I)
+_WAITING = re.compile(r"\b(waiting|wait(s)? on|nothing (else |new )?to dispatch|no action needed|standing by|until .* (finish|return|complete)|in flight|still running)\b", re.IGNORECASE)
 
 
 def main(argv=None) -> int:
     run = Run.from_args(argv, (__doc__ or "").split("\n\n")[0])
     root = run.root
     msgs = run.messages(root, "role, content, timestamp")
-    nudges: List[Dict[str, Any]] = []
+    nudges: list[dict[str, Any]] = []
     batch_notices = bgproc_notices = 0
     last_assistant = None
     for m in msgs:
@@ -39,7 +39,7 @@ def main(argv=None) -> int:
                 batch_notices += 1
             elif c.startswith("[IMPORTANT: Background process"):
                 bgproc_notices += 1
-    goal_state: Dict[str, Any] = {}
+    goal_state: dict[str, Any] = {}
     try:
         row = run._conn.execute("SELECT value FROM state_meta WHERE key=?", (f"goal:{root}",)).fetchone()
         if row:

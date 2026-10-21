@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "PAYLOAD_DIR_NAME",
     "BundleLayout",
     "NotBundledApp",
-    "PAYLOAD_DIR_NAME",
     "launch_detached",
     "resolve_bundle_layout",
 ]

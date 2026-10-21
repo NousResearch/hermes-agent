@@ -337,8 +337,10 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     const identity = await readChatIdentity(page)
     assertResolvedIdentity(identity, options, predictedHome)
     // The ordinary host-attach path may reuse the updater's relaunched app's
-    // backend. Observe the ledger the app reads for this home (its machine root),
-    // not an arbitrary listener, and retain the OS listener + installed-tree proof below.
+    // backend, and `hermes gateway ensure` attaches to (or starts, detached) the
+    // canonical gateway. Observe the ledger and gateway_state.json the app's home
+    // resolves to (its machine root), not an arbitrary listener, and retain the
+    // OS listener + installed-tree proof below.
     fs.writeFileSync(path.join(out, `desktop-backend-${options.phase}.log`), connection.logs.map(redact).join('\n'))
     const backend = localBackendProcess(Number(base.port), running.pid, predictedHome ?? options.home)
     // `identity.hermesRoot` was asserted against options.root above. For a listener that

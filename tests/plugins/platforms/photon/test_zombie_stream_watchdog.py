@@ -44,7 +44,7 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 
 # -- Sidecar decision rules (execute the real node module) -------------------
 
-def _run_staleness_harness(script: str) -> Dict[str, Any]:
+def _run_staleness_harness(script: str) -> dict[str, Any]:
     harness = (
         "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
         "createProbeMessageId, heartbeatStall } "
@@ -180,7 +180,7 @@ def test_heartbeat_stall_replaces_silence_rule_once_heartbeats_arrive() -> None:
 
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 
-def _healthz_payload(**staleness: Any) -> Dict[str, Any]:
+def _healthz_payload(**staleness: Any) -> dict[str, Any]:
     return {
         "ok": True,
         "stream": {
@@ -213,7 +213,7 @@ async def test_monitor_surfaces_zombie_suspected_without_fatal(
 
     polls = 0
 
-    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+    async def _fake_call(path: str, payload: dict[str, Any]) -> Any:
         nonlocal polls
         assert path == "/healthz"
         polls += 1

@@ -270,11 +270,24 @@ FROM runtime_base AS python_deps
 # is baked so hosted/immutable images can enable the adapter without writing
 # the sealed venv.
 #
+# --record-selection writes these extras to the store's facts.json as the venv
+# selection, as a bundle build does. Without it, the first opt-in extra a
+# container installs on use (FAL, a plugin's deps) records a selection of
+# just that extra, and every later boot runs a generation without the extras
+# baked here (aiohttp, so no API server). stage2's dependency refresh
+# restores this baseline into volumes that already lost it.
+#
 # Source binding is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
+# --cache puts uv's cache at /opt/hermes/uv-cache, the seed path that
+# pm.packages.uv_cache_dir() merges into $HERMES_HOME/cache/uv on first use.
+# Do not leave the cache at its default: HERMES_HOME is not set yet in this
+# stage, so the default is /root/.hermes/cache/uv, which nothing reads. A plugin
+# install then runs with an empty cache and builds python-olm from source.
 RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
-    --out /opt/hermes/.venv --no-install-project --sealed \
+    --cache /opt/hermes/uv-cache \
+    --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra matrix --extra google-chat
 

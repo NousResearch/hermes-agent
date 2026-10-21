@@ -76,7 +76,7 @@ class HeartbeatState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "HeartbeatState":
+    def from_json(cls, raw: str) -> HeartbeatState:
         data = json.loads(raw)
         return cls(**{name: coerce(data.get(name) or default) for name, (coerce, default) in _STATE_FIELDS.items()})
 
@@ -267,6 +267,14 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
-    "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
+    "HEARTBEAT_PROMPT_TEMPLATE",
+    "MIN_INTERVAL_SECONDS",
+    "POLL_SECONDS",
+    "HeartbeatManager",
+    "HeartbeatState",
+    "format_interval",
+    "load_heartbeat",
+    "migrate_heartbeat_to_session",
+    "parse_interval",
+    "save_heartbeat",
 ]

@@ -169,8 +169,8 @@ class TestDynamicContextFileCap:
     @pytest.fixture(autouse=True)
     def _no_explicit_config(self, monkeypatch):
         # No explicit context_file_max_chars → dynamic path is eligible.
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config", dict)
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
 
 
 
@@ -727,7 +727,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", lambda: {})
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", dict)
         _pb._BACKEND_PROBE_CACHE.clear()
         assert "Bot Screen" not in _pb.build_environment_hints()
 

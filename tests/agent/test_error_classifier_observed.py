@@ -5,11 +5,12 @@ and account data), raised as the exception class the OpenAI SDK / httpx raises f
 classifier change is checked against what providers really send rather than hand-written
 strings. Add a row whenever a new production body shows up in a bug report or trace.
 
-The last two tests are bodies main still mishandles; each is a run-time xfail keyed on the current
-wrong outcome, so it turns into a passing regression test the moment its fix lands:
+OpenRouter's "can only afford N tokens" 402 (#49769) stays ``billing`` here; the main loop's
+recovery chain retries it once with the lowered cap (see that test's docstring).
 
-* #49769 — OpenRouter's "can only afford N tokens" 402 is recoverable by lowering max_tokens,
-  but the main loop classifies it as terminal billing and abandons the provider.
+The last test is a body main still mishandles, as a run-time xfail keyed on the current wrong
+outcome, so it turns into a passing regression test the moment its fix lands:
+
 * #85005 — "<model> is not a multimodal model" (vLLM/text-only endpoints) is not recognised as
   an image rejection, so the image is never stripped and every retry fails identically.
 """
@@ -78,13 +79,16 @@ def test_observed_body_routes_to_its_recovery(provider, error, reason, retryable
     assert (result.reason, result.retryable, result.should_fallback) == (reason, retryable, fallback)
 
 
-def test_affordable_402_is_retried_on_the_same_provider():
-    result = classify_api_error(_status(openai.APIStatusError, 402, AFFORD_402), provider="openrouter",
-                                model="anthropic/claude-opus-5.5")
-    outcome = f"reason={result.reason.name} retryable={result.retryable}"
-    with known_failure(r"reason=billing retryable=False", "#49769: affordable-tokens 402 treated as terminal billing"):
-        assert result.retryable and result.reason != FailoverReason.billing, (
-            f"402 'can only afford N' must be retried on this provider, not abandoned as billing: {outcome}")
+def test_affordable_402_classifies_as_billing_with_a_parseable_budget():
+    """#49769 is recovered in the main loop, not by the classifier: the 402 stays ``billing`` and the
+    recovery chain retries once with the cap lowered to the budget it names
+    (``tests/agent/test_affordable_402_main_loop.py`` drives that retry end to end)."""
+    from agent.auxiliary_client import _affordable_max_tokens_from_error
+
+    error = _status(openai.APIStatusError, 402, AFFORD_402)
+    result = classify_api_error(error, provider="openrouter", model="anthropic/claude-opus-5.5")
+    assert result.reason == FailoverReason.billing
+    assert _affordable_max_tokens_from_error(error) == 81664 - 64
 
 
 def test_not_a_multimodal_model_is_an_image_rejection():

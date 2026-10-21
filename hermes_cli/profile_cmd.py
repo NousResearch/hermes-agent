@@ -411,19 +411,24 @@ def _profile_alias(args):
     name = args.profile_name
     remove = getattr(args, "remove", False)
     custom_name = getattr(args, "alias_name", None)
-    if not profile_exists(name):
-        _die(f"Error: Profile '{name}' does not exist.")
     alias_name = custom_name or name
     try:
         validate_alias_name(alias_name)
     except ValueError as exc:
         _die(f"Error: {exc}")
-    if remove:
+    if remove:  # runs without the profile: an orphan alias outlives it
+        exists = profile_exists(name)
+        if custom_name and not exists:  # orphan cleanup is `alias <alias> --remove`
+            _die(f"Error: Profile '{name}' does not exist.")
         if remove_wrapper_script(alias_name):
             print(f"✓ Removed alias '{alias_name}'")
+        elif not exists:
+            _die(f"Error: No alias '{alias_name}' and no profile '{name}'. `hermes doctor` lists orphan aliases.")
         else:
             print(f"No alias '{alias_name}' found to remove.")
         return
+    if not profile_exists(name):
+        _die(f"Error: Profile '{name}' does not exist.")
     collision = check_alias_collision(alias_name)
     if collision:
         _die(f"Error: {collision}")

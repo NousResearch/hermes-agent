@@ -59,32 +59,22 @@ def _default_pairing_dir() -> Path:
     return PAIRING_DIR if PAIRING_DIR is not None else get_hermes_dir("platforms/pairing", "pairing")
 
 
-# Platform value -> allowlist env var. Approving a code also writes the user into
-# an already-configured allowlist (revoke removes them) so the operator's list stays
-# the visible source of truth. Platforms absent here (or with no allowlist
-# configured) keep the pairing store as the sole grant record (authz union).
-# See #23778.
-_PLATFORM_ALLOWLIST_ENV = {
-    "telegram": "TELEGRAM_ALLOWED_USERS", "discord": "DISCORD_ALLOWED_USERS",
-    "whatsapp": "WHATSAPP_ALLOWED_USERS", "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOWED_USERS",
-    "slack": "SLACK_ALLOWED_USERS", "signal": "SIGNAL_ALLOWED_USERS",
-    "email": "EMAIL_ALLOWED_USERS", "sms": "SMS_ALLOWED_USERS",
-    "mattermost": "MATTERMOST_ALLOWED_USERS", "matrix": "MATRIX_ALLOWED_USERS",
-    "dingtalk": "DINGTALK_ALLOWED_USERS", "feishu": "FEISHU_ALLOWED_USERS",
-    "wecom": "WECOM_ALLOWED_USERS", "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
-    "weixin": "WEIXIN_ALLOWED_USERS", "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
-    "qqbot": "QQ_ALLOWED_USERS", "yuanbao": "YUANBAO_ALLOWED_USERS",
-}
-
-
 def _allowlist_env_for_platform(platform: str) -> Optional[str]:
-    """Allowlist env var name for ``platform`` (plugin registry fallback), or None."""
+    """Allowlist env var name for ``platform`` (its ``PlatformEntry.allowed_users_env``), or None.
+
+    Approving a code also writes the user into an already-configured allowlist (revoke removes
+    them) so the operator's list stays the visible source of truth. Platforms without one (or with
+    no allowlist configured) keep the pairing store as the sole grant record (authz union). See
+    #23778. Discovers plugins first: ``hermes pairing approve`` runs in a CLI process that may not
+    have loaded them yet."""
     platform = (platform or "").lower().strip()
-    if env_var := _PLATFORM_ALLOWLIST_ENV.get(platform):
-        return env_var
     with contextlib.suppress(Exception):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent
+    with contextlib.suppress(Exception):
+        from gateway.platform_env import authz_field
         from gateway.platform_registry import platform_registry
-        return platform_registry.get(platform).allowed_users_env or None
+        return authz_field(platform, "allowed_users_env", platform_registry.get(platform)) or None
     return None
 
 
@@ -312,6 +302,16 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
             _save_json_file(active / src.name, merged)
 
 
+_dir_lock_holders: dict = {}
+_dir_lock_holders_guard = threading.Lock()
+
+
+def _dir_lock_holder(directory: Path) -> threading.local:
+    """Per-directory reentrancy holder for ``_file_lock`` (shared by every store on that dir)."""
+    with _dir_lock_holders_guard:
+        return _dir_lock_holders.setdefault(str(directory), threading.local())
+
+
 def _is_hashed_entry(entry) -> bool:
     return isinstance(entry, dict) and "salt" in entry and "hash" in entry
 
@@ -373,6 +373,20 @@ class PairingStore:
         if len(live) != len(pending):
             self._save_json(path, live)
 
+    @contextlib.contextmanager
+    def _locked(self):
+        """Serialize load->mutate->save across stores and processes: the dashboard builds a
+        store per request and the CLI runs in its own process, so ``self._lock`` alone is not enough.
+        The file lock is taken FIRST: ``is_approved`` runs on the gateway event loop under
+        ``self._lock``, so holding it while waiting (up to 10 s) on another process would stall
+        every chat on that loop. ``is_approved`` never takes the file lock, so the order is safe."""
+        from hermes_cli.auth import _file_lock
+        with _file_lock(
+            self._dir / ".lock", _dir_lock_holder(self._dir), 10.0,
+            f"Timed out waiting for the pairing store lock ({self._dir})",
+        ), self._lock:
+            yield
+
     _load_json = staticmethod(_load_json_file)
     _save_json = staticmethod(_save_json_file)
 
@@ -415,7 +429,7 @@ class PairingStore:
         ]
 
     def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
-        """Add a user to the approved list. Must be called under self._lock."""
+        """Add a user to the approved list. Must be called under self._locked()."""
         approved = self._load_json(self._approved_path(platform))
         normalized_user_id = _normalize_user_id(platform, user_id)
         for approved_user_id in _matching_ids(platform, approved, normalized_user_id):
@@ -428,7 +442,7 @@ class PairingStore:
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
         path = self._approved_path(platform)
-        with self._lock:
+        with self._locked():
             approved = self._load_json(path)
             matching_ids = _matching_ids(platform, approved, user_id)
             if not matching_ids:
@@ -447,7 +461,7 @@ class PairingStore:
         return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
 
     def _finish_approval(self, platform: str, pending: dict, matched_key: str, matched_entry: dict) -> dict:
-        """Remove a pending request and approve its user. Must hold self._lock."""
+        """Remove a pending request and approve its user. Must hold self._locked()."""
         del pending[matched_key]
         self._save_json(self._pending_path(platform), pending)
         # A successful approval proves legitimacy, so the persisted brute-force streak
@@ -463,7 +477,7 @@ class PairingStore:
         Returns None if the user is rate-limited, the platform hit MAX_PENDING_PER_PLATFORM,
         or the platform is locked out. Only a salted SHA-256 hash of the code is persisted.
         """
-        with self._lock:
+        with self._locked():
             self._cleanup_expired(platform)
             normalized_user_id = _normalize_user_id(platform, user_id)
             if self._is_locked_out(platform) or self._is_rate_limited(platform, user_id):
@@ -491,7 +505,7 @@ class PairingStore:
 
         See #10195.
         """
-        with self._lock:
+        with self._locked():
             self._cleanup_expired(platform)
             # Chat UIs insert visual spacing between code characters; strip all
             # whitespace, then match exactly (surrounding words still fail). #89937
@@ -528,7 +542,7 @@ class PairingStore:
         obtainable by an authenticated admin, so a stale id is "the row expired", not an
         attack -- counting it would let a few GUI clicks lock the operator out.
         """
-        with self._lock:
+        with self._locked():
             self._cleanup_expired(platform)
             request_id = str(request_id or "").strip().lower()
             if not request_id:
@@ -543,7 +557,7 @@ class PairingStore:
         """List pending requests (codes are never returned; each exposes a ``request_id``
         for :meth:`approve_request`; legacy pre-hash entries report an empty id)."""
         results = []
-        with self._lock:
+        with self._locked():
             for p in self._platforms(platform, "pending"):
                 self._cleanup_expired(p)
                 for entry_id, info in self._load_json(self._pending_path(p)).items():
@@ -561,7 +575,7 @@ class PairingStore:
 
     def clear_pending(self, platform: str | None = None) -> int:
         """Clear all pending requests. Returns count removed."""
-        with self._lock:
+        with self._locked():
             count = 0
             for p in self._platforms(platform, "pending"):
                 count += len(self._load_json(self._pending_path(p)))
@@ -605,7 +619,7 @@ class PairingStore:
     def record_decline(self, platform: str, user_id: str) -> None:
         """Stamp the sender (all aliases) and prune expired stamps. Callers stamp BEFORE sending so a
         delivery failure cannot become a decline storm on the sender's next message."""
-        with self._lock:
+        with self._locked():
             now = time.time()
             stamps = {
                 key: value for key, value in self._load_json(self._decline_stamp_path()).items()

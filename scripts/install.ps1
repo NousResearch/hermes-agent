@@ -16,10 +16,16 @@
 #                         `hermes pm install cua-driver`
 #   -Verbose              stream every child command's output (the default
 #                         with redirected output and in CI)
+#   -Channel stable|main  stable (default): the latest published release, then
+#                         release to release; main: every commit. Also
+#                         $env:HERMES_INSTALL_CHANNEL (the only way under
+#                         `irm | iex`); an explicit choice is saved like
+#                         `hermes update --set-channel`
 [CmdletBinding(PositionalBinding=$false)]
 param(
     [string]$Branch = "main",
     [string]$Commit = "",
+    [string]$Channel = $(if ($env:HERMES_INSTALL_CHANNEL) { $env:HERMES_INSTALL_CHANNEL } else { "" }),
     [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
     [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
     [switch]$Manifest,
@@ -664,6 +670,27 @@ function Write-StatusLine([string]$Text, [int]$Width) {
     Write-Host ("`r" + $line.PadRight($Width - 1)) -NoNewline -ForegroundColor DarkGray
 }
 
+# The error line of a failed command's output: the first fatal:/error: line (git's
+# cause; later ones are generic), else the last non-empty one. Fail reasons carry it, and Hermes-Setup shows the reason
+# as-is, so the screen names the cause (git's "fatal: ...") and not just the step.
+$script:NativeError = $null
+function Select-ErrorLine($Lines) {
+    $pick = $null; $last = $null
+    foreach ($raw in $Lines) {
+        $line = ("$raw" -split "`r")[-1].Trim()
+        if (-not $line) { continue }
+        $last = $line
+        if (-not $pick -and $line -match '(^|\s)(fatal|error): ') { $pick = $line }
+    }
+    if (-not $pick) { $pick = $last }
+    if ($pick -and $pick.Length -gt 240) { $pick = $pick.Substring(0, 240) }
+    return $pick
+}
+function Get-NativeDetail {
+    if ($script:NativeError) { return ": $($script:NativeError)" }
+    return ""
+}
+
 # Run a native command block like Invoke-Native: $LASTEXITCODE stays the
 # caller's to judge. Quiet mode shows $StatusLabel with the block's newest
 # output line rewritten in place, appends everything to the install log and,
@@ -674,6 +701,7 @@ function Write-StatusLine([string]$Text, [int]$Width) {
 # function's scope, so locals here avoid the names call sites use.
 function Invoke-Logged {
     param([string]$StatusLabel, [scriptblock]$NativeBlock, [switch]$MayFail)
+    $script:NativeError = $null
     $logWriter = $null
     if (Test-QuietOutput) {
         $logPath = Join-Path (Join-Path $HermesHome 'logs') 'install.log'
@@ -687,7 +715,19 @@ function Invoke-Logged {
     }
     if (-not $logWriter) {
         Log $StatusLabel
-        Invoke-Native $NativeBlock | Out-Host
+        # stderr stays on stderr (Hermes-Setup logs it); the lines are kept so a
+        # failure reason can name the cause.
+        # Named -TypeName: a positional New-Object binds to callers' New-Object shims.
+        $outputLines = New-Object -TypeName 'System.Collections.Generic.Queue[string]'
+        Invoke-Native { & $NativeBlock 2>&1 } | ForEach-Object {
+            $outputLines.Enqueue("$_")
+            if ($outputLines.Count -gt 20) { [void]$outputLines.Dequeue() }
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { [Console]::Error.WriteLine("$_") }
+            else { $_ | Out-Host }
+        }
+        $exitCode = $LASTEXITCODE
+        if ($exitCode) { $script:NativeError = Select-ErrorLine $outputLines }
+        $global:LASTEXITCODE = $exitCode
         return
     }
     $columns = 80
@@ -706,6 +746,7 @@ function Invoke-Logged {
             if ($newest) { Write-StatusLine "${StatusLabel}: $newest" $columns }
         }
         $exitCode = $LASTEXITCODE
+        if ($exitCode) { $script:NativeError = Select-ErrorLine $recentLines }
     } finally {
         $logWriter.Dispose()
         Write-Host ("`r" + (' ' * ($columns - 1)) + "`r") -NoNewline
@@ -809,8 +850,123 @@ function Disable-TreelessGraphWrites([string]$Dir) {
     }
 }
 
+# A YAML scalar as Hermes writes it: unquoted, or one pair of matching quotes; trailing comment dropped.
+function ConvertFrom-YamlScalar([string]$Text) {
+    $s = ($Text -replace '\s+#.*$', '').Trim()
+    if ($s.Length -gt 1 -and ($s[0] -eq '"' -or $s[0] -eq "'") -and $s[-1] -eq $s[0]) { $s = $s.Substring(1, $s.Length - 2) }
+    return $s
+}
+
+# The update channel this install chose (config.yaml update.installs.<id>.channel, id = sha16 of
+# the canonical install path, as hermes_cli.update_channel keys it; a record naming this path also
+# counts, since Windows paths can differ only in case). Pre-Python reader of the block YAML Hermes
+# writes; anything it cannot read returns '', which keeps the plain branch behaviour.
+function Get-ChosenChannel {
+    $config = Join-Path $HermesHome 'config.yaml'
+    if (-not (Test-Path -LiteralPath $config)) { return '' }
+    try {
+        $root = (Get-Item -LiteralPath $InstallDir -Force).FullName.TrimEnd('\')
+        $hash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root))
+        $id = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0, 16)
+        $lines = [IO.File]::ReadAllLines($config)
+    } catch { return '' }
+    $keys = New-Object System.Collections.Generic.List[object]
+    $records = @{}
+    foreach ($line in $lines) {
+        if ($line -match '^\s*(#|$)') { continue }
+        if ($line -notmatch '^( *)([^:]+):(.*)$') { continue }
+        $indent = $Matches[1].Length
+        $key = ConvertFrom-YamlScalar $Matches[2]
+        $value = ConvertFrom-YamlScalar $Matches[3]
+        while ($keys.Count -and $keys[$keys.Count - 1].Indent -ge $indent) { $keys.RemoveAt($keys.Count - 1) }
+        $keys.Add([pscustomobject]@{ Indent = $indent; Key = $key })
+        if ($keys.Count -eq 4 -and $keys[0].Key -ceq 'update' -and $keys[1].Key -ceq 'installs') {
+            $record = $keys[2].Key
+            if (-not $records.ContainsKey($record)) { $records[$record] = @{} }
+            $records[$record][$key] = $value
+        }
+    }
+    foreach ($record in $records.GetEnumerator()) {
+        $path = "$($record.Value['path'])".TrimEnd('\')
+        if ($record.Key -ceq $id -or ($path -and $path -eq $root)) {
+            $channel = "$($record.Value['channel'])"
+            if ($channel -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$') { return $channel }
+        }
+    }
+    return ''
+}
+
+# The latest published stable release (vX.Y.Z), the release `hermes update` resolves for the
+# stable channel. github.com's /releases/latest redirect answers when the API quota is spent, and
+# origin's highest vX.Y.Z tag (final tags are pushed by the publication run) when github.com's web
+# endpoints are unreachable but git is not. Returns '' when none answers.
+function Get-LatestStableRelease([string]$Origin) {
+    $pattern = '^v(0|[1-9]\d{0,2})\.(0|[1-9]\d*)\.(0|[1-9]\d*)$'  # update_channel.STABLE_TAG_RE
+    $tag = ''
+    try {
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/NousResearch/hermes-agent/releases/latest' `
+            -Headers @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'hermes-installer' } -TimeoutSec 20
+        $tag = "$($release.tag_name)"
+    } catch { }
+    if ($tag -cnotmatch $pattern) {
+        try {
+            $request = [Net.HttpWebRequest]::Create('https://github.com/NousResearch/hermes-agent/releases/latest')
+            $request.Method = 'HEAD'
+            $request.AllowAutoRedirect = $false
+            $request.Timeout = 20000
+            $request.UserAgent = 'hermes-installer'
+            $response = $request.GetResponse()
+            try { if ("$($response.Headers['Location'])" -match '/releases/tag/([^/]+)$') { $tag = $Matches[1] } }
+            finally { $response.Close() }
+        } catch { }
+    }
+    if ($tag -cnotmatch $pattern) {
+        $tags = @(Invoke-Native { git ls-remote --tags --refs $Origin 'refs/tags/v*' 2>$null } |
+            ForEach-Object { "$_" -replace '^.*refs/tags/', '' } | Where-Object { $_ -cmatch $pattern })
+        if ($tags) { $tag = $tags | Sort-Object { [version]$_.Substring(1) } | Select-Object -Last 1 }
+    }
+    if ($tag -cmatch $pattern) { return $tag }
+    return ''
+}
+
+# The stable release this run installs, '' to follow the branch, or '-' when stable applies but no
+# release could be looked up: an explicit -Channel, else stable for the official repository's main line (forks and mirrors publish no official
+# releases; hermes_cli.update_channel.default_channel decides the same way).
+function Get-StableTarget([string]$Origin) {
+    if ($Commit -or $Channel -ceq 'main') { return '' }
+    if ($Channel -cne 'stable') {
+        if ($Branch -cne 'main') { return '' }
+        if ($Origin -notmatch '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)NousResearch/hermes-agent(\.git)?/?$') { return '' }
+    }
+    $release = Get-LatestStableRelease $Origin
+    if ($release) { return $release }
+    return '-'
+}
+
+# Fetch tag $Release into checkout $Dir (releases can be cut off main, on release/* branches).
+function Receive-StableRelease([string]$Dir, [string]$Release) {
+    Invoke-Logged -MayFail "Fetching $Release" { git -C $Dir fetch origin "+refs/tags/${Release}:refs/tags/${Release}" }
+    return (-not $LASTEXITCODE)
+}
+
+# Stable applies but cannot be reached. A fresh install stops (installing main instead would be a
+# channel nobody chose); a rerun keeps its checkout for `hermes update`, unless stable was asked
+# for by name. $What says what failed.
+function Confirm-StableUnreachable([string]$What) {
+    if ((Test-Path (Join-Path $InstallDir '.git')) -and $Channel -cne 'stable') {
+        Write-Warn "$What; keeping the checkout where it is"
+        return
+    }
+    Fail "$What$(Get-NativeDetail). Rerun the installer to retry, or pass -Channel main to install main's tip" git_fetch_failed
+}
+
 function Stage-Repository {
     $pinned = $false
+    # Not $channel: variables are case-insensitive, and the helpers below read the -Channel
+    # parameter through this scope.
+    $chosen = ''
+    $release = ''
+    if ($Channel -and $Channel -cnotin @('stable', 'main')) { Fail "-Channel must be stable or main, not $Channel" other }
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
     if (-not (Test-Path (Join-Path $InstallDir ".git")) -and (Test-Path -LiteralPath $InstallDir)) {
@@ -834,13 +990,35 @@ function Stage-Repository {
         }
     }
     if (Test-Path (Join-Path $InstallDir ".git")) {
-        Log "Updating $InstallDir ($Branch)"
+        # A chosen channel (stable, a preview) owns where this checkout sits: `hermes update`
+        # moves it. Switching it to the installer's branch would leave it on main while its
+        # channel still says otherwise, and the next check would offer the release as an update.
+        # Only an explicit -Commit pin outranks the choice.
+        # An explicit -Channel is a new choice and replaces the recorded one.
+        if (-not $Commit -and -not $Channel) { $chosen = Get-ChosenChannel }
+        # A checkout cloned before longpaths was set: a deep path past MAX_PATH fails checkout.
+        Invoke-Native { git -C $InstallDir config core.longpaths true } | Out-Null
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if ($env:HERMES_REPO_URL) {
             Invoke-Native { git -C $InstallDir remote set-url origin $RepoUrl }
             if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" git_fetch_failed }
         }
+        # No recorded choice: an official checkout tracks stable, as `hermes update` does.
+        if (-not $chosen) {
+            # The configured URL, as hermes_cli.update_channel reads it (`remote get-url`
+            # applies insteadOf rewrites).
+            $origin = "$(Invoke-Native { git -C $InstallDir config --get remote.origin.url 2>$null })".Trim()
+            $release = Get-StableTarget $origin
+        }
+        if ($chosen -ceq 'main') { $chosen = '' }
+        if ($release -ceq '-') {
+            Confirm-StableUnreachable "could not look up the latest stable release"
+            $chosen = 'stable'
+            $release = ''
+        } elseif ($chosen) { Log "Repairing $InstallDir on the $chosen update channel it chose" }
+        elseif ($release) { Log "Updating $InstallDir to the latest stable release ($release)" }
+        else { Log "Updating $InstallDir ($Branch)" }
         # Explicit refspec: a tag-pinned --single-branch checkout from an older installer maps only
         # the tag, so a by-name fetch never writes the origin/$Branch used below (#125112).
         # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor marker
@@ -871,8 +1049,33 @@ function Stage-Repository {
                 }
             }
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
-        if ($LASTEXITCODE) { Fail "git fetch failed" git_fetch_failed }
+        if ($chosen) {
+            Log "Keeping its checkout: ``hermes update`` moves it (``hermes update --set-channel main`` follows main)"
+            return
+        }
+        if ($release -and -not (Receive-StableRelease $InstallDir $release)) {
+            Confirm-StableUnreachable "could not fetch $release"
+            return
+        }
+        if ($release) {
+            # A rerun only moves a checkout forward onto the release. Any other move (a main
+            # checkout diverged from a release cut on release/*, one already past it, a shallow
+            # one that cannot tell) is `hermes update`'s: it refuses a release that predates the
+            # session stores this checkout wrote (update_downgrade_guard).
+            Invoke-Native { git -C $InstallDir merge-base --is-ancestor $release HEAD 2>$null } | Out-Null
+            if (-not $LASTEXITCODE) {
+                Log "Keeping its checkout: it already has $release (``hermes update`` moves it to the next release)"
+                return
+            }
+            Invoke-Native { git -C $InstallDir merge-base --is-ancestor HEAD $release 2>$null } | Out-Null
+            if ($LASTEXITCODE) {
+                Log "Keeping its checkout: $release does not descend from it (``hermes update`` decides that move)"
+                return
+            }
+        } else {
+            Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+            if ($LASTEXITCODE) { Fail "git fetch failed$(Get-NativeDetail)" git_fetch_failed }
+        }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work that
@@ -891,6 +1094,13 @@ function Stage-Repository {
             if ($LASTEXITCODE) { Fail "could not stash local changes in $InstallDir; commit or move them aside, then rerun" local_changes_blocked }
             Write-Warn "local changes stashed as hermes-install-autostash-$stamp"
         }
+        if ($release) {
+            # Detached at the release commit, the way `hermes update` places a stable checkout;
+            # branches (and any commits on them) stay where they are.
+            Invoke-Logged "Checking out $release" { git -C $InstallDir checkout --detach $release }
+            if ($LASTEXITCODE) { Fail "git checkout failed$(Get-NativeDetail)" git_checkout_failed }
+            return
+        }
         # checkout's branch guess only sees remote refs the refspec maps, so a narrow checkout
         # (detached at its tag, no local branch) gets the branch created at the fetched tip.
         Invoke-Native { git -C $InstallDir show-ref --verify --quiet "refs/heads/$Branch" }
@@ -899,7 +1109,7 @@ function Stage-Repository {
         } else {
             Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
         }
-        if ($LASTEXITCODE) { Fail "git checkout failed" git_checkout_failed }
+        if ($LASTEXITCODE) { Fail "git checkout failed$(Get-NativeDetail)" git_checkout_failed }
         # --no-stat: across a large gap (v2026.7.1 -> today is ~27k lines) the
         # diffstat arrives as one burst. Hermes-Setup.exe forwards every line
         # to its window as a separate event; the burst overflows the Windows
@@ -929,7 +1139,7 @@ function Stage-Repository {
                 Log "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescue"
             }
             Invoke-Logged "Resetting to origin/$Branch" { git -C $InstallDir reset --hard "origin/$Branch" }
-            if ($LASTEXITCODE) { Fail "git reset failed" git_reset_failed }
+            if ($LASTEXITCODE) { Fail "git reset failed$(Get-NativeDetail)" git_reset_failed }
             Write-Warn "not fast-forwardable; reset to origin/$Branch"
         }
     } else {
@@ -952,8 +1162,15 @@ function Stage-Repository {
         if (Test-QuietOutput) { $progress = @('--progress') }
         # A pinned install materializes only the pin (below): checking out the
         # branch tip first fetches and rewrites every file the two differ in.
+        $release = Get-StableTarget $RepoUrl
+        if ($release -ceq '-') { Confirm-StableUnreachable "could not look up the latest stable release" }
+        if ($release) { Log "Installing the latest stable release ($release); -Channel main follows every commit" }
         $checkout = @()
-        if ($Commit) { $checkout = @('--no-checkout') }
+        if ($Commit -or $release) { $checkout = @('--no-checkout') }
+        # Staging dir + deepest tracked path (~160) pass MAX_PATH (260) once LOCALAPPDATA
+        # is longer than ~55 characters (a ~33-character user name), and checkout dies with
+        # "Filename too long". --config lands before checkout and stays for `hermes update`.
+        $longPaths = @('--config', 'core.longpaths=true')
         try {
             $cloned = $false
             $deferred = $false
@@ -965,7 +1182,7 @@ function Stage-Repository {
                 # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress @longPaths --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -974,31 +1191,34 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git clone @progress @longPaths --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
-            if (-not $cloned) { Fail "git clone failed; no checkout published" git_clone_failed }
+            if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }
             if ($Commit) {
                 # Pin before publishing: a pinned or deferred clone has no files yet,
                 # and a failure here leaves only the staging dir, which finally removes.
                 Invoke-Native { git -C $tree merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
                 if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
             }
-            if ($Commit -or $deferred) {
+            # A failure here leaves only the staging dir, which finally removes.
+            if ($release -and -not (Receive-StableRelease $tree $release)) { Confirm-StableUnreachable "could not fetch $release" }
+            if ($Commit -or $release -or $deferred) {
                 # The checkout step is where throttled downloads die: retry it alone.
                 # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
-                $what = if ($Commit) { $Commit } else { "files" }
+                $detachAt = if ($Commit) { $Commit } else { $release }
+                $what = if ($detachAt) { $detachAt } else { "files" }
                 $materialized = $false
                 foreach ($attempt in 1..2) {
                     Invoke-Logged "Checking out $what (attempt $attempt of 2)" {
-                        if ($Commit) { git -C $tree checkout --force --detach $Commit } else { git -C $tree reset --hard HEAD }
+                        if ($detachAt) { git -C $tree checkout --force --detach $detachAt } else { git -C $tree reset --hard HEAD }
                     }
                     if (-not $LASTEXITCODE) { $materialized = $true; break }
                     if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
                 }
                 if (-not $materialized) {
                     $what = if ($Commit) { $Commit } else { "the cloned tree" }
-                    Fail "could not check out $what; no checkout published" git_checkout_failed
+                    Fail "could not check out $what; no checkout published$(Get-NativeDetail)" git_checkout_failed
                 }
                 $pinned = [bool]$Commit
             }
@@ -1017,7 +1237,7 @@ function Stage-Repository {
         Invoke-Native { git -C $InstallDir merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
         if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
         Invoke-Logged "Pinning $Commit" { git -C $InstallDir checkout $Commit }
-        if ($LASTEXITCODE) { Fail "could not pin commit $Commit" git_checkout_failed }
+        if ($LASTEXITCODE) { Fail "could not pin commit $Commit$(Get-NativeDetail)" git_checkout_failed }
     }
 }
 
@@ -1101,10 +1321,9 @@ function Invoke-SourceCompletion([bool]$Desktop) {
 }
 
 function Publish-UserCommand {
-    # PATH exposure stays installer-owned on Windows: expose_cli() answers
-    # "windows-installer-owned" rather than creating the user-facing command,
-    # so the install-scoped launchers the completion publishes are not the ones
-    # the user's PATH points at.
+    # Stage the user-facing commands into $HermesHome\bin and put that folder on
+    # the User PATH. Updates repair this entry through expose_cli(), which edits
+    # the User PATH only for the home that new consoles use.
     $binDir = Join-Path $HermesHome "bin"
     $bootPy = Get-BootstrapPython
     Push-Location $InstallDir
@@ -1197,7 +1416,8 @@ function Invoke-InstalledHermes([string[]]$CommandArgs) {
     $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1) + $CommandArgs
     Invoke-Native { & $runtimeCommand[0] @runtimeArgs }
     if ($LASTEXITCODE) {
-        Fail "hermes $($CommandArgs -join ' ') failed (exit $LASTEXITCODE)" $(if ($CommandArgs[0] -eq 'setup') { 'setup_failed' } else { 'gateway_failed' })
+        $class = @{ setup = 'setup_failed'; gateway = 'gateway_failed' }[$CommandArgs[0]]
+        Fail "hermes $($CommandArgs -join ' ') failed (exit $LASTEXITCODE)" $(if ($class) { $class } else { 'other' })
     }
 }
 
@@ -1278,8 +1498,9 @@ function Stage-Complete {
             completedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
         }
         $marker | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $InstallDir ".hermes-bootstrap-complete") -Encoding UTF8
-        Write-Ok "Hermes Agent install complete (pinned $commit). Run: hermes"
     }
+    if ($Channel) { Invoke-InstalledHermes @('update', '--set-channel', $Channel) }
+    if ($commit) { Write-Ok "Hermes Agent install complete (pinned $commit). Run: hermes" }
 }
 
 function New-DesktopShortcuts {

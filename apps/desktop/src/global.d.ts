@@ -7,7 +7,6 @@ import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
-import type { PoolLimits } from '../electron/pool-limits'
 import type { KeepAwakeMode } from '../electron/power-save'
 import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
@@ -35,24 +34,30 @@ declare global {
   interface Window {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
-      // the window's backend; pass a named profile to lazily spawn/reuse that
-      // profile's backend from the pool.
-      getConnection: (
-        profile?: string | null,
-        opts?: { priority?: 'foreground' | 'background' }
-      ) => Promise<HermesConnection>
+      // the window's backend; pass a named profile to dial/reuse that profile's
+      // cached gateway descriptor.
+      getConnection: (profile?: string | null) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
-        priority?: 'foreground' | 'background'
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
       }) => Promise<GatewayWsUrlResult>
+      // One-use plugin socket URL for a local gateway (its native grant rides
+      // a header main attaches to that dial); null for every other backend;
+      // { refused: 'permission' } when main refused the grant mint for a
+      // permission reason. Any other failure rejects.
+      getPluginWsUrl?: (payload: {
+        connectionId?: null | string
+        path: string
+        pluginId: string
+        profile?: null | string
+      }) => Promise<null | string | { refused: 'permission' }>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Credential-free routes across the union connection registry. The
@@ -68,19 +73,6 @@ declare global {
       // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
-      // Keepalive: mark a pool profile backend as recently used so the idle
-      // reaper spares it while its chat is active. `activeTurn` reports whether
-      // a prompt turn leases the backend (early skip for cooperative
-      // retirement; the backend probe is the proof).
-      touchBackend: (profile?: string | null, options?: { activeTurn?: boolean }) => Promise<{ ok: boolean }>
-      // Pool sizing (Settings → Advanced): device-local, live-applied by the
-      // main process. get resolves the limits currently in force; set applies
-      // (and persists) new ones, evicting/reaping to converge immediately.
-      getPoolLimits: () => Promise<PoolLimits>
-      setPoolLimits: (limits: { maxBackends?: number; idleMs?: number }) => Promise<{
-        ok: boolean
-        limits: PoolLimits
-      }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
@@ -325,6 +317,13 @@ declare global {
         filters?: Array<{ extensions: string[]; name: string }>
         title?: string
       }) => Promise<null | string>
+      /** Save dialog + main-process write of renderer-supplied text (/save; the gateway may be remote). */
+      saveTextFileAs?: (request: {
+        content: string
+        defaultPath?: string
+        filters?: Array<{ extensions: string[]; name: string }>
+        title?: string
+      }) => Promise<{ canceled?: boolean; path?: string; saved: boolean }>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
       saveGatewayFile?: (payload: {
@@ -384,12 +383,13 @@ declare global {
       translucencySupported?: boolean
       /** Feature flag: the local-models UI is enabled. */
       localModelsEnabled?: boolean
-      /** Launch flag shared with every backend the app starts. */
-      guestOnboardingEnabled?: boolean
+      /** Dev-only launch flag (`--fresh-install`, unpackaged builds): onboarding treats this launch as a fresh install. */
+      assumeFreshInstall?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (mode: KeepAwakeMode) => void
+      onKeepAwakeOffer?: (callback: () => void) => () => void
       minimizeToTray?: {
         get: () => Promise<{ enabled: boolean; available: boolean }>
         set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
@@ -446,6 +446,17 @@ declare global {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
+      preparedSubmissions?: {
+        read: () => Promise<string>
+        update: (key: string, entry: string | null) => Promise<void>
+        /** Atomic in the main process: replace `key` only while it holds exactly `expected`
+         *  (null = absent). `current` is the record stored afterwards. Group Send requires it. */
+        compareAndSet?: (
+          key: string,
+          expected: string | null,
+          entry: string | null
+        ) => Promise<{ applied: boolean; current: string | null }>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>
@@ -606,9 +617,6 @@ declare global {
       ) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
-      // Cooperative pool retirement: main is stopping the pooled backend under
-      // `poolKey` for a foreground open. The renderer parks that scope.
-      onPoolBackendRetiring?: (callback: (payload: { poolKey: string }) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
@@ -889,6 +897,8 @@ export interface DesktopUpdateStatus {
   sourceVersion?: string
   /** Source stable: true when forward-only (newer than the release); absent from older checkers. */
   aheadOfRelease?: boolean
+  /** Source stable: the checkout already contains the release, so installing it moves back. */
+  rollback?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
@@ -983,7 +993,8 @@ export interface HermesConnection {
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
-  authMode?: 'oauth' | 'token'
+  // 'native': this machine's gateway; no static token, per-call private grants.
+  authMode?: 'native' | 'oauth' | 'token'
   remoteHost?: string
   remoteIdentity?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'

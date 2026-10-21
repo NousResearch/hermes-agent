@@ -586,8 +586,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                             return
                         if self._first_send_overflows():
                             # A head send failed: keep the full text for the fallback final, and
-                            # skip the boundary reset below that would clear it.
+                            # skip the boundary reset below that would clear it. Still yield: the
+                            # buffer stays over the debounce threshold, so `continue` alone re-enters
+                            # the split on every pass and spins the loop without ever sleeping.
                             self._signal_flush(tick.flush_event)
+                            await asyncio.sleep(0.05)
                             continue
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.

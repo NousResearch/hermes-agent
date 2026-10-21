@@ -1,0 +1,27 @@
+name: chroma
+repo: https://github.com/TobiasDraven/chroma-for-hermes
+sha: f0ad0546e045ca910deb7fd4d9219e0a9e30ab68
+title: Chroma
+description: 'Theme browser and manager for the Hermes Desktop: browse 94 skins by pack, colour family
+  or gallery, import VS Code and terminal themes, edit a skin''s palette, and apply a theme to this
+  profile or everywhere. A Desktop plugin (desktop/plugin.js inside the plugin SDK surface) with a
+  backend half that mints real gateway skins so the CLI and every connected Desktop follow the
+  change; no agent tools, hooks, middleware or env vars. Derived from hermes-theme-picker by
+  jdtimothy (MIT) - see the disclosure below.'
+maintainer: TobiasDraven
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/TobiasDraven/chroma-for-hermes#readme
+version: "2.9.1"
+image: https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/f0ad0546e045ca910deb7fd4d9219e0a9e30ab68/docs/chroma-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/f0ad0546e045ca910deb7fd4d9219e0a9e30ab68/docs/hermes-chroma.png
+platforms: []
+known_issues:
+  - The one-step install claim (paste the repo URL into Desktop -> Plugins) is being settled, not established: it depends on the repo root being an agent package.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1290,6 +1290,18 @@ class TestInferenceProfileContextLength:
         assert kwargs["modelId"] == self.ARN  # the request still targets the profile
         assert kwargs["system"][-1] == {"cachePoint": {"type": "default"}}
 
+    def test_profile_wrapping_claude_gets_an_explicit_aux_output_cap(self):
+        # Converse gives Claude a 4,096-token default when maxTokens is omitted, which cut every
+        # compression summary. A profile ARN that resolves to Claude must get an explicit cap.
+        from agent import bedrock_adapter
+        client = MagicMock()
+        client.get_inference_profile.return_value = {"models": [
+            {"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}]}
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+            cap = bedrock_adapter.bedrock_max_output_tokens(self.ARN)
+        assert cap == bedrock_adapter._CONVERSE_AUX_OUTPUT_CAP
+        assert cap > 4096
+
 
 class TestBedrockContextProbe:
     """Test the live context-window probe that reads the real window from

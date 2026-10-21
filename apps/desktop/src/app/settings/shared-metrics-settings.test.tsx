@@ -3,23 +3,24 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as GatewayStore from '@/store/gateway'
-import type { SharedMetricsConsent } from '@/store/shared-metrics'
-
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { $settingsOwner } from '@/store/settings-scope'
+import type { SharedMetricsConsent } from '@/store/shared-metrics'
 
-const requestGatewayForAgent = vi.fn()
-const setDesktopMetricsGate = vi.fn()
-const notifyError = vi.fn()
+const mocks = vi.hoisted(() => ({
+  gate: vi.fn(),
+  notifyError: vi.fn(),
+  request: vi.fn()
+}))
 
 // The real gateway store, with only the per-agent request routed to the fake backend below.
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<typeof GatewayStore>()),
-  requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
+  requestGatewayForAgent: (...args: unknown[]) => mocks.request(...args)
 }))
-vi.mock('@/store/desktop-metrics', () => ({ recordOnboarding: vi.fn(), setDesktopMetricsGate }))
-vi.mock('@/store/notifications', () => ({ notifyError }))
+vi.mock('@/store/desktop-metrics', () => ({ recordOnboarding: vi.fn(), setDesktopMetricsGate: mocks.gate }))
+vi.mock('@/store/notifications', () => ({ notifyError: mocks.notifyError }))
 
 const { en } = await import('@/i18n/en')
 const { SharedMetricsSettings } = await import('./shared-metrics-settings')
@@ -29,7 +30,7 @@ const copy = en.sharedMetrics
 function backend(initial: SharedMetricsConsent) {
   let stored = initial
 
-  requestGatewayForAgent.mockImplementation(
+  mocks.request.mockImplementation(
     async (_connection: unknown, _profile: unknown, method: string, params: Record<string, unknown> = {}) => {
       if (method === 'shared_metrics.set') {
         const enabled = params.enabled === true
@@ -52,9 +53,20 @@ function deferred<T>() {
 }
 
 const setCalls = () =>
-  requestGatewayForAgent.mock.calls
+  mocks.request.mock.calls
     .filter(call => call[2] === 'shared_metrics.set')
     .map(call => ({ enabled: call[3].enabled, send: call[3].send }))
+
+beforeEach(() => {
+  $activeGatewayProfile.set('default')
+  $connection.set({
+    baseUrl: 'https://original.example',
+    connectionId: 'same-id',
+    mode: 'remote',
+    profile: 'default',
+    token: 'original-token'
+  } as never)
+})
 
 afterEach(() => {
   cleanup()
@@ -97,20 +109,9 @@ describe('SharedMetricsSettings', () => {
 })
 
 describe('SharedMetricsSettings owner isolation', () => {
-  beforeEach(() => {
-    $activeGatewayProfile.set('default')
-    $connection.set({
-      baseUrl: 'https://original.example',
-      connectionId: 'same-id',
-      mode: 'remote',
-      profile: 'default',
-      token: 'original-token'
-    } as never)
-  })
-
   it('pins consent writes to the captured owner and ignores their stale settlement', async () => {
     const save = deferred<SharedMetricsConsent>()
-    requestGatewayForAgent.mockImplementation(async (_connectionId, _profile, method) => {
+    mocks.request.mockImplementation(async (_connectionId, _profile, method) => {
       if (method === 'shared_metrics.set') {
         return save.promise
       }
@@ -125,7 +126,7 @@ describe('SharedMetricsSettings owner isolation', () => {
 
     fireEvent.click(share)
     await waitFor(() =>
-      expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      expect(mocks.request).toHaveBeenCalledWith(
         'same-id',
         'default',
         'shared_metrics.set',
@@ -155,12 +156,12 @@ describe('SharedMetricsSettings owner isolation', () => {
     expect(replacementOwner).not.toBe(capturedOwner)
     await waitFor(() => expect((share as HTMLButtonElement).disabled).toBe(false))
     expect(
-      requestGatewayForAgent.mock.calls.filter(
+      mocks.request.mock.calls.filter(
         ([, , method, , , , options]) =>
           method === 'shared_metrics.set' && options?.expectedConnectionOwner === replacementOwner.cacheOwner
       )
     ).toHaveLength(0)
-    expect(setDesktopMetricsGate).not.toHaveBeenCalled()
-    expect(notifyError).not.toHaveBeenCalled()
+    expect(mocks.gate).not.toHaveBeenCalled()
+    expect(mocks.notifyError).not.toHaveBeenCalled()
   })
 })

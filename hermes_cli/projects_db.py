@@ -481,5 +481,5 @@ def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
     """Deterministic ``<project-slug>/<task-id>[-<title-slug>]`` branch name for a project-linked kanban
     task (stable and human-meaningful, replacing the random ``wt/<task-id>`` fallback)."""
     base = f"{project.slug or _slugify(project.name)}/{task_id}"
-    tslug = _BRANCH_SAFE_RE.sub("-", str(title).strip().lower()).strip("-")[:40].strip("-") if title else ""
+    tslug = _BRANCH_SAFE_RE.sub("-", str(title).strip().lower()).strip("-.")[:40].strip("-.") if title else ""
     return f"{base}-{tslug}" if tslug else base

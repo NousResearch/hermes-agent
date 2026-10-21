@@ -1,0 +1,32 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": false,
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "strictNullChecks": false,
+    "strictFunctionTypes": false,
+    "strictBindCallApply": false,
+    "strictPropertyInitialization": false,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "ignoreDeprecations": "6.0",
+    "noCheck": true,
+    "types": ["node", "vite/client"],
+    "composite": false,
+    "declaration": false,
+    "rootDir": "..",
+    "outDir": "build/electron-types",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@desktop/*": ["src/*"],
+      "@hermes/plugin-sdk": ["src/sdk/index.ts"],
+      "@hermes/shared/billing": ["../shared/src/billing-types.ts"],
+      "@hermes/shared/translucency": ["../shared/src/translucency.ts"],
+      "@hermes/shared": ["../shared/src/index.ts"]
+    }
+  },
+  "include": ["web/src", "src", "../shared/src"],
+  "exclude": ["electron/**/*.e2e.mts", "electron", "e2e", "playwright.config.ts"]
+}

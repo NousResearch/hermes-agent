@@ -5,6 +5,7 @@
   "private": true,
   "workspaces": [
     "apps/*",
+    "apps/desktop/web",
     "ui-tui",
     "ui-tui/packages/*",
     "web",
@@ -16,6 +17,7 @@
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
     "install:desktop": "npm install --workspace apps/desktop",
+    "install:desktop-web": "npm install --workspace apps/desktop/web",
     "audit:root": "npm audit --workspaces=false",
     "audit:web": "npm audit --workspace web",
     "audit:tui": "npm audit --workspace ui-tui",

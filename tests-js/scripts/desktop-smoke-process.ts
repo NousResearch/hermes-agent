@@ -23,9 +23,10 @@ export interface NativeProcess {
   cwd?: string
 }
 
-/** The identified listener, with how it was tied to this app (ancestry or this home's ledger). */
+/** The identified listener, with how it was tied to this app (ancestry, this home's ledger,
+ * or the canonical gateway this home's `gateway_state.json` names). */
 export interface BackendProcess extends NativeProcess {
-  ownership: 'child' | 'host-ledger'
+  ownership: 'child' | 'host-ledger' | 'host-gateway'
 }
 
 /** What the caller already knows about the app that owns this listener. */
@@ -179,6 +180,49 @@ function processStartTime(pid: number): number | null {
   }
 }
 
+const gatewayStateSchema = z.object({
+  pid: z.number().int().positive(), kind: z.literal('hermes-gateway'),
+  gateway_state: z.string(), start_time: z.number().nullable().optional(),
+}).passthrough()
+
+/** Whether `pid` is still the incarnation `gateway.status._get_process_start_time` recorded:
+ * raw `/proc/<pid>/stat` start ticks on Linux, psutil centiseconds elsewhere. An unrecorded
+ * start time carries only its PID, as in the product's `_start_times_conflict`. */
+function gatewayIncarnationMatches(pid: number, recorded: number | null | undefined): boolean {
+  if (recorded === null || recorded === undefined) {
+    return true
+  }
+
+  if (process.platform === 'linux') {
+    try {
+      return Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(')').pop()!.trim().split(/\s+/)[19]) === recorded
+    } catch {
+      return false
+    }
+  }
+
+  const started = processStartTime(pid)
+
+  return started !== null && Math.abs(started - recorded / 100) < 2
+}
+
+/** The running canonical gateway (`hermes gateway run`) recorded for `homes`. Desktop reaches a
+ * local backend through `hermes gateway ensure`, which attaches to that daemon or starts it
+ * detached, so it is neither an Electron descendant nor a `serve` spawn-ledger record. */
+function canonicalGatewayPids(homes: string[], processes: NativeProcess[]): number[] {
+  return [...new Set(homes)].flatMap((home: string): number[] => {
+    try {
+      const state = gatewayStateSchema.parse(JSON.parse(
+        fs.readFileSync(path.join(home, 'gateway_state.json'), 'utf8').replace(/^\uFEFF/, '')))
+
+      const live = state.gateway_state === 'running' && processes.some(candidate => candidate.pid === state.pid)
+        && gatewayIncarnationMatches(state.pid, state.start_time)
+
+      return live ? [state.pid] : []
+    } catch { return [] /* Missing/unreadable state provides no attachment evidence. */ }
+  })
+}
+
 /** Identify the actual listener, not a healthy helper or a command recorded before spawn. */
 export function localBackendProcess(port: number, electronPid: number, hermesHome?: string): BackendProcess {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -192,12 +236,15 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
   // its own child. Registration is only a candidate: the OS listener and the
   // caller's existing installed-tree checks must independently agree.
   let registered: number[] = []
+  let gateways: number[] = []
 
   if (hermesHome) {
     // The product writes one machine-root ledger for every profile, and the app
     // reads it at its own resolved root (`main.ts` -> `spawnLedgerPath(HERMES_HOME)`,
     // where a `<root>/profiles/<name>` home resolves to `<root>`).
     const ledgerRoot = resolveDesktopHermesHome({ home: os.homedir(), env: { HERMES_HOME: hermesHome } })
+    // A named profile is served by the root's multiplexer; a standalone one by its own gateway.
+    gateways = canonicalGatewayPids([hermesHome, ledgerRoot], processes)
 
     try {
       registered = parseSpawnLedger(fs.readFileSync(path.join(ledgerRoot, SPAWN_LEDGER_FILENAME), 'utf8'))
@@ -218,7 +265,9 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
     } catch { /* Missing/unreadable ledger provides no attachment evidence. */ }
   }
 
-  const candidates = processes.filter(candidate => children.includes(candidate) || registered.includes(candidate.pid))
+  const candidates = processes.filter(candidate => children.includes(candidate) || registered.includes(candidate.pid)
+    || gateways.includes(candidate.pid))
+
   let pids: number[]
 
   if (process.platform === 'win32') {
@@ -234,10 +283,11 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
   const matches = candidates.filter((child: NativeProcess): boolean => pids.includes(child.pid))
 
   if (matches.length !== 1) {
-    throw new Error(`Expected one Desktop-owned or registered host backend listener on port ${port}; found ${matches.length}`)
+    throw new Error(`Expected one Desktop-owned, registered host or canonical gateway backend listener on port ${port}; found ${matches.length}`)
   }
 
-  const backend: BackendProcess = { ...matches[0], ownership: children.includes(matches[0]) ? 'child' : 'host-ledger' }
+  const ownership = children.includes(matches[0]) ? 'child' : registered.includes(matches[0].pid) ? 'host-ledger' : 'host-gateway'
+  const backend: BackendProcess = { ...matches[0], ownership }
 
   if (process.platform === 'linux') {
     backend.executable = fs.readlinkSync(`/proc/${backend.pid}/exe`)

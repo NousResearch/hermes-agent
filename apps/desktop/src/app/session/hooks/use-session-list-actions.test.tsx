@@ -6,8 +6,10 @@ import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
+  $gatewaySwitching,
   beginGatewaySwitch,
   endGatewaySwitch,
+  isCurrentGatewaySwitch,
   recoverActiveSourceAfterFailedGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
@@ -370,6 +372,77 @@ describe('refreshSessions identity + loading hygiene', () => {
       $queuedPromptsBySession.set({})
     }
   })
+
+  it.each([
+    ['populated', 'resolve'],
+    ['populated', 'reject'],
+    ['empty', 'resolve'],
+    ['empty', 'reject']
+  ] as const)('keeps a newer switch barrier when an old %s refresh settles via %s', async (cache, outcome) => {
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValueOnce(pending.promise)
+    setSessions(cache === 'populated' ? [row('outgoing')] : [])
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    const refresh = result.current.refreshSessions().catch(() => undefined)
+
+    expect($sessionsLoading.get()).toBe(cache === 'empty')
+    const token = beginGatewaySwitch()
+
+    try {
+      // Settle before the new dial advances the epoch or starts its refresh:
+      // neither request identity nor activation epoch identifies this wipe.
+      expect($gatewaySwitching.get()).toBe(true)
+      expect($sessionsLoading.get()).toBe(true)
+      expect($sessions.get()).toEqual([])
+
+      await act(async () => {
+        if (outcome === 'resolve') {
+          pending.resolve(sidebar({ sessions: [row('outgoing')] }))
+        } else {
+          pending.reject(new Error('outgoing gateway disconnected'))
+        }
+        await refresh
+      })
+
+      expect($gatewaySwitching.get()).toBe(true)
+      expect($sessionsLoading.get()).toBe(true)
+    } finally {
+      endGatewaySwitch(token)
+    }
+  })
+
+  it.each(['empty', 'populated'] as const)(
+    'lets the switch-own %s-list refresh release discovery before the switch ends',
+    async cache => {
+      const pending = deferred<SidebarSessionsResponse>()
+      listSidebarSessions.mockReturnValueOnce(pending.promise)
+      const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+      const token = beginGatewaySwitch()
+
+      try {
+        // Another publisher can fill the wiped list before the switch's read.
+        if (cache === 'populated') {
+          setSessions([row('incoming')])
+        }
+        gatewayScope.epoch += 1
+        const refresh = result.current.refreshSessions(() => isCurrentGatewaySwitch(token))
+        expect($sessionsLoading.get()).toBe(true)
+
+        await act(async () => {
+          pending.resolve(sidebar({ sessions: [row('incoming')] }))
+          await refresh
+        })
+
+        expect($sessions.get().map(session => session.id)).toEqual(['incoming'])
+        expect($gatewaySwitching.get()).toBe(true)
+        expect($sessionsLoading.get()).toBe(false)
+        endGatewaySwitch(token)
+        expect($sessionsLoading.get()).toBe(false)
+      } finally {
+        endGatewaySwitch(token)
+      }
+    }
+  )
 
   it('does not let a superseded owner publish or release a newer switch loading barrier', async () => {
     const pending = deferred<SidebarSessionsResponse>()

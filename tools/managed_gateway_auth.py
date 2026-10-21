@@ -75,4 +75,6 @@ def managed_gateway_auth_headers(
     if not isinstance(token, str) or not token.strip():
         return {}
 
-    return {"Authorization": f"Bearer {token.strip()}"}
+    from tools.managed_gateway_identity import user_agent
+
+    return {"Authorization": f"Bearer {token.strip()}", "User-Agent": user_agent()}

@@ -148,7 +148,7 @@ class TestFeishuExecApproval:
             )
 
         assert len(adapter._approval_state) == 1
-        approval_id = list(adapter._approval_state.keys())[0]
+        approval_id = next(iter(adapter._approval_state.keys()))
         state = adapter._approval_state[approval_id]
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"

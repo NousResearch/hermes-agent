@@ -10,10 +10,10 @@ import {
   CONNECTOR_CARD_PHASES,
   MARK_LABEL,
   reissueConnectionTarget,
-  useConnectionOwner,
   useConnectorFocusHandoff
 } from '@/components/assistant-ui/connector-tool'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowAction, ConnectorSummary } from '@/components/ui/connector-card'

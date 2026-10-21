@@ -2,8 +2,10 @@
 
 Git-only (outside a repo children share the parent's cwd); local terminal backend only (on
 docker/ssh/modal the host worktree is invisible in the sandbox, so isolation is skipped). One
-worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``hermes-subagent/<id>``;
-pruned only on proof (zero commits AND clean, both probes ok), else kept + ``inspection_failed``.
+worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``hermes-subagent/<id>``.
+On finish: zero commits AND clean (both probes ok) -> removed; work left behind -> archived to
+``refs/hermes/archive/<tree>`` then removed (``worktrees.archive_dirty``, branch kept so the parent
+can merge it); a failed probe or archive -> kept + flagged.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT, env=None):
     """
     return subprocess.run(["git", *harden_git_argv(args)], cwd=cwd, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, env=env or noninteractive_git_env())
+                          stdin=subprocess.DEVNULL, env=env or noninteractive_git_env(), check=False)
 
 
 def local_backend_active() -> bool:
@@ -72,7 +74,7 @@ def _ensure_gitignore_entry(repo_root: str) -> None:
         logger.debug("subagent worktree: could not update .gitignore: %s", exc)
 
 
-def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[Dict[str, str]]:
+def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated worktree for one child; None (silent downgrade) outside git/on failure."""
     repo_root = resolve_repo_root(parent_cwd)
     if not repo_root:
@@ -100,17 +102,19 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         logger.warning("subagent worktree: git worktree add failed: %s", result.stderr.strip())
         return None
     logger.info("subagent worktree created: %s (branch %s)", wt_path, branch)
+    from hermes_cli.worktree_registry import record_worktree_repo
+    record_worktree_repo(repo_root)
     return {"path": str(wt_path), "branch": branch, "repo_root": repo_root, "base_commit": base_commit}
 
 
-def _base_payload(info: Dict[str, str]) -> Dict[str, Any]:
+def _base_payload(info: dict[str, str]) -> dict[str, Any]:
     """Result-entry schema the parent expects (no creation-side internals)."""
     return {"path": info.get("path", ""), "branch": info.get("branch", ""),
             "commits": 0, "dirty": False, "pruned": False}
 
 
-def mark_worktree_payload_unproven(payload: Dict[str, Any], reason: str, *,
-                                   unmeasured: str = "commits/dirty") -> Dict[str, Any]:
+def mark_worktree_payload_unproven(payload: dict[str, Any], reason: str, *,
+                                   unmeasured: str = "commits/dirty") -> dict[str, Any]:
     """Flag a worktree result payload as un-inspected, in place.
 
     The parent only sees this dict, so the uncertainty must travel in it or "0 commits, clean"
@@ -129,12 +133,12 @@ def mark_worktree_payload_unproven(payload: Dict[str, Any], reason: str, *,
     return payload
 
 
-def unproven_worktree_payload(info: Dict[str, str], reason: str) -> Dict[str, Any]:
+def unproven_worktree_payload(info: dict[str, str], reason: str) -> dict[str, Any]:
     """Complete un-inspected payload for ``delegate_tool`` when finalize raises."""
     return mark_worktree_payload_unproven(_base_payload(info), reason)
 
 
-def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> Dict[str, Any]:
+def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> dict[str, Any]:
     """Inspect (and possibly prune) a child worktree after the child finishes.
 
     Prunes only when *prune*, commits==0, clean tree AND both git probes succeeded; otherwise
@@ -160,7 +164,7 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     failed, unmeasured = [], []
     probes = (("commits", "rev-list", ["rev-list", "--count", f"{base_commit}..HEAD"],
                lambda s: int(s or 0)),
-              ("dirty", "status", ["status", "--porcelain"], bool))
+              ("dirty", "status", ["status", "--porcelain", "--untracked-files=normal"], bool))
     try:
         for field, label, args, parse in probes:
             res = _run_git(args, cwd=path, env=probe_env)
@@ -176,10 +180,24 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     if failed:
         # Destructive cleanup requires affirmative proof; defaults prove nothing.
         return mark_worktree_payload_unproven(payload, "; ".join(failed), unmeasured="/".join(unmeasured))
+    if not payload["dirty"]:
+        # status trusts skip-worktree / assume-unchanged: edits behind them are invisible to it.
+        from hermes_cli.worktree_archive import ArchiveError
+        from hermes_cli.worktree_retention import hidden_index_edits
+        try:
+            payload["dirty"] = bool(hidden_index_edits(path))
+        except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
+            return mark_worktree_payload_unproven(payload, f"index flag probe failed: {exc}", unmeasured="dirty")
+    if prune and (payload["commits"] or payload["dirty"]):
+        return _archive_finished_worktree(info, payload)
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
-            from hermes_cli.worktree_ops import release_lsp_clients
+            from hermes_cli.worktree_ops import release_lsp_clients, removal_blocked
+            blocked = removal_blocked(path)  # an embedded repo / private ref dies with the tree
+            if blocked:
+                payload["note"] = f"Worktree kept at {path}: {blocked[1]}."
+                return payload
             release_lsp_clients(path)  # the child ran in-process: its language servers are ours
             removed = _run_git(["worktree", "remove", "--force", path], cwd=cwd)
             if removed.returncode == 0:
@@ -193,7 +211,43 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     return payload
 
 
-def build_worktree_context_note(info: Dict[str, str]) -> str:
+def _archive_finished_worktree(info: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    """A finished child left commits or edits: snapshot them, then remove the tree.
+
+    The branch is kept (the parent reviews and merges it); the archive also covers uncommitted
+    edits. ``worktrees.archive_dirty: false`` or a failed snapshot keeps the tree as before.
+    """
+    from hermes_cli.worktree_archive import ArchiveError
+    from hermes_cli.worktree_sweep import archive_then_remove, live_process_pids, sweep_settings
+    settings = sweep_settings()
+    if not settings["archive_dirty"]:
+        return payload
+    path = info.get("path", "")
+    # A server or watcher the child started may still run in the tree: leave it to the sweep.
+    if live_process_pids([path], exclude=(os.getpid(),)).get(path):
+        logger.info("subagent worktree: a live process works in %s; keeping it", path)
+        return payload
+    try:
+        ref, _kept, removed, why = archive_then_remove(
+            info.get("repo_root", "") or path, path, reason="subagent finished",
+            max_untracked_mb=settings["archive_max_file_mb"], unlock=False, keep_branch=True,
+            exclude_pids=(os.getpid(),))
+    except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
+        logger.warning("subagent worktree: archive failed, keeping %s: %s", path, exc)
+        return payload
+    payload["archive"] = ref
+    payload["pruned"] = removed
+    if removed:
+        payload["note"] = (f"Worktree archived to {ref} and removed; branch {info.get('branch')} kept. "
+                           f"Restore the full tree (including uncommitted edits) with "
+                           f"`hermes worktree restore {ref.rsplit('/', 1)[-1]}`.")
+    else:
+        payload["note"] = (f"Worktree archived to {ref} but kept at {path} ({why}); "
+                           f"branch {info.get('branch')} kept.")
+    return payload
+
+
+def build_worktree_context_note(info: dict[str, str]) -> str:
     """Context block telling the child to work inside its isolated worktree."""
     return (
         "\n\n[WORKTREE ISOLATION] You are working in an isolated git worktree "
@@ -202,5 +256,6 @@ def build_worktree_context_note(info: Dict[str, str]) -> str:
         "All file edits and shell commands must happen inside this worktree directory (your "
         "terminal already starts there). Do NOT cd to the main repository checkout. Commit your "
         "changes to your branch when done; the parent agent will review and merge your branch. If "
-        "you make no commits and leave the tree clean, the worktree is discarded automatically."
+        "you make no commits and leave the tree clean, the worktree is discarded automatically; "
+        "otherwise it is archived (restorable) and removed when you finish."
     )

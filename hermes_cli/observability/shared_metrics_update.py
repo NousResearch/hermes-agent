@@ -11,6 +11,11 @@ Desktop's packaged updaters (electron-updater, App Installer, Store) never run `
 Desktop reports their outcome through the ``shared_metrics.update_run`` RPC instead. Desktop's
 source-checkout hand-off DOES run ``hermes update``; that receipt is tagged ``initiator=desktop``
 and counted here, never by the RPC, so no run is counted twice.
+
+Run and stage rows agree on where a FAILED run stopped: a run whose ``failed_stage`` names a stage it
+never marked (it exited inside it, before the stage's END mark) also gets one failed stage row for it.
+A run that passed the commit point and only owes follow-ups (contract C3) is a ``success`` run, while
+the stage that failed (``deps``, ``build``, ``restart``, ``verify``) still reads ``failed`` at stage level.
 """
 
 from __future__ import annotations
@@ -61,13 +66,17 @@ _OS_ERROR_TYPES = frozenset(
 _SUBPROCESS_ERROR_TYPES = frozenset({"CalledProcessError", "SubprocessError", "TimeoutExpired"})
 # Exception type name -> class, first match wins; any other type reads ``exception``.
 _EXCEPTION_TYPE_CLASSES = (
-    (_PM_ERROR_TYPES, "deps_failed"), (_OS_ERROR_TYPES, "os_error"), (_SUBPROCESS_ERROR_TYPES, "subprocess_failed"),
+    (frozenset({"PermissionError"}), "permission_denied"), (_PM_ERROR_TYPES, "deps_failed"),
+    (_OS_ERROR_TYPES, "os_error"), (_SUBPROCESS_ERROR_TYPES, "subprocess_failed"),
 )
 # Fixed stop-reason prefixes Hermes itself writes (only the prefix is read, never what follows):
 # _update_takeover's preparation failure and update_completion's Windows gateway resume failure.
 _STOP_REASON_PREFIX_CLASSES = (
     ("historical takeover preparation failed", "deps_failed"), ("Windows gateway recovery failed", "restart_failed"),
 )
+# An OSError that ended the run, read by its errno token alone (never the text after it):
+# ENOSPC (28 on every platform), Windows ERROR_HANDLE_DISK_FULL (39) / ERROR_DISK_FULL (112).
+_DISK_FULL_ERRNO = re.compile(r"[A-Z][A-Za-z0-9_]*: \[(?:Errno 28|WinError (?:39|112))\]")
 # ---- end iuf c1 ----
 
 
@@ -88,12 +97,28 @@ def _restart_incomplete(receipt: dict[str, Any]) -> bool:
         isinstance(row, dict) and row.get("outcome") == "failed" for row in outcomes)
 
 
-def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], outcome: str) -> str:
-    """Why a failed/refused run stopped, from fields the FINAL receipt already carries.
+def _named_stop(receipt: dict[str, Any], stages: list[dict[str, Any]]) -> str | None:
+    """The class the run named itself: the user's parked changes on a committed run, or the closed
+    ``stop_class`` a pre-apply exit recorded (read only while nothing was applied)."""
+    from .shared_metrics_contract import UPDATE_STOP_CLASSES
 
-    The parked copy (update_receipt._metric_receipt) keeps outcome, stages, the admission step and
-    fleet states but no stop_reason / exit_code / gateway_restart, so a parked run can only be told
-    apart by its stages; full receipts carry every field read here (``schema`` marks one).
+    if receipt.get("outcome") == "partial" and receipt.get("user_action"):
+        # Committed; only the user's stashed changes are owed (record_user_action, exit 1). Since C3
+        # this is the only ``partial`` a receipt gets; older releases' verification wrote it too.
+        return "local_changes_parked"
+    stop_class = receipt.get("stop_class")
+    if stop_class in UPDATE_STOP_CLASSES and not any(s["name"] == "apply" for s in stages):
+        return stop_class
+    return None
+
+
+def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], outcome: str) -> str:
+    """Why a failed/refused/partial run stopped, from fields the FINAL receipt already carries.
+
+    A pre-apply exit names itself (``stop_class``, recorded on the line before the exit by
+    update_receipt.record_stop_reason); only a run with no apply mark reads it, so a reason can
+    never outlive the exit that recorded it. Parked copies (update_receipt._metric_receipt) carry
+    every field read here except the free text; copies parked by older releases have no ``schema``.
     """
     if outcome not in {"failed", "refused"}:
         return "none"
@@ -108,6 +133,8 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
     exc_type = match.group(1) if match else ""
     if exc_type == "KeyboardInterrupt" or exit_code == 130:
         return "interrupted"
+    if named := _named_stop(receipt, stages):
+        return named
     if outcome == "refused":
         # Exit 2 at the command boundary is the updater's refusal convention; on main the only
         # open-receipt exit 2 is another updater holding the lock (update_finish).
@@ -125,6 +152,8 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
         return "restart_failed"  # a skipped restart left the fleet owing one (completion exit 1)
     if by_reason := next((cls for prefix, cls in _STOP_REASON_PREFIX_CLASSES if reason.startswith(prefix)), None):
         return by_reason
+    if _DISK_FULL_ERRNO.match(reason):
+        return "disk_full"
     if exc_type:
         return next((cls for types, cls in _EXCEPTION_TYPE_CLASSES if exc_type in types), "exception")
     marked = {s["name"] for s in stages}
@@ -218,6 +247,17 @@ def _apply_mode(receipt: dict[str, Any], stages: list[dict[str, Any]]) -> str:
     return "unknown"
 
 
+def _committed_with_work_owed(receipt: dict[str, Any]) -> bool:
+    """The code moved (an apply mark that did not fail), and the run closed owing work, not failed:
+    interrupted after the commit point (finalize_interrupted_update_receipt) or the user's parked
+    changes (record_user_action -> ``partial``). Follow-ups alone already finalize ``success`` (C3)."""
+    applied = any(isinstance(mark, dict) and mark.get("name") == "apply" and mark.get("outcome") != "failed"
+                  for mark in receipt.get("stages") or ())
+    owed = receipt.get("outcome") == "interrupted" or (
+        receipt.get("outcome") == "partial" and bool(receipt.get("user_action")))
+    return applied and owed
+
+
 def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, str]]] | None:
     """Bounded hermes.update.run + hermes.update.stage dimensions for one FINAL receipt."""
     from .shared_metrics_contract import update_duration_bucket, version_age_bucket
@@ -228,18 +268,24 @@ def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list
     outcome = _RUN_OUTCOMES.get(str(receipt.get("outcome") or ""), "failed")
     if outcome == "success" and any(s["name"] == "apply" and s.get("outcome") == "skipped" for s in stages):
         outcome = "noop"
+    if _committed_with_work_owed(receipt):
+        outcome = "partial"
     started = _epoch(receipt.get("started_at"))
     committed = _epoch((receipt.get("pre_update") or {}).get("commit_date"))
     age_ms = None if started is None or committed is None else (started - committed) * 1000
+    failure_class = update_failure_class(receipt, stages, "failed" if outcome == "partial" else outcome)
     run = {
         "apply_mode": _apply_mode(receipt, stages),
         "duration_bucket": update_duration_bucket(_elapsed_ms(receipt.get("started_at"), receipt.get("finished_at"))),
-        "failed_stage": _failed_stage(stages) if outcome in {"failed", "refused"} else "none",
+        "failed_stage": (
+            # The parked autostash is the apply's last step (update_cmd._pull_updates restores it).
+            "apply" if failure_class == "local_changes_parked"
+            else _failed_stage(stages) if outcome in {"failed", "refused", "partial"} else "none"),
         "from_version_age_bucket": version_age_bucket(age_ms),
         "kind": "desktop" if receipt.get("initiator") == "desktop" else "cli",
         "outcome": outcome,
         # ---- iuf c1 ----
-        "failure_class": update_failure_class(receipt, stages, outcome),
+        "failure_class": failure_class,
         # ---- end iuf c1 ----
     }
     if run["outcome"] == "refused" and not stages:
@@ -252,7 +298,29 @@ def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list
         }
         for stage in stages
     ]
+    if died_in := _unmarked_failed_stage(run, stages):
+        last_mark = next((s["at"] for s in reversed(stages) if s.get("at")), receipt.get("started_at"))
+        stage_rows.append({
+            "duration_bucket": update_duration_bucket(_elapsed_ms(last_mark, receipt.get("finished_at"))),
+            "outcome": "failed", "stage": died_in,
+        })
     return run, stage_rows
+
+
+def _unmarked_failed_stage(run: dict[str, str], stages: list[dict[str, Any]]) -> str | None:
+    """The stage a failed run stopped in when the receipt holds no mark for it, else None.
+
+    Stage marks are END marks, so a run that exits inside a stage (every pre-apply ``sys.exit``:
+    fetch, channel, branch, merge, HEAD checks) leaves none for it and the stage rows would show no
+    failure where the run row says it died. Only ``failed`` runs: a refusal is not a stage failure,
+    and a committed run that owes follow-ups is a ``success`` whose failed stage already has its mark.
+    """
+    from .shared_metrics_contract import UPDATE_STAGES
+
+    died_in = run["failed_stage"]
+    if run["outcome"] != "failed" or died_in not in UPDATE_STAGES or any(s["name"] == died_in for s in stages):
+        return None
+    return died_in
 
 
 def _collection_on() -> bool:

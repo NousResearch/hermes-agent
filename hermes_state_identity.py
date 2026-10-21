@@ -17,7 +17,7 @@ def _live_or_column(msg: Mapping[str, Any], live_key: str, column: str) -> Any:
     return msg.get(live_key) if live_key in msg else msg.get(column)
 
 
-def _uid_list(value: Any) -> List[str]:
+def _uid_list(value: Any) -> list[str]:
     """Normalize a uid list (a live list, or the JSON text an export/import carries) to unique non-empty
     strings in order; anything else is ``[]``."""
     if isinstance(value, str):
@@ -25,7 +25,7 @@ def _uid_list(value: Any) -> List[str]:
     return uid_list(value)
 
 
-def _uid_map(value: Any) -> Dict[str, Any]:
+def _uid_map(value: Any) -> dict[str, Any]:
     """Normalize a ``{tool call id: uid}`` map (a live dict, or the JSON text an export/import carries): a
     non-empty string uid, or a list of them for a provider id repeated inside one row (one per occurrence,
     see ``merge_tool_call_uids``); anything else is dropped, and a non-map is ``{}``."""
@@ -37,7 +37,7 @@ def _uid_map(value: Any) -> Dict[str, Any]:
         (isinstance(v, str) and v) or (isinstance(v, list) and v and all(isinstance(u, str) and u for u in v)))}
 
 
-def _tool_call_uid_map(msg: Mapping[str, Any]) -> Dict[str, Any]:
+def _tool_call_uid_map(msg: Mapping[str, Any]) -> dict[str, Any]:
     return _uid_map(_live_or_column(msg, TOOL_CALL_UIDS, "tool_call_uids"))
 
 
@@ -96,7 +96,7 @@ def _restore_identity_columns(row: Any, msg: MutableMapping[str, Any]) -> None:
         msg[ABSORBED_MESSAGE_UIDS] = absorbed
 
 
-def _stable_tool_key(row: Any) -> Optional[Tuple[Any, ...]]:
+def _stable_tool_key(row: Any) -> Optional[tuple[Any, ...]]:
     """Display-dedupe key of a tool-calling assistant row built from its stable call ids instead of the arguments a
     prune rewrites (#117750: a pruned carried-forward copy must collapse with its durable original). ``None`` for
     every other row and for an incomplete id set, so the caller keeps the full content key: a tool RESULT row keeps

@@ -700,7 +700,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     head = "Migration plan (dry run — nothing changed)" if dry_run else "Migration plan"
     lines = [head, f"  default home: {plan.default_home}", "", "  profile      gateway pid   service"]
     for p in plan.profiles:
-        lines.append(f"  {p.name:<12} {str(p.pid or '-'):<13} {p.service_label()}")
+        lines.append(f"  {p.name:<12} {p.pid or '-'!s:<13} {p.service_label()}")
     if plan.standalone_by_config:
         lines.append(f"  Standalone by config (gateway.standalone: true), left alone: "
                      f"{', '.join(plan.standalone_by_config)}")
@@ -1277,6 +1277,12 @@ def maybe_auto_migrate_after_update() -> None:
     # most. A manifest makes the update hook a RESUME, and a resume is not gated on blockers.
     resuming = plan.manifest is not None
     if not plan.standalone_secondaries and not resuming:
+        return
+    from hermes_cli.gateway_migrate_guards import masked_default_unit
+    masked = None if resuming else masked_default_unit(plan.default_home)
+    if masked is not None:
+        print(f"\n  ℹ Per-profile gateways kept: the default gateway unit is masked ({masked}).\n"
+              f"    Unmask it and run {MIGRATE_COMMAND} to fold them into one gateway.")
         return
     print()
     auto_blockers = auto_migration_blockers(plan)

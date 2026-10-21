@@ -29,7 +29,7 @@ def node_binary() -> str | None:
     if not node:
         return None
     out = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=30,
-                         stdin=subprocess.DEVNULL).stdout.strip()
+                         stdin=subprocess.DEVNULL, check=False).stdout.strip()
     m = re.match(r"v(\d+)\.(\d+)", out)
     if not m or (int(m.group(1)), int(m.group(2))) < _MIN_NODE:
         return None
@@ -48,6 +48,7 @@ def desktop_parse(stdout_bytes: str) -> dict:
     proc = subprocess.run(
         [require_node(), str(BRIDGE_MJS), str(PARSER_TS), "5000"], input=stdout_bytes,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, f"desktop parser bridge crashed: {proc.stderr[-2000:]}"
     return json.loads(proc.stdout.strip().splitlines()[-1])

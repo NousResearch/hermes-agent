@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -221,8 +222,39 @@ async def test_legacy_channel_connect_pops_marker_on_disconnect(pty_keepalive_ha
 
     deadline = time.monotonic() + 5.0
     while "LEGACY63553" in markers and time.monotonic() < deadline:
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     assert "LEGACY63553" not in markers
+
+
+@pytest.mark.asyncio
+async def test_legacy_marker_dropped_when_cancel_lands_mid_close(pty_keepalive_harness, monkeypatch):
+    """The disconnect closes the bridge in a worker thread; cancelling the handler while that close is still
+    running must not skip the marker discard."""
+    import threading
+    import time
+    from starlette.testclient import TestClient
+
+    close_started = threading.Event()
+
+    def slow_close(self):
+        close_started.set()
+        time.sleep(0.5)  # still running when the client context exits and cancels the handler
+        self.alive = False
+
+    monkeypatch.setattr(FakeBridge, "close", slow_close)
+    markers = _pty_marker_dict()
+    markers.clear()
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?channel=LEGACYCANCEL") as ws:
+        ws.send_bytes(b"hi")
+        assert "LEGACYCANCEL" in markers
+        ws.close()
+        assert close_started.wait(5)  # teardown is inside bridge.close ...
+    # ... and leaving the client context cancelled the handler there.
+    deadline = time.monotonic() + 5.0
+    while "LEGACYCANCEL" in markers and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert "LEGACYCANCEL" not in markers
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,9 @@
+{
+  "description": "Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first.",
+  "name": "browser_get_images",
+  "parameters": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+  }
+}

@@ -9,7 +9,7 @@ class TestTokenValidation:
 
     def test_classic_pat_rejected(self):
         from hermes_cli.copilot_auth import validate_copilot_token
-        valid, msg = validate_copilot_token("ghp_abcdefghijklmnop1234")
+        valid, _msg = validate_copilot_token("ghp_abcdefghijklmnop1234")
         assert valid is False
 
     @pytest.mark.parametrize("token", ["gho_abcdefghijklmnop1234", "github_pat_abcdefghijklmnop1234", "ghu_abcdefghijklmnop1234"])
@@ -20,7 +20,7 @@ class TestTokenValidation:
     def test_arbitrary_string_rejected(self):
         """A non-GitHub value in GITHUB_TOKEN must fail validation instead of reaching the API (#12650)."""
         from hermes_cli.copilot_auth import validate_copilot_token
-        valid, msg = validate_copilot_token("not_a_github_token")
+        valid, _msg = validate_copilot_token("not_a_github_token")
         assert valid is False
 
 

@@ -24,8 +24,8 @@ _TOKEN = re.compile(r"""\s*(?:
   | (?P<num>-?\d+(?:\.\d+)?)
   | (?P<op>==|!=|&&|\|\||<=|>=|[!()<>,])
   | (?P<path>[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_*][A-Za-z0-9_-]*)*)
-)""", re.X)
-_TEMPLATE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+)""", re.VERBOSE)
+_TEMPLATE = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 
 
 class Unsupported(ValueError):

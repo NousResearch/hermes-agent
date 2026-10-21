@@ -33,6 +33,7 @@ from hermes_cli.local_runtime.estimator import (
     ctx_bytes,
     physics_check,
 )
+import itertools
 
 GIB = 1 << 30
 MIB = 1 << 20
@@ -172,9 +173,9 @@ def test_ladder_shape():
     rungs = ladder(262144)
     assert rungs[0] == FLOOR
     assert rungs[-1] == 262144
-    assert all(a < b for a, b in zip(rungs, rungs[1:]))
+    assert all(a < b for a, b in itertools.pairwise(rungs))
     # geometric-ish: each step grows, none more than 2x
-    assert all(b / a <= 2.0 for a, b in zip(rungs, rungs[1:]))
+    assert all(b / a <= 2.0 for a, b in itertools.pairwise(rungs))
 
 
 def test_initial_window_never_below_floor_and_never_above_native():
@@ -193,7 +194,7 @@ def test_initial_window_monotone_in_vram():
         d = initial_window(p, card(vram))
         assert isinstance(d, WindowDecision)
         windows.append(d.window)
-    assert all(a <= b for a, b in zip(windows, windows[1:]))
+    assert all(a <= b for a, b in itertools.pairwise(windows))
 
 
 def test_flat_curve_reaches_native_where_dense_does_not():

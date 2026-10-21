@@ -384,15 +384,7 @@ async def test_runner_active_turn_carrier_clears_the_exact_resolved_key():
     runner.session_store = MagicMock()
     mark_active = AsyncMock(return_value="token-1")
     clear_active = AsyncMock(return_value=True)
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            mark_turn_active=mark_active,
-            clear_turn_active=clear_active,
-        ),
-    )
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, mark_turn_active=mark_active, clear_turn_active=clear_active)
     event = SimpleNamespace()
 
     await runner._mark_durable_active_turn(
@@ -416,14 +408,7 @@ async def test_runner_active_turn_clear_is_best_effort():
     clear_active = AsyncMock(
         side_effect=[OSError("disk unavailable"), True]
     )
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            clear_turn_active=clear_active,
-        ),
-    )
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, clear_turn_active=clear_active)
     event = SimpleNamespace(
         _gateway_active_turn_session_key="resolved-session-key",
         _gateway_active_turn_token="token-1",
@@ -441,14 +426,7 @@ async def test_runner_active_turn_clear_stops_after_bounded_retries():
     runner = object.__new__(GatewayRunner)
     runner.session_store = MagicMock()
     clear_active = AsyncMock(side_effect=OSError("disk unavailable"))
-    setattr(
-        runner,
-        "_async_session_store",
-        SimpleNamespace(
-            _store=runner.session_store,
-            clear_turn_active=clear_active,
-        ),
-    )
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, clear_turn_active=clear_active)
     event = SimpleNamespace(
         _gateway_active_turn_session_key="resolved-session-key",
         _gateway_active_turn_token="token-1",

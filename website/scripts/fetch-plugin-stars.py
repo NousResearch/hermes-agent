@@ -28,14 +28,14 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Run as `python website/scripts/fetch-plugin-stars.py`, so sys.path[0] is this directory and the
 # repo-root `hermes_yaml` shim is not importable without this (broke every scheduled probe).
 sys.path.insert(0, str(REPO_ROOT))
-import hermes_yaml as yaml  # noqa: E402
+import hermes_yaml as yaml
 
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT = REPO_ROOT / "website" / "static" / "api" / "plugin-stars.json"
@@ -162,7 +162,7 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output: Path = DEFAULT_OUTPUT,
     slugs = catalog_slugs(catalog_dir)
     prev_stars = {k: int(v) for k, v in (previous.get("stars") or {}).items() if isinstance(v, (int, float))}
     stars, probed = probe_stars(slugs, prev_stars, token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
-    fetched_at = datetime.now(timezone.utc).isoformat() if probed else previous.get("fetched_at")
+    fetched_at = datetime.now(UTC).isoformat() if probed else previous.get("fetched_at")
     output.write_text(json.dumps({"fetched_at": fetched_at, "stars": stars}, separators=(",", ":")),
                       encoding="utf-8")
     if not probed:

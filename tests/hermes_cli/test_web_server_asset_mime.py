@@ -22,7 +22,7 @@ def _essence(content_type: str) -> str:
     return content_type.split(";", 1)[0].strip().lower()
 
 
-def _is_javascript(content_type: "str | None") -> bool:
+def _is_javascript(content_type: str | None) -> bool:
     if not content_type:
         return False
     return _essence(content_type) in JAVASCRIPT_MIME_ESSENCES
@@ -149,7 +149,7 @@ class TestNormalizeWebAssetMimeTypes:
 
         # Every extension we pin must be present in the strict map after import
         # of the dashboard module (module-level call already ran).
-        import hermes_cli.web_server_dashboard  # noqa: F401
+        import hermes_cli.web_server_dashboard
 
         for ext, mime in WEB_ASSET_MIME_TYPES.items():
             assert mimetypes.guess_type(f"file{ext}")[0] == mime

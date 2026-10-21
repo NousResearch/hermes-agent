@@ -14,7 +14,7 @@ from pm import cli, paths, registry
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.store import current_target
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 @pytest.mark.parametrize("next_version", ["1.2.3", "1.2.4"])

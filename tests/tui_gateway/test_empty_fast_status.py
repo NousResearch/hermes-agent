@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 @pytest.mark.parametrize("tier,expected", [("", "normal"), (None, "normal"), ("priority", "fast")])

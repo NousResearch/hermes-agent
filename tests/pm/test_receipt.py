@@ -10,12 +10,12 @@ import json
 
 import pytest
 
-import pm.receipt as receipt
+from pm import receipt
 
 
 @pytest.fixture(autouse=True)
 def _isolated_receipt_context():
-    import hermes_cli.update_receipt as update_receipt
+    from hermes_cli import update_receipt
     variables = (receipt._current, receipt._completed_by_update, update_receipt._current)
     tokens = [variable.set(None) for variable in variables]
     yield
@@ -106,6 +106,7 @@ print(json.dumps(row))
     child = subprocess.run(
         [sys.executable, "-S", "-c", code], cwd=repo, env=dict(os.environ),
         capture_output=True, text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert child.returncode == 0, child.stdout + child.stderr
     row = json.loads(child.stdout)

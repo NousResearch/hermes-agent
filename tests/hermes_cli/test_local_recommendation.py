@@ -35,16 +35,16 @@ from hermes_cli.local_runtime.estimator import HardwareBudget
 _GIB = 1 << 30
 
 
-def _discrete(size_gb: int) -> HardwareBudget:
-    total = size_gb * _GIB
+def _discrete(size_gb: float) -> HardwareBudget:
+    total = int(size_gb * _GIB)
     margin = max(2 * _GIB, int(total * 0.09))
     return HardwareBudget(usable_vram_bytes=max(0, total - margin),
                           total_device_bytes=total,
                           ram_available_bytes=64 * _GIB, uma=False)
 
 
-def _unified(size_gb: int) -> HardwareBudget:
-    total = size_gb * _GIB
+def _unified(size_gb: float) -> HardwareBudget:
+    total = int(size_gb * _GIB)
     return HardwareBudget(usable_vram_bytes=int(total * 0.80),
                           total_device_bytes=total,
                           ram_available_bytes=0, uma=True)
@@ -193,13 +193,31 @@ def test_unmatched_or_spilled_profiles_keep_the_existing_estimate(
 def test_every_entry_carries_the_recommendation_axes():
     """quality and decode_fraction are authoring requirements: an entry
     without them silently loses every quality comparison (quality=0) or
-    prices as dense (decode_fraction=1.0)."""
+    prices as dense (decode_fraction=1.0). An entry that is never
+    recommended needs no quality ordering."""
     for entry in CATALOG:
-        assert entry.quality > 0, f"{entry.id} has no quality ordering"
+        if entry.recommend:
+            assert entry.quality > 0, f"{entry.id} has no quality ordering"
         assert 0.0 < entry.decode_fraction <= 1.0, entry.id
         if not entry.moe:
             assert entry.decode_fraction == 1.0, (
                 f"{entry.id} is dense — it reads every weight per token")
+
+
+@pytest.mark.parametrize("budget", [_discrete(32), _discrete(48), _discrete(96), _unified(32), _unified(64),
+                                    _unified(128)],
+                         ids=lambda b: f"{'unified' if b.uma else 'discrete'}-{b.total_device_bytes / _GIB:g}")
+def test_nemotron_bolt_is_an_option_never_the_recommendation(budget):
+    """NVIDIA asked for Nemotron 3.5 Bolt as an option beside the others, not a default. It runs
+    resident on these machines and clears the floor, and still is never picked, even alone."""
+    bolt = next(e for e in CATALOG if e.id == "nemotron-3.5-bolt-74b-a9b")
+    assert not bolt.recommend
+    choice = select_variant(bolt, budget)
+    assert choice is not None and choice.zero_spill
+    assert predicted_decode_tok_s(bolt, choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
+    assert recommended_entry(budget, (bolt,)) is None
+    picked = recommended_entry(budget)
+    assert picked is None or picked[0].id != bolt.id
 
 
 def test_unified_never_recommends_a_below_floor_dense_model():
@@ -222,6 +240,22 @@ def test_unified_never_recommends_a_below_floor_dense_model():
         assert predicted_decode_tok_s(entry, choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
 
 
+@pytest.mark.parametrize("budget", [
+    *(_unified(gb) for gb in (16, 24, 31.5, 32, 48, 64, 96, 128, 256)),
+    *(_discrete(gb) for gb in (8, 12, 16, 24, 32, 48, 96)),
+], ids=lambda b: f"{'unified' if b.uma else 'discrete'}-{b.total_device_bytes / _GIB:g}")
+def test_a_derived_recommendation_always_clears_the_floor(budget):
+    """A machine where nothing resident reaches the floor gets no recommendation. A "32 GB" laptop
+    reads 31.5 GB, where only the 27B fits and runs well under the floor on an iGPU or the CPU;
+    it stays one click away in Browse."""
+    picked = recommended_entry(budget)
+    if picked is None or picked[1] == "product-default":
+        return
+    choice = select_variant(picked[0], budget)
+    assert choice is not None and choice.zero_spill
+    assert predicted_decode_tok_s(picked[0], choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
+
+
 def test_quality_decides_where_speed_permits():
     """On big discrete hardware every resident entry clears the floor, so
     the pick must be the highest-quality fitting entry — the axis that
@@ -230,7 +264,7 @@ def test_quality_decides_where_speed_permits():
     pick = recommended_entry(budget)[0].id
     resident = [
         e for e in CATALOG
-        if (c := select_variant(e, budget)) is not None and c.zero_spill
+        if e.recommend and (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
 

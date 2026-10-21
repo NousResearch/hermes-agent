@@ -151,7 +151,7 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
 @pytest.mark.asyncio
 async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
     """The default/root path must behave exactly as before the fix."""
-    runner, captured = _make_multiplex_runner()
+    runner, _captured = _make_multiplex_runner()
 
     used = {}
     monkeypatch.setattr(

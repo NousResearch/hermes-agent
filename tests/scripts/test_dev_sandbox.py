@@ -28,7 +28,7 @@ def test_ephemeral_sandbox_preserves_command_and_removes_state(tmp_path, entry, 
     env = {key: value for key, value in os.environ.items() if not key.startswith("HERMES_DEV_SANDBOX_")}
     result = subprocess.run(["bash", str(root / "scripts" / entry), "--", sys.executable,
                              str(probe), str(output), "argument with spaces"], cwd=checkout,
-                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, check=False)
     assert result.returncode == 7, result.stderr
     observed = json.loads(output.read_text(encoding="utf-8-sig"))
     home = Path(observed["env"]["HERMES_HOME"])

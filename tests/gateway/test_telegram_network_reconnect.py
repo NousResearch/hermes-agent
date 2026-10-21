@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from gateway.run import GatewayRunner  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from gateway.run import GatewayRunner
 
 
 @pytest.fixture(autouse=True)
@@ -287,7 +287,7 @@ async def test_reconnect_stop_deadline_does_not_wait_for_cancel_cleanup(monkeypa
 
     async def _start_polling_with_same_lock(*args, **kwargs):
         async with lifecycle_lock:
-            return None
+            return
 
     mock_updater = MagicMock()
     mock_updater.running = True
@@ -629,7 +629,7 @@ async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
     async def timeout_wait_for(coro, timeout):
         if asyncio.iscoroutine(coro):
             coro.close()
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     with patch("asyncio.sleep", side_effect=fast_sleep):
         with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=timeout_wait_for):

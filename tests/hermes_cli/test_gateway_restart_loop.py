@@ -373,7 +373,7 @@ class TestProfileFlagGatewayLifecycle:
         # With no profile identity the guard cannot prove self-targeting, so
         # the profile-flag form is allowed rather than over-blocking siblings;
         # the adjacent form stays blocked unconditionally.
-        import cron.lifecycle_guard as lifecycle_guard
+        from cron import lifecycle_guard
 
         monkeypatch.setattr(lifecycle_guard, "_current_profile_name", lambda: None)
         assert not _contains_gateway_lifecycle_command("hermes -p zeus gateway restart")
@@ -582,7 +582,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     ):
         """#78398: an over-budget root must never reach shlex — not even via
         the launchctl pre-scan that runs before the full guard."""
-        import cron.lifecycle_guard as lifecycle_guard
+        from cron import lifecycle_guard
         import tools.terminal_tool as tt
 
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
@@ -1089,7 +1089,7 @@ class TestLifecycleGuardModule:
         the resolved FileProvider path from local metadata and fail closed
         without opening it.
         """
-        import cron.lifecycle_guard as lifecycle_guard
+        from cron import lifecycle_guard
 
         cloud_dir = (
             tmp_path
@@ -1127,7 +1127,7 @@ class TestLifecycleGuardModule:
         FileProvider hazard as iCloud's Mobile Documents: an evicted
         placeholder's open() can hang preflight. The guard must fail closed
         on the lexical path without opening the file."""
-        import cron.lifecycle_guard as lifecycle_guard
+        from cron import lifecycle_guard
 
         cloud_dir = (
             tmp_path
@@ -1161,7 +1161,7 @@ class TestLifecycleGuardModule:
         check_gateway_lifecycle) must also refuse a cloud-resident script
         without opening it, and the surfaced reason must attribute the
         refusal to the cloud-synced path — not to a lifecycle command."""
-        import cron.lifecycle_guard as lifecycle_guard
+        from cron import lifecycle_guard
         from cron.lifecycle_guard import (
             GatewayLifecycleBlocked,
             check_gateway_lifecycle,

@@ -18,7 +18,7 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     preflight is retired. An unavailable matcher must still fail closed.
     """
     try:
-        from gateway.status import looks_like_gateway_command_line  # noqa: PLC0415
+        from gateway.status import looks_like_gateway_command_line
     except Exception:
         return False
     return looks_like_gateway_command_line(cmdline)

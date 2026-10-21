@@ -71,7 +71,7 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str) -> Dict[str, Any]:
+def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
     Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
@@ -89,9 +89,9 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
     return record
 
 
-def list_pending(subsystem: str) -> List[Dict[str, Any]]:
+def list_pending(subsystem: str) -> list[dict[str, Any]]:
     """Return all pending records for ``subsystem``, oldest first."""
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
             record = json.loads(p.read_text(encoding="utf-8-sig"))
@@ -104,7 +104,7 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     return records
 
 
-def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
+def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
     """Return a single pending record by id, or None."""
     path = _pending_path(subsystem, pending_id)
     if not path.exists():
@@ -286,7 +286,7 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
-def _staged_base(name: str, target_label: str, staged: Optional[Dict[str, Dict[str, str]]]) -> str:
+def _staged_base(name: str, target_label: str, staged: Optional[dict[str, dict[str, str]]]) -> str:
     """What an op diffs against: the content earlier ops of the same batch left in this file,
     else the on-disk copy (empty for a file that does not exist yet)."""
     files = (staged or {}).get(name)
@@ -303,7 +303,7 @@ def _staged_base(name: str, target_label: str, staged: Optional[Dict[str, Dict[s
 
 
 def skill_pending_diff(
-    record: Dict[str, Any], staged: Optional[Dict[str, Dict[str, str]]] = None
+    record: dict[str, Any], staged: Optional[dict[str, dict[str, str]]] = None
 ) -> str:
     """Full content (create) or unified diff vs. the base file (edit/patch/write_file),
     rendered by /skills diff <id> on surfaces that can show it. ``staged`` carries the file
@@ -365,8 +365,8 @@ def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = 
     return folded, None
 
 
-def _fold_staged(staged: Dict[str, Dict[str, str]], action: str, name: str,
-                 op: Dict[str, Any]) -> None:
+def _fold_staged(staged: dict[str, dict[str, str]], action: str, name: str,
+                 op: dict[str, Any]) -> None:
     """Record what one op leaves in the staged view the next op diffs against."""
     if not name:
         return
@@ -392,14 +392,14 @@ def _fold_staged(staged: Dict[str, Dict[str, str]], action: str, name: str,
         files.pop(label, None)
 
 
-def _batch_pending_diff(payload: Dict[str, Any]) -> str:
+def _batch_pending_diff(payload: dict[str, Any]) -> str:
     """Per-op diffs for a staged ``batch`` payload (skill_manage operations[]). Ops apply in
     order, so each op reuses the single-op path above with the earlier ops' staged content as
     its base (disk only for files no earlier op touched) — a patch to a skill an earlier op
     created shows a real diff, which is the case this renderer exists for."""
     ops = [op for op in (payload.get("operations") or []) if isinstance(op, dict)]
     total = len(ops)
-    staged: Dict[str, Dict[str, str]] = {}
+    staged: dict[str, dict[str, str]] = {}
     parts = []
     for i, op in enumerate(ops):
         op_action, op_name = op.get("action", ""), op.get("name") or ""

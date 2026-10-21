@@ -302,7 +302,7 @@ export const zhHantChat = {
       heartbeatEveryHours: hours => `每 ${hours} 小時`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期 — 等待會話閒置',
+      dueWaitingForIdle: '已到期 — 等待會話閒置',
       heartbeatActions: '活動訊號操作',
       pauseHeartbeat: '暫停活動訊號',
       resumeHeartbeat: '繼續活動訊號',
@@ -542,11 +542,6 @@ export const zhHantChat = {
         title: '本機引擎有可用更新',
         text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
         action: '立即更新'
-      },
-      'local-setup': {
-        title: '這台電腦可以本地執行模型',
-        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
-        action: '立即設定'
       },
       'right-pane': {
         title: '工作面板',

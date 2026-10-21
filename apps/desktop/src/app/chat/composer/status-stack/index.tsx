@@ -391,7 +391,9 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             <div
               className={cn(
                 'transition-opacity duration-200 ease-out',
-                scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+                scrolledUp
+                  ? 'opacity-30 group-hover/composer-dock:opacity-100 group-focus-within/composer-dock:opacity-100'
+                  : 'opacity-100'
               )}
               data-slot="status-stack-content"
             >

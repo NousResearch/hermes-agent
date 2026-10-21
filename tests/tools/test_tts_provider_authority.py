@@ -16,7 +16,7 @@ import pytest
 
 
 def _fake_key(tag: str) -> str:
-    return "-".join((("tts", tag, "test", "key")))
+    return "-".join(("tts", tag, "test", "key"))
 
 
 @pytest.fixture(autouse=True)
@@ -192,13 +192,13 @@ class TestResolverAuthority:
     def test_resolver_returns_configured_provider_despite_override(self, openai_backend):
         from tools.tts_tool import _apply_call_overrides
 
-        tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, "xai")
+        _tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, "xai")
         assert provider == "openai"
 
     def test_resolver_returns_configured_provider_when_unset(self, openai_backend):
         from tools.tts_tool import _apply_call_overrides
 
-        tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, None)
+        _tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, None)
         assert provider == "openai"
 
     def test_warning_is_emitted_once_per_distinct_value(self, openai_backend, caplog):

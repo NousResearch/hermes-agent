@@ -226,16 +226,21 @@ function Get-UiHtmlPath {
 }
 
 function Get-DefaultBrowserExe {
-    # The OS default browser, read from the UserChoice ProgId that the
-    # Windows Settings app writes (https first, http as fallback). Only
+    # The OS default browser, read from the ProgId that the Windows Settings
+    # app writes (https first, http as fallback). Windows 11 25H2 writes only
+    # UserChoiceLatest\ProgId and leaves the legacy UserChoice key stale or
+    # without a value, so the newer key is read first. Only
     # Chromium-family browsers (ChromeHTML / MSEdgeHTM) support the
     # --app + --user-data-dir combo the shim relies on; any other
     # default browser returns $null and degrades to the WinForms card.
     $progId = $null
     foreach ($proto in @("https", "http")) {
-        try {
-            $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\UserChoice" -Name ProgId -ErrorAction Stop).ProgId
-        } catch { continue }
+        foreach ($sub in @("UserChoiceLatest\ProgId", "UserChoice")) {
+            try {
+                $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\$proto\$sub" -Name ProgId -ErrorAction Stop).ProgId
+            } catch { continue }
+            if ($progId) { break }
+        }
         if ($progId) { break }
     }
     if (-not $progId) { return $null }
@@ -1680,7 +1685,13 @@ try {
     $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
         ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
     if ($owedSteps.Count -gt 0) {
-        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
+        # A gateway_restart owed only for serve/dashboard units (the reason then starts with
+        # "serve/dashboard ", hermes_cli/update_cmd_fleet_verify.SERVE_ONLY_REASON_PREFIX) names their own
+        # command in the log. The hint drops only when EVERY gateway_restart line is serve-only; any other
+        # reason, including a raw restart-phase error, keeps it (#141071).
+        $gwReasons = @((($res.Output -join "`n") -split "`r?`n") | Where-Object { $_ -cmatch "Update follow-up 'gateway_restart' did not finish: " })
+        $serveOnly = ($gwReasons.Count -gt 0) -and -not @($gwReasons | Where-Object { ($_ -cnotmatch "did not finish: serve/dashboard ") -or ($_ -cmatch "hermes gateway restart") }).Count
+        $owedHint = if (($owedSteps -contains 'gateway_restart') -and -not $serveOnly) { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
         Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
     }
 

@@ -97,14 +97,14 @@ def journey(tmp_path_factory):
             out["a_update"] = machine.update(label="update-while-held")
             out["a_head"] = machine.installed_head()
             # (b) kill the owner only; the job must take its child down
-            subprocess.run(["taskkill", "/F", "/PID", str(owner.pid)], capture_output=True, timeout=60)
+            subprocess.run(["taskkill", "/F", "/PID", str(owner.pid)], capture_output=True, timeout=60, check=False)
             owner.wait(timeout=60)
             try:
                 wait_until(lambda: not _alive(child), 20, "the bound child to die with its owner")
                 out["b_child_dead"] = True
             except AssertionError:
                 out["b_child_dead"] = False
-                subprocess.run(["taskkill", "/F", "/PID", str(child)], capture_output=True, timeout=60)
+                subprocess.run(["taskkill", "/F", "/PID", str(child)], capture_output=True, timeout=60, check=False)
             # (c) the tree is gone: the lock is free
             out["c_update"] = machine.update(label="update-after-tree")
             out["c_head"] = machine.installed_head()

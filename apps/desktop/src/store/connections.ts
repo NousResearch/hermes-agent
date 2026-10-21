@@ -289,7 +289,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     }
 
     if (registry.connections.some(connection => connection.id === connectionId)) {
-      await selectConnection(connectionId, { profile: defaultRoute.profile })
+      await selectConnection(connectionId, { profile: defaultRoute.profile, restore: true })
     }
 
     return $connectionsRegistry.get() ?? registry
@@ -323,7 +323,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   if ($activeConnectionId.get() === preferredId) {
     await rememberConnection(preferredId)
   } else {
-    await selectConnection(preferredId)
+    await selectConnection(preferredId, { restore: true })
   }
 
   return $connectionsRegistry.get() ?? registry
@@ -358,6 +358,32 @@ export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
+  /** This call restores the source the window launched on; it is not a switch
+   *  the user asked for, so the persisted "All profiles" browse mode must be
+   *  left alone. The boot path passes it explicitly: the old inference
+   *  (`$activeConnectionId` still null) only held while nothing had published a
+   *  source yet, so a second restore pass — the normal case, because main opens
+   *  the local backend before the registry settles — read as user-initiated. */
+  restore?: boolean
+}
+
+/** The silent boot restore, by its caller's word, or (first pass, before any
+ *  source is published) by the old null-id inference. */
+function isBootRestore(options: SelectConnectionOptions): boolean {
+  return options.restore === true || (pendingTarget === null && $activeConnectionId.get() === null)
+}
+
+/** The requested pair is already live, so nothing was switched: `selectConnection`
+ *  only reaches this with `switching` true because "All profiles" is on. A user
+ *  pick collapses the browse view; a boot restore leaves it alone, since
+ *  collapsing it here dropped the user back to a single profile at every launch. */
+async function settleLivePair(connectionId: string, targetProfile: string, restoreOnBoot: boolean): Promise<void> {
+  if (!restoreOnBoot) {
+    $showAllProfiles.set(false)
+  }
+
+  rehomeNewChatDraft(targetProfile)
+  await rememberConnection(connectionId)
 }
 
 export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
@@ -371,8 +397,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // A user-initiated source switch collapses "All profiles" browse mode: the
   // picker is a concrete-source action. The silent boot-time restore (below,
   // from initializeConnectionsRegistry) is not — it must leave the persisted
-  // browse-mode preference alone so it survives restart (#93197).
-  const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
+  // browse-mode preference alone so it survives restart (#93197). The caller
+  // that knows it is restoring says so; the null-id inference stays as the
+  // fallback for the first pass, when no source has been published yet.
+  const restoreOnBoot = isBootRestore(options)
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
@@ -418,9 +446,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
-    $showAllProfiles.set(false)
-    rehomeNewChatDraft(targetProfile)
-    await rememberConnection(connectionId)
+    await settleLivePair(connectionId, targetProfile, restoreOnBoot)
 
     return
   }

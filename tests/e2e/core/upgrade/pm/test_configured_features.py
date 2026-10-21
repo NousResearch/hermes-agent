@@ -145,7 +145,7 @@ def migrated(tmp_path_factory, provider):
     assert uv is not None
     cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--extra", "messaging",
                          "--python", str(leg.install / "venv" / "bin" / "python")],
-                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800)
+                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"harness: messaging install into the N-1 venv failed:\n{cp.stderr[-4000:]}"
     with (leg.install / "pyproject.toml").open("rb") as fh:
         assert "messaging" in tomllib.load(fh)["project"]["optional-dependencies"], "harness: N-1 has no messaging extra"

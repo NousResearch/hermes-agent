@@ -49,7 +49,7 @@ def multiplexed():
 
 def _stub_action(monkeypatch, name: str, seen: dict, result: dict | None = None):
     """Stand in for the plugin action: read the credential like the git path does, note the thread."""
-    import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli import plugins_cmd
     from agent.secret_scope import get_secret
 
     def _stub(*_args, **_kwargs):

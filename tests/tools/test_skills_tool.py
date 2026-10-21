@@ -14,7 +14,7 @@ from tools.skills_tool import (
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
-    _find_all_skills,
+    find_all_skills,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -201,7 +201,7 @@ class TestGetCategoryFromPath:
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills
+# find_all_skills
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +238,7 @@ class TestFindAllSkills:
                 encoding="utf-8",
             )
 
-            skills = _find_all_skills()
+            skills = find_all_skills()
 
         assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
         assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
@@ -257,7 +257,7 @@ class TestFindAllSkills:
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            skills = {s["name"]: s for s in _find_all_skills()}
+            skills = {s["name"]: s for s in find_all_skills()}
 
         # If no description in frontmatter, the first non-header line is used.
         assert skills["no-desc"]["description"] == "First paragraph."
@@ -272,7 +272,7 @@ class TestFindAllSkills:
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
         with patch("tools.skills_tool.SKILLS_DIR", skills_root):
-            skills = _find_all_skills()
+            skills = find_all_skills()
 
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
@@ -579,12 +579,12 @@ class TestSkillMatchesPlatform:
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills — platform filtering integration
+# find_all_skills — platform filtering integration
 # ---------------------------------------------------------------------------
 
 
 class TestFindAllSkillsPlatformFiltering:
-    """Test that _find_all_skills respects the platforms field."""
+    """Test that find_all_skills respects the platforms field."""
 
     def test_discovery_filters_on_platform(self, tmp_path):
         # Host-native: a skill tagged only for a platform that is never the
@@ -595,13 +595,13 @@ class TestFindAllSkillsPlatformFiltering:
             _make_skill(
                 tmp_path, "cross-plat", frontmatter_extra=f"platforms: [plan9, {sys.platform}]\n"
             )
-            names = {s["name"] for s in _find_all_skills()}
+            names = {s["name"] for s in find_all_skills()}
 
         assert names == {"universal-skill", "cross-plat"}
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills — env-var prerequisites must not change the listing
+# find_all_skills — env-var prerequisites must not change the listing
 # ---------------------------------------------------------------------------
 
 
@@ -624,7 +624,7 @@ class TestFindAllSkillsSecureSetup:
                 frontmatter_extra="prerequisites:\n  env_vars: [MY_PRESENT_KEY]\n",
             )
             _make_skill(tmp_path, "simple-skill")
-            skills = _find_all_skills()
+            skills = find_all_skills()
 
         assert {s["name"] for s in skills} == {"needs-key", "has-key", "simple-skill"}
         for skill in skills:

@@ -45,6 +45,7 @@ def _run_dump(image: str) -> str:
     r = subprocess.run(
         ["docker", "run", "--rm", image, "dump"],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert r.returncode == 0, (
         f"hermes dump exited {r.returncode}: "
@@ -61,6 +62,7 @@ def _read_stamp_commit_from_image(image: str) -> str | None:
             "/opt/hermes/install-stamp.json",
         ],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     if r.returncode != 0:
         return None

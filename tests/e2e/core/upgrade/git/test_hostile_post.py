@@ -256,7 +256,7 @@ def _publish_gateway_fault_release(w: G.World, tag: str) -> str:
     """A release whose ``hermes gateway run`` refuses to boot while the toggle exists."""
     text = _head_file(w, "hermes_cli/gateway.py")
     if _GATEWAY_MARK not in text:
-        m = re.search(r"^def run_gateway\(.*?\):\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        m = re.search(r"^def run_gateway\(.*?\):\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
         assert m, "premise: hermes_cli/gateway.py has no run_gateway() with a docstring to inject after"
         text = text[:m.end()] + _HOSTILE_GATEWAY + text[m.end():]
     return w.publish(f"release: e2e hostile post gateway {tag}", {
@@ -269,7 +269,7 @@ def _publish_deps_fault_release(w: G.World, tag: str) -> str:
     """A release whose dependency preparation (``ensure_tools_for_sync``) fails while the toggle exists."""
     text = _head_file(w, "pm/client.py")
     if _DEPS_MARK not in text:
-        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
         assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
         text = text[:m.end()] + _HOSTILE_DEPS + text[m.end():]
     return w.publish(f"release: e2e hostile post deps {tag}", {
@@ -431,31 +431,21 @@ def test_gateway_that_cannot_reboot_is_an_owed_restart_not_a_failed_update(w):
             assert OWED_RESTART in G.output(status), \
                 f"a later command does not warn that a gateway restart is still owed:\n{diag}"
 
-            # The fault clears; the next plain update retries the owed restart. This gateway is a
-            # manual `gateway run` that died at boot: no supervisor and no live process, so the
-            # retry has nothing it can relaunch. It must still exit 0 and must NOT silently discharge
-            # the obligation (no gateway serves HEAD yet).
+            # The fault clears; the next plain update retries the owed restart. The gateway was a
+            # manual `gateway run` with no supervisor, but the pre-swap pause recorded its argv, so the
+            # retry relaunches it on HEAD. The obligation may discharge only because a gateway now
+            # serves HEAD, never while none does.
             _toggle(w, BREAK_GATEWAY, False)
             cp = _ns_update(host, w)
+            served = None
+            with contextlib.suppress(AssertionError):
+                served = H.wait_for(lambda: _serving(w, target), timeout=240, interval=1.0, what="a gateway on HEAD")
             status = _ns_cli(host, w, "status", timeout=300)
             diag = (_facts(w, cp, identify_after=_identify(w)) + w.diag(cp) + "\n--- gateway logs ---\n"
                     + _gateway_logs(w)[-6000:] + "\n--- sandbox ---\n" + host.ps_text()
                     + "\n--- hermes status ---\n" + G.output(status)[-3000:])
             assert cp.returncode == 0, f"the retrying update failed:\n{diag}"
-            assert OWED_RESTART in G.output(status), \
-                f"the retry discharged the owed restart while no gateway serves HEAD:\n{diag}"
-
-            # The operator restarts it (the remedy the warning names); once a gateway serves HEAD the
-            # obligation discharges and the warning goes away.
-            host.spawn([w.sb.hermes, "gateway", "run"], log=w.sb.root / "gateway-b2.log")
-            served = None
-            with contextlib.suppress(AssertionError):
-                served = H.wait_for(lambda: _serving(w, target), timeout=240, interval=1.0, what="a gateway on HEAD")
-            status = _ns_cli(host, w, "status", timeout=300)
-            diag = (_facts(w, cp, identify_after=_identify(w)) + "\n--- gateway logs ---\n"
-                    + _gateway_logs(w)[-6000:] + "\n--- sandbox ---\n" + host.ps_text()
-                    + "\n--- hermes status ---\n" + G.output(status)[-3000:])
-            assert served, f"premise: the restarted gateway never served {target[:12]}:\n{diag}"
+            assert served, f"the retry did not relaunch the paused gateway on {target[:12]}:\n{diag}"
             assert OWED_RESTART not in G.output(status), \
                 f"the owed-restart warning survived a gateway serving HEAD:\n{diag}"
         finally:

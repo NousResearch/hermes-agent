@@ -105,6 +105,7 @@ def test_powershell_scripts_parse(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert result.returncode == 0, (
         f"PowerShell parse errors:\n{result.stdout}\n{result.stderr}"

@@ -10,7 +10,7 @@ lazily (call time) to avoid an import cycle.
 from typing import Any, Dict, Optional
 
 
-def _request_reasoning_config(model_options: Any) -> Optional[Dict[str, Any]]:
+def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
     """Translate model_options (structured ``reasoning`` or legacy ``reasoning_effort``) into
     AIAgent reasoning_config; unknown effort values are ignored, never raised."""
     if not isinstance(model_options, dict):

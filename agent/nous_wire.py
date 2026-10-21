@@ -41,7 +41,7 @@ def classify_upstream(response: Any) -> Optional[str]:
     """
     if response is None:
         return None
-    if isinstance(getattr(response, "provider", None), str) and getattr(response, "provider"):
+    if isinstance(getattr(response, "provider", None), str) and response.provider:
         return "openrouter"
     rid = getattr(response, "id", None)
     if isinstance(rid, str):

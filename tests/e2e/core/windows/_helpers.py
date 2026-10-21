@@ -91,7 +91,13 @@ class WinHome:
         return self.hermes_home / "state.db"
 
 
+#: Every home made this test, with its creation time: the lane's conftest stops the gateway a
+#: prompt auto-started for it (Desktop and CLI attach to one daemon that outlives the turn).
+MADE_HOMES: list[tuple[WinHome, float]] = []
+
+
 def make_home(tmp_path: Path, base_url: str, *, extra_config: str = "") -> WinHome:
+    since = time.time()
     root = tmp_path
     profile = root / "Users" / "e2e"
     hermes_home = profile / ".hermes"
@@ -105,6 +111,7 @@ def make_home(tmp_path: Path, base_url: str, *, extra_config: str = "") -> WinHo
         cfg.setdefault("display", {})["compact"] = True
 
     home.update_config(_hermetic)
+    MADE_HOMES.append((home, since))
     return home
 
 
@@ -145,6 +152,7 @@ def run(argv: list[str], home: WinHome, *, cwd: Path | None = None, timeout: flo
     proc = subprocess.run(
         argv, cwd=cwd or home.project, env=home.env(env_extra), capture_output=True,
         input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL, timeout=timeout,
+        check=False,
     )
     return Run(proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
 
@@ -324,7 +332,7 @@ def kill_owned(home: WinHome, *, since: float) -> None:
 
 def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
     """The Desktop's backend quit path on Windows (electron/backend-child.ts): taskkill /T /F."""
-    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
 
 
 def nonce(prefix: str) -> str:

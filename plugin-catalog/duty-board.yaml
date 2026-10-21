@@ -1,0 +1,19 @@
+name: duty-board
+title: Duty Board
+repo: https://github.com/xiaoyaner0201/hermes-duty-board
+sha: 405dbae3ff3314fa7b8f1de3f56f27a9ee313563
+description: "Read-only dashboard tab and model-free /duty and hermes duty summaries for waiting conversations, unanswered messages, running turns, undelivered background results and failing cron jobs. Supports all 17 dashboard languages, including right-to-left Arabic. Disclosure — opens HERMES_HOME/state.db with SQLite mode=ro (sessions, messages, turn leases, async delegations, goals) and reads cron/jobs.json and gateway_state.json; writes only HERMES_HOME/duty-board/dismissed.json for dashboard dismissals. Chat requires in-process Hermes 0.21.7+ and a configured owner; shared-chat summaries default to counts only. No network calls, no model calls, no credentials, no background processes."
+maintainer: xiaoyaner0201
+tier: community
+category: desktop
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/xiaoyaner0201/hermes-duty-board#readme
+version: "0.4.0"
+screenshots:
+  - https://raw.githubusercontent.com/xiaoyaner0201/hermes-duty-board/405dbae3ff3314fa7b8f1de3f56f27a9ee313563/docs/screenshot.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

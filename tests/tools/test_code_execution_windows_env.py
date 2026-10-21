@@ -76,6 +76,7 @@ class TestWindowsSocketSmokeTest:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
         assert result.returncode == 0, (
             f"Child failed to create socket with scrubbed env:\n"
@@ -124,6 +125,7 @@ def test_windows_live_child_offset_matches_os_zone_when_timezone_is_configured(m
             [sys.executable, "-c", script, timestamp],
             env=env, stdin=subprocess.DEVNULL, capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=30,
+            check=False,
         )
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)

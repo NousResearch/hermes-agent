@@ -39,8 +39,7 @@ vi.mock('./tree-node', () => ({
   // The sash math only needs the zone element it measures by
   // [data-tree-group="<id>"]; the real TreeNode pulls in the whole zone chrome
   // (context menus, i18n, drag sessions) that these tests never touch.
-  TreeNode: ({ node }: { node: LayoutNode }) =>
-    node.type === 'group' ? <div data-tree-group={node.id} /> : null
+  TreeNode: ({ node }: { node: LayoutNode }) => (node.type === 'group' ? <div data-tree-group={node.id} /> : null)
 }))
 
 const SPLIT_ID = 'spl-root'
@@ -241,5 +240,4 @@ describe('TreeSplit sash drag cleanup', () => {
     flushRaf()
     expect(kidA.getAttribute('style')).toBe(styleA)
   })
-
 })

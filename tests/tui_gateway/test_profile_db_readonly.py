@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import tui_gateway.server as server
+from tui_gateway import server
 from hermes_state import SessionDB
 
 
@@ -37,6 +37,19 @@ def test_foreign_profile_db_is_read_only(monkeypatch, tmp_path):
         assert db is not None
         assert db.read_only is True
         assert db.get_session("seed") is not None
+
+
+def test_fresh_served_profile_store_is_seeded_for_its_first_read(monkeypatch, tmp_path):
+    """A brand-new bot's first RPC is the Bot Chat registry lookup (session.list by title). Its
+    state.db does not exist yet; the serving process owns that store, so the read seeds it instead
+    of answering storage_unavailable until a turn happens to run (#120730 remote-secondary E2E)."""
+    fresh = tmp_path / "profiles" / "newbot"
+    fresh.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: fresh if (name or "").strip() == "newbot" else None)
+    with server._profile_db({"profile": "newbot"}) as db:
+        assert db is not None and db.read_only is True
+        assert db.get_session_by_title("Bot Chat") is None
+    assert (fresh / "state.db").stat().st_size > 0
 
 
 def test_foreign_profile_db_writer_opt_in(monkeypatch, tmp_path):

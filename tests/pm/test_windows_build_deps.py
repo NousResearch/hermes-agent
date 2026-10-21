@@ -26,6 +26,7 @@ def _powershell(script, *args, env=None):
         [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(script), *map(str, args)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=180,
+        check=False,
     )
 
 

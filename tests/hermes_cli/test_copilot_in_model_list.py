@@ -47,10 +47,10 @@ def _no_other_copilot_creds(monkeypatch):
     for var in ("GH_TOKEN", "GITHUB_TOKEN", "HERMES_COPILOT_ACP_COMMAND",
                 "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
-    import hermes_cli.auth as auth
-    import hermes_cli.model_switch as model_switch
+    from hermes_cli import auth
+    from hermes_cli import model_switch
 
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(auth, "_load_auth_store", dict)
     monkeypatch.setattr(model_switch_providers, "_credential_pool_is_usable", lambda *a, **k: False)
 
 
@@ -74,7 +74,7 @@ def test_copilot_acp_listed_when_executable_resolves(tmp_path, monkeypatch, _no_
 def test_copilot_acp_hidden_when_executable_missing(monkeypatch, _no_other_copilot_creds):
     # `copilot` may genuinely be installed on a dev machine — force the
     # resolution miss so the test pins behaviour, not the host's PATH.
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
 
     monkeypatch.setattr(auth.shutil, "which", lambda *_a, **_k: None)
 

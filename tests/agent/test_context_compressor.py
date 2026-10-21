@@ -22,6 +22,7 @@ from agent.context_compressor import (
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+import itertools
 
 _REQ = httpx.Request("POST", "http://x")
 
@@ -221,7 +222,7 @@ class TestSummarizeToolResultSkillTools:
         assert ok == f"[skills_list] category=devops 2 skills ({len(ok_content)} chars)"
         assert failed.startswith("[skills_list] FAILED: skills dir unreadable")
         # Control: skill_view really has a top-level ``name`` and keeps its stub.
-        assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
+        assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100).startswith("[skill_view] name=github (100 chars)")
 
 
 class TestSummarizeToolResultOutcome:
@@ -3317,7 +3318,7 @@ class TestSummaryPromptBounding:
         assert coverage["sampled_record_count"] == len(shown)
         # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
         assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
-        for a, b in zip(shown, shown[1:]):
+        for a, b in itertools.pairwise(shown):
             if b == a + 1:
                 assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
             else:

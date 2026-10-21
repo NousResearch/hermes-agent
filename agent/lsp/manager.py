@@ -102,10 +102,30 @@ class _BackgroundLoop:
         try:
             loop.run_forever()
         finally:
+            # ``loop.stop()`` returns from run_forever immediately and leaves every in-flight
+            # task pending: a reader parked on the server's stdout, the shutdown coroutine that
+            # hit its caller's timeout, a server->client request handler.  Closing the loop
+            # strands those coroutines -- the GC finalises them with no running loop, so
+            # LSPClient._reader_loop's cleanup dies with "RuntimeError: no running event loop"
+            # at exit.  Cancel and drain them here, while the loop can still run.
+            self._drain_pending(loop)
             try:
                 loop.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _drain_pending(loop: asyncio.AbstractEventLoop) -> None:
+        """Cancel tasks still queued on a stopped loop and let it run their cleanup to completion."""
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                # The cap keeps a task that swallows CancelledError from wedging exit.
+                loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+        except Exception:
+            pass
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
         """Submit a coroutine to the loop and block for its result (or raise)."""
@@ -132,7 +152,7 @@ class _BackgroundLoop:
         except RuntimeError:
             pass
         if thread is not None:
-            thread.join(timeout=2.0)
+            thread.join(timeout=5.0)  # covers _drain_pending's 2s cap before loop.close()
 
 
 class LSPService:

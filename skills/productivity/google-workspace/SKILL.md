@@ -30,6 +30,7 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
 - `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+- `scripts/gmail_read_api.py` — strict read-only Gmail CLI for named accounts. It verifies the exact mailbox before every read and has no mutation commands.
 
 ## First-Time Setup
 
@@ -179,6 +180,38 @@ GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/
 ```
 
 ### Gmail
+
+For a named account, prefer the separate read-only adapter. The alias resolves
+only to `${HERMES_HOME:-$HOME/.hermes}/google-accounts/<alias>/google_token.json`;
+the token must record its expected `account` email and carry exactly the
+`gmail.readonly` Gmail scope (unrelated read-only Google scopes are allowed).
+The adapter verifies `users.getProfile` before every mailbox operation and
+writes only body-free receipts plus explicitly fetched attachments under the
+private account-scoped source cache.
+
+```bash
+GMAIL_READ="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/gmail_read_api.py"
+
+# Identity/count preflight. Output identifies only the alias, not the email.
+$GMAIL_READ --account personal profile
+
+# Bounded search with an explicit continuation token when one is returned.
+$GMAIL_READ --account personal search "has:attachment filename:pdf newer_than:30d" --max-results 10
+$GMAIL_READ --account personal search "has:attachment" --page-token NEXT_PAGE_TOKEN
+
+# Read one message and list recursive attachment descriptors.
+$GMAIL_READ --account personal get MESSAGE_ID --max-body-bytes 1048576
+
+# Fetch one attachment to private content-addressed storage. Existing matching
+# bytes are reused; a path is never chosen from the remote filename.
+$GMAIL_READ --account personal attachment-get MESSAGE_ID ATTACHMENT_ID --max-bytes 26214400
+```
+
+An authentication, scope, or identity error is a typed blocked result. Do not
+fall back to another account, browser session, or broader OAuth scope.
+
+The compatibility CLI below includes mutations and uses the default account.
+Use it only when the requested operation actually requires that broader surface.
 
 ```bash
 # Search (returns JSON array with id, from, subject, date, snippet)

@@ -66,6 +66,31 @@ checks the terminal clipboard payload and receipt placement/expiry, then resizes
 The glyph CLI's intentional Thought footer is excluded when checking for duplicated
 reasoning body text.
 
+Those PTY tests require a prepared Python test interpreter per `CONTRIBUTING.md`
+(`python -m pm.build_env --source . --out .venv --group dev --group test`), Node on
+`PATH`, and the current checkout's UI bundle at `ui-tui/dist/entry.js` (run `npm ci`
+once at the repository root if workspace dependencies are missing). The harness
+(`tests/e2e/core/terminal/_pty.py`) checks Node and the bundle exist and binds
+`HERMES_TUI_DIR` and `HERMES_NODE` explicitly; the tests never download or provision
+their own toolchain. `scripts/run_tests.sh` only honors a prebuilt test environment
+without activation when `HERMES_PYTHON` explicitly points at its interpreter; set it
+to the prepared interpreter below, or to your own prepared interpreter's path if it
+lives elsewhere. From the repository root, build the UI with its package script, then
+run the six tests with retries disabled:
+
+```bash
+npm run build --workspace ui-tui
+HERMES_PYTHON="$PWD/.venv/bin/python" HERMES_TEST_FILE_RETRIES=0 \
+  scripts/run_tests.sh -j 2 \
+  tests/e2e/core/terminal/test_terminal_transcript_pty.py \
+  tests/e2e/core/terminal/test_terminal_clipboard_pty.py --file-timeout 240
+```
+
+Rebuild after switching revisions or modifying TUI source — the bundle must match the
+checkout under test. A missing `ui-tui/dist/entry.js` is a setup failure, not regression
+evidence. Native host-terminal clipboard behavior still needs manual checking; this
+suite makes no macOS, Windows, or manual-emulator coverage claims.
+
 Run Python tests through `scripts/run_tests.sh`, TUI tests through Vitest, and the normal
 typecheck/build/repository checks. Validate actual terminal selection, clipboard round-trips,
 resizing, and Unicode input by hand: unit tests cannot establish emulator/font behavior.

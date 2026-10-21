@@ -216,7 +216,8 @@ def test_refused_skill_write_reads_neutral_not_failed():
     from hermes_cli.cli_modern_layout import _RED, tool_row
 
     refused = ('{"success": false, "error": "operations[0] (patch on \'hermes-agent-dev\') failed: '
-               'SKILL.md content is 100,193 characters (limit: 100,000)."}')
+               'SKILL.md content is 100,193 characters (limit: 100,000).", '
+               '"file_preview": "Never ignore a ROLLBACK FAILED note."}')
     row = tool_row("skill_manage", {"operations": [{"action": "patch", "name": "hermes-agent-dev"}]}, 1.1, refused)
     assert _plain(row).startswith(get_tool_emoji("skill_manage") + " "), row
     assert "[operations[0]" in _plain(row) and _RED not in row, row

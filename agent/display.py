@@ -1029,8 +1029,11 @@ def is_neutral_failure(tool_name: str, result: Any) -> bool:
     """True when a failed call of ``tool_name`` should render neutrally (see NEUTRAL_FAILURE_TOOLS)."""
     if tool_name not in NEUTRAL_FAILURE_TOOLS:
         return False
-    text = result if isinstance(result, str) else repr(result)
-    return _UNSAFE_FAILURE_MARKER not in text
+    # Only the error text: a refused patch also returns a file_preview of the skill, whose own
+    # prose may mention the marker.
+    data = result if isinstance(result, dict) else safe_json_loads(result)
+    error = data.get("error") if isinstance(data, dict) else result
+    return _UNSAFE_FAILURE_MARKER not in str(error or "")
 
 
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:

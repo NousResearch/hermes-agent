@@ -116,9 +116,11 @@ export function isNeutralFailure(toolName: string | undefined, result: unknown):
     return false
   }
 
-  const text = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+  // Only the error text: a refused patch also returns a file_preview of the
+  // skill, whose own prose may mention the marker.
+  const error = parseMaybeObject(result).error ?? (typeof result === 'string' ? result : '')
 
-  return !text.includes('ROLLBACK FAILED')
+  return !String(error).includes('ROLLBACK FAILED')
 }
 
 /** A call that reported failure, from the part's flag or its result body.

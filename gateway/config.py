@@ -645,7 +645,7 @@ class GatewayConfig:
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
     unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     # Opt-in outbound drop patterns (gateway/outbound_suppression.py); platforms.<p>.suppress_outbound extends it.
-    suppress_outbound: List[str] = field(default_factory=list)
+    suppress_outbound: list[str] = field(default_factory=list)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -826,7 +826,7 @@ class GatewayConfig:
         choice = self._extra_choice(platform, "notice_delivery", {"public", "private"}, "public")
         return "public" if choice is None else choice
 
-    def get_suppress_outbound(self, platform: Optional[Platform] = None) -> List[str]:
+    def get_suppress_outbound(self, platform: Optional[Platform] = None) -> list[str]:
         """Effective ``suppress_outbound`` patterns: the global list, extended (never replaced) by
         ``platforms.<platform>.suppress_outbound``; order kept, duplicates dropped."""
         from gateway.outbound_suppression import normalize_suppress_outbound

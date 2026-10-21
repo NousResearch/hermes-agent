@@ -20,16 +20,16 @@ logger = logging.getLogger(__name__)
 
 # Compiled-pattern cache keyed by pattern string; None marks a pattern that failed to compile
 # (warned once, then skipped without retrying).
-_COMPILED: Dict[str, Optional["re.Pattern[str]"]] = {}
+_COMPILED: dict[str, Optional[re.Pattern[str]]] = {}
 
 # Resolved-config cache so the per-message hot path does not re-parse config.yaml. Keyed by the
 # resolved config path -> (mtime stamp, GatewayConfig): context-local profile homes route different
 # config files through one process and two files can share an mtime, so the path is part of the
 # identity. Bounded by the number of profile homes, so no eviction is needed.
-_CONFIG_CACHE: Dict[str, tuple[Any, Any]] = {}
+_CONFIG_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
-def normalize_suppress_outbound(value: Any) -> List[str]:
+def normalize_suppress_outbound(value: Any) -> list[str]:
     """Coerce a ``suppress_outbound`` value to a list of pattern strings.
 
     A list of strings is the documented shape; a single string is a one-element list. Non-string
@@ -46,7 +46,7 @@ def normalize_suppress_outbound(value: Any) -> List[str]:
             type(value).__name__,
         )
         return []
-    patterns: List[str] = []
+    patterns: list[str] = []
     for item in value:
         if isinstance(item, str) and item:
             patterns.append(item)
@@ -55,7 +55,7 @@ def normalize_suppress_outbound(value: Any) -> List[str]:
     return patterns
 
 
-def _compile(pattern: str) -> Optional["re.Pattern[str]"]:
+def _compile(pattern: str) -> Optional[re.Pattern[str]]:
     """Compile one pattern as written (case-sensitive; ``(?i)`` is the operator's opt-in)."""
     if pattern not in _COMPILED:
         try:
@@ -66,7 +66,7 @@ def _compile(pattern: str) -> Optional["re.Pattern[str]"]:
     return _COMPILED[pattern]
 
 
-def _patterns_for(platform: Any) -> List[str]:
+def _patterns_for(platform: Any) -> list[str]:
     """Effective pattern list for *platform* from the active profile's config (fail-open)."""
     from gateway.config import Platform, load_gateway_config
     from gateway.run import _gateway_config_home, _gateway_platform_value

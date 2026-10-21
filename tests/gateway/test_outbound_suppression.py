@@ -28,7 +28,7 @@ def suppress_config(monkeypatch, tmp_path):
     """
     import json
 
-    import gateway.run as run
+    from gateway import run
 
     home = tmp_path / "hermes-home"
     home.mkdir()

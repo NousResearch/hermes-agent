@@ -40,7 +40,12 @@ import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, request
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { runtimeSessionOwner, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  runtimeSessionOwner,
+  sessionTileOwnerRoute,
+  setSessionOwnerProbe,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
@@ -60,6 +65,13 @@ export interface SessionRpcDispatcherDeps {
 
 export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest {
   const { ambientRequest, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef } = deps
+
+  // `requestForOwnedSession` (session control, approvals, …) runs from the
+  // store layer and shares this module's "name the owner before dispatching"
+  // contract, but it cannot import `resolveSessionOwner` itself: that module
+  // (use-session-actions/utils) imports store/session-states, so the import
+  // would close a cycle. Hand the probe over once, when the window wires up.
+  setSessionOwnerProbe(resolveSessionOwner)
 
   return async <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
     const paramSessionId = typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined

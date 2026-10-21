@@ -16,6 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { $archivedSessions } from './archived-sessions'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -1090,19 +1091,29 @@ function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo
  * connection tags), then the cron and messaging slices. Unlisted-draft stubs
  * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
  * shadows its stub, so a listed session never resolves off a stale stamp.
+ *
+ * Archived rows are a fourth slice and MUST be here too. The sidebar queries
+ * them separately (`archived=only`, store/sidebar-archive.ts), so they are
+ * absent from $sessions; without this rung a session opened from the Archived
+ * view had no owner anywhere in the sync ladder, and every session-scoped RPC
+ * that runs through requestForOwnedSession (session.control.read, approvals)
+ * failed closed with SessionOwnerResolutionError while its transcript — an
+ * id-only REST read — loaded fine. The atom lives in store/archived-sessions.ts
+ * because this module and the loader would otherwise import each other.
  */
 export function ownerLookupSessionRows(): SessionInfo[] {
+  const archived = $archivedSessions.get()
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
   const stubs = $unlistedSessionOwnerRows.get()
 
   // Recents-only stays the common case; keep its array identity (no copy) so
   // per-list memo caches (lineageAliases) keyed on the reference still hit.
-  if (!cron.length && !messaging.length) {
+  if (!archived.length && !cron.length && !messaging.length) {
     return withUnlistedOwnerStubs($sessions.get(), stubs)
   }
 
-  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
+  return withUnlistedOwnerStubs([...$sessions.get(), ...archived, ...cron, ...messaging], stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed

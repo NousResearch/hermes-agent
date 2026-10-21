@@ -5,8 +5,11 @@ import { $apiRequestScope } from '@/api/client'
 import { listAllProfileSessions } from '@/api/sessions'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $archivedSessions } from './archived-sessions'
 import { $sidebarShowArchived } from './layout'
 import { $sessions } from './session'
+
+export { $archivedSessions }
 
 // The backend's `/api/profiles/sessions` page cap (`le=500`). The Electron
 // merge path (remote profiles, registry gateways) answers every page by
@@ -71,7 +74,6 @@ export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
   }
 }
 
-export const $archivedSessions = atom<SessionInfo[]>([])
 export const $archivedSessionsLoading = atom(false)
 
 // Each load takes a generation; only the newest may publish or clear the

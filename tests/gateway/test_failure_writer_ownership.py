@@ -131,8 +131,7 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
 
 
 def test_context_overflow_exception_persists_nothing(tmp_path):
-    """Exception-path overflow (400/500 on a long session) must not write the user row or a
-    boundary — the same no-grow rule as the persist path (#1630)."""
+    """A payload-too-large exception must not write the user row or a boundary (#1630)."""
     import asyncio
     from gateway.config import GatewayConfig, Platform
     from gateway.platforms.event import MessageEvent
@@ -163,6 +162,51 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
         assert db.message_count() == before
         assert "/compress" in reply and "/new" in reply
         db.close()
+
+    asyncio.run(check())
+
+
+def test_unclassified_generic_400_persists_user_message(tmp_path):
+    """A bare provider 400 is not enough evidence to discard a long-session user turn."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = None
+
+        async def refresh(*args):
+            return None
+
+        runner._refresh_agent_cache_message_count = refresh
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="synthetic", user_id="synthetic")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        try:
+            prepared = runner._PreparedTurn(
+                [{"role": "user", "content": "fixture"}] * 100,
+                "", "synthetic inbound", None, None, None, sid, "synthetic-owner",
+            )
+            result = {"failed": True, "error": 'HTTP 400: {"detail":"Bad Request"}', "messages": []}
+            failed, hidden, overflow = runner._hmwa_classify_turn_failure(result, prepared.history, entry)
+            assert failed and not overflow
+            await runner._hmwa_persist_turn_transcript(
+                event=MessageEvent(text="synthetic inbound", source=source, message_id="synthetic-id"),
+                source=source, session_entry=entry, session_key=entry.session_key,
+                agent_result=result, agent_messages=[], prepared=prepared, response="",
+                agent_failed_early=failed, hidden_reasoning_incomplete=hidden,
+                is_context_overflow_failure=overflow,
+            )
+            rows = db.get_messages(sid)
+            assert any(row["role"] == "user" and row["content"] == "synthetic inbound" for row in rows)
+        finally:
+            db.close()
 
     asyncio.run(check())
 

@@ -424,6 +424,7 @@ hermes plugins install user/repo             # install from Git, then prompt Ena
 hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins update my-plugin --force      # same, accepting a caution security-scan verdict without the question
 hermes plugins update                        # list every plugin with an update, then "Update all N? [Y/n]"
 hermes plugins update --yes                  # same, without the question (scripts, cron; required without a terminal)
 hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
@@ -781,6 +782,20 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **safe** | Installs normally, no extra output |
 | **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
 | **dangerous** | Blocked. `--force` does **not** override |
+
+`hermes plugins update` scans the new code with the same rules before it
+replaces the installed copy, so a plugin that picks up risky code in an update
+is flagged before it runs. A caution verdict on a Git update asks
+`Update anyway? [y/N]`, and `hermes plugins update NAME --force` accepts it
+without the question. Hermes Desktop shows the same findings in a dialog with an
+**Update anyway** button. Catalog updates move to a reviewed pin, so a caution
+verdict there does not ask. In every case nothing changes until the update is
+accepted.
+
+Hermes Desktop shows an **Update** button on a Git-installed plugin when the
+last update check found a newer commit. The gateway runs that check every
+`plugins.auto_update_check_hours` (default 24), and `hermes plugins check-updates`
+runs it on demand.
 
 On `hermes plugins update`, a dangerous verdict on the updated tree
 disables the plugin until you review the findings and re-enable it. A

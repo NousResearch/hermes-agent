@@ -9,6 +9,7 @@ export {
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
   finalizeInterruptedMessages,
+  lastTextPartText,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,

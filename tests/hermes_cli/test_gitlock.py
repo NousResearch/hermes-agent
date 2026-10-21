@@ -694,8 +694,8 @@ def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_
 
     hook.unlink()
 
-    stuck = _fetch(clone)
-    assert stuck.returncode != 0 and "reference already exists" in stuck.stderr, f"premise: {stuck.stderr}"
+    stuck = _fetch(clone)  # git 2.51+: "reference already exists"; older git: "...main.lock': File exists"
+    assert stuck.returncode != 0 and "origin/main" in stuck.stderr, f"premise: {stuck.stderr}"
     assert release_dead_ref_locks(clone) == [str(lock)]
     landed = _fetch(clone)
     assert landed.returncode == 0, landed.stderr

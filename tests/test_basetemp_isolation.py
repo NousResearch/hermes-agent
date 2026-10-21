@@ -92,8 +92,14 @@ def test_read_only_var_tmp_falls_back_to_system_temp(tmp_path, monkeypatch):
     real_makedirs = suite_conftest.os.makedirs
     real_mkdtemp = suite_conftest.tempfile.mkdtemp
 
+    uid_suffix = f"-{suite_conftest.os.getuid()}" if hasattr(suite_conftest.os, "getuid") else ""
+    blocked_var_tmp_roots = {
+        Path("/var/tmp") / f"hermes-pytest{uid_suffix}",
+        Path("/var/tmp") / f"hermes-pytest{uid_suffix}-fallback",
+    }
+
     def deny_var_tmp(path, *args, **kwargs):
-        if str(path).startswith("/var/tmp/"):
+        if Path(path) in blocked_var_tmp_roots:
             raise PermissionError("read-only test fixture")
         return real_makedirs(path, *args, **kwargs)
 
@@ -111,7 +117,6 @@ def test_read_only_var_tmp_falls_back_to_system_temp(tmp_path, monkeypatch):
     suite_conftest._relocate_basetemp_outside_operator_home(config)
 
     relocated = config._tmp_path_factory._given_basetemp
-    uid_suffix = f"-{suite_conftest.os.getuid()}" if hasattr(suite_conftest.os, "getuid") else ""
     assert relocated is not None and relocated.parent == tmp_path / f"hermes-pytest{uid_suffix}-fallback"
 
 

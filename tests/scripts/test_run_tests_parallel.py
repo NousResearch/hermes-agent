@@ -694,8 +694,13 @@ def test_scratch_root_falls_back_when_var_tmp_is_not_writable(tmp_path: Path, mo
     monkeypatch.setattr(runner.os.path, "isdir",
                         lambda path: True if str(path) == "/var/tmp" else real_isdir(path))
 
+    blocked_var_tmp_roots = {
+        Path("/var/tmp") / f"hermes-pytest{uid_suffix}",
+        Path("/var/tmp") / f"hermes-pytest{uid_suffix}-fallback",
+    }
+
     def deny_var_tmp(path, *args, **kwargs):
-        if str(path).startswith("/var/tmp/"):
+        if Path(path) in blocked_var_tmp_roots:
             raise PermissionError("read-only test fixture")
         return real_makedirs(path, *args, **kwargs)
 

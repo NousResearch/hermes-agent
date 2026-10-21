@@ -507,6 +507,51 @@ class TestSaveEnvValueSecure:
             assert load_env()["ANTHROPIC_TOKEN"] == token
 
 
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "pw" + "$" + "Qr123",  # `$NAME` is expanded by the shell; fatal under `set -u`
+            "run" + chr(96) + "id" + chr(96),  # backtick runs the inner command — silent corruption
+            "pw$Qr'9",  # both specials: single quotes unavailable, escaped double-quote form
+        ],
+    )
+    def test_save_env_value_survives_being_sourced_by_a_shell(self, tmp_path, token):
+        """A saved secret must round-trip through a shell SOURCING the file, not only through
+        load_env_file: credential helpers wrap `set -euo pipefail; source ~/.hermes/.env`, where an
+        unquoted `$NAME` is expanded (an unset name aborts the helper outright) and an unquoted
+        backtick RUNS the inner command, silently storing a wrong secret. `#`, quotes and
+        whitespace were already quoted; `$` and backtick were not.
+        """
+        import shutil
+        import subprocess
+
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("SOME_SECRET", None)
+            save_env_value("SOME_SECRET", token)
+
+            env_path = tmp_path / ".env"
+            line = [
+                ln
+                for ln in env_path.read_text(encoding="utf-8").splitlines()
+                if ln.startswith("SOME_SECRET=")
+            ][0]
+            assert line.startswith(("SOME_SECRET='", 'SOME_SECRET="')), "value must be quoted"
+            assert load_env()["SOME_SECRET"] == token
+            if line.startswith("SOME_SECRET='"):
+                assert dotenv_values(str(env_path))["SOME_SECRET"] == token
+
+        if shutil.which("bash"):
+            sourced = subprocess.run(
+                ["bash", "-c", f"set -euo pipefail; source {env_path}; printf %s \"$SOME_SECRET\""],
+                capture_output=True,
+                text=True,
+            )
+            assert sourced.returncode == 0, sourced.stderr
+            assert sourced.stdout == token
+
+
     def test_save_env_value_already_quoted_input_is_not_double_wrapped_idempotently(
         self, tmp_path
     ):

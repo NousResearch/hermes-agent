@@ -15,6 +15,7 @@ empty file still counts as paused (fail safe, e.g. ``touch .../PAUSED``).
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -97,11 +98,16 @@ def resume(board: Optional[str] = None) -> bool:
 
 
 def paused_boards() -> list[str]:
-    """Slugs of every board currently paused (metadata-aware, never raises)."""
+    """Slugs of every board currently paused (metadata-aware, never raises).
+
+    Never raises is a contract, not a convenience: this feeds the CLI listing and the
+    dashboard's status line, so an unreadable board index must read as "nothing known to
+    be paused" rather than take the caller down with it.
+    """
     try:
         from hermes_cli import kanban_db_boards as boards
 
         slugs = [entry["slug"] for entry in boards.list_boards(include_archived=False)]
-    except Exception:
+    except (ImportError, OSError, sqlite3.Error, KeyError, TypeError):
         return []
     return [slug for slug in slugs if is_paused(slug)]

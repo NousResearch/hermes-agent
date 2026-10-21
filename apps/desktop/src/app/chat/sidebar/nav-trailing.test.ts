@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { rowOwnsTrailing } from './index'
+import { rowOwnsTrailing } from './nav-trailing'
 
 const row = { icon: () => null, id: 'kanban:nav', label: 'Kanban', route: '/kanban' }
 

@@ -25,6 +25,7 @@ from contextvars import copy_context
 import heapq
 import itertools
 import logging
+import math
 import threading
 import time
 from typing import Callable, Optional
@@ -68,7 +69,14 @@ class PeriodicScheduler:
         self._thread: Optional[threading.Thread] = None
 
     def schedule(self, fn: Callable[[], object], interval: float) -> ScheduledHandle:
-        handle = ScheduledHandle(self, fn, float(interval))
+        # A zero or negative interval re-queues the handle as immediately due
+        # forever, pinning the shared scheduler thread to one callback; a
+        # non-finite interval corrupts the heap ordering.  Reject both at the
+        # door instead of scheduling them (#119219).
+        interval = float(interval)
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("interval must be a finite value greater than zero")
+        handle = ScheduledHandle(self, fn, interval)
         with self._cond:
             self._requeue(handle)
             if self._thread is None or not self._thread.is_alive():

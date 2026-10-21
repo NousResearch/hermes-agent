@@ -70,10 +70,33 @@ def prompt_glyph() -> str:
 _SEPARATOR_WIDTH = 40
 
 
+# Every block (user message, reasoning, answer) is framed the same way: blank line, bar, content,
+# bar, blank line. A closing bar leaves the blank line owed; whatever prints next (a tool row, the
+# turn footer) pays it, and an opening bar pays it with its own leading blank line.
+_GAP_PENDING = False
+
+
 def separator(accent: bool) -> str:
-    """The bar above each user message and answer (accent) or reasoning block (dim)."""
+    """An opening bar: accent for user messages and answers, dim for reasoning. Every caller prints
+    a blank line ahead of it, so it also settles a gap the previous block owes."""
+    global _GAP_PENDING
+    _GAP_PENDING = False
     color = _fg(_skin_hex("ui_accent", "#FFBF00")) if accent else _DIM
     return f"{color}{'─' * _SEPARATOR_WIDTH}{_RST}"
+
+
+def closing_separator(accent: bool) -> str:
+    """The bar that closes a block; the blank line after it is owed to whatever prints next."""
+    global _GAP_PENDING
+    bar = separator(accent)
+    _GAP_PENDING = True
+    return bar
+
+
+def _take_gap() -> str:
+    global _GAP_PENDING
+    gap, _GAP_PENDING = ("\n" if _GAP_PENDING else ""), False
+    return gap
 
 
 def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
@@ -89,18 +112,25 @@ def answer_label(timestamp: str = "") -> str:
     return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
 
 
-def thought_title(text: str) -> str:
-    """Short title for a reasoning block: its first ``**bold**`` heading, else its first sentence."""
+def _full_title(text: str) -> str:
+    """The reasoning's first ``**bold**`` heading, else its first sentence, whitespace-collapsed."""
     text = (text or "").strip()
     match = re.search(r"\*\*(.+?)\*\*", text)
     title = match.group(1) if match else re.split(r"(?<=[.!?])\s|\n", text, maxsplit=1)[0]
-    title = " ".join(title.split()).strip("*# ")
+    return " ".join(title.split()).strip("*# ")
+
+
+def thought_title(text: str) -> str:
+    """Short title for a reasoning block: its first ``**bold**`` heading, else its first sentence."""
+    title = _full_title(text)
     return title if len(title) <= _TITLE_MAX else title[:_TITLE_MAX - 1].rstrip() + "…"
 
 
 def thought_line(seconds: float | None, text: str) -> str:
     """``∴ Thought for 3s · Planning the change`` (dim italic), closing a reasoning block."""
-    title = thought_title(text)
+    # The reasoning is printed above this line; a title that IS the whole reasoning would repeat it.
+    whole = _full_title(text) == " ".join((text or "").split()).strip("*# ")
+    title = "" if whole else thought_title(text)
     took = t("cli.modern.thought_for", seconds=f"{max(seconds or 0.0, 0.0):.0f}") if seconds else t("cli.modern.thought")
     body = f"{took} · {title}" if title else took
     return f"\x1b[2;3m∴ {body}{_RST}"
@@ -119,37 +149,39 @@ def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
     lines unless ``full``, as classic), then the ``∴ Thought for 3s`` summary."""
     lines = (text or "").strip().splitlines()
     shown = lines if full or len(lines) <= _REASONING_PREVIEW_LINES else lines[:_REASONING_PREVIEW_LINES]
-    rows = [separator(False), *(reasoning_text_line(line) for line in shown)]
+    rows = ["", separator(False), *(reasoning_text_line(line) for line in shown)]
     if len(shown) < len(lines):
         rows.append(f"{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - len(shown))}{_RST}")
-    return [*rows, thought_line(seconds, text)]
+    return [*rows, thought_line(seconds, text), closing_separator(False)]
 
 
 def completed_tool_line(cli, function_name: str, args: dict | None, duration: float, result=None,
                         is_error: bool = False) -> str:
     """The scrollback line for a finished tool call in the active layout."""
     if is_modern(cli):
-        return tool_row(function_name, args, duration, result, is_error)
+        return _take_gap() + tool_row(function_name, args, duration, result, is_error)
     from agent.display import get_cute_tool_message
     return f"  {get_cute_tool_message(function_name, args, duration, result=result)}"
 
 
 def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
-    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed."""
-    from agent.display import get_tool_row_parts
+    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
+    ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
+    from agent.display import get_tool_row_parts, is_neutral_failure
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
+    neutral = is_neutral_failure(function_name, result)
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
-        mark = f"{_RED}✗{_RST}" if suffix is not None else (emoji or "●")
+        mark = f"{_RED}✗{_RST}" if suffix is not None and not neutral else (emoji or "●")
         line = f"{mark} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
         if detail:
             line += f" {detail}"
         if index == len(rows) - 1 and duration >= 0.1:
             line += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
-            line += f"{_RED}{suffix}{_RST}"
+            line += f"{_DIM if neutral else _RED}{suffix}{_RST}"
         out.append(line)
     return "\n".join(out)
 
@@ -201,7 +233,7 @@ def turn_footer(summary: str) -> str:
     """``─ 12.4s · read 3 files · edited 1 file +4 -0 · 7:02 AM`` closing each turn."""
     body = summary.lstrip("⋯ ").strip()
     clock = datetime.now().strftime("%-I:%M %p") if os.name != "nt" else datetime.now().strftime("%I:%M %p")
-    return f"{_DIM}─ {body} · {clock}{_RST}" if body else f"{_DIM}─ {clock}{_RST}"
+    return _take_gap() + (f"{_DIM}─ {body} · {clock}{_RST}" if body else f"{_DIM}─ {clock}{_RST}")
 
 
 # ── live region (prompt_toolkit fragments, redrawn every frame) ─────────────────────────────

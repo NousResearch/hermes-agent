@@ -9,6 +9,16 @@ export const canonicalProfile = (profile: unknown): string =>
 export const canonicalSessionKey = (sessionId: unknown, profile?: unknown): string =>
   JSON.stringify([canonicalProfile(profile), sessionId])
 
+const admissionObservers = new Set<(admissionId: string, status: string) => void>()
+
+/** Every `prompt.submit` this Desktop's canonical clients send (composer, edit and regenerate,
+ *  Quick Entry, bots) reports its accepted admission here, whichever surface sent it. */
+export function observeCanonicalAdmissions(observer: (admissionId: string, status: string) => void): () => void {
+  admissionObservers.add(observer)
+
+  return () => admissionObservers.delete(observer)
+}
+
 /** Live events and retained snapshots must describe the same answerable card. */
 export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: Record<string, unknown>): Record<string, unknown> {
   const choices = Array.isArray(prompt.choices) ? prompt.choices : []
@@ -649,6 +659,8 @@ export class CanonicalDesktopProtocol {
       if (value.ref?.session_id !== params.session_id || typeof value.admission_id !== 'string') {
         throw new Error('Canonical admission receipt destination mismatch')
       }
+
+      for (const observe of admissionObservers) { observe(value.admission_id, String(value.status ?? '')) }
 
       return { ...value, session_id: value.ref.session_id, submission_id: params.submission_id ?? params.input_id }
     }

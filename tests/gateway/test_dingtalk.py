@@ -461,6 +461,51 @@ class TestInboundMediaCaching:
         msg.extensions = {"content": ext_content}
         assert collect_download_codes(msg) == [(ext_content, "downloadCode", "file")]
 
+    @pytest.mark.asyncio
+    async def test_generic_content_type_photo_routes_to_image_cache(self, monkeypatch):
+        """DingTalk answers ``application/octet-stream`` for many photos; the sender's file
+        name must still route those bytes into the image cache — the document cache would
+        hide the picture from the vision tools."""
+        import plugins.platforms.dingtalk.adapter as dt
+        monkeypatch.setattr(dt, "_fetch_media_bytes",
+                            AsyncMock(return_value=(b"\x89PNG\r\n", "application/octet-stream")))
+        image_cache = AsyncMock(return_value="/tmp/hermes/cache/images/photo.png")
+        monkeypatch.setattr(dt, "cache_image_from_bytes_async", image_cache)
+        document_cache = AsyncMock(return_value="/tmp/hermes/cache/docs/dingtalk.png")
+        monkeypatch.setattr(dt, "cache_document_from_bytes_async", document_cache)
+
+        cached = await dt._cache_dingtalk_media("https://oss.example/dl?sig=2", "file", "photo.png")
+
+        assert cached == "/tmp/hermes/cache/images/photo.png"
+        document_cache.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generic_content_type_document_keeps_its_extension(self, monkeypatch):
+        """A real document with a generic content type still lands in the document cache."""
+        import plugins.platforms.dingtalk.adapter as dt
+        monkeypatch.setattr(dt, "_fetch_media_bytes",
+                            AsyncMock(return_value=(b"%PDF-1.4", "application/octet-stream")))
+        document_cache = AsyncMock(return_value="/tmp/hermes/cache/docs/dingtalk.pdf")
+        monkeypatch.setattr(dt, "cache_document_from_bytes_async", document_cache)
+        monkeypatch.setattr(dt, "cache_image_from_bytes_async", AsyncMock())
+
+        assert await dt._cache_dingtalk_media("https://oss.example/dl?sig=3", "file", "report.pdf") \
+            == "/tmp/hermes/cache/docs/dingtalk.pdf"
+        assert document_cache.await_args.args[1].endswith(".pdf")
+
+    def test_collect_download_codes_reads_legacy_rich_text_shape(self):
+        """``_rich_list`` accepts the legacy ``rich_text`` shape too, so those items are
+        resolved instead of reaching media_urls as bare codes."""
+        from plugins.platforms.dingtalk.inbound import collect_download_codes
+        msg = MagicMock()
+        msg.image_content = None
+        msg.rich_text_content = None
+        item = {"type": "picture", "downloadCode": "code-legacy"}
+        msg.rich_text = [item]
+        msg.message_type = "richText"
+        msg.extensions = {}
+        assert collect_download_codes(msg) == [(item, "downloadCode", "image")]
+
 
 # ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)

@@ -856,6 +856,8 @@ def _handle_schedule(args: dict, **kw) -> str:
     raw_reason = args.get("reason")
     _check(raw_reason is None or isinstance(raw_reason, str), "reason must be a string")
     reason = _redact(raw_reason.strip()) if raw_reason and raw_reason.strip() else None
+    until = args.get("until")
+    _check(until is None or isinstance(until, str), "until must be a string")
     with _board(args.get("board")) as (kb, conn):
         # The goal loop treats ``scheduled`` as terminal like ``blocked``, so
         # parking would bypass the completion judge (see kanban_block, #38696).
@@ -864,8 +866,11 @@ def _handle_schedule(args: dict, **kw) -> str:
                "goal_mode tasks cannot be scheduled: use kanban_block with kind "
                f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
                "blocker, or kanban_complete so the completion judge can evaluate it.")
-        ok = kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
+        try:
+            ok = kb.schedule_task(
+                conn, tid, reason=reason, expected_run_id=_worker_run_id(tid), until=until)
+        except ValueError as e:
+            raise _Reject(str(e)) from e
         _check(ok, f"could not schedule {tid} (unknown id or not in todo/ready/running/blocked)")
         return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 

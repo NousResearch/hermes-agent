@@ -326,6 +326,9 @@ _SPECS = [
     _cmd("schedule", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
+        _arg("--until", metavar="ISO8601",
+             help="Wake deadline (ISO8601, e.g. 2026-10-14T09:30+03:00); the dispatcher "
+                  "auto-promotes the task when it passes. Naive = machine-local."),
         _bulk_ids("schedule"),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [

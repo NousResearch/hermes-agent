@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -14,7 +15,7 @@ export function prepareElectronRuntime({ source, install = true, env = process.e
     join(source, 'node_modules/electron/package.json')].find(existsSync)
   if (!manifest) throw new Error('Missing prepared Electron dependency; install the locked desktop workspace first')
   const packageRoot = dirname(manifest)
-  const { version } = JSON.parse(readFileSync(manifest, 'utf8'))
+  const { version, dependencies } = JSON.parse(readFileSync(manifest, 'utf8'))
   const desktop = JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(source, 'package-lock.json'), 'utf8'))
   const entry = lock.packages?.[relative(source, packageRoot).split('\\').join('/')]
@@ -41,6 +42,14 @@ export function prepareElectronRuntime({ source, install = true, env = process.e
   const installerEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !excluded.has(key.toLowerCase())))
   Object.assign(installerEnv, { ELECTRON_INSTALL_PLATFORM: process.platform, ELECTRON_INSTALL_ARCH: process.arch,
     npm_config_platform: process.platform, npm_config_arch: process.arch })
+  // install.js unpacks with @electron-internal/extract-zip, whose Windows binding imports
+  // VCRUNTIME140.dll. A fresh Windows has none, so the load fails (ERR_DLOPEN_FAILED).
+  // Node loads bindings with LOAD_WITH_ALTERED_SEARCH_PATH, so a copy beside the binding
+  // is found first. HERMES_VC_RUNTIME is the copy our Python ships.
+  if (process.platform === 'win32' && env.HERMES_VC_RUNTIME && dependencies?.['@electron-internal/extract-zip']) {
+    const binding = dirname(createRequire(manifest).resolve('@electron-internal/extract-zip'))
+    copyFileSync(env.HERMES_VC_RUNTIME, join(binding, 'vcruntime140.dll'))
+  }
   console.log(`electron-runtime: preparing locked Electron ${version} (${process.platform}-${process.arch})...`)
   execFileSync(process.execPath, [join(packageRoot, 'install.js')], { cwd: source, env: installerEnv, stdio: 'inherit' })
   if (!prepared()) throw new Error('Electron installer did not produce the prepared host runtime')

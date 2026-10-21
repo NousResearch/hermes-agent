@@ -631,7 +631,7 @@ class TestReaderLoopEofWhileAlive:
             ), "spawn must attach a reader thread"
             # Past the historical 5s reader bound: the capture pipe is long at
             # EOF and the direct child is still sleeping.
-            time.sleep(5.5)
+            assert not session._completion_event.wait(5.5)
             assert session.process.poll() is None
             assert session.exited is False
             assert session.id in registry._running

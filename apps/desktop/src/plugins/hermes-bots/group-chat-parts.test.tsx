@@ -246,3 +246,24 @@ describe('approval card (#91706)', () => {
     expect(answer).toHaveBeenCalledWith(entry, MEMBERS[0], 'once')
   })
 })
+
+// A hosted room resolves mentions at the GATEWAY, against each member's frozen
+// handle (`resolve_mentions`). The friendly slug the legacy parser also accepts
+// is not in that vocabulary: `@atlas-prime` addresses nobody, so the canonical
+// composer has to insert the handle itself.
+describe('mentionTokenFor (hosted room handles)', () => {
+  it('inserts the frozen handle when the caller supplies it', async () => {
+    const { canonicalMentionHandle } = await import('./canonical-group-rows')
+    const { mentionTokenFor } = await import('./group-chat-parts')
+    const member: GroupMember = { display_name: 'Atlas Prime', handle: 'atlas', name: 'atlas-2' }
+
+    expect(mentionTokenFor(member)).toBe('atlas-prime')
+    expect(mentionTokenFor(member, canonicalMentionHandle)).toBe('atlas')
+  })
+
+  it('keeps deriving the legacy tag when no handle is supplied', async () => {
+    const { mentionTokenFor } = await import('./group-chat-parts')
+
+    expect(mentionTokenFor(MEMBERS[0])).toBe('alpha')
+  })
+})

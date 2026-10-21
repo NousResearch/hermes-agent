@@ -1,17 +1,66 @@
-import { atom, Button, host, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { atom, host, useValue } from '@hermes/plugin-sdk'
+import { useEffect, useMemo } from 'react'
 
-import { useCanonicalGroupLabels } from './canonical-group-labels'
+import type { CanonicalGroupRoom } from './canonical-group-rows'
 import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
 
+/** Every hosted room this Desktop knows, by `canonical:` key. Creation
+ *  (`registerCanonicalGroup`) and discovery both publish here, and the left
+ *  roster renders from it — that is what makes a new group appear. */
+export const $canonicalGroupRooms = atom<Record<string, { route: CanonicalGroupRoute; room: CanonicalRoom }>>({})
+
+/** The stable identity of one hosted room on one source. */
+export function canonicalGroupKey(route: CanonicalGroupRoute, room: CanonicalRoom): string {
+  return `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
+}
+
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
-  const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
+  const key = canonicalGroupKey(route, room)
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id, roomName: room.name } })
+  $canonicalGroupRooms.set({
+    ...$canonicalGroupRooms.get(),
+    [key]: { room, route: { connectionId: route.connectionId, profile: route.profile } }
+  })
 
   return key
+}
+
+/** Re-list one source's rooms and publish them. `groups.list` is the whole
+ *  answer for that (connection, profile), so a room the gateway no longer
+ *  holds leaves the roster with it. */
+export async function refreshCanonicalGroupRooms(route: CanonicalGroupRoute): Promise<void> {
+  const { rooms } = await discoverCanonicalGroups(route)
+  const bindings = { ...$canonicalGroupBindings.get() }
+  const next: Record<string, { route: CanonicalGroupRoute; room: CanonicalRoom }> = {}
+
+  for (const room of rooms) {
+    const key = canonicalGroupKey(route, room)
+    next[key] = { room, route: { connectionId: route.connectionId, profile: route.profile } }
+    bindings[key] = { ...route, roomId: room.room_id, roomName: room.name }
+  }
+
+  $canonicalGroupBindings.set(bindings)
+  $canonicalGroupRooms.set(next)
+}
+
+/** Keep the roster's hosted rooms in step with the source this window is on,
+ *  and with the gateway coming back. Failures keep the last good list. */
+export function useCanonicalGroupRooms(): CanonicalGroupRoom[] {
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const rooms = useValue($canonicalGroupRooms)
+
+  useEffect(() => {
+    void refreshCanonicalGroupRooms(captureCanonicalGroupRoute()).catch(() => {
+      // No canonical driver (or the gateway is restarting): show what we have.
+    })
+  }, [connectionId, gateway, profile])
+
+  return useMemo(() => Object.entries(rooms).map(([key, entry]) => ({ key, room: entry.room })), [rooms])
 }
 
 /** Where a group string entered. Room and group names are free text (hosted_rooms
@@ -97,30 +146,4 @@ export function publishCanonicalGroup(
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [alias]: binding })
 }
 
-export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: CanonicalGroupOrigin) => void }) {
-  const labels = useCanonicalGroupLabels()
-  const connectionId = useValue(host.state.connectionId)
-  const profile = useValue(host.state.profile)
-  const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
-  const [error, setError] = useState('')
-  const [refresh, setRefresh] = useState(0)
-  useEffect(() => {
-    let cancelled = false
-    setRooms([])
-    setError('')
-    void (async () => {
-      const route = captureCanonicalGroupRoute()
-      const result = await discoverCanonicalGroups(route)
 
-      if (!cancelled) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
-    })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
-
-    return () => { cancelled = true }
-  }, [connectionId, profile, refresh])
-
-  return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
-    {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key, 'key')} variant="ghost">{room.name}</Button>)}
-  </div>
-}

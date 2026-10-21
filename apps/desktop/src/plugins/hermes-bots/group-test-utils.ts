@@ -455,10 +455,16 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  const { createElement } = await import('react')
+  const { en } = await import('@/i18n/en')
   const { Textarea } = await import('@/components/ui/textarea')
 
   return {
     Textarea,
+    // Class merge + the row button the mention popover renders into. Real
+    // implementations are Tailwind/CVA concerns; tests only need DOM elements.
+    cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
+    RowButton: (props: Record<string, unknown>) => createElement('button', { type: 'button', ...props }),
     // Real value: approval.respond forwards it as its client deadline (#60654).
     APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,
@@ -476,7 +482,14 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
     useQuery: () => ({ data: [], isLoading: false }),
-    useValue: <T>(store: { get: () => T }) => store.get()
+    useValue: <T>(store: { get: () => T }) => store.get(),
+    // `useBots()` binds the plugin bundle through this, so a test that renders
+    // any group surface needs a translator that resolves real keys.
+    usePluginI18n: () => (key: string, ...args: unknown[]) => {
+      const leaf = key.split('.').reduce<unknown>((node, part) => (node as Record<string, unknown>)?.[part], en)
+
+      return typeof leaf === 'function' ? (leaf as (...a: unknown[]) => string)(...args) : String(leaf ?? key)
+    }
   }
 }
 

@@ -61,21 +61,25 @@ export function RosterGroupRowView({
         {...rowProps}
         needsYou={Boolean(groupNeedsYou[rowProps.group]) || groupHasPendingClarify(groupClarify, rowProps.group)}
       />
-      <div className="flex flex-col">
-        {([-1, 1] as const).map(delta => (
-          <Tip key={delta} label={delta === -1 ? b.sections.moveUp : b.sections.moveDown}>
-            <Button
-              aria-label={`${rowProps.group}: ${delta === -1 ? b.sections.moveUp : b.sections.moveDown}`}
-              disabled={!reorderGroupRows(sortedGroupRows, rowProps.group, delta)}
-              onClick={() => moveRoom(rowProps.group, delta)}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name={delta === -1 ? 'chevron-up' : 'chevron-down'} />
-            </Button>
-          </Tip>
-        ))}
-      </div>
+      {/* Desktop-only rows carry the roster order this writes. A hosted room
+          has no record here, so its reorder buttons would write nowhere. */}
+      {groupRooms[rowProps.group] ? (
+        <div className="flex flex-col">
+          {([-1, 1] as const).map(delta => (
+            <Tip key={delta} label={delta === -1 ? b.sections.moveUp : b.sections.moveDown}>
+              <Button
+                aria-label={`${rowProps.group}: ${delta === -1 ? b.sections.moveUp : b.sections.moveDown}`}
+                disabled={!reorderGroupRows(sortedGroupRows, rowProps.group, delta)}
+                onClick={() => moveRoom(rowProps.group, delta)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name={delta === -1 ? 'chevron-up' : 'chevron-down'} />
+              </Button>
+            </Tip>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }

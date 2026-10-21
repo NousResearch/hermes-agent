@@ -51,6 +51,7 @@ _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
 _REOPEN_SEED = object()
+_REASONING = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
@@ -161,6 +162,30 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._delivered_segment_texts: list[str] = []  # finalized text per past segment
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
+        # ── Live reasoning relay state ─────────────────────────────────────
+        # The agent's reasoning_callback buffers thinking-channel deltas
+        # (GLM / DeepSeek / Qwen reasoning_content) here; run() flushes them
+        # as 💭 commentary bubbles on a time/length cadence (see
+        # _reasoning_flush_due).  Gated by the gateway on show_reasoning.
+        self._reasoning_buf: str = ""
+        self._reasoning_last_delta_ts: float = 0.0
+        # When the buffer transitioned empty→non-empty (oldest buffered
+        # char).  Age-based cadence: during a continuously streaming
+        # reasoning phase a silence-only timer never fires (every delta
+        # resets it), so the first bubble would wait for the full char
+        # threshold (~30s at typical token rates).  Basing the flush on
+        # buffer AGE guarantees a bubble at least every
+        # _REASONING_FLUSH_SECONDS once reasoning starts streaming.
+        self._reasoning_first_delta_ts: float = 0.0
+        # Bubbles emitted for the CURRENT reasoning phase.  Reset when a
+        # phase ends (flush on done/boundary/content) so the next phase's
+        # first bubble gets the fast path again — "first bubble is fast,
+        # later bubbles keep cadence" without extra state machines.
+        self._reasoning_bubble_count: int = 0
+        # True when at least one reasoning bubble was delivered this turn —
+        # suppresses the gateway's final 💭 prepend when streaming already
+        # showed the reasoning live (mirrors the CLI's reasoning box).
+        self.reasoning_delivered: bool = False
         self._before_finalize_notified = False
         self._reset_message_state()
 
@@ -409,6 +434,58 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if text:
             self._queue.put((_COMMENTARY, text))
 
+    def on_reasoning(self, text: str) -> None:
+        """Thread-safe: buffer a reasoning delta from the agent's thinking channel.
+
+        Called from the agent's worker thread via ``agent.reasoning_callback``;
+        the async ``run()`` task drains it from the queue and flushes buffered
+        reasoning as 💭 commentary bubbles on the _reasoning_flush_due cadence.
+        """
+        if text:
+            self._queue.put((_REASONING, text))
+
+    # ── live reasoning flush cadence ──────────────────────────────────────
+
+    _REASONING_FLUSH_CHARS = 4096     # flush partial text at this length
+    _REASONING_FLUSH_SECONDS = 10.0   # ... or when buffer is this old
+    # 아빠 지정 규격 (2026-10-21): 10초당 4096자 단위 플러시, 10초보다 빨리 끝나면 바로 출력.
+    # 2.5초 조기 플러시는 3~4초짜리 짧은 씽킹을 2개의 자투리 버블로 강제 분할하므로 10초로 통일.
+    _REASONING_FIRST_BUBBLE_SECONDS = 10.0
+
+    def _reasoning_flush_due(self) -> bool:
+        """True when the buffered reasoning should be flushed as a bubble."""
+        if not self._reasoning_buf:
+            return False
+        now = time.monotonic()
+        # Buffer-age cadence (primary): guarantees a bubble at least every
+        # _REASONING_FLUSH_SECONDS while reasoning streams continuously.
+        # A silence-only timer never fires mid-stream (every delta resets
+        # it), which delayed the first bubble to the full char threshold.
+        if self._reasoning_first_bubble_due():
+            return True
+        if self._reasoning_first_delta_ts and (
+            now - self._reasoning_first_delta_ts >= self._REASONING_FLUSH_SECONDS
+        ):
+            return True
+        if len(self._reasoning_buf) >= self._REASONING_FLUSH_CHARS:
+            return True
+        return False
+
+    def _reasoning_first_bubble_due(self) -> bool:
+        """First bubble of a reasoning phase flushes early so the user sees
+        something right after TTFT instead of staring at nothing for the
+        full cadence window.  Only the FIRST bubble gets this fast path —
+        subsequent bubbles keep the regular cadence to avoid spam."""
+        return bool(
+            self._reasoning_buf
+            and not self._reasoning_bubble_count
+            and self._reasoning_first_delta_ts
+            and (
+                time.monotonic() - self._reasoning_first_delta_ts
+                >= self._REASONING_FIRST_BUBBLE_SECONDS
+            )
+        )
+
     def flush_pending_sync(self, timeout: float = 5.0) -> bool:
         """Block the agent worker thread until everything queued so far is delivered:
         ``(_FLUSH, Event)`` barrier — run() drains earlier items (FIFO), finalizes the
@@ -571,7 +648,74 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         await self._suppress_silence_marker()
                         return
 
-                if self._should_edit(tick) and (
+                # ── Live reasoning flush ─────────────────────────────────
+                # Emit buffered reasoning as an interim 💭 bubble when: the
+                # stream is ending (got_done), a tool boundary arrived, or
+                # the time/length threshold tripped.  Sent BEFORE the
+                # content update below so the bubble lands above the answer.
+                should_edit = self._should_edit(tick)
+                if self._reasoning_buf and (
+                    tick.got_done
+                    or tick.got_segment_break
+                    or self._reasoning_flush_due()
+                    or (should_edit and self._accumulated)
+                ):
+                    _rtext = self._reasoning_buf
+                    self._reasoning_buf = ""
+                    # Whether this flush ENDS the reasoning phase (stream
+                    # done / tool boundary / real content arriving). Only
+                    # then does the next reasoning delta start a NEW phase
+                    # whose first bubble earns the fast path again; a
+                    # mid-phase time/length flush must keep the cadence,
+                    # or every bubble would re-trigger the fast path.
+                    _phase_ended = (
+                        tick.got_done
+                        or tick.got_segment_break
+                        or (should_edit and self._accumulated)
+                    )
+                    # Age clock restarts for the next bubble's cadence.
+                    self._reasoning_first_delta_ts = time.monotonic()
+                    self._reasoning_last_delta_ts = time.monotonic()
+                    _rtext = ensure_closed_code_fences(
+                        self._clean_for_display(_rtext)
+                    ).strip()
+                    if _rtext:
+                        # Render as a Telegram EXPANDABLE blockquote (blue
+                        # accent bar, collapsed to ~3 lines until tapped) —
+                        # G-레미's suggestion via dad (2026-10-19).  The
+                        # adapter converts "> "-prefixed lines to blockquote
+                        # entities; the official MarkdownV2 expandability
+                        # mark is a trailing || on the LAST quoted line
+                        # (core.telegram.org/bots/api).  Short quotes (<3
+                        # lines) simply render as a plain blockquote.
+                        # Dad's 2026-10-21 label idea, take-2 (collapse-safe):
+                        #  - a blank line rendered as bare '>' does NOT match
+                        #    the adapter's blockquote pattern, so it escapes
+                        #    out as a literal '>' and SHATTERS the quote into
+                        #    separate blockquotes — the expandable mark then
+                        #    only covers the last fragment (collapse dies)
+                        #  - so: drop blank lines (keep line breaks between
+                        #    real lines), widen tabs to 4 spaces, and keep the
+                        #    expandability mark on the final line only
+                        _lines = ["💭 thinking..."] + [
+                            ln.replace("\t", "    ")
+                            for ln in _rtext.splitlines() if ln.strip()
+                        ]
+                        _quoted = "\n".join(
+                            f"> {ln}" + ("||" if _i == len(_lines) - 1 else "")
+                            for _i, ln in enumerate(_lines)
+                        )
+                        _rok = await self._send_commentary(_quoted)
+                        if _rok:
+                            self._reasoning_bubble_count += 1
+                            self.reasoning_delivered = True
+                        self._last_edit_time = time.monotonic()
+                    if _phase_ended:
+                        # New phase starts with the next delta (if any):
+                        # re-arm the first-bubble fast path for it.
+                        self._reasoning_bubble_count = 0
+
+                if should_edit and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
                     # Seal first: it clears the message id, so a remainder still over the limit
@@ -685,6 +829,20 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             elif kind is _COMMENTARY:
                 tick.commentary_text = item[1]
                 return tick
+            elif kind is _REASONING:
+                # Reasoning delta: accumulate into the reasoning buffer;
+                # flushed in run() on time/length/boundary cadence.  Keep
+                # draining — a reasoning delta is not a stop item.
+                if not self._reasoning_buf:
+                    # Empty→non-empty: restart the age clock for the flush
+                    # cadence.  NOTE: do NOT reset _reasoning_bubble_count
+                    # here — a mid-phase time/length flush also empties the
+                    # buffer, so this transition does NOT imply a new phase.
+                    # Phase-end (done/boundary/content) re-arms the fast
+                    # path in the flush block in run().
+                    self._reasoning_first_delta_ts = time.monotonic()
+                self._reasoning_buf += item[1]
+                self._reasoning_last_delta_ts = time.monotonic()
             elif kind is _FLUSH:
                 # Barrier: finalize like a tool boundary, signal at the end of the tick.
                 tick.got_flush = tick.got_segment_break = True

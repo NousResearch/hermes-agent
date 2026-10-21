@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
@@ -210,7 +210,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
         if ctx.mute_notification_reply:
-            return None, None, None, False
+            return None, None, None, False, None
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
@@ -289,6 +289,22 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # stitched as a "partial delivery" nobody received (classic -q parity).
                     raise _NoStreamConsumer()
 
+        # Live reasoning relay: same gate pair as the CLI's reasoning box —
+        # token streaming active (relay rides the consumer queue) AND the
+        # user opted into show_reasoning on this platform.  Buffers thinking-
+        # channel deltas for flush as 💭 bubbles on the cadence above.
+        reasoning_stream_cb: Callable[[str], None] | None = None
+        if stream_consumer is not None and want_stream_deltas:
+            from gateway.run import _resolve_gateway_display_bool
+            _want_reasoning_stream = _resolve_gateway_display_bool(
+                ctx.user_config, platform_key, "show_reasoning",
+                default=False, platform=ctx.source.platform,
+            )
+            if _want_reasoning_stream:
+                def reasoning_stream_cb(text: str) -> None:
+                    if ctx._run_still_current() and hasattr(stream_consumer, "on_reasoning"):
+                        stream_consumer.on_reasoning(text)
+
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
@@ -314,7 +330,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
                 self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
-        return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
+        return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages, reasoning_stream_cb
 
 
     # ── per-turn agent wiring ───────────────────────────────────────────────────────────────
@@ -415,7 +431,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent._gateway_turn_request_overrides = turn_overrides
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
-                                   stream_delta_cb, interim_assistant_cb, want_interim_messages):
+                                   stream_delta_cb, interim_assistant_cb, want_interim_messages,
+                                   reasoning_stream_cb=None):
         """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
@@ -441,6 +458,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, (
             self._local_notice_callback_sync if local_viewer_turn(self) else self._notice_callback_sync)
         agent.reasoning_callback = None  # per turn: a reused agent never keeps an earlier API turn's sink
+        # Live reasoning relay (gateway parity with the CLI's reasoning box):
+        # the agent fires reasoning_callback with structured reasoning deltas
+        # (reasoning_content — GLM / DeepSeek / Qwen thinking channels).  Only
+        # wired when token streaming is active (the relay rides the stream
+        # consumer's queue) AND the user opted into show_reasoning.
+        # LOCAL PATCH — must stay BELOW the per-turn clear above: an earlier
+        # merge placed this assignment above it and upstream's
+        # ``reasoning_callback = None`` silently disabled the relay every turn.
+        # ``reasoning_stream_cb`` is None when the gates are closed, so the
+        # clear's intent (no stale sink on a reused agent) is preserved.
+        # API-turn observers wired below still win (they assign after us).
+        agent.reasoning_callback = reasoning_stream_cb
         if self._approval_owner is not None:
             from gateway.session_api_turn import api_execution, wire_api_observers
             if api_execution.get() is not None:
@@ -996,6 +1025,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx
+        # Live reasoning relay: surface mid-turn 💭 delivery on the result so
+        # the final prepend can skip re-sending the same reasoning block.
+        if (
+            stream_consumer is not None
+            and isinstance(result, dict)
+            and getattr(stream_consumer, "reasoning_delivered", False)
+        ):
+            result["reasoning_delivered"] = True
         # Canonicalize a model-emitted computer-use screenshot path at the common result boundary so
         # the streaming finalizer and the non-streaming delivery path see the same response.
         if isinstance(result, dict) and isinstance(result.get("final_response"), str):
@@ -1260,7 +1297,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if tier is not _REQUEST_OPTION_MISSING:
                 runner._service_tier = tier
         runner._reasoning_config = reasoning_config
-        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+        stream_consumer, stream_delta_cb, interim_cb, want_interim, reasoning_stream_cb = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
@@ -1268,7 +1305,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim, reasoning_stream_cb)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
         if local_viewer_turn(self) and not ctx.mute_notification_reply:

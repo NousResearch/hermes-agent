@@ -88,18 +88,22 @@ export function isZombieSuspect(silentForMs, thresholdMs, probeOutcome) {
 /**
  * Heartbeat stall rule. Photon's messages stream sends a server heartbeat
  * about every 30s even on a quiet line, so once one has been seen, silence is
- * benign and a missing heartbeat is the real stall signal. Returns null while
- * the rule does not apply (disabled, or no heartbeat seen yet — the
+ * benign and a missing heartbeat is the real stall signal. Heartbeats are
+ * per client, not per stream, so they only prove the connection: a sidecar
+ * respawned in-process can get heartbeats while its messages subscription
+ * never delivers (#124010). The rule therefore applies only after this
+ * sidecar's messages stream has yielded at least once. Returns null while it
+ * does not apply (disabled, no heartbeat yet, or no message yet: the
  * silence-probe rules above stay in charge), else whether the stream has gone
  * `stallMs` without a heartbeat or a yielded message.
  *
  * @param {number} now
- * @param {{lastHeartbeatAt: number, heartbeatCount: number, lastInboundAt: number}} state
+ * @param {{lastHeartbeatAt: number, heartbeatCount: number, lastInboundAt: number, inboundCount: number}} state
  * @param {number} stallMs stall threshold (<= 0 disables the rule)
  * @returns {null | {stalled: boolean, stalledForMs: number}}
  */
 export function heartbeatStall(now, state, stallMs) {
-  if (!(stallMs > 0) || !(state.heartbeatCount > 0)) return null;
+  if (!(stallMs > 0) || !(state.heartbeatCount > 0) || !(state.inboundCount > 0)) return null;
   const stalledForMs = now - Math.max(state.lastHeartbeatAt, state.lastInboundAt);
   return { stalled: stalledForMs >= stallMs, stalledForMs };
 }

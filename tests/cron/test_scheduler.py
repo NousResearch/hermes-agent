@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import contextvars
 import itertools
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -18,10 +20,58 @@ from cron.scheduler import (
     _resolve_cron_enabled_toolsets,
     _resolve_delivery_target,
     _summarize_cron_failure_for_delivery,
-    run_job,
 )
 from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
+
+
+def _run_owned_job(job, tmp_path, db=None):
+    """Run the production owner bridge, preserving each test's agent/DB probes."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
+
+    ref = SessionRef("test-profile", "canonical-cron-session")
+    admission_id = "cron-owner-admission"
+    request_id = "cron-owner-request"
+    owns_db = db is None
+    if owns_db:
+        db = acquire(tmp_path / "state.db")
+        db.create_session(ref.session_id, source="cron")
+    else:
+        db.db_path = str(tmp_path / "state.db")
+    authority = SimpleNamespace(
+        db=db,
+        sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
+        pending_results={},
+    )
+    row = {
+        "admission_id": admission_id, "request_id": request_id,
+        "principal_id": "cron-owner", "payload": {"text": ""},
+    }
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": request_id,
+    }))
+
+    async def run():
+        previous = current_execution()
+        try:
+            await execute(authority, ref, row, policy)
+        except RuntimeError as exc:
+            saved = authority.pending_results.get(admission_id)
+            if saved is None:
+                raise
+            assert str(exc) == saved["result"]["cron_result"][3]
+        assert current_execution() is previous
+        assert authority._cron_cancellations == {}
+        return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
+
+    try:
+        return asyncio.run(run())
+    finally:
+        if owns_db:
+            release(db)
+
 
 def test_cron_cleanup_worker_inherits_caller_contextvars():
     """Profile-scoped secrets must remain visible during threaded cleanup."""
@@ -520,7 +570,7 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -530,7 +580,7 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
-        assert kwargs["session_id"].startswith("cron_test-job_")
+        assert kwargs["session_id"] == "canonical-cron-session"
         original_session_id = kwargs["session_id"]
         fake_db.get_compression_tip.assert_called_once_with(original_session_id)
         fake_db.end_session.assert_called_once()
@@ -589,7 +639,7 @@ class TestRunJobSessionPersistence:
 
             mock_agent.close.side_effect = close_agent
             mock_agent_cls.return_value = mock_agent
-            success, *_ = run_job(job)
+            success, *_ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert fake_db.end_session.call_count == 1
@@ -648,8 +698,8 @@ class TestRunJobSessionPersistence:
             "name": "test",
             "prompt": "hello",
         }
-        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
-            run_job(job)
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            _run_owned_job(job, tmp_path, fake_db)
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["skip_memory"] is False
@@ -750,7 +800,7 @@ class TestRunJobSessionPersistence:
                  },
              ), \
              patch("run_agent.AIAgent", FakeAgent):
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -810,7 +860,7 @@ class TestRunJobSessionPersistence:
                  },
              ), \
              patch("run_agent.AIAgent", FakeAgent):
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -828,64 +878,34 @@ class TestRunJobSessionPersistence:
 
     @pytest.mark.parametrize("timeout_value", ["600", "0"])
     def test_run_job_heartbeats_oneshot_claim_in_both_wait_modes(
-        self, tmp_path, monkeypatch, timeout_value
+        self, monkeypatch, timeout_value
     ):
-        """Timed and unlimited one-shot monitors both refresh their owned claim."""
+        """Timed and unlimited owner-side monitors refresh their owned claim."""
+        from concurrent.futures import Future
+        from cron.scheduler import _run_agent_with_watchdog
+
         job = {
             "id": "heartbeat-job",
-            "name": "heartbeat",
-            "prompt": "hello",
             "schedule": {"kind": "once", "run_at": "2026-07-10T12:00:00Z"},
             "run_claim": {"at": "2026-07-10T12:00:00Z", "by": "owner-token"},
         }
-        fake_db = MagicMock()
-
-        class FakeAgent:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def run_conversation(self, *args, **kwargs):
-                return {"final_response": "ok"}
-
-        class FakeFuture:
-            def result(self):
-                return {"final_response": "ok"}
-
-            def done(self):
-                return True  # run_job's finally asks the real Future; this one has already returned
-
-        fake_future = FakeFuture()
+        fake_future = Future()
+        fake_future.set_result({"final_response": "ok"})
         fake_pool = MagicMock()
         fake_pool.submit.return_value = fake_future
         wait_results = [(set(), set()), ({fake_future}, set())]
         monotonic_ticks = itertools.count(step=61.0)
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", timeout_value)
 
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
-             patch(
-                 "hermes_cli.runtime_provider.resolve_runtime_provider",
-                 return_value={
-                     "api_key": "***",
-                     "base_url": "https://example.invalid/v1",
-                     "provider": "openrouter",
-                     "api_mode": "chat_completions",
-                 },
-             ), \
-             patch("run_agent.AIAgent", FakeAgent), \
-             patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=fake_pool), \
+        with patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=fake_pool), \
              patch("cron.scheduler.concurrent.futures.wait", side_effect=wait_results), \
              patch("cron.scheduler.time.monotonic", side_effect=monotonic_ticks.__next__), \
              patch("cron.scheduler.heartbeat_run_claim", return_value=True) as heartbeat:
-            success, _output, final_response, error = run_job(job)
+            result = _run_agent_with_watchdog(
+                MagicMock(), "hello", job, job["id"], "heartbeat", "cron:heartbeat-job:test", None)
 
-        assert success is True
-        assert error is None
-        assert final_response == "ok"
-        heartbeat.assert_called_once_with(
-            "heartbeat-job", expected_owner="owner-token"
-        )
+        assert result["final_response"] == "ok"
+        heartbeat.assert_called_once_with("heartbeat-job", expected_owner="owner-token")
 
     def test_run_job_resets_secret_source_cache_before_reload(self, tmp_path, monkeypatch):
         """Each run must clear the secret-source cache before re-reading the
@@ -927,7 +947,7 @@ class TestRunJobSessionPersistence:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _output, _final, error = run_job(job)
+            success, _output, _final, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -986,7 +1006,7 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent", FakeAgent):
             for job in jobs:
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
                 assert success is True
                 assert error is None
                 assert final_response == "ok"
@@ -1020,9 +1040,12 @@ class TestRunJobConfigEnvVarExpansion:
     }
 
     def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
-        """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
+        """${VAR} in config.yaml model: is expanded from the PROFILE's own secret scope. The owner
+        bridge runs the job under that profile's runtime scope, where a process-env value would be
+        another profile's leak, so the ref resolves from ``<home>/.env`` and never os.environ."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
-        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
+        (tmp_path / ".env").write_text("_HERMES_TEST_CRON_MODEL=gpt-4o-mini-cron-test\n")
+        monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "leaked-from-process-env")
 
         job = {"id": "env-job", "name": "env test", "prompt": "hi"}
         fake_db = MagicMock()
@@ -1038,7 +1061,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1102,7 +1125,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True, error
         assert error is None
@@ -1154,7 +1177,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1200,7 +1223,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1222,7 +1245,7 @@ class TestRunJobModelResolution:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is False
         assert error is not None
@@ -1255,14 +1278,14 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
         assert mock_agent_cls.call_args.kwargs["model"] == "alias-key-model"
 
-    def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
-        """A malformed config.yaml degrades gracefully when the job has a model."""
+    def test_corrupt_config_yaml_refuses_even_with_job_model(self, tmp_path, monkeypatch):
+        """An explicit model cannot bypass invalid terminal/tool configuration."""
         (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
@@ -1280,12 +1303,11 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
 
-        # Explicit job model survives the corrupt-config fall-through.
-        assert success is True
-        assert error is None
-        assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
+        assert success is False
+        assert "Hermes stopped because your settings file" in error
+        mock_agent_cls.assert_not_called()
 
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
@@ -1334,7 +1356,7 @@ class TestRunJobSkillBacked:
             mock_agent_cls.return_value = mock_agent
 
             try:
-                success, _output, final_response, error = run_job(job)
+                success, _output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
             finally:
                 clear_env_passthrough()
 
@@ -1358,7 +1380,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
@@ -1371,7 +1393,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
@@ -1382,7 +1404,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
@@ -1397,7 +1419,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
                  patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
                  patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-                 patch("cron.scheduler._deliver_result") as deliver_mock, \
+                 patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
                  patch("cron.scheduler.mark_job_run"):
                 tick(verbose=False)
             deliver_mock.assert_not_called()
@@ -1410,7 +1432,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
@@ -1422,7 +1444,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
@@ -1433,7 +1455,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output") as save_mock, \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
@@ -1447,12 +1469,13 @@ class TestSilentDelivery:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run") as mark_mock:
             from cron.scheduler import tick
             tick(verbose=False)
 
         deliver_mock.assert_not_called()
+        assert mark_mock.call_args.kwargs["execution_id"]
         mark_mock.assert_called_once()
         assert mark_mock.call_args[0][:2] == ("monitor-job", False)
 
@@ -1546,7 +1569,7 @@ class TestRunJobWakeGate:
             "script": script,
         }
 
-    def test_wake_false_skips_agent_and_returns_silent(self, caplog):
+    def test_wake_false_skips_agent_and_returns_silent(self, caplog, tmp_path):
         """When _run_job_script output ends with {wakeAgent: false}, the agent
         is not invoked and run_job returns the SILENT marker so delivery is
         suppressed."""
@@ -1556,14 +1579,14 @@ class TestRunJobWakeGate:
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent") as agent_cls:
-            success, _doc, final, err = scheduler.run_job(self._make_job())
+            success, _doc, final, err = _run_owned_job(self._make_job(), tmp_path)
 
         assert success is True
         assert err is None
         assert final == SILENT_MARKER
         agent_cls.assert_not_called()
 
-    def test_wake_true_runs_agent_with_injected_output(self):
+    def test_wake_true_runs_agent_with_injected_output(self, tmp_path):
         """When the script returns {wakeAgent: true, data: ...}, the agent is
         invoked and the data line still shows up in the prompt."""
         from cron import scheduler
@@ -1577,7 +1600,7 @@ class TestRunJobWakeGate:
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, script_output)), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            success, _doc, _final, err = scheduler.run_job(self._make_job())
+            success, _doc, _final, err = _run_owned_job(self._make_job(), tmp_path)
 
         agent_cls.assert_called_once()
         # The script output should be visible in the prompt passed to
@@ -2594,53 +2617,3 @@ class TestBuildJobPromptExtraPrompt:
         job = {"prompt": "original"}
         _build_job_prompt(job, extra_prompt="transient context")
         assert job["prompt"] == "original"
-
-class TestSetCronSessionTitle:
-    """Robust cron session titling: #50535/#50536/#50537."""
-
-    def test_dedupes_on_duplicate_title(self):
-        # First write collides (ValueError); helper falls back to lineage #N.
-        from cron.scheduler import _set_cron_session_title
-        db = MagicMock()
-        db.set_session_title.side_effect = [ValueError("in use"), True]
-        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
-        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
-        assert out == "Nightly Synthesis #2"
-        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-class TestFailureStreakNudge:
-    """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
-
-    def _job(self, streak, kind="cron", name="scout"):
-        return {
-            "id": "j1",
-            "name": name,
-            "failure_streak": streak,
-            "schedule": {"kind": kind},
-        }
-
-    def test_silent_below_threshold(self):
-        from cron.scheduler import _failure_streak_nudge
-        with patch("cron.scheduler.load_config", return_value={}):
-            assert _failure_streak_nudge(self._job(0)) == ""
-            assert _failure_streak_nudge(self._job(1)) == ""
-
-    def test_oneshot_never_nudges(self):
-        from cron.scheduler import _failure_streak_nudge
-        with patch("cron.scheduler.load_config", return_value={}):
-            assert _failure_streak_nudge(self._job(10, kind="once")) == ""
-
-    def test_config_threshold_and_disable(self):
-        from cron.scheduler import _failure_streak_nudge
-        cfg5 = {"cron": {"failure_nudge_threshold": 5}}
-        with patch("cron.scheduler.load_config", return_value=cfg5):
-            assert _failure_streak_nudge(self._job(3)) == ""
-            assert _failure_streak_nudge(self._job(4))
-        with patch("cron.scheduler.load_config", return_value={"cron": {"failure_nudge_threshold": 0}}):
-            assert _failure_streak_nudge(self._job(50)) == ""
-
-    def test_missing_streak_field_backcompat(self):
-        from cron.scheduler import _failure_streak_nudge
-        job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
-        with patch("cron.scheduler.load_config", return_value={}):
-            assert _failure_streak_nudge(job) == ""

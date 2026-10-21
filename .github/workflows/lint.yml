@@ -15,6 +15,10 @@ name: Lint (ruff + ty)
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       event_name:
         description: The event name from the calling orchestrator (pull_request or push).
         type: string
@@ -28,19 +32,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: lint-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   lint-diff:
     name: ruff + ty diff
     if: inputs.event_name == 'pull_request' && inputs.python
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0 # need full history for merge-base + worktree
 
       - uses: ./.github/actions/setup-pm
@@ -141,11 +146,13 @@ jobs:
     # the diff comment even when enforcement fails.
     name: ruff enforcement (blocking)
     if: inputs.python
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - uses: ./.github/actions/setup-pm
         with:
@@ -177,12 +184,13 @@ jobs:
     # parent (current main), so an improvement that lands on main is locked in at once.
     name: code health ratchet (blocking)
     if: inputs.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
 
       - uses: ./.github/actions/setup-pm
@@ -212,11 +220,13 @@ jobs:
     # See scripts/check-windows-footguns.py for the full rule list.
     name: Windows footguns (blocking)
     if: inputs.python
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - uses: ./.github/actions/setup-pm
         with:

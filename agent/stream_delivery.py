@@ -8,7 +8,7 @@ import re
 import threading
 from typing import Any, Dict, List
 
-from agent.memory_manager import sanitize_context
+from agent.memory_context import sanitize_context
 from agent.message_content import flatten_message_text
 from agent.history_commentary import visible_commentary
 

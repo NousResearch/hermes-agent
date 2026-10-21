@@ -159,9 +159,10 @@ def _persisted_action_id(log_dir: Path, name: str) -> Optional[str]:
 
 @router.post("/api/gateway/restart")
 async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``hermes gateway restart`` in the background."""
+    """Kick off a ``hermes gateway restart --interrupt`` in the background: the user-commanded force
+    path that supersedes a drain (D6, 19b26244046), so live sessions do not refuse it."""
     with http_failure("Failed to spawn gateway restart", 500, "Failed to restart gateway"):
-        proc, _reused = _spawn_gateway_restart(profile)
+        proc, _reused = _spawn_gateway_restart(profile, interrupt=True)
     return {"ok": True, "pid": proc.pid, "name": "gateway-restart"}
 
 
@@ -346,7 +347,9 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
                            message=f"This build is newer than stable release v{status.get('sourceVersion')}. "
                                    "Updating moves it back to that release.")
         # "What's changed" for the desktop's remote update overlay; best-effort
-        # (empty list on any failure).
+        # (empty list on any failure). Channel + release name pick its notes source.
+        payload.update(channel=status.get("channel"), branch=status.get("branch"),
+                       source_version=status.get("sourceVersion"))
         payload["commits"] = [{**row, "sha": row["sha"][:7], "at": row["at"] // 1000}
                               for row in status.get("commits", [])[:20]]
     return payload

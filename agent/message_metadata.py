@@ -93,6 +93,32 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     return uid
 
 
+# Producer-owned provenance for the compressor's standalone in-flight-task restatement. It rides in
+# display_metadata (persisted by SessionDB, popped from every wire copy) so gateway replay can send the
+# row unstamped, as the compaction turn did; a human pasting the header text carries no flag.
+INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
+
+
+def mark_inflight_restatement(msg: MutableMapping[str, Any]) -> None:
+    metadata = msg.get("display_metadata")
+    msg["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), INFLIGHT_TASK_RESTATEMENT: True}
+
+
+def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
+    """The compaction-provenance fields replay keeps (summary flag, restatement flag), else ``{}``. A proactive
+    prune re-persists the replayed view, so a dropped flag would get the row stamped on the next replay."""
+    metadata = msg.get("display_metadata")
+    fields: dict = {"_compressed_summary": True} if msg.get("_compressed_summary") else {}
+    if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_RESTATEMENT):
+        fields["display_metadata"] = {INFLIGHT_TASK_RESTATEMENT: True}
+    return fields
+
+
+def is_compaction_scaffolding(msg: Mapping[str, Any]) -> bool:
+    """Compaction sent its summary and restatement rows unstamped; a replay stamp would break the cached prefix."""
+    return bool(scaffolding_replay_fields(msg))
+
+
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
 
 

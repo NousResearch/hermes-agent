@@ -791,6 +791,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     features = session_info.get("features") or {}
     if features.get("real_profile"):  # auditability: this ran on the user's real-profile copy-browser
         response["used_real_profile"] = True
+    elif session_info.get("real_profile_unavailable") and not session_info.get("_rp_note_shown"):
+        session_info["_rp_note_shown"] = True  # first SUCCESSFUL navigation carries it, failed opens don't eat it
+        response["real_profile_unavailable"] = session_info["real_profile_unavailable"]
     # Only a successful, non-blocked navigation becomes the task owner: failed opens
     # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
     _last_active_session_key[effective_task_id] = nav_session_key

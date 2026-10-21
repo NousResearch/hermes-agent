@@ -109,3 +109,19 @@ def without_unsupported_response_format(
         task or "call", _route_key(provider, base_url) or "provider", model or "model", format_type,
     )
     return {k: v for k, v in extra_body.items() if k != "response_format"}
+
+
+def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without ``response_format`` (top-level and ``extra_body``); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("response_format", None) is not None
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and "response_format" in extra_body:
+        remaining = {k: v for k, v in extra_body.items() if k != "response_format"}
+        if remaining:
+            retry_kwargs["extra_body"] = remaining
+        else:
+            retry_kwargs.pop("extra_body", None)
+        changed = True
+    return retry_kwargs if changed else None

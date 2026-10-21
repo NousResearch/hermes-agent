@@ -16,12 +16,12 @@ Tracks [issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816).
 
 ## How it runs
 
-The curator is triggered by an inactivity check, not a cron job. On CLI session start, during gateway housekeeping, and on the Desktop/`hermes serve` maintenance timer, Hermes checks whether:
+The curator is triggered by an inactivity check, not a cron job. On CLI session start, during gateway housekeeping (which also covers a local Desktop, since it attaches to the gateway), and on the `hermes serve` maintenance timer, Hermes checks whether:
 
 1. Enough time has passed since the last curator run (`interval_hours`, default **7 days**), and
 2. The agent has been idle long enough (`min_idle_hours`, default **2 hours**).
 
-Desktop and other `hermes serve` backends share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. A running messaging gateway for the same profile owns these chores instead.
+`hermes serve` / `hermes dashboard` backends (for example a remote Desktop connection) share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. A running messaging gateway for the same profile owns these chores instead.
 
 The timer services its backend's profile. In-flight maintenance runs in a worker thread; closing the backend does not cooperatively interrupt that pass. Starting multiple independent serve processes for the same profile can still race the curator's interval check.
 

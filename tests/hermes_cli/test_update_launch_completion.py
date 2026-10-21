@@ -425,6 +425,19 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
 
+def test_gateway_status_skips_pending_source_update_completion(tmp_path, monkeypatch, completion_tail):
+    """`gateway status` remains a read-only recovery diagnostic while a tail is owed (#139133)."""
+    import pm
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **_kw: pytest.fail("status started a dependency sync"))
+
+    assert venv_sync.prepare_launch(root, ["gateway", "status"]) is None
+    assert completion_tail == []
+    assert pending.is_file(), "a status query must leave the update tail for `hermes gateway restart`"
+
+
 @pytest.mark.parametrize("marker,value,owed_by_cli", [
     ("HERMES_SUPERVISED_CHILD", "1", True),
     ("HERMES_S6_SUPERVISED_CHILD", "true", True),

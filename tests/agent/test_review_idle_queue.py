@@ -253,7 +253,7 @@ def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
         raise AssertionError("runtime resolution must not run")
 
     monkeypatch.setattr(
-        "agent.auxiliary_client._managed_local_netloc", lambda: "")
+        "agent.auxiliary_managed_local._managed_local_netloc", lambda: "")
     monkeypatch.setattr(
         "agent.background_review._resolve_review_runtime", _explode)
     assert riq.review_targets_managed_local(object(), {}) is False

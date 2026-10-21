@@ -35,7 +35,7 @@ jobs:
     name: Live provider canaries
     # Forks and PRs never see these secrets; only run where they exist.
     if: github.repository == 'NousResearch/hermes-agent'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 25
     # Only booleans at job level: the key VALUES are scoped to the one step that
     # needs them ('Run live canaries'), so `uv sync` build backends and the
@@ -63,7 +63,7 @@ jobs:
 
       - name: Checkout code
         if: steps.gate.outputs.configured != '0'
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Install uv
         if: steps.gate.outputs.configured != '0'

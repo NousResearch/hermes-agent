@@ -182,7 +182,13 @@ def dispatch_plugin_auth(action: str, args: Any, provider: str) -> bool:
 
     True = the plugin owned the action (core prints nothing more). False = run the built-in path. A
     handler exception becomes a readable ``SystemExit`` naming provider and action.
+    ``<plugin>:<id>`` names an OAuth client a plugin declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`).
     """
+    from hermes_cli.plugin_oauth import handle_auth_action
+
+    owned = handle_auth_action(action, args, provider)
+    if owned is not None:
+        return owned
     handler = plugin_auth_handler(provider)
     if handler is None:
         return False

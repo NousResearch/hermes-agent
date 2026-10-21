@@ -240,10 +240,12 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
 
 
 def _session_is_reapable(sid: str, session: dict) -> bool:
-    """Reaper eligibility: the LRU exemptions, and not the sole driver of an active /loop or /heartbeat
-    (closing the session stops the notification poller that fires it, freezing the schedule until a client
-    reattaches). Kept out of ``_sessions_quiescent``: an idle looping session does not block a memory trim."""
-    return _session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+    """Reaper eligibility: the LRU exemptions, and not the sole receiver of a pending wake-up — an active /loop or
+    /heartbeat, or a running background process that will notify it (closing the session stops the notification
+    poller that delivers both, and ``agent_close`` kills the process). Kept out of ``_sessions_quiescent``: an idle
+    session waiting on a wake-up does not block a memory trim."""
+    return (_session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+            and not _session_owns_pending_process_notification(session))
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:

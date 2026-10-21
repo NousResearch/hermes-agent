@@ -33,6 +33,13 @@ def test_shipped_catalog_entries_are_all_valid_and_pinned():
     assert all(e.install_identifier.startswith(e.repo) for e in entries)
 
 
+
+def test_verified_tier_survives_load_and_unknown_tier_is_rejected(tmp_path):
+    """``tier`` is official/verified/community (Nous-granted badges); anything else skips the entry."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("vendor", tier="verified")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("bogus", tier="platinum")))
+    assert {e.name: e.tier for e in pc.load_catalog(tmp_path)} == {"vendor": "verified"}
+
 def test_category_defaults_to_other_and_unknown_category_is_rejected(tmp_path):
     """``category`` is the browse shelf: absent → ``desktop``; a value outside CATALOG_CATEGORIES is an
     invalid entry (skipped with a warning) so a typo cannot create a phantom shelf on the site."""

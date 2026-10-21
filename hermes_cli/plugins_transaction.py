@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 import shutil
 
 
@@ -92,12 +93,16 @@ def update_plugin(
     *,
     catalog_entry=None,
     interactive: bool = False,
+    force: bool = False,
+    scan_decision_cb: Callable[[Any], bool] | None = None,
     carry_user_files: Callable[[Path], list[str]] | None = None,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
     the dashboard and the gateway's auto-apply pass False and get a refusal instead.
+    Every update is scanned: *force* accepts a caution verdict (the user already saw it), and
+    *scan_decision_cb(result)* may accept one by asking; a dangerous verdict always blocks.
     *carry_user_files(staged)* may merge user-owned state into the staged tree before
     manifest validation, example-file generation, dependency preparation and publication; it
     returns the carried paths so a scan block can attribute findings to them."""
@@ -186,7 +191,8 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            pc._scan_merged_tree(staged, source, merged, force=False, reviewed_pin=catalog_entry is not None)
+            pc._scan_merged_tree(staged, source, merged, force=force, scan_decision_cb=scan_decision_cb,
+                                 reviewed_pin=catalog_entry is not None)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:

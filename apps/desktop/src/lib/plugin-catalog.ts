@@ -1,10 +1,9 @@
 /**
  * The curated Hermes plugin catalog as the Desktop sees it.
  *
- * The Capabilities → Plugins tab embeds the docs-site catalog page
- * (`CATALOG_PICKER_URL`) as a one-click picker; that page renders
  * `PLUGIN_CATALOG_URL` (`/docs/api/plugins.json`, generated from the repo's
- * `plugin-catalog/` directory at site build). A `hermes://plugin/install?catalog=<name>`
+ * `plugin-catalog/` directory at site build) is the catalog the Capabilities →
+ * Plugins card catalog browses. A `hermes://plugin/install?catalog=<name>`
  * deep link resolves against the SAME document so a link and an in-app pick
  * always agree on the repo, subdir and reviewed pin for a name.
  *
@@ -28,8 +27,10 @@ import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gatew
 import { $gatewayState } from '@/store/session'
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
-export const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
 export const PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
+export const PLUGIN_CATALOG_DOCS_URL = `${CATALOG_ORIGIN}/docs/user-guide/features/plugin-catalog`
+export const SKILLS_DOCS_URL = `${CATALOG_ORIGIN}/docs/skills/`
+export const SUBMIT_MOD_URL = 'https://github.com/NousResearch/hermes-agent/compare'
 
 /** Catalog names are directory names under `plugin-catalog/`; anything else is not a lookup key. */
 export const PLUGIN_CATALOG_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -45,12 +46,22 @@ export interface PluginCatalogEntry {
   sha?: string
   /** Sub-directory of a monorepo the plugin lives in; empty when the repo root is the plugin. */
   subdir?: string
+  /** The description's first sentence: what the plugin does, in one line. */
+  summary?: string
 }
 
 export type PluginCatalogLookupError = 'invalid_name' | 'unavailable' | 'unknown'
 
 export type PluginCatalogLookup =
   { ok: false; error: PluginCatalogLookupError } | { ok: true; entry: PluginCatalogEntry }
+
+/** Mirrors `plugin_catalog_presence._first_sentence`, so the dialog and the setup card agree. */
+function firstSentence(text: string): string | undefined {
+  const flat = text.split(/\s+/).filter(Boolean).join(' ')
+  const end = flat.indexOf('. ')
+
+  return (end >= 0 ? flat.slice(0, end + 1) : flat) || undefined
+}
 
 function asEntry(raw: unknown): null | PluginCatalogEntry {
   if (!raw || typeof raw !== 'object') {
@@ -59,15 +70,26 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
 
   const row = raw as Record<string, unknown>
 
-  if (typeof row.name !== 'string' || typeof row.repo !== 'string' || !row.repo) {
+  // A field that is not a string reads as absent.
+  const text = (field: 'description' | 'name' | 'repo' | 'sha' | 'subdir'): string | undefined => {
+    const value = row[field]
+
+    return typeof value === 'string' ? value : undefined
+  }
+
+  const name = text('name')
+  const repo = text('repo')
+
+  if (name === undefined || !repo) {
     return null
   }
 
   return {
-    name: row.name,
-    repo: row.repo,
-    sha: typeof row.sha === 'string' && row.sha ? row.sha : undefined,
-    subdir: typeof row.subdir === 'string' && row.subdir ? row.subdir : undefined
+    name,
+    repo,
+    sha: text('sha') || undefined,
+    subdir: text('subdir') || undefined,
+    summary: firstSentence(text('description') ?? '')
   }
 }
 

@@ -225,10 +225,10 @@ def cmd_whatsapp(args):
 
 def cmd_whatsapp_cloud(args):
     """Set up WhatsApp Business Cloud API (official Meta integration) — complementary to the
-    ``hermes whatsapp`` Baileys bridge wizard. See ``hermes_cli/setup_whatsapp_cloud.py``."""
+    ``hermes whatsapp`` Baileys bridge wizard. See ``plugins/platforms/whatsapp_cloud/setup_wizard.py``."""
     from hermes_cli.main import _require_tty
     _require_tty("whatsapp-cloud")
-    from hermes_cli.setup_whatsapp_cloud import run_whatsapp_cloud_setup
+    from plugins.platforms.whatsapp_cloud.setup_wizard import run_whatsapp_cloud_setup
     return run_whatsapp_cloud_setup()
 
 

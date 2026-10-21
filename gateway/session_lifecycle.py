@@ -89,6 +89,33 @@ class SessionLifecycleMixin:
             return False
         return row is None or row.get("end_reason") is not None
 
+    def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
+        """The physical target the authority's receipt names for *entry*'s local route, else None
+        (not a local route, no receipt, or the receipt belongs to another route).
+
+        Such a route moves only through the authority (compression and reset advance the receipt
+        and the route in one transaction), and its first admitted turn reopens a stamped row
+        (``reopen_local_session``). A row stamped ended (a viewer's ``ws_orphan_reap``) is
+        therefore never a stale route: dropping it minted a replacement id the authority refuses
+        (``admission_conflict``) and stranded the conversation (#140642)."""
+        origin = getattr(entry, "origin", None)
+        if origin is None or getattr(origin, "platform", None) is None or origin.platform.value != "local":
+            return None
+        db = self._db_for_key(entry.session_key)
+        if db is None or getattr(db, "_read_ctx", None) is None:
+            return None
+        import sqlite3
+
+        from hermes_state_local import local_receipt
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            receipt = local_receipt(db, str(origin.chat_id))
+            if receipt.get("route") != entry.session_key:
+                return None
+            return str(receipt["entry"]["session_id"]) or None
+        except (RuntimeStoreError, sqlite3.Error, KeyError, TypeError, AttributeError):
+            return None
+
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
         """Only explicit suspension replaces a routed conversation; time never does."""
         return "suspended" if entry.suspended else None

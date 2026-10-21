@@ -214,6 +214,29 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
                            persistent=ssh_config.get("persistent", True))
 
 
+def _stamp_sandbox_home(env_obj, provider, cwd) -> None:
+    """Record the provider's declared home on this environment: a declared absolute path whatever ``cwd`` the
+    environment started in (``terminal.cwd`` may pick another directory), or, for ``~``, the path it resolved
+    to inside THIS sandbox when it started there. Per environment, never per backend, so a second sandbox
+    with a different home gets its own."""
+    try:
+        declared = provider.default_cwd
+    except Exception:
+        # A plugin's property must not take environment creation down; it just gets no home.
+        logger.warning("%s.default_cwd raised; not recording a sandbox home", type(provider).__name__,
+                       exc_info=True)
+        declared = None
+    if declared == "~":
+        home = getattr(env_obj, "cwd", None) if cwd == "~" else None
+    else:
+        home = declared
+    if isinstance(home, str) and home.startswith("/") and home != "/":
+        try:
+            env_obj._hermes_sandbox_home = home
+        except AttributeError:
+            pass
+
+
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
@@ -225,6 +248,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
             env_obj._hermes_backend_name = provider.name.strip().lower()
         except AttributeError:
             pass
+        _stamp_sandbox_home(env_obj, provider, cwd)
         return env_obj
     try:
         from agent.terminal_env_registry import plugin_backend_names

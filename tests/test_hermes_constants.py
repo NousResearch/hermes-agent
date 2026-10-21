@@ -70,6 +70,33 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == local_appdata / "hermes"
 
+    @pytest.mark.platforms("windows")
+    def test_root_for_another_environment_ignores_this_process(self, tmp_path, monkeypatch):
+        """hermes_root_for_environment applies the root rules to the mapping it gets."""
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "sandbox-local"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "sandbox-home"))
+        local = tmp_path / "local"
+        user = tmp_path / "user"
+        custom = tmp_path / "data"
+        cases = [
+            ({"LOCALAPPDATA": str(local)}, local / "hermes"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": str(local / "hermes" / "profiles" / "work")},
+             local / "hermes"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": str(custom / "profiles" / "work")}, custom),
+            ({"LOCALAPPDATA": str(local), "HERMES_DATA_DIR_SUFFIX": "-magic"}, local / "hermes-magic"),
+            ({"localappdata": str(local), "HERMES_HOME": "%LocalAppData%\\data"}, local / "data"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "$LOCALAPPDATA\\data"}, local / "data"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "${LOCALAPPDATA}\\data"}, local / "data"),
+            ({"LOCALAPPDATA": str(local), "USERPROFILE": str(user), "HERMES_HOME": "~\\data"}, user / "data"),
+            ({"USERPROFILE": str(user)}, user / "AppData" / "Local" / "hermes"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "relative\\data"}, None),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "%UNDEFINED%\\data"}, None),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "~\\data"}, None),
+            ({}, None),
+        ]
+        for environ, root in cases:
+            assert hermes_constants.hermes_root_for_environment(environ) == root, environ
+
 
 
 

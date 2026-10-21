@@ -32,7 +32,19 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
     """Normalize a physical session_id into a stable logical cache scope."""
     sid = str(session_id or "")
     match = _CRON_SESSION_ID_RE.match(sid)
-    return match.group(1) if match else sid
+    if match:
+        return match.group(1)
+    # The unified scheduler admits cron fires into a ``local-*`` session. Its
+    # physical id is intentionally opaque and changes on every fire, so recover
+    # the stable job scope from the bound scheduler admission instead.
+    from gateway.session_cron import current_execution
+
+    execution = current_execution()
+    if execution is not None and str(execution[1]) == sid:
+        job_id = str(execution[2] or "").strip()
+        if job_id:
+            return f"cron_{job_id}"
+    return sid
 
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:

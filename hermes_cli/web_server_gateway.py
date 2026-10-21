@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -516,11 +516,36 @@ def _spawn_hermes_action(
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
-    detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
+
+    def _popen(**detach: Any) -> subprocess.Popen:
+        return subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, **detach,
+        )
+
+    try:
+        if sys.platform == "win32":
+            try:
+                proc = _popen(creationflags=windows_detach_flags())
+            except OSError as exc:
+                # CREATE_BREAKAWAY_FROM_JOB is refused ("Access is denied") when the parent's job
+                # object forbids breakaway — an Electron/Tauri-launched dashboard, some Windows
+                # Terminal configs. The flag is best-effort by contract (windows_detach_flags);
+                # retry without it so the action still spawns, and record why for the status route.
+                if getattr(exc, "winerror", None) != 5:
+                    raise
+                log_file.write(
+                    f"{name}: breakaway spawn refused ({exc}); retrying without CREATE_BREAKAWAY_FROM_JOB\n".encode()
+                )
+                proc = _popen(creationflags=windows_detach_flags_without_breakaway())
+        else:
+            proc = _popen(start_new_session=True)
+    except OSError as exc:
+        # Without this the action log would hold only the started-header for a spawn that never
+        # happened; close the handle the child would have owned and let the endpoint report it.
+        log_file.write(f"{name}: spawn failed: {exc}\n".encode())
+        log_file.close()
+        raise
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
@@ -632,11 +657,28 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
             f"`hermes -p {requested} gateway install --force` starts a separate one anyway.")
 
 
+def live_session_refusal(profile: Optional[str], verb: str) -> Optional[str]:
+    """Refusal text when the gateway ``verb`` would act on has live sessions, else None. Asked before
+    spawning: the child refuses the same way, but into an action log the UI never reads."""
+    from hermes_cli.gateway_lifecycle_guards import refusal_lines
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    homes = [_resolve_profile_dir(_own_profile_selector(profile) or "default")]
+    from gateway.host_attach import host_gateway
+    owner = host_gateway()
+    if owner is not None:
+        homes.append(Path(owner.home))
+    lines = refusal_lines(verb, homes, flag_hint=f"POST /api/gateway/{verb}?interrupt=true")
+    return "\n".join(lines) or None
+
+
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:
     """Best-effort gateway restart after a config change. The save stays authoritative: a failed
     spawn is reported (``restart_started: False`` + ``restart_error``) so the UI can fall back to
-    its manual restart banner instead of failing the request."""
+    its manual restart banner instead of failing the request. Live sessions refuse it the same way."""
     from hermes_cli.web_server import _spawn_gateway_restart
+    refusal = live_session_refusal(profile, "restart")
+    if refusal:
+        return {"restart_started": False, "restart_error": refusal}
     try:
         proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:

@@ -8,8 +8,6 @@ export interface ToolResultMetadata {
   preview?: string
   summary?: string
   todos?: unknown
-  /** A card's Retry of this call, recorded on the saved tool row (start_chat's handoff card). */
-  retried?: unknown
 }
 
 export interface ToolResultSource {

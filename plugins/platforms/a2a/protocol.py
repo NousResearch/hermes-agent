@@ -5,6 +5,7 @@ Stdlib only. ``extract_text`` stays tolerant of v0.3 peers."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -127,6 +128,12 @@ def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
 
 
+def message_context_id(scope: str, message_id: str) -> str:
+    """The context a first message without a ``contextId`` opens. Named by the message, so a retry
+    of that send after a timeout reopens the same context instead of a fresh one."""
+    return "ctx-" + hashlib.sha256(f"{scope}\0{message_id}".encode()).hexdigest()[:16]
+
+
 def text_part(text: str) -> dict:
     """v1.0 text Part (member-presence discriminated, no ``kind``)."""
     return {"text": text, "mediaType": "text/plain"}
@@ -174,6 +181,12 @@ def extract_text(message_or_params: dict) -> str:
         elif (data := part.get("data")) is not None:
             chunks.append(f"[data ({part.get('mediaType') or 'application/json'})]\n{_json_or_str(data)}")
     return "\n".join(chunks).strip()
+
+
+def extract_message_id(params: dict) -> str:
+    """v1.0 puts messageId inside the Message; a peer retrying a send repeats it."""
+    msg = params.get("message") or {}
+    return str(msg.get("messageId") or "") if isinstance(msg, dict) else ""
 
 
 def extract_context_id(params: dict) -> str:
@@ -321,9 +334,11 @@ class TaskStore:
         return {"configId": rec.get("push_config_id") or "", "taskId": rec["task_id"],
                 "createdAt": rec.get("created_iso", ""), "pushNotificationConfig": {"url": rec.get("push_url") or ""}}
 
-    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "") -> dict:
+    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "",
+               input_id: str = "") -> dict:
+        """``input_id``: the owner admission a forwarded task was sent as (empty for local tasks)."""
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
-               "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+               "input_id": input_id, "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
@@ -435,15 +450,22 @@ def _conv_path(context_id: str) -> Path:
     return get_hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
 
 
-def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
+def persist_message(context_id: str, role: str, text: str, task_id: str = "", input_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"ts": time.time(), "role": role, "text": text, "task_id": task_id, **({"input_id": input_id} if input_id else {})}
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def logged_input(context_id: str, input_id: str) -> bool:
+    """True when the context's durable log already holds the forwarded input ``input_id``."""
+    # limit=0 slices out[-0:], i.e. every entry.
+    return any(entry.get("input_id") == input_id for entry in load_conversation(context_id, limit=0))
 
 
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:

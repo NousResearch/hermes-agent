@@ -76,6 +76,12 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
                         data={"profile": profile_name, "home": home_display})
 
 
+def _exec_autoprune(ctx: CommandContext) -> CommandReply:
+    """Core /autoprune text — record the auto-prune decision or show its state."""
+    from hermes_cli.prune_advisor import run_command
+    return CommandReply(run_command(ctx.args))
+
+
 def _exec_bundles(ctx: CommandContext) -> CommandReply:
     """Core /bundles data — installed skill bundles listing."""
     try:
@@ -148,9 +154,9 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
                 entries.append(f"`{cmd}` — {desc}")
         # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
         from agent.skill_commands import skill_command_collision_note
-        from tools.skills_tool import _find_all_skills
+        from tools.skills_tool import find_all_skills
         entries.extend(f"⚠ {note}" for note in filter(None, map(
-            skill_command_collision_note, sorted(s["name"] for s in _find_all_skills()))))
+            skill_command_collision_note, sorted(s["name"] for s in find_all_skills()))))
     except Exception:
         pass
 
@@ -180,6 +186,7 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "egress": _exec_egress,
     "profile": _exec_profile,
     "bundles": _exec_bundles,
+    "autoprune": _exec_autoprune,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands}
 

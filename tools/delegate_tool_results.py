@@ -7,6 +7,9 @@ import json
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
+from tools.delegation_redaction import (
+    parent_copy, redact_child_result, redact_child_text, redact_child_value, redact_summary,
+)
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -66,7 +69,8 @@ def _extract_output_tail(result: dict[str, Any], *, max_entries: int = 12, max_c
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = _stringify_tool_content(msg.get("content") or "")
+        # Live progress (subagent.complete overlay): honours security.redact_secrets=false.
+        content = redact_child_text(_stringify_tool_content(msg.get("content") or ""), force=False)
         tool_name = name_by_call_id.get(msg.get("tool_call_id") or "", "tool")
         tail.append({"tool": tool_name, "preview": content[:max_chars], "is_error": _looks_like_error_output(content)})
     tail.reverse()
@@ -78,14 +82,14 @@ _TOOL_INPUT_TARGET_KEYS = frozenset({
 })
 _TOOL_INPUT_URL_KEYS = frozenset({"endpoint", "url", "urls"})
 
-def _sanitize_tool_target(key: str, value: Any) -> Any:
+def _sanitize_tool_target(key: str, value: Any, force: bool = True) -> Any:
     """Keep bounded side-effect targets while dropping URL secrets."""
     if isinstance(value, list):
-        cleaned = [item for item in (_sanitize_tool_target(key, item) for item in value[:16]) if item is not None]
+        cleaned = [item for item in (_sanitize_tool_target(key, item, force) for item in value[:16]) if item is not None]
         return cleaned or None
     if not isinstance(value, str) or not value:
         return None
-    bounded = value[:1024]
+    bounded = redact_child_text(value, force=force)[:1024]
     if key in _TOOL_INPUT_URL_KEYS:
         try:
             parsed = urlsplit(bounded)
@@ -103,22 +107,23 @@ def _sanitize_tool_target(key: str, value: Any) -> Any:
             return None
     return bounded
 
-def _sanitize_targets(mapping: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_targets(mapping: dict[str, Any], force: bool = True) -> dict[str, Any]:
     """Keep only known side-effect target keys, each sanitized (URL secrets dropped)."""
     targets: dict[str, Any] = {}
     for raw_key, value in mapping.items():
         key = str(raw_key).lower()
         if key in _TOOL_INPUT_TARGET_KEYS:
-            cleaned = _sanitize_tool_target(key, value)
+            cleaned = _sanitize_tool_target(key, value, force)
             if cleaned is not None:
                 targets[key] = cleaned
     return targets
 
-def _input_summary(keys: Any, targets: Any) -> dict[str, Any]:
-    """``{argument_keys, targets}`` with bounded, sanitized contents (empty on bad shapes)."""
+def _input_summary(keys: Any, targets: Any, force: bool = True) -> dict[str, Any]:
+    """``{argument_keys, targets}`` with bounded, sanitized contents (empty on bad shapes). ``force=False`` for the
+    parent's own tool_trace copy (honours the opt-out); lifecycle hooks re-sanitize with ``force=True``."""
     return {
-        "argument_keys": [str(key)[:128] for key in keys[:64]] if isinstance(keys, list) else [],
-        "targets": _sanitize_targets(targets) if isinstance(targets, dict) else {},
+        "argument_keys": [redact_child_text(str(key), force=force)[:128] for key in keys[:64]] if isinstance(keys, list) else [],
+        "targets": _sanitize_targets(targets, force) if isinstance(targets, dict) else {},
     }
 
 def _summarize_tool_arguments(arguments: Any) -> dict[str, Any]:
@@ -129,7 +134,7 @@ def _summarize_tool_arguments(arguments: Any) -> dict[str, Any]:
         parsed = None
     if not isinstance(parsed, dict):
         return _input_summary([], {})
-    return _input_summary(sorted(str(key)[:128] for key in parsed), parsed)
+    return _input_summary(sorted(str(key) for key in parsed), parsed, force=False)
 
 def _subagent_stop_tool_call_history(tool_trace: Any) -> list[dict[str, Any]]:
     """Detached, metadata-only tool history for lifecycle hooks (input summaries re-sanitized)."""
@@ -178,7 +183,9 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         from tools.spill_safety import write_text_exclusive
         # Exclusive symlink-refusing create; not private because cache/delegation is bind-mounted read-only into
         # remote backends whose container UID must be able to read it.
-        write_text_exclusive(path, summary, private=False)
+        # ``summary`` is already the forced, structure-preserving projection (_trim_summary_with_footer); a
+        # second whole-text pass here would eat JSON delimiters and corrupt a valid structured answer.
+        write_text_exclusive(path, getattr(summary, "forced", summary), private=False)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)
@@ -188,6 +195,20 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     """``(model_text, spill_path)`` for one over-budget summary: a ~75% head / ~25% tail window snapped to line
     boundaries (so the opening AND the closing outcomes/files-changed/issues both survive), the full text spilled
     to disk, and a footer giving the exact ``read_file offset=`` for the omitted middle."""
+    # ``summary`` is the parent's copy (scrubbed per the user's setting in _finalize_child_results), carrying the
+    # forced projection of the COMPLETE output. The spill file and the forced (memory/hook/ledger) excerpt are cut
+    # from that projection: trimming the opt-out copy first can drop a PEM BEGIN marker and leave an unrecognizable
+    # key body behind. Direct callers pass plain text: project it here (idempotent on already-forced text).
+    forced = redact_child_text(summary) if hasattr(summary, "forced") else redact_summary(summary, True, True)
+    spill_path = _spill_summary_to_file(task_index, forced)
+    if spill_path:
+        # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
+        from tools.credential_files import to_agent_visible_cache_path
+        spill_path = to_agent_visible_cache_path(spill_path)
+    model_text = _head_tail_with_footer(str(summary), cap, spill_path)
+    return parent_copy(model_text, _head_tail_with_footer(forced, cap, spill_path)), spill_path
+
+def _head_tail_with_footer(summary: str, cap: int, spill_path: Optional[str]) -> str:
     original_len = len(summary)
     head_budget = int(cap * 0.75)
     tail_budget = cap - head_budget
@@ -198,12 +219,6 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     nl = tail.find("\n")
     if 0 <= nl < tail_budget * 0.5:
         tail = tail[nl + 1:]
-
-    spill_path = _spill_summary_to_file(task_index, summary)
-    if spill_path:
-        # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
-        from tools.credential_files import to_agent_visible_cache_path
-        spill_path = to_agent_visible_cache_path(spill_path)
     footer_lines = [
         "", "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
         f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
@@ -220,7 +235,7 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     else:
         footer_lines.append("Full output could not be stored to disk; the head+tail above is all that was preserved.")
     footer_lines.append("─" * 37)
-    return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines), spill_path
+    return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines)
 
 def _parent_prompt_size_tokens(parent_agent) -> Optional[int]:
     """The parent's current prompt size: the aggregator's own last ``prompt_tokens`` (pre-MoA-fold), else
@@ -336,7 +351,8 @@ def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> 
             task_index = entry.get("task_index", -1)
             in_range = isinstance(task_index, int) and 0 <= task_index < len(task_list)
             memory.on_delegation(
-                task=task_list[task_index]["goal"] if in_range else "", result=entry.get("summary", "") or "",
+                task=task_list[task_index]["goal"] if in_range else "",
+                result=redact_child_text(entry.get("summary", "") or "", force=True),  # memory providers persist
                 child_session_id=getattr(child_by_index.get(task_index), "session_id", ""),
             )
         except Exception:
@@ -366,7 +382,8 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
                 "subagent_stop", parent_session_id=getattr(parent_agent, "session_id", None),
                 parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                 child_session_id=getattr(child, "session_id", None), child_role=child_role,
-                child_summary=entry.get("summary"), child_status=entry.get("status"),
+                child_summary=redact_child_value(entry.get("summary")),  # forced: plugins leave the process
+                child_status=entry.get("status"),
                 tool_call_history=_subagent_stop_tool_call_history(entry.get("tool_trace")),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
             )
@@ -395,8 +412,18 @@ def _finalize_child_results(
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
-        _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
+        for entry in results:
+            schema = getattr(child_by_index.get(entry.get("task_index")), "_delegate_output_schema", None)
+            # Fork the forced, structure-preserving projection from the COMPLETE output before the parent budget
+            # trims anything; spill/memory/hooks/the durable row read it. The parent's own copy honours
+            # security.redact_secrets=false.
+            summary = entry.get("summary")
+            forced = redact_summary(summary, isinstance(schema, dict) or "schema_valid" in entry, True)
+            entry.update(redact_child_result(entry, schema, force=False))
+            if isinstance(summary, str) and isinstance(entry.get("summary"), str):
+                entry["summary"] = parent_copy(entry["summary"], forced)
+        _apply_summary_budget(results, parent_agent)
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
 

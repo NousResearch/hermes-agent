@@ -18,7 +18,7 @@ import time
 from types import SimpleNamespace
 
 from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.yuanbao import MessageSender, YuanbaoAdapter
+from plugins.platforms.yuanbao.adapter import MessageSender, YuanbaoAdapter
 
 
 # ---------------------------------------------------------------------------

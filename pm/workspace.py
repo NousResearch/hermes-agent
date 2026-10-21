@@ -272,6 +272,15 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 changed = True
         if virtual:
             document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+        project = document.get("project")
+        # uv rejects any [project] table whose version is neither set nor dynamic, at
+        # parse time and for buildable members too, so a version-less member would abort
+        # every `uv lock` of the workspace. Give it the same inert version plugin-deps use.
+        # PEP 621 forbids a static version while "version" is listed under
+        # project.dynamic, so an explicitly dynamic version is left alone.
+        if project is not None and "version" not in project and "version" not in project.get("dynamic", ()):
+            project["version"] = "0.0.0"
+            changed = True
         if virtual or changed:
             import tomli_w
 

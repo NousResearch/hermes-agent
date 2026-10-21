@@ -16,5 +16,6 @@ export const deUpdateChannel = {
   rollbackTitle: (v: string) => `Zurück zum stabilen Release ${v}`,
   rollbackBody: (v: string) =>
     `Dieser Build ist neuer als das stabile Release ${v}. Die Installation setzt Hermes auf dieses Release zurück.`,
-  rollbackAction: (v: string) => `Zurück auf ${v}`
+  rollbackAction: (v: string) => `Zurück auf ${v}`,
+  allChanges: 'Alle Änderungen ansehen'
 }

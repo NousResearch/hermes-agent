@@ -104,9 +104,9 @@ test('a symlink path refusal is not reported as an unpinned_pip_install block', 
 
   const toast = $notifications.get()[0]
   expect(toast?.title).toBe("Couldn't install searxng-search")
-  expect(toast?.message).toContain('research')
-  expect(toast?.message).toContain('symlink')
+  expect(toast?.message).toBe('Skill action failed')
   expect(toast?.message).not.toMatch(/unpinned_pip_install/)
-  expect(toast?.detail).toMatch(/Unsafe install path:/)
+  expect(toast?.detail).toContain('research is a symlink')
+  expect(toast?.detail).not.toMatch(/unpinned_pip_install/)
   expect(toast?.action).toBeUndefined()
 })

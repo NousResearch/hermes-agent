@@ -273,12 +273,13 @@ export function notifyHubActionFailed(
     // let notifyError treat a long provenance tail as the failure.
     if (/Unsafe install path:/i.test(message)) {
       const name = skillName || ''
-      const component = message.match(/(\S+) is a symlink/)?.[1] ?? 'that folder'
 
+      // No new locale key: en/de/es/fr/types are over the file-line cap and
+      // may only shrink. The CLI line in `detail` names the symlink.
       notify({
         kind: 'error',
         title: name ? translateNow('skills.hub.installBlockedTitle', name) : fallbackTitle,
-        message: translateNow('skills.hub.installPathBlocked', component),
+        message: translateNow('skills.hub.actionFailed'),
         detail: message
       })
 

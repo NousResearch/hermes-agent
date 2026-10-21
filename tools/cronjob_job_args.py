@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
+from cron.skill_lists import unwrap_skill_repr
 
 import hermes_time
 
@@ -227,6 +228,13 @@ def _clean_str_list(items: Any) -> list[str]:
 
 
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> list[str]:
+    skills = unwrap_skill_repr(skills)
+    skill = unwrap_skill_repr(skill)
+    # A repr-shaped `skill` can unwrap to a whole list ("['a', 'b']" -> ['a', 'b']);
+    # treat that as the skills list rather than one entry wrapping it.
+    if isinstance(skill, (list, tuple)):
+        skills = list(skill) if skills is None else skills
+        skill = None
     if skills is None:
         skills = [skill] if skill else []
     elif isinstance(skills, str):

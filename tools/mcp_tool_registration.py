@@ -58,6 +58,18 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
+def _record_cost_policy(server_name: str, config: dict, key) -> None:
+    """Declared ``tool_costs``/``spend_limit`` for *key*. Load-time validation already dropped malformed
+    entries (``_filter_suspicious_mcp_servers``); a direct caller's bad table still fails loudly. Caller holds
+    ``_core._lock``."""
+    from tools.mcp_tool_costs import config_cost_policy
+    policy = config_cost_policy(server_name, config)
+    if policy is None:
+        _core._server_cost_policies.pop(key, None)
+    else:
+        _core._server_cost_policies[key] = policy
+
+
 def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any], key=None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
     classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
@@ -67,16 +79,29 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
         if key is None:
             key = _server_key(server_name)
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _record_cost_policy(server_name, config, key)
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
 
 
+def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:
+    """Live discovery only: the schema cache omits tools the user's include/exclude filter dropped, so a valid
+    cost for a filtered tool would read as unknown there."""
+    from tools.mcp_tool_costs import unknown_cost_keys
+    if unknown := unknown_cost_keys(_core._server_cost_policies.get(key), tool_names):
+        logger.warning("MCP server '%s': tool_costs names %s, which the server does not offer, so those calls "
+                       "carry no cost and no spend limit. Use the server's own tool names (without Hermes' "
+                       "'mcp_%s_' prefix).", server_name, unknown, server_name)
+
+
 def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
-    """``trust`` is the CONSUMING profile's policy, never the connection's: an ``untrusted`` profile that
-    adopts a ``full`` profile's live connection must still be asked before every write-capable call."""
+    """``trust`` (and the cost policy) is the CONSUMING profile's policy, never the connection's: an
+    ``untrusted`` profile that adopts a ``full`` profile's live connection must still be asked before every
+    write-capable call."""
     with _core._lock:
-        _core._server_trust_levels[_server_key(server_name, scope, current=False)] = _normalize_server_trust(
-            (config or {}).get("trust"))
+        key = _server_key(server_name, scope, current=False)
+        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _record_cost_policy(server_name, config, key)
 
 
 def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
@@ -150,6 +175,7 @@ def _remove_server_scope(key, scope: str) -> None:
         else:
             _core._server_tool_scopes.pop(key, None)
         _core._server_trust_levels.pop(_server_key(server_name, scope, current=False), None)
+        _core._server_cost_policies.pop(_server_key(server_name, scope, current=False), None)
     _restore_server_toolset_alias(key)
 
 
@@ -405,6 +431,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
+    _warn_unknown_cost_keys(name, key, [t.name for t in server._tools if getattr(t, "name", None)])
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     # Judged by the connection's owner scope (the ``(scope, name)`` key the registration below

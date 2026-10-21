@@ -210,11 +210,20 @@ def test_real_user_systemd_scope_preserves_worker_context(
     if not process_registry._systemd_run_user_scope_available():
         pytest.skip("systemd-run --user --scope is unavailable on this host")
 
-    workspace, task = worker_setup
-    from dataclasses import replace
-    from uuid import uuid4
-    # User-manager transient units outlive pytest's temporary directories.
-    task = replace(task, id=f"t_candidate_{uuid4().hex}")
+    from hermes_cli import kanban_db_connect as kbc
+
+    workspace, template = worker_setup
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(workspace.parent / ".hermes" / "scope-test.db"))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    # The wrapper checks its live claim before launching the payload. Use the
+    # real claim path, which also gives this transient scope a unique task id.
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(
+            conn, title=template.title, assignee=template.assignee,
+            workspace_kind=template.workspace_kind, workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid)
+    assert task is not None
     unit = f"hermes-worker-kanban-{task.id}-run-{task.current_run_id}.scope"
     # Only this freshly named scope is test-owned; the live-system guard still refuses every other unit.
     request.node.live_system_guard_owned_units = {unit}
@@ -255,7 +264,14 @@ def test_real_user_systemd_scope_preserves_worker_context(
         assert payload["ppid"] == pid
         assert payload["cwd"] == str(workspace)
         assert payload["task"] == task.id
-        assert payload["run"] == "23"
+        assert payload["run"] == str(task.current_run_id)
+        with kbc.connect_closing() as conn:
+            current = kb.get_task(conn, task.id)
+            assert current is not None and current.worker_pid == pid
+            run = conn.execute(
+                "SELECT worker_pid FROM task_runs WHERE id = ?", (task.current_run_id,),
+            ).fetchone()
+            assert run is not None and run["worker_pid"] == pid
         assert payload["claim"] == task.claim_lock
         assert payload["board"] == kb.get_current_board()
         assert payload["home"] == str(workspace.parent / '.hermes' / 'profiles' / task.assignee)

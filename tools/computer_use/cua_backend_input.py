@@ -101,13 +101,26 @@ class _InputMixin:
         button_norm = (button or "left").lower()
         if button_norm not in {"left", "right", "middle"}:
             return _refuse("click", f"unknown button {button!r} — expected left, right, middle.")
-        tool, args["button"] = ("double_click" if click_count == 2 else "click"), button_norm
+        tool = "double_click" if click_count == 2 else "click"
+        # `button` is `click`'s enum, but `double_click` does not carry it: cua-driver's double_click
+        # schema advertises `element_token, pid, window_id, x, y, delivery_mode, session, target, scope`
+        # and no `button` (verified against 0.21.0 / 0.23.2 / 0.35.4 / 0.37.0). Under a strict schema
+        # (`additionalProperties: false`) an unknown property is a hard refusal, so sending `button`
+        # to `double_click` fails EVERY double-click with `invalid_arguments` — not only element
+        # clicks. Gate the property on the live schema so a driver that does advertise it keeps
+        # receiving it, and never guess from a version number.
+        if self._session.supports_input_property(tool, "button"):
+            args["button"] = button_norm
         refusal = self._pointer_args(tool, args, (
             ("element_index click", {"element_index": element} if element is not None else None),
             ("coordinate click", {"x": x, "y": y} if x is not None and y is not None else None),
         ), "click requires element= or x/y.")
         if modifiers:
-            args["modifier"] = modifiers
+            # `double_click` has no `modifier` property on the same driver generations; `click` does.
+            if self._session.supports_input_property(tool, "modifier"):
+                args["modifier"] = modifiers
+            else:
+                return _refuse(tool, f"{tool} does not accept modifier={modifiers!r} on this driver.")
         return refusal if refusal is not None else self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
@@ -116,14 +129,48 @@ class _InputMixin:
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
         if refusal is None:
-            refusal = self._pointer_args("drag", args, (
-                ("element-based drag", {"from_element": from_element, "to_element": to_element}
-                 if from_element is not None and to_element is not None else None),
-                ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
-                                     "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
-                 if from_xy is not None and to_xy is not None else None),
-            ), "drag requires from_element/to_element or from_coordinate/to_coordinate.")
+            # The driver's `drag` tool takes coordinates only: `from_x`, `from_y`, `to_x`, `to_y` are
+            # required, and `from_element` / `to_element` are not in its schema (verified identical
+            # across 0.21.0 / 0.23.2 / 0.37.0). An element-addressed drag is therefore refused for an
+            # unknown argument AND for the missing required coordinates. Resolve the element indices
+            # to the center of their last-captured bounds before dispatch — but only when the live
+            # schema does not advertise `from_element`, so a future driver that accepts it keeps
+            # receiving the element form.
+            if (from_element is not None and to_element is not None
+                    and not self._session.supports_input_property("drag", "from_element")):
+                resolved = self._element_drag_points(from_element, to_element)
+                if isinstance(resolved, ActionResult):
+                    refusal = resolved
+                else:
+                    from_xy, to_xy = resolved
+            if refusal is None:
+                refusal = self._pointer_args("drag", args, (
+                    ("element-based drag", {"from_element": from_element, "to_element": to_element}
+                     if from_element is not None and to_element is not None and from_xy is None else None),
+                    ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
+                                         "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
+                     if from_xy is not None and to_xy is not None else None),
+                ), "drag requires from_element/to_element or from_coordinate/to_coordinate.")
         return refusal if refusal is not None else self._run_input_action("drag", args, delivery_mode, bring_to_front)
+
+    def _element_drag_points(self, from_element: int, to_element: int) -> (
+            tuple[tuple[int, int], tuple[int, int]] | ActionResult):
+        """``((from_x, from_y), (to_x, to_y))`` for an element-addressed drag, or an ActionResult refusal.
+
+        The gesture origin and destination are the centers of the elements' last-captured bounds. A
+        capture that carried no usable bounds for either index (for example one parsed from the
+        markdown tree, whose bounds are all (0, 0, 0, 0)) cannot steer a gesture, so it is refused
+        with an actionable message rather than dispatched as a gesture at the screen origin.
+        """
+        points = []
+        for index in (from_element, to_element):
+            bounds = self._snapshot_bounds.get(index)
+            if not bounds:
+                return _refuse("drag", f"element {index} has no bounds from the latest capture — "
+                                       "call capture() first, or use from_coordinate/to_coordinate.")
+            x, y, w, h = bounds
+            points.append((x + w // 2, y + h // 2))
+        return points[0], points[1]
 
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
                x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[list[str]] = None,

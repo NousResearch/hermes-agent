@@ -300,6 +300,12 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        # Bounds are tied to the same snapshot. The driver's `drag` tool addresses a gesture by coordinates
+        # only (`from_x`, `from_y`, `to_x`, `to_y` are required; `from_element`/`to_element` are not in its
+        # schema), so an element-addressed drag has to be resolved to the element's center before dispatch.
+        # The markdown fallback yields (0, 0, 0, 0) bounds — those are unusable as a gesture origin, so they
+        # are not stored and the caller gets an explicit refusal instead of a gesture at the screen origin.
+        self._snapshot_bounds = {e.index: e.bounds for e in elements if e.bounds != (0, 0, 0, 0)}
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,

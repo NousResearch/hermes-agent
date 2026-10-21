@@ -5,8 +5,6 @@ export interface DesktopTranslations {
   createSessionFailed: string
   sendFailedTitle: string
   sendFailedBody: string
-  sendFailedTitle: string
-  sendFailedBody: string
   promptFailed: string
   providerCredentialRequired: string
   emptySlashCommand: string

@@ -111,7 +111,7 @@ def _(rid, params: dict) -> dict:
 
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
-_minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+_minted_viewer_ids: weakref.WeakKeyDictionary[object, set[str]] = weakref.WeakKeyDictionary()
 # Transports that cannot be weakly referenced (stdio, slotted, or none bound at all) are one
 # connection per process — the TUI's own pipe — so their minted ids share one process-wide set.
 _unweakable_minted_ids: set[str] = set()

@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -35,6 +36,9 @@ _AUTO_DELETE_SECONDS = 21600  # 6 hours
 # leaked ~20 MB per share.
 
 
+_PENDING_LOCK_HOLDER = threading.local()
+
+
 def _pending_file() -> Path:
     return get_hermes_home() / "pastes" / "pending.json"
 
@@ -56,6 +60,16 @@ def _save_pending(entries: list[dict]) -> None:
         pass  # non-fatal — worst case the user runs ``hermes debug delete`` manually
 
 
+@contextlib.contextmanager
+def _pending_lock():
+    """Cross-process lock for pending.json read-modify-write (gateway sweep vs CLI/gateway share)."""
+    from hermes_cli.auth import _file_lock
+    path = _pending_file()
+    with _file_lock(path.with_name(path.name + ".lock"), _PENDING_LOCK_HOLDER, 10.0,
+                    f"Timed out waiting for the pending paste list lock ({path})"):
+        yield
+
+
 def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     """Synchronously DELETE pending pastes whose ``expire_at`` has passed → (deleted, remaining).
 
@@ -66,27 +80,37 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     if not entries:
         return (0, 0)
     current = time.time() if now is None else now
-    deleted = 0
-    remaining: list[dict] = []
+    reaped: set[str] = set()
     for entry in entries:
         try:
             expire_at = float(entry.get("expire_at", 0))
         except (TypeError, ValueError):
-            continue  # drop malformed entries
+            continue  # malformed entries are dropped below
         if expire_at > current:
-            remaining.append(entry)
             continue
         try:
             gone = delete_paste(entry.get("url", ""))
         except Exception:
             gone = False  # network hiccup, 404 (already gone), ...
         if gone or expire_at + 86400 <= current:
-            deleted += 1  # deleted, or given up on → count as reaped
-        else:
-            remaining.append(entry)
-    if deleted:
-        _save_pending(remaining)
-    return (deleted, len(remaining))
+            reaped.add(entry.get("url", ""))  # deleted, or given up on → count as reaped
+    # DELETEs can take minutes; a share may have scheduled new pastes meanwhile, so
+    # re-read under the lock and drop only what this sweep reaped (and malformed rows).
+    with _pending_lock():
+        latest = _load_pending()
+        remaining = [e for e in latest if _keep_after_sweep(e, reaped, current)]
+        if len(remaining) != len(latest):
+            _save_pending(remaining)
+    return (len(reaped), len(remaining))
+
+
+def _keep_after_sweep(entry: dict, reaped: set[str], current: float) -> bool:
+    try:
+        expire_at = float(entry.get("expire_at", 0))
+    except (TypeError, ValueError):
+        return False
+    # A URL re-scheduled during the sweep has a future expiry and must stay.
+    return not (entry.get("url", "") in reaped and expire_at <= current)
 
 
 def _best_effort_sweep_expired_pastes() -> None:
@@ -158,12 +182,17 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     paste_rs_urls = [u for u in urls if _extract_paste_id(u)]
     if not paste_rs_urls:
         return
-    # Dedupe by URL, keeping the later expire_at.
-    by_url: dict[str, float] = {e["url"]: float(e["expire_at"]) for e in _load_pending()}
-    expire_at = time.time() + delay_seconds
-    for u in paste_rs_urls:
-        by_url[u] = max(expire_at, by_url.get(u, 0.0))
-    _save_pending([{"url": u, "expire_at": ts} for u, ts in by_url.items()])
+    try:
+        with _pending_lock():
+            # Dedupe by URL, keeping the later expire_at.
+            by_url: dict[str, float] = {e["url"]: float(e["expire_at"]) for e in _load_pending()}
+            expire_at = time.time() + delay_seconds
+            for u in paste_rs_urls:
+                by_url[u] = max(expire_at, by_url.get(u, 0.0))
+            _save_pending([{"url": u, "expire_at": ts} for u, ts in by_url.items()])
+    except (OSError, TimeoutError):
+        # The pastes are already uploaded; a lock failure must not lose the share result.
+        logger.debug("could not schedule auto-delete for %s", paste_rs_urls, exc_info=True)
 
 
 def _post_paste(service: str, endpoint: str, body: bytes, content_type: str) -> str:
@@ -219,9 +248,8 @@ class LogSnapshot:
 
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
-    from hermes_cli.logs import LOG_FILES
-    filename = LOG_FILES.get(log_name)
-    return (get_hermes_home() / "logs" / filename) if filename else None
+    from hermes_cli.logs import log_file_path
+    return log_file_path(log_name)  # update/handoff: the ROOT home's, whatever profile is active
 
 
 # Logs written by a client process, invisible to a remote/docker/SSH backend running `debug
@@ -423,7 +451,7 @@ def build_nous_bundle(bundle: dict[str, str], redact: bool = True) -> bytes:
     """Gzip a :func:`collect_share_bundle` mapping into the Nous envelope (shape parsed by the
     discord-support viewer — keep it stable)."""
     envelope = {"format": _NOUS_BUNDLE_FORMAT, "redacted": bool(redact),
-                "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "created": datetime.datetime.now(datetime.UTC).isoformat(),
                 "files": bundle}
     return gzip.compress(json.dumps(envelope).encode("utf-8"))
 
@@ -592,9 +620,11 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     try:
         res = share_to_nous(build_nous_bundle(bundle, redact=redact))
     except Exception as exc:
+        from pm.network import edge_block
+
         error = redact_debug_support_text(exc)
-        print(f"\nNous upload failed: {error}\n"
-              "\nThe Nous diagnostics service may be unavailable or not yet provisioned.\n"
+        cause = edge_block(exc) or "The Nous diagnostics service may be unavailable or not yet provisioned"
+        print(f"\nNous upload failed: {error}\n\n{cause}.\n"
               "Run `hermes debug share --local` to print the report instead, "
               "or `hermes debug share` to upload to a public paste service.\n", file=sys.stderr)
         sys.exit(1)

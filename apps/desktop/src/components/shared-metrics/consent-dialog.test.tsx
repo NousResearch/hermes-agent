@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
@@ -11,6 +12,9 @@ import {
 } from '@/store/shared-metrics'
 
 import { SharedMetricsConsentDialog } from './consent-dialog'
+
+// Onboarding's due check answered "not due": first-run surfaces are free to show.
+markOnboardingDecided()
 
 const copy = en.sharedMetrics
 
@@ -67,8 +71,9 @@ describe('SharedMetricsConsentDialog', () => {
   it('details decide nothing when closed and record a chosen answer as both opt-ins', async () => {
     const { calls, requestGateway } = backend({ enabled: false, send: false, decided: false })
 
-    render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
+    render(<SharedMetricsConsentDialog enabled profile="havoc" requestGateway={requestGateway} />)
     await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
+    expect(calls.find(c => c.method === 'shared_metrics.status')?.params).toEqual({ profile: 'havoc' })
 
     $sharedMetricsDetailsOpen.set(true)
     await screen.findByRole('dialog')
@@ -88,7 +93,8 @@ describe('SharedMetricsConsentDialog', () => {
     expect(calls.find(c => c.method === 'shared_metrics.set')?.params).toEqual({
       enabled: true,
       send: false,
-      first_run: true
+      first_run: true,
+      profile: 'havoc'
     })
   })
 })

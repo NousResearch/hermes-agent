@@ -5,7 +5,7 @@ import path from 'node:path'
 import { type ConsoleMessage, expect, type Locator, type Page } from '@playwright/test'
 import { z } from 'zod'
 
-import { validateMockUrl } from './mock-provider-config.ts'
+import { MOCK_MODEL_ID, validateMockUrl } from './mock-provider-config.ts'
 import { MOCK_REPLY } from './mock-server.ts'
 
 export type ChatPhase = 'old' | 'new' | 'installed'
@@ -215,6 +215,34 @@ async function rendererEvidence(page: Page, consoleLines: readonly string[]): Pr
   return ['--- renderer state ---', JSON.stringify(state, null, 2), '--- renderer console ---', ...consoleLines].join('\n')
 }
 
+/** Apps prettify a model id ("mock-model" renders as "Mock Model"), so compare with case and separators folded. */
+function foldModelName(text: string): string {
+  return text.toLowerCase().replace(/[\s_-]+/g, ' ')
+}
+
+/**
+ * Wait until the page shows the seeded mock model. Older desktops keep the
+ * composer's model as renderer state and ship it as the session override on
+ * session.create, so a send before the configured model has loaded goes to the
+ * app's default provider and the mock never sees the prompt (v2026.7.1 sent to
+ * openrouter and got a 401). The name is searched in the page text rather than
+ * a selector because the chip's markup differs between app versions. An app
+ * that never renders the name proceeds after the timeout and the
+ * mock-received assertion still decides; the note lands in the renderer log.
+ */
+async function waitForMockModel(page: Page, notes: string[], timeoutMs: number = 30_000): Promise<void> {
+  const wanted = foldModelName(MOCK_MODEL_ID)
+
+  try {
+    await expect.poll(
+      async (): Promise<boolean> => foldModelName(await page.evaluate((): string => document.body.innerText)).includes(wanted),
+      { timeout: timeoutMs },
+    ).toBe(true)
+  } catch {
+    notes.push(`[smoke] the page never showed "${MOCK_MODEL_ID}" within ${timeoutMs}ms; sending anyway`)
+  }
+}
+
 /** Lifecycle belongs to the caller, so this also runs inside the OLD update window. */
 export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeOptions): Promise<DesktopChatReceipt> {
   const { phase, outDir, expectCommit } = options
@@ -246,6 +274,9 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
 
   try {
     const composer = await waitForChatReady(page)
+
+    await waitForMockModel(page, consoleLines)
+
     const identity = await readChatIdentity(page)
 
     if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit) }

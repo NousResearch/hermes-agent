@@ -25,17 +25,19 @@ from utils import is_truthy_value
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
-    DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
-    _get_stt_section, _ok_result)
+    DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
+    normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
 from tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
-    _validate_audio_file, _validate_audio_file_size, _validate_audio_source_file)
+    _validate_audio_file, _validate_audio_source_file)
+from tools.transcription_chunking import exceeds_upload_limit, transcribe_oversized, upload_limit
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
-    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+    _normalize_local_stt_language, _transcribe_local_command, _try_lazy_install_stt,
+    build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
-from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
+from tools.transcription_cloud import (
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
     _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
@@ -97,7 +99,7 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 
 
 def _resolve_stt_language(
-    provider_key: str, stt_config: Optional[Dict[str, Any]] = None, *, extra_keys: tuple = ()
+    provider_key: str, stt_config: Optional[dict[str, Any]] = None, *, extra_keys: tuple = ()
 ) -> Optional[str]:
     """Language hint for an STT provider, first non-empty wins (never ""): ``stt.<provider>.language``
     (plus *extra_keys* aliases, e.g. ``language_code``) > ``stt.language`` > ``HERMES_LOCAL_STT_LANGUAGE``
@@ -128,7 +130,7 @@ def _has_openai_audio_backend() -> bool:
     return _openai_audio_unavailable_reason() is None
 
 
-def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
+def _is_local_stt_provider(provider: str, stt_config: dict[str, Any]) -> bool:
     """Whether *provider* is exempt from Hermes's remote upload cap."""
     return (provider or "").lower().strip() in {"local", "local_command"}
 
@@ -315,7 +317,7 @@ def _start_idle_unload_watcher(timeout_seconds: int) -> None:
                     # A copy: a Context can't be entered twice at once, and the owner's own
                     # request may still be running in the original.
                     timeout = owner_context.copy().run(_configured_idle_unload_seconds)
-                except Exception:  # noqa: BLE001 - keep the owner's last known value
+                except Exception:
                     timeout = fallback
                 if timeout <= 0:
                     break  # unload disabled mid-flight — stand down
@@ -333,7 +335,7 @@ def _touch_transcription_time() -> None:
     _last_transcription_time = time.monotonic()
 
 
-def _get_or_load_local_model(model_name: str, local_cfg: Dict[str, Any]):
+def _get_or_load_local_model(model_name: str, local_cfg: dict[str, Any]):
     """Cached faster-whisper model, (re)loaded under a double-checked lock when needed. The returned
     strong reference stays valid even if the idle watcher nulls the global mid-transcription."""
     global _local_model, _local_model_name
@@ -365,7 +367,7 @@ def _replace_cached_model_on_cpu(model_name: str):
 
 def _transcribe_local(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
         return _error_result("faster-whisper not installed")
@@ -379,8 +381,15 @@ def _transcribe_local(
             return _error_result("Local whisper model failed to load")
         # pre_transcription hook overrides win over config-resolved values.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
-        transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
-                                  if v})
+        effective_language = language if language is not None else transcribe_kwargs.get("language")
+        normalized_language = _normalize_local_stt_language(
+            effective_language, getattr(model, "supported_languages", None))
+        if normalized_language:
+            transcribe_kwargs["language"] = normalized_language
+        else:
+            transcribe_kwargs.pop("language", None)
+        if prompt:
+            transcribe_kwargs["initial_prompt"] = prompt
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
             # faster-whisper's transcribe() is lazy: the decode (and with it the
@@ -413,7 +422,7 @@ def _transcribe_local(
 
 
 # ---- Public API ---------------------------------------------------------
-def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
+def _read_block_error(file_path: str) -> Optional[dict[str, Any]]:
     """Refuse to ship a credential store (auth.json, .env, OAuth tokens) to an STT provider.
     Mirrors the image-gen / video-gen read guards."""
     from agent.file_safety import get_read_block_error
@@ -422,7 +431,7 @@ def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
 
 
 def _transcribe_prepared_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
     """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
     config default; ``source`` is a caller-surface label (``"gateway"``, ``"voice_mode"``) forwarded
     to the ``pre_transcription`` hook only."""
@@ -435,55 +444,62 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
+    remote = not _is_local_stt_provider(provider, stt_config)
     with ExitStack() as cleanup:
-        if not _is_local_stt_provider(provider, stt_config):
-            error = _validate_audio_file_size(Path(file_path))
-            if error:
-                return error
-            # Never overwrite a neighboring WAV or leave converted voice notes behind.
-            if Path(file_path).suffix.lower() == ".caf":
-                work_dir = cleanup.enter_context(
-                    TemporaryDirectory(prefix="hermes-caf-", ignore_cleanup_errors=True)
-                )
-                file_path = _convert_caf_to_wav(file_path, work_dir)
-                if not file_path:
-                    return _error_result("CAF audio could not be converted to WAV.")
+        # Never overwrite a neighboring WAV or leave converted voice notes behind.
+        if remote and Path(file_path).suffix.lower() == ".caf":
+            work_dir = cleanup.enter_context(TemporaryDirectory(prefix="hermes-caf-", ignore_cleanup_errors=True))
+            file_path = _convert_caf_to_wav(file_path, work_dir)
+            if not file_path:
+                return _error_result("CAF audio could not be converted to WAV.")
         # Best-effort pre-upload silence trim for built-in cloud providers.
         if provider in CLOUD_STT_PROVIDERS:
             trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
             if trimmed:
                 file_path = trimmed
                 cleanup.callback(shutil.rmtree, os.path.dirname(trimmed), ignore_errors=True)
+        if remote:
+            limit = upload_limit(provider, _limit_model_name(provider, stt_config, model))
+            if exceeds_upload_limit(file_path, limit):
+                # Hints are resolved once for the whole recording, not once per segment.
+                hints = _resolve_dispatch_hints(file_path, provider, stt_config, model, source)
+                return transcribe_oversized(
+                    file_path, limit, lambda part: _route_stt_provider(part, provider, stt_config, *hints))
         return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
 
 
+def _limit_model_name(provider: str, stt_config: dict[str, Any], model: Optional[str]) -> Optional[str]:
+    """Model whose duration cap applies to an upload (built-ins resolve config/defaults)."""
+    return _builtin_model_name(provider, stt_config, model) if provider in _BUILTIN_MODEL_KEYS else model
+
+
 # Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"
-# shares ``stt.local``; xAI takes no model (logging-only); deepinfra uses the live catalog when empty.
+# shares ``stt.local``; deepinfra uses the live catalog when empty.
 _BUILTIN_MODEL_KEYS = {
     "local": ("local", "model", DEFAULT_LOCAL_MODEL, False),
     "local_command": ("local", "model", DEFAULT_LOCAL_MODEL, False),
     "groq": ("groq", "model", DEFAULT_GROQ_STT_MODEL, True),
     "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
+    "xai": ("xai", "model", "", True),  # blank -> normalize_xai_stt_model resolves env/default
     "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
     "deepinfra": ("deepinfra", "model", "", True)}
 
 
-def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Optional[str]) -> str:
+def _builtin_model_name(provider: str, stt_config: dict[str, Any], model: Optional[str]) -> str:
     """Resolve the model for a built-in provider: caller override > ``stt.<provider>`` config > default."""
     if model:
         return model
-    if provider == "xai":
-        return "grok-stt"
     section, key, default, empty_is_missing = _BUILTIN_MODEL_KEYS[provider]
     cfg = _get_stt_section(stt_config, section)
-    return (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
+    resolved = (cfg.get(key) or default) if empty_is_missing else cfg.get(key, default)
+    return normalize_xai_stt_model(resolved) if provider == "xai" else resolved
 
 
-def _dispatch_stt_provider(
-    file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None,
-    source: Optional[str] = None) -> Dict[str, Any]:
-    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
+def _resolve_dispatch_hints(
+    file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str], source: Optional[str],
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """``(model, language, prompt)`` for one recording: static ``stt.prompt`` plus ``pre_transcription`` hooks."""
     # Static ``stt.prompt`` is the base; hook results mutate on top (last hook to set a field wins).
     prompt = stt_config.get("prompt")
     prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
@@ -492,7 +508,20 @@ def _dispatch_stt_provider(
         file_path=file_path, provider=provider, model=model,
         language=_get_stt_section(stt_config, provider).get("language"), prompt=prompt, source=source,
     )
-    prompt = _enforce_prompt_length_limit(prompt, provider)
+    return model, language, _enforce_prompt_length_limit(prompt, provider)
+
+
+def _dispatch_stt_provider(
+    file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str] = None,
+    source: Optional[str] = None) -> dict[str, Any]:
+    """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
+    return _route_stt_provider(
+        file_path, provider, stt_config, *_resolve_dispatch_hints(file_path, provider, stt_config, model, source))
+
+
+def _route_stt_provider(
+    file_path: str, provider: str, stt_config: dict[str, Any], model: Optional[str],
+    language: Optional[str], prompt: Optional[str]) -> dict[str, Any]:
     if provider in BUILTIN_STT_PROVIDERS:
         # Looked up in this module at call time so tests may patch ``_transcribe_*``.
         handler = globals()[f"_transcribe_{provider}"]
@@ -514,7 +543,7 @@ def _dispatch_stt_provider(
     return plugin_result if plugin_result is not None else _no_provider_error(provider, stt_config)
 
 
-def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, Any]:
+def _no_provider_error(provider: str, stt_config: dict[str, Any]) -> dict[str, Any]:
     """Error envelope when nothing claimed *provider*: unregistered name > openai selection reason > generic hint."""
     provider_key = str(provider or "").strip().lower()
     if "provider" in stt_config and provider_key and provider_key not in BUILTIN_STT_PROVIDERS and provider_key != "none":
@@ -535,7 +564,7 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
 
 
 def transcribe_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
     # Secret-store refusal runs before ANY validation so the error names the real reason.
@@ -559,10 +588,10 @@ def transcribe_audio(
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
-def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None) -> dict[str, Any]:
     """Try an already-installed local STT backend without changing config: passive inbound-media
     recovery after the configured provider failed — never lazy-installs or falls through to cloud."""
-    error = _validate_audio_file(file_path)
+    error = _validate_audio_file(file_path, enforce_size_limit=False)
     if error:
         return error
     local_model = model or (_load_stt_config().get("local") or {}).get("model", DEFAULT_LOCAL_MODEL)

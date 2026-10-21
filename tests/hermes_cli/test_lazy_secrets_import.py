@@ -15,6 +15,7 @@ def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
         text=True,
         cwd=str(repo_root),
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        check=False,
     )
 
 
@@ -102,6 +103,7 @@ sys.exit(0)
                 text=True,
                 cwd=str(repo_root),
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                check=False,
             )
             assert result.returncode == 0, (
                 f"cryptography._rust loaded during update check:\n"

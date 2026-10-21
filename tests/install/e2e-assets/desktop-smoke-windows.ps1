@@ -54,7 +54,10 @@ try {
 } catch {
     "outside-job wrapper failed: $_" | Add-Content -LiteralPath $spec.log -Encoding UTF8
 } finally {
-    Set-Content -LiteralPath $spec.exit -Value $code -Encoding ascii
+    # Write then rename: the parent stops waiting the moment this file exists, and a rename
+    # within one directory is atomic, so it can never read a half-written exit code.
+    Set-Content -LiteralPath "$($spec.exit).tmp" -Value $code -Encoding ascii
+    Move-Item -LiteralPath "$($spec.exit).tmp" -Destination $spec.exit -Force
 }
 '@
 

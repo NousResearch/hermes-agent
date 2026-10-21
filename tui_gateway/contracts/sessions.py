@@ -403,6 +403,8 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    through_message_id: int | None = None  # keep history rows through this physical row id
+    through_row_id: int | None = None  # alias for through_message_id
     # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
     # lost-response retry returns the SAME child instead of a duplicate.
     idempotency_key: str | None = None

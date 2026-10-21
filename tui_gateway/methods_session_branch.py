@@ -25,6 +25,17 @@ def _visible_branch_history(messages) -> list:
             and _coerce_message_text(message.get("content")).strip()]
 
 
+def _message_row_id(msg: dict) -> int | None:
+    """Durable SQLite row id from a history entry (_row_id else row_id), or None."""
+    raw = msg.get("_row_id")
+    if raw is None:
+        raw = msg.get("row_id")
+    try:
+        return None if raw is None else int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str):
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
@@ -105,7 +116,18 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         history = _branch_source_history(db, session, old_key)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
+        through_id = params.get("through_message_id")
+        if through_id is None:
+            through_id = params.get("through_row_id")
+        cut_idx = -1
+        if isinstance(through_id, int) and through_id > 0:
+            for idx, msg in enumerate(history):
+                rid_val = _message_row_id(msg)
+                if rid_val is not None and rid_val <= through_id:
+                    cut_idx = idx
+        if cut_idx >= 0:
+            history = history[:cut_idx + 1]
+        elif isinstance(count := params.get("count"), int) and count > 0:
             history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:

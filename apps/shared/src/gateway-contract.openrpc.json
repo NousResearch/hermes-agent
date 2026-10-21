@@ -35105,6 +35105,30 @@
             "default": null,
             "title": "Count"
           },
+          "through_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Through Message Id"
+          },
+          "through_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Through Row Id"
+          },
           "idempotency_key": {
             "anyOf": [
               {

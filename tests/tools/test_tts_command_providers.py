@@ -30,6 +30,7 @@ from tools.tts_command_provider import (
     _get_named_provider_config,
     _is_command_provider_config,
     _iter_command_providers,
+    list_command_tts_voices,
     render_command_template as _render_command_tts_template,
     run_command_provider as _run_command_tts,
     shell_quote_context as _shell_quote_context,
@@ -197,6 +198,27 @@ class TestIterCommandProviders:
         }
         names = sorted(name for name, _ in _iter_command_providers(cfg))
         assert names == ["piper-cli", "voxcpm"]
+
+
+class TestCommandTtsVoiceListing:
+    def test_runs_opted_in_lister_with_command_provider_boundary(self, monkeypatch):
+        seen = {}
+
+        def fake_run(command, timeout, env_passthrough=None):
+            seen.update(command=command, timeout=timeout, env_passthrough=env_passthrough)
+            return subprocess.CompletedProcess(command, 0, "alto\n\nsoprano\nalto\n", "")
+
+        monkeypatch.setattr("tools.tts_command_provider.run_command_provider", fake_run)
+        voices = list_command_tts_voices("piper-cli", {"providers": {"piper-cli": {
+            "command": "speak", "voices_command": "piper --list-voices", "timeout": 9,
+            "env_passthrough": ["PIPER_HOME"],
+        }}})
+
+        assert voices == ["alto", "soprano"]
+        assert seen == {"command": "piper --list-voices", "timeout": 9.0, "env_passthrough": ["PIPER_HOME"]}
+
+    def test_unconfigured_lister_is_not_available(self):
+        assert list_command_tts_voices("piper-cli", {"providers": {"piper-cli": {"command": "speak"}}}) is None
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
+const getCommandTtsVoices = vi.fn()
 
 // Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
 // config hook reaches them through the barrel, and a bare mock would throw.
@@ -31,6 +32,7 @@ vi.mock('@/hermes', async () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  getCommandTtsVoices: (provider: string, profile?: string) => getCommandTtsVoices(provider, profile),
   setApiRequestProfile: () => {}
 }))
 
@@ -72,6 +74,7 @@ beforeAll(async () => {
 beforeEach(() => {
   scopeProfileMock.set('default')
   getElevenLabsVoices.mockResolvedValue({ available: false })
+  getCommandTtsVoices.mockResolvedValue({ available: false, provider: '', voices: [] })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
   saveHermesConfig.mockResolvedValue({ ok: true })
 })
@@ -97,6 +100,26 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('loads command-provider voice suggestions in the settings profile scope', async () => {
+    scopeProfileMock.set('nash')
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-cli',
+        providers: { 'piper-cli': { command: 'piper', voice: 'old' } }
+      }
+    })
+    getCommandTtsVoices.mockResolvedValue({
+      available: true,
+      provider: 'piper-cli',
+      voices: [{ id: 'new-voice', label: 'New voice' }]
+    })
+
+    renderConfigSettings('voice')
+
+    await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledWith('piper-cli', 'nash'))
+    expect(await screen.findByText('Voice')).toBeTruthy()
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

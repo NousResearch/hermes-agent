@@ -37,7 +37,8 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
+  descriptionExtra,
+  allowCustomOptions = false
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -46,6 +47,7 @@ export function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
+  allowCustomOptions?: boolean
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -148,7 +150,7 @@ export function ConfigField({
   // options are dropdown suggestions instead of a closed Select gate. The old
   // native <datalist> filtered by the current value, so a field already set
   // to a valid option showed only that single suggestion.
-  if (selectOptions && FREE_INPUT_KEYS.has(schemaKey)) {
+  if (selectOptions && (FREE_INPUT_KEYS.has(schemaKey) || allowCustomOptions)) {
     return row(
       <ComboboxInput
         className={CONTROL_TEXT}

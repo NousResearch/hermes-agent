@@ -790,5 +790,31 @@ class TestProfileScopedAudio:
     def test_audio_endpoints_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/audio/elevenlabs/voices?profile=ghost")
         assert resp.status_code == 404
+        resp = client.get("/api/audio/tts/voices?profile=ghost&provider=piper-cli")
+        assert resp.status_code == 404
         resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
         assert resp.status_code == 404
+
+    def test_command_tts_voice_list_runs_inside_target_profile_home(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        from hermes_constants import get_hermes_home
+        from tools import tts_command_provider
+
+        seen = {}
+
+        def list_voices(provider, _config):
+            seen["provider"] = provider
+            seen["home"] = str(get_hermes_home())
+            return ["en_US-lessac-medium"]
+
+        monkeypatch.setattr(tts_command_provider, "list_command_tts_voices", list_voices)
+        resp = client.get("/api/audio/tts/voices?profile=worker_beta&provider=piper-cli")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "available": True,
+            "provider": "piper-cli",
+            "voices": [{"id": "en_US-lessac-medium", "label": "en_US-lessac-medium"}],
+        }
+        assert seen == {"provider": "piper-cli", "home": str(isolated_profiles["worker_beta"])}

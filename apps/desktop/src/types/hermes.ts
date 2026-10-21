@@ -76,6 +76,17 @@ export interface ElevenLabsVoicesResponse {
   voices: ElevenLabsVoice[]
 }
 
+export interface CommandTtsVoice {
+  id: string
+  label: string
+}
+
+export interface CommandTtsVoicesResponse {
+  available: boolean
+  provider: string
+  voices: CommandTtsVoice[]
+}
+
 export interface OAuthProviderStatus {
   /** Nous only: the tier name the token resolves to, when the backend knows
    *  one. Null for a free-tier identity and for older backends. */

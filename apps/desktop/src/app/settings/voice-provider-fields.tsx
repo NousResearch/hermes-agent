@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getElevenLabsVoices,
+  getCommandTtsVoices,
   getHermesConfigSchema,
   type ProfileScope,
   profileScopeKey,
@@ -22,6 +23,54 @@ import { diffConfig, enumOptionsFor, getNested, inferFieldSchema, setNested } fr
 // per-provider fields exist; both the Voice settings page and the
 // Capabilities TTS panel derive from it so the two surfaces never drift.
 const VOICE_KEYS = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
+
+export function CommandTtsVoicePicker({
+  config,
+  onChange,
+  profile
+}: {
+  config: HermesConfigRecord
+  onChange: (next: HermesConfigRecord) => void
+  profile?: ProfileScope
+}) {
+  const provider = String(getNested(config, 'tts.provider') ?? '').trim()
+  const canonicalPath = `tts.providers.${provider}`
+  const legacyPath = `tts.${provider}`
+  const canonicalConfig = getNested(config, canonicalPath)
+  const providerPath = canonicalConfig && typeof canonicalConfig === 'object' ? canonicalPath : legacyPath
+  const providerConfig = getNested(config, providerPath)
+  const [voices, setVoices] = useState<{ id: string; label: string }[] | null>(null)
+
+  useEffect(() => {
+    if (!provider || !providerConfig || typeof providerConfig !== 'object') {
+      setVoices(null)
+      return
+    }
+    let cancelled = false
+    getCommandTtsVoices(provider, profile)
+      .then(result => !cancelled && setVoices(result.available ? result.voices : null))
+      .catch(() => !cancelled && setVoices(null))
+    return () => { cancelled = true }
+  }, [provider, profile, providerConfig])
+
+  if (!voices) {
+    return null
+  }
+  const key = `${providerPath}.voice`
+  const value = getNested(config, key)
+  const options = voices.map(voice => voice.id)
+  return (
+    <ConfigField
+      allowCustomOptions
+      enumOptions={options}
+      onChange={next => onChange(setNested(config, key, next))}
+      optionLabels={Object.fromEntries(voices.map(voice => [voice.id, voice.label]))}
+      schema={{ type: 'string' }}
+      schemaKey={key}
+      value={value}
+    />
+  )
+}
 
 export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): string[] {
   const prefix = `${section}.${providerKey}.`

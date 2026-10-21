@@ -8,6 +8,7 @@ import type {
   BackendUpdateCheckResponse,
   CuratorStatusResponse,
   DebugShareResponse,
+  CommandTtsVoicesResponse,
   ElevenLabsVoicesResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -263,6 +264,13 @@ export function setSttLease(lease: string, active: boolean, owner: ResolvedOwner
 export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabsVoicesResponse> {
   return hermesApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
+    ...profileScoped(profile)
+  })
+}
+
+export function getCommandTtsVoices(provider: string, profile?: null | string): Promise<CommandTtsVoicesResponse> {
+  return hermesApi<CommandTtsVoicesResponse>({
+    path: `/api/audio/tts/voices?provider=${encodeURIComponent(provider)}`,
     ...profileScoped(profile)
   })
 }

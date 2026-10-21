@@ -47,6 +47,8 @@ export type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
   BackendUpdateCheckResponse,
+  CommandTtsVoice,
+  CommandTtsVoicesResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,
   ComputerUseStatus,

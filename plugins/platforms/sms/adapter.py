@@ -27,6 +27,7 @@ from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
 from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
 )
+from gateway.platforms.send_targets import StandaloneSendPolicy
 
 try:
     import aiohttp
@@ -291,7 +292,7 @@ _SMS_MARKDOWN_SUBS = (
 # register() exposes the platform via the registry, replacing the Platform.SMS elif in gateway/run.py, the
 # _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _PLATFORMS["sms"] static dict in
 # hermes_cli/gateway.py, and the _send_sms dispatch in tools/send_message_tool.py. TWILIO_*
-# env→PlatformConfig seeding stays in core.
+# env→PlatformConfig seeding lives in this plugin's gateway_env.py.
 # ──────────────────────────────────────────────────────────────────────────
 def _strip_markdown_for_sms(message: str) -> str:
     """Strip markdown — SMS renders it as literal characters."""
@@ -329,14 +330,30 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 _is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are communicating via SMS. Keep responses concise and use plain text only — no markdown, no "
+    "formatting. SMS messages are limited to ~1600 characters, so be brief and direct."
+)
+
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        standalone_send=StandaloneSendPolicy(text_direct=True),
         name="sms", label="SMS (Twilio)", adapter_factory=SmsAdapter,
+        dashboard_description="Send and receive text messages via Twilio.",
+        docs_url="https://www.twilio.com/console",
+        dashboard_env_vars=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
+        dashboard_required_env=("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
         check_fn=check_sms_requirements, is_connected=_is_connected,
         required_env=["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
-        install_hint="pip install aiohttp", allowed_users_env="SMS_ALLOWED_USERS",
-        allow_all_env="SMS_ALLOW_ALL_USERS", cron_deliver_env_var="SMS_HOME_CHANNEL",
+        install_hint="pip install aiohttp", cron_deliver_env_var="SMS_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=MAX_SMS_LENGTH, pii_safe=True,
-        emoji="📱", allow_update_command=True)
+        emoji="📱", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="minimal",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

@@ -1,11 +1,12 @@
 name: shodan
 repo: https://github.com/Adolanium/hermes-plugin-shodan
-sha: c7d56211420438bd300c3526b7536f55aafb0fce
+sha: d12828e9c90654bca598d45832cee2ef6454cf30
 description: Shodan tools with complete capability declarations.
 maintainer: Adolanium
 tier: community
 category: tools
 docs_url: https://github.com/Adolanium/hermes-plugin-shodan#readme
+image: https://raw.githubusercontent.com/Adolanium/hermes-plugin-shodan/d12828e9c90654bca598d45832cee2ef6454cf30/assets/catalog-banner.png
 capabilities:
   provides_tools:
   - shodan_host

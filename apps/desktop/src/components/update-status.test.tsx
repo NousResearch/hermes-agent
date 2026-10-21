@@ -93,6 +93,31 @@ describe('deriveUpdateStatus', () => {
     expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
   })
 
+  it('names a stable release the checkout already contains as a rollback, never a new update', () => {
+    const status = {
+      supported: true,
+      behind: -1,
+      channel: 'stable',
+      sourceVersion: '0.21.7',
+      updateAvailable: true,
+      aheadOfRelease: false
+    }
+
+    const view = (rollback: boolean) =>
+      deriveUpdateStatus({
+        apply: IDLE_APPLY,
+        checking: false,
+        rollback: en.settings.about.channel.rollbackBody,
+        status: { ...status, rollback },
+        target: 'client',
+        u: en.updates
+      }).line
+
+    expect(view(true)).toBe(en.settings.about.channel.rollbackBody('v0.21.7'))
+    expect(view(true)).not.toBe(en.updates.updateReadyUnknown)
+    expect(view(false)).toBe(en.updates.updateReadyUnknown)
+  })
+
   it('never-checked: idle tone, invites a check', () => {
     const view = derive(null)
 

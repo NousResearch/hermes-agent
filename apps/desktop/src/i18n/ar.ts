@@ -8,11 +8,84 @@ import { arCommandCenter } from './ar_command_center'
 import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
+import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+
+  catalog: {
+    add: 'إضافة',
+    added: 'تمت الإضافة',
+    discover: 'اكتشف',
+    featured: 'مميزة',
+    explorePlugins: 'استكشف الإضافات',
+    exploreSkills: 'استكشف المهارات',
+    mostStarred: 'الأكثر حصولًا على نجوم',
+    newest: 'الأحدث',
+    recentlyUpdated: 'المحدثة مؤخرًا',
+    alphabetical: 'الاسم',
+    sortBy: 'ترتيب حسب',
+    seeAll: 'عرض الكل',
+    related: 'عناصر مشابهة',
+    tags: 'الوسوم',
+    screenshots: 'لقطات الشاشة',
+    listView: 'عرض القائمة',
+    cardView: 'عرض البطاقات',
+    installTitle: (name: string) => `تثبيت «${name}»؟`,
+    installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
+    installTo: 'التثبيت في',
+    thisComputer: 'هذا الكمبيوتر',
+    installing: 'جارٍ التثبيت…',
+    installComplete: (name: string) => `تم تثبيت «${name}»`,
+    destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
+    installed: 'المثبتة',
+    searchSkills: 'البحث في المهارات',
+    searchPlugins: 'البحث في الإضافات',
+    allSources: 'كل المصادر',
+    allCategories: 'كل الفئات',
+    about: 'نبذة',
+    author: 'المؤلف',
+    source: 'المصدر',
+    category: 'الفئة',
+    version: 'الإصدار',
+    platforms: 'المنصات',
+    requires: 'المتطلبات',
+    tools: 'الأدوات',
+    hooks: 'الخطافات',
+    middleware: 'البرمجيات الوسيطة',
+    commands: 'الأوامر',
+    license: 'الترخيص',
+    addedDate: 'تاريخ الإضافة',
+    updatedDate: 'تاريخ التحديث',
+    repository: 'المستودع',
+    documentation: 'التوثيق',
+    noResults: 'لا توجد نتائج مطابقة',
+    tryAnother: 'جرّب بحثًا آخر أو امسح عوامل التصفية.',
+    clearFilters: 'مسح عوامل التصفية',
+    filters: 'عوامل التصفية',
+    loadFailed: 'تعذر تحميل الكتالوج',
+    retry: 'حاول مرة أخرى',
+    more: 'عرض المزيد',
+    pinned: 'التزام تمت مراجعته',
+    snapshotHint: 'من كتالوج Hermes. لا يتصل التصفح بمستودعات المصدر مطلقًا.',
+    installHint: 'راجع المصدر قبل التثبيت. تسري التغييرات على الجلسات الجديدة.',
+    results: (count: number) => `النتائج: ${count.toLocaleString('ar')}`,
+    back: 'العودة إلى النتائج'
+  },
+  connectors: {
+    directory: {
+      suggested: 'مقترحة',
+      allApps: 'كل التطبيقات',
+      receiptConnected: apps => `متصلة: ${apps}`,
+      receiptNone: 'لم يتم ربط تطبيقات جديدة',
+      receiptTimedOut: 'أُغلقت بعد 5 دقائق',
+      finishInBrowser: 'أكمل في المتصفح',
+      signInFailed: 'تعذّر الاتصال. انقر لإعادة المحاولة'
+    }
+  },
   sharedMetrics: arCommon.sharedMetrics,
+  firstRun: arFirstRun,
   externalOpenFailed: arChrome.externalOpenFailed,
   sessionImport: arConnectors.sessionImport,
   sendDiagnostics: arDiagnostics.sendDiagnostics,
@@ -22,6 +95,8 @@ export const arOverrides = {
   notifications: arDiagnostics.notifications,
   remoteDisplayBanner: arBoot.remoteDisplayBanner,
   butterbar: arBoot.butterbar,
+  promptNotices: arBoot.promptNotices,
+  keepAwakeOffer: arBoot.keepAwakeOffer,
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,
@@ -37,7 +112,15 @@ export const arOverrides = {
   artifactCard: arArtifacts.artifactCard,
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,
-  composer: arChat.composer,
+  composer: {
+    ...arChat.composer,
+    redirect: 'إعادة توجيه التشغيل الحالي',
+    queueLostNote: 'فُقد الدور أثناء إعادة التشغيل',
+    restoreImageDraft: 'استعادة مسودة الصورة',
+    queueCancelFailed: 'تعذّر إزالة الدور المنتظر',
+    queueLostDiscard: 'تجاهل',
+    queueLostDiscardTip: 'أعادت البوابة التشغيل أثناء هذا الدور ولا يمكن إكماله. تجاهله لتستمر الأدوار المنتظرة خلفه.'
+  },
   statusStack: arChat.statusStack,
   updates: arBoot.updates,
   install: arBoot.install,
@@ -56,19 +139,6 @@ export const arOverrides = {
   errors: arDiagnostics.errors,
   tips: arChat.tips,
   ui: arCommon.ui,
-  handoffTour: {
-    profileTitle: 'مهمتك الأولى تعمل على الملف الشخصي الافتراضي',
-    profileText:
-      'يبدّل هذا الشريط بين الملفات الشخصية. المضاء الآن هو الافتراضي، حيث توجد جلسة المهمة. والآخر هو ملف الإعداد، حيث توجد محادثة الترحيب.',
-    sessionsTitle: 'لكل ملف شخصي جلساته الخاصة',
-    sessionsText:
-      'هذه القائمة تخص الملف الافتراضي. «جلسة جديدة» تبدأ جلسة على الملف المحدد. بدّل الملف من الشريط فتتغير القائمة معه.',
-    stayTitle: 'Hermes على بُعد نقرة',
-    stayText: 'انتقل إلى ملف الإعداد وافتح «مرحبًا بك في Hermes» متى احتجت إلى مساعدة. ستبقى هناك.',
-    localTitle: 'يمكن لهذا الجهاز تشغيل النماذج محليًا',
-    localText: (model: string) =>
-      `${model} يناسب أجهزتك. يعمل مجانًا، ولا تغادر المحادثات جهازك. اختره من هنا، من قائمة النماذج، متى شئت.`
-  },
   freeTier: {
     offer: {
       heading: 'واصل مع Hermes',

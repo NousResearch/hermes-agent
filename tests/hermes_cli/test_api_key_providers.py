@@ -156,7 +156,7 @@ class TestResolveProvider:
         # behavior, not the Bedrock fallback.
         monkeypatch.setattr(
             "agent.bedrock_adapter.has_aws_credentials",
-            lambda env=None: False,
+            lambda env=None, **_kw: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
         with pytest.raises(AuthError, match="not connected to any AI provider"):

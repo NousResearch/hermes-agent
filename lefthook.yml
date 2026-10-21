@@ -6,7 +6,7 @@ pre-commit:
 
     - name: lint web
       root: web/
-      glob: "*.{js,ts,tsx}"
+      glob: "web/**/*.{js,ts,tsx}"
       run: npx eslint {staged_files}
 
     - name: lint bootstrap installer

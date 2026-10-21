@@ -241,6 +241,19 @@ export function removePane(node: LayoutNode, paneId: string): LayoutNode | null 
 }
 
 /**
+ * Order panes for one adoption pass so a pane docked against another pane in
+ * the SAME pass comes after it. Adopted first, its anchor isn't in the tree yet
+ * and it would fall back into main's zone (a session's preview tabs returning
+ * stacked behind the chat). Stable: everything else keeps its order.
+ */
+export function anchorsFirst<T extends { id: string }>(panes: T[], anchorOf: (id: string) => string | undefined): T[] {
+  const ids = new Set(panes.map(pane => pane.id))
+  const waits = (pane: T) => Number(ids.has(anchorOf(pane.id) ?? ''))
+
+  return [...panes].sort((a, b) => waits(a) - waits(b))
+}
+
+/**
  * Insert `paneId` at `target` group: `center` joins the stack (as a tab);
  * an edge splits the group in that direction. If the neighboring split
  * already runs in that orientation the new group is spliced in beside the

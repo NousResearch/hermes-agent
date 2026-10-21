@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import time
 from types import MappingProxyType
 
 from pm.filesystem import long_root, native
@@ -236,8 +237,11 @@ def stage_tools(names: Sequence[str], *, source_store: Path, out: Path, target: 
                 raise InstallError(package.name, "tool copy source failed verification", "run preparation again")
         staged = Facts(out / "facts.json", strict=True)
         for package in packages:
+            started = time.monotonic()
             _install(package, lock, staged, destination, target,
                      copy_from=(facts, source), _lock_held=True, _fresh_copy=True)
+            # Copy plus re-digest of a large tree runs silently for minutes on Windows.
+            print(f"    copied {package.name} ({time.monotonic() - started:.1f}s)", flush=True)
     return out
 
 

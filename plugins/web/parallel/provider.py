@@ -26,18 +26,8 @@ def _client(slot: str, cls_name: str) -> Any:
         import parallel  # deliberately lazy
         return getattr(parallel, cls_name)(api_key=api_key)
 
-    # Mirrors the lazy-deps pattern used by the legacy implementation.
-    # Swallows benign ImportError from the pm helper itself; if the
-    # SDK is genuinely missing the subsequent ``from parallel import ...``
-    # raises ImportError that the caller can handle.
-    try:
-        from pm import ensure_import as _lazy_ensure
-
-        _lazy_ensure("parallel-web")
-    except ImportError:
-        pass
-    except Exception as exc:
-        raise ImportError(str(exc))
+    # The key is checked before the SDK is ensured (cached_sdk_client): without a key the
+    # error names the key, not an install the user may not be allowed to run.
     return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "parallel-web", _factory)
 
 

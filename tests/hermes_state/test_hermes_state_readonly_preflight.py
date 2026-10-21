@@ -155,6 +155,17 @@ class TestSkips:
 
 
 class TestSessionDBIntegration:
+    def test_sessiondb_repairs_readonly_dir_before_fresh_db_lock(self, hermes_home):
+        sub = hermes_home / "profiles" / "p1"
+        sub.mkdir(parents=True)
+        os.chmod(sub, 0o555)
+        try:
+            db = SessionDB(sub / "state.db")  # absent DB: the quarantine lock lives in this dir
+            db.close()
+            assert os.access(sub, os.W_OK)
+        finally:
+            os.chmod(sub, 0o755)
+
     def test_sessiondb_selfheals_readonly_db_in_home(self, hermes_home):
         db_path = hermes_home / "state.db"
         first = SessionDB(db_path)

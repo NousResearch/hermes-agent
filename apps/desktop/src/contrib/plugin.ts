@@ -16,6 +16,13 @@ import type { ReadableAtom } from 'nanostores'
 
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
+import {
+  listPluginAppActions,
+  type PluginAppActionId,
+  type PluginAppActionInfo,
+  type PluginRunActionResult,
+  runPluginAppAction
+} from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
@@ -31,6 +38,7 @@ import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
+export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
@@ -153,6 +161,16 @@ export interface PluginContext {
    *  plugin and cleared when it unloads. Feature-detect on older hosts:
    *  `ctx.pet?.say(...)`. */
   pet: PluginPet
+  /** Run a built-in app action (toggle the browser panel, open Settings,
+   *  focus the composer, …) through the same handler its keyboard shortcut
+   *  and palette entry use, so rebinding or unbinding the shortcut changes
+   *  nothing. Only view / navigation actions are allowed (`listActions()`);
+   *  an unknown or denied id is refused with `{ ok: false, error }` and a
+   *  console warning, never thrown. Feature-detect on older hosts:
+   *  `ctx.runAction?.('view.showBrowser')`. */
+  runAction: (id: PluginAppActionId) => PluginRunActionResult
+  /** The actions `runAction` accepts, with their localized labels. */
+  listActions: () => PluginAppActionInfo[]
   /** Plugin-scoped persistence. */
   storage: PluginStorage
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
@@ -349,6 +367,8 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),
     pet: createPluginPet(pluginId, track),
+    runAction: id => runPluginAppAction(pluginId, id),
+    listActions: listPluginAppActions,
     storage: createPluginStorage(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }

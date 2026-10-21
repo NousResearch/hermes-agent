@@ -23,7 +23,7 @@ import httpx
 
 from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
@@ -130,15 +130,16 @@ def _load_snapshots() -> dict:
 
 def _store_snapshot(task_id: str, snapshot_id: str) -> None:
     if task_id and snapshot_id:
-        _save_json_store(_snapshot_store(), {**_load_snapshots(), task_id: snapshot_id})
+        _update_json_store(_snapshot_store(), lambda snapshots: snapshots.update({task_id: snapshot_id}))
 
 
 def _delete_snapshot(task_id: str, snapshot_id: str) -> None:
     """Drop the stored id for ``task_id`` only if it still equals ``snapshot_id``."""
-    snapshots = _load_snapshots()
-    if task_id and snapshots.get(task_id) == snapshot_id:
-        snapshots.pop(task_id)
-        _save_json_store(_snapshot_store(), snapshots)
+    def update(snapshots: dict) -> None:
+        if task_id and snapshots.get(task_id) == snapshot_id:
+            snapshots.pop(task_id)
+
+    _update_json_store(_snapshot_store(), update)
 
 
 def _extract_snapshot_id(snapshot: Any) -> str | None:

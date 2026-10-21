@@ -26,11 +26,20 @@ export const healsByStoredId = new Map<string, number>()
  *  blip is not. Only the former may stop a poll — misclassifying a transient
  *  failure would silently freeze a healthy session.
  *
- *  Match the gateway's 4001 code when the error carries one. Codeless errors
+ *  Canonical authority errors share code 4001; their reason is authoritative.
+ *  Only reason `not_found` means the binding is gone. Legacy errors without a
+ *  reason retain the gateway's 4001 contract. Codeless errors
  *  (the frame's structure was lost across the IPC bridge or a wrapped rethrow)
  *  are accepted only with a bare "session not found" body — a tool or report
  *  string that merely mentions the phrase must not latch a live runtime. */
 export function isSessionGoneForBackgroundPolling(error: unknown): boolean {
+  const data = error && typeof error === 'object' ? (error as { data?: unknown }).data : undefined
+  const reason = data && typeof data === 'object' ? (data as { reason?: unknown }).reason : undefined
+
+  if (typeof reason === 'string') {
+    return reason === 'not_found'
+  }
+
   if (error instanceof JsonRpcGatewayError && typeof error.code === 'number') {
     return error.code === GATEWAY_SESSION_NOT_FOUND_CODE
   }

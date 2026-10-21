@@ -51,6 +51,12 @@ def record_slash_command(*, command: str, surface: str) -> None:
     _emit(contract.SLASH_COMMAND_MARK, fields_.slash_command_fields, command=command, surface=surface)
 
 
+def record_tool_search(*, scope: str, hits: int, outcome: str) -> None:
+    from .shared_metrics_connectors import tool_search_fields
+
+    _emit(contract.TOOL_SEARCH_MARK, tool_search_fields, scope=scope, hits=hits, outcome=outcome)
+
+
 def record_compression(
     *, trigger: str, outcome: str, tokens_before: int | None, context_length: int | None,
     failure_class: str | None = None,

@@ -24,7 +24,7 @@ from hermes_cli.auth_constants import (
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE, DEFAULT_NOUS_WELCOME_URL,
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
-    _nous_err, httpx)
+    WELCOME_CLAIM_FLAG, _nous_err, httpx)
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
     from hermes_cli.auth import ProviderConfig
@@ -442,7 +442,9 @@ def _nous_shared_shape(src: dict[str, Any]) -> dict[str, Any]:
         "inference_base_url": src.get("inference_base_url") or (
             DEFAULT_NOUS_WELCOME_URL if src.get("auth_method") == "anonymous" else DEFAULT_NOUS_INFERENCE_URL),
         "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
-        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id")
+        # WELCOME_CLAIM_FLAG travels too: an adopted connector guest that lost it would read as pre-trial.
+        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id", "connectors_token",
+                               WELCOME_CLAIM_FLAG)
            if src.get(k) not in (None, "")}}
 
 
@@ -1037,7 +1039,7 @@ class _NousRuntimeResolve:
             # Guest seam: the anon_ credential is the refresh material; re-exchange instead of
             # redeeming a rotating refresh token. Quarantine never applies to a guest.
             if self.force_refresh or self.invoke_jwt_status() is not None:
-                refresh_guest_state(self.state, client)
+                refresh_guest_state(self.state, client, purpose="inference")
                 self.access_token = self.state["access_token"]
                 self.stored_inference_base_url = self.state.get("inference_base_url") or self.stored_inference_base_url
                 self.inference_base_url = _nous_inference_env_override() or self.stored_inference_base_url
@@ -1069,10 +1071,11 @@ def resolve_nous_runtime_credentials(
     stale_access_token: Optional[str] = None) -> dict[str, Any]:
     """Resolve Nous inference credentials for runtime use (refreshing under the auth-store lock).
 
-    A guest whose ``anon_`` credential NAS no longer knows (reaped or claimed) is retired and a new
-    identity is set up once, transparently -- the one client rule covering both reap and claim.
+    A guest whose ``anon_`` credential NAS no longer knows (reaped or claimed) is retired and never
+    replaced here: the welcome trial is claimed once per OS user, so that user goes on to sign-in or
+    provider setup.
     """
-    from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest, ensure_portal_identity
+    from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest
     from hermes_cli.anon_challenge import run_with_challenge
     try:
         # A free-tier exchange may be answered with a browser challenge; it is worked here, after
@@ -1082,16 +1085,9 @@ def resolve_nous_runtime_credentials(
             force_refresh=force_refresh, stale_access_token=stale_access_token))
     except AnonCredentialDead as dead_exc:
         from hermes_cli.auth import get_provider_auth_state
-        from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED
         dead = get_provider_auth_state("nous") or {}
         clear_dead_guest(str(dead_exc.code or "anon_credential_dead"), dead_token=dead.get("anon_token"))
-        # A locked account is retired but never silently replaced: the way forward is a sign-in.
-        if dead_exc.code == ANON_ACCOUNT_LOCKED:
-            raise
-        if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
-            raise
-        return run_with_challenge(lambda: _resolve_nous_runtime_credentials(
-            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle))
+        raise
 
 
 def _resolve_nous_runtime_credentials(
@@ -1111,6 +1107,10 @@ def _resolve_nous_runtime_credentials(
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
         if not state:
             raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
+        from hermes_cli.anon_auth import guest_without_free_tier
+        if guest_without_free_tier(state):
+            # Not terminal (no relogin): the identity stays for connectors.
+            raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing")
         run = _NousRuntimeResolve(
             auth_store, state, state_source_path, force_refresh=force_refresh,
             stale_access_token=stale_access_token, timeout_seconds=timeout_seconds)
@@ -1165,7 +1165,9 @@ def _snapshot_nous_pool_status() -> dict[str, Any]:
     try:
         from agent.credential_pool import load_pool
         pool = load_pool("nous")
-        entries = list(pool.entries()) if pool and pool.has_credentials() else []
+        # A guest's row is not a Portal login: without its trial stamp in auth.json it runs nothing.
+        entries = [e for e in pool.entries() if getattr(e, "auth_method", None) != "anonymous"] if (
+            pool and pool.has_credentials()) else []
         if not entries:
             return _empty_nous_auth_status()
         entry = max(entries, key=lambda e: (
@@ -1216,9 +1218,10 @@ def _nous_status_from_state(
 
 def _compute_nous_auth_status() -> dict[str, Any]:
     """Uncached implementation of get_nous_auth_status(). See that function."""
+    from hermes_cli.anon_auth import guest_without_free_tier
     from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
     state = get_provider_auth_state("nous")
-    if not state:
+    if not state or guest_without_free_tier(state):
         return _snapshot_nous_pool_status()
     base_status = _nous_status_from_state(
         state, logged_in=bool(state.get("access_token")), source="auth_store")
@@ -1271,12 +1274,13 @@ def get_nous_auth_status_local() -> dict[str, Any]:
     ``logged_in`` = usable invoke JWT, or a refresh token not terminally quarantined — not proof
     the server still accepts it.
     """
+    from hermes_cli.anon_auth import guest_without_free_tier
     from hermes_cli.auth import get_provider_auth_state
     try:
         state = get_provider_auth_state("nous")
     except Exception:
         state = None
-    if not state:
+    if not state or guest_without_free_tier(state):
         return _snapshot_nous_pool_status()
     jwt_reason = _state_invoke_jwt_status(state, state.get("access_token"))
     last_err = _terminal_quarantine_marker(state)

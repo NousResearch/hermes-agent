@@ -168,7 +168,7 @@ def _set_model(rid, params, key, value, session):
 
 
 _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal",
-               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast"}
+               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _set_fast(rid, params, key, value, session):
@@ -199,6 +199,12 @@ def _set_fast(rid, params, key, value, session):
         overrides = resolve_fast_mode_overrides(target_model, provider=getattr(agent, "provider", None),
                                                 base_url=getattr(agent, "base_url", None),
                                                 tier="ultrafast" if nv == "ultrafast" else None)
+        if overrides is not None and nv == "ultrafast":
+            from agent.codex_service_tiers import ultrafast_offered
+            if not ultrafast_offered(target_model, provider=getattr(agent, "provider", None),
+                                     base_url=getattr(agent, "base_url", None),
+                                     access_token=getattr(agent, "api_key", None)):
+                overrides = None
         if overrides is None:
             return _err(rid, 4002, f"{nv} mode is not available for this model")
     if session is not None:
@@ -405,6 +411,9 @@ def _toggle_setters() -> dict:
         "battery": (_word, "display.battery",
                     {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
                     lambda: not bool(_display_cfg().get("battery", False)), on_off),
+        # Ink's /timestamps: the classic CLI's display.timestamps (the shared owner's setter too).
+        "timestamps": (_word, "display.timestamps", _BOOL_WORDS,
+                       lambda: not bool(_display_cfg().get("timestamps", False)), on_off),
         "statusbar": (_word, "display.tui_statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES}},
                       lambda: "top" if _coerce_statusbar(_display_cfg().get("tui_statusbar", "top")) == "off" else "off",
                       lambda v: v),
@@ -483,7 +492,7 @@ _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
-    "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}

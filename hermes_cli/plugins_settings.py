@@ -36,23 +36,35 @@ _ENV_NAME_CLEAN_RE = re.compile(r"[^A-Z0-9]+")
 
 
 def _manifest_config_schema(plugin_dir: Optional[Path]) -> Mapping[str, Mapping[str, Any]]:
-    """``config_schema`` mapping from ``<plugin_dir>/plugin.yaml``; ``{}`` when absent or malformed
-    (the loader already warned about malformed entries at load time)."""
+    """``config_schema`` from ``<plugin_dir>/plugin.yaml``, or for a portable package from
+    ``plugin.json`` ``extensions.com.nousresearch.hermes.config_schema`` (Agent Plugins v1 forbids
+    unknown top-level fields, so Hermes-specific keys live in the vendor namespace); ``{}`` when
+    absent or malformed (the loader already warned about malformed entries at load time)."""
     if plugin_dir is None:
         return {}
     manifest = Path(plugin_dir) / "plugin.yaml"
-    if not manifest.is_file():
-        return {}
     try:
-        from utils import fast_safe_load
-        data = fast_safe_load(manifest.read_text(encoding="utf-8-sig")) or {}
+        if manifest.is_file():
+            from utils import fast_safe_load
+            data = fast_safe_load(manifest.read_text(encoding="utf-8-sig")) or {}
+            raw = data.get("config_schema") if isinstance(data, Mapping) else None
+        else:
+            raw = _portable_config_schema(Path(plugin_dir))
     except Exception as exc:  # unreadable manifest: no settings surface, never a failed list
-        logger.debug("plugin settings: cannot read %s: %s", manifest, exc)
+        logger.debug("plugin settings: cannot read the manifest in %s: %s", plugin_dir, exc)
         return {}
-    raw = data.get("config_schema") if isinstance(data, Mapping) else None
     if not isinstance(raw, Mapping):
         return {}
     return {str(k): v for k, v in raw.items() if isinstance(v, Mapping)}
+
+def _portable_config_schema(plugin_dir: Path) -> Any:
+    portable = plugin_dir / "plugin.json"
+    if not portable.is_file():
+        return None
+    import json
+    from hermes_cli.agent_plugins import manifest_config_schema
+    return manifest_config_schema(json.loads(portable.read_text(encoding="utf-8-sig")))
+
 
 
 def secret_env_name(plugin_id: str, key: str, spec: Mapping[str, Any]) -> str:

@@ -43,6 +43,8 @@ import time
 import uuid
 from typing import Any, Callable
 
+from tools.clarify_batch import settle_batch
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +62,8 @@ class ServerRequest:
         "qids",
         "result",
         "sid",
+        "withdrawn",
+        "writing",
     )
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
@@ -78,6 +82,9 @@ class ServerRequest:
         self.on_result = on_result
         # Client transports that answered NOT_SHOWN_CODE (no window there shows this session).
         self.declined: set = set()
+        # Published but frame not yet written; a cancel in that gap parks its reason in ``withdrawn`` for _register.
+        self.writing = False
+        self.withdrawn: str | None = None
 
     def frame(self) -> dict:
         return {"jsonrpc": "2.0", "id": self.id, "method": self.method,
@@ -168,8 +175,17 @@ def _register(req: ServerRequest) -> None:
     if problem is not None:
         raise ValueError(problem)  # a key the renderer's typed handler would never read: our bug
     with _lock:
+        req.writing = True
         _open[req.id] = req
-    _write(req.frame())
+    try:
+        _write(req.frame())
+    finally:
+        with _lock:
+            req.writing = False
+            withdrawn = req.withdrawn
+    if withdrawn is not None:
+        # cancel() landed between publish and write: its request.cancel must follow the frame, not precede it.
+        _emit_cancel(req, withdrawn)
 
 
 def send(method: str, sid: str, params: dict, *, timeout: float | None,
@@ -207,7 +223,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return {"answers": locked, "outcome": "timed_out"}
+            return settle_batch(locked, ended="timed_out")
     return None
 
 
@@ -288,16 +304,11 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
         else:
             result = frame.get("result")
             req.result = result if isinstance(result, dict) else {}
-            if req.qids and "answers" in req.result:
+            if req.qids:
                 # Batch clarify: answers locked early via clarify.lock belong to the final set even when
-                # the closing response only carries the tail the user answered last.
-                answers = req.result.get("answers")
-                merged = dict(req.locked)
-                if isinstance(answers, dict):
-                    merged.update(answers)
-                req.result = {**req.result, "answers": merged, "outcome": "submitted"}
-            elif req.qids:
-                req.result = {"answers": dict(req.locked), "outcome": "cancelled"}
+                # the closing response only carries the tail the user answered last (one rule with the
+                # session owner's registry: ``tools.clarify_batch``).
+                req.result = settle_batch(req.locked, req.result)
             req.answered = True
     if req.on_result is not None:
         req.on_result(req.result)
@@ -318,31 +329,36 @@ def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[s
         req.locked[question_id] = answer
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
-            req.result, req.answered = {"answers": dict(req.locked), "outcome": "submitted"}, True
+            req.result, req.answered = settle_batch(req.locked, ended="submitted"), True
             _open.pop(request_id, None)
     if not remaining:
         req.event.set()
     return remaining
 
 
-def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
+def cancel(sid: str | None = None, reason: str = "interrupted", *, method: str | None = None) -> int:
     """Withdraw open requests — only *sid*'s (session.interrupt must not touch other sessions'), or
-    every one when *sid* is None (shutdown). Blocked waits return None (a batch returns its locked
-    answers with ``outcome: cancelled``); queue-backed requests run ``on_result(None)`` so their
-    owner can settle. Returns the number withdrawn."""
+    every one when *sid* is None (shutdown); *method* narrows it to one request kind. Blocked waits
+    return None (a batch returns its locked answers with ``outcome: cancelled``); queue-backed requests
+    run ``on_result(None)`` so their owner can settle. Returns the number withdrawn."""
     with _lock:
-        targets = [req for req in _open.values() if sid is None or req.sid == sid]
+        targets = [req for req in _open.values()
+                   if (sid is None or req.sid == sid) and (method is None or req.method == method)]
         for req in targets:
             _open.pop(req.id, None)
             if req.qids is not None:
-                req.result, req.answered = {"answers": dict(req.locked), "outcome": "cancelled"}, True
+                req.result, req.answered = settle_batch(req.locked, ended="cancelled"), True
             else:
                 req.result, req.answered = None, False
+            if req.writing:
+                req.withdrawn = reason
+        announced = {req.id for req in targets if not req.writing}
     for req in targets:
         if req.on_result is not None:
             req.on_result(None)
         req.event.set()
-        _emit_cancel(req, reason)
+        if req.id in announced:
+            _emit_cancel(req, reason)
     return len(targets)
 
 

@@ -116,7 +116,7 @@ def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirna
     # A launch-service gateway's record fails the own-rung argv check (inline ``-c``), so the card
     # falls through to the multiplexer rung — mirrored here by an absent own record.
     monkeypatch.setattr(messaging, "read_runtime_status", lambda *a, **k: None)
-    monkeypatch.setattr(messaging, "multiplexer_liveness_for_profile", lambda home: (os.getpid(), record))
+    monkeypatch.setattr(status, "multiplexer_liveness_for_profile", lambda home: (os.getpid(), record))
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],

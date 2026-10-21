@@ -74,6 +74,11 @@ def _make_runner():
     runner._honcho_configs = {}
     runner._shutdown_all_gateway_honcho = lambda: None
     runner.session_store = MagicMock()
+    # A bare MagicMock attribute is os.fspath()-able as the RELATIVE path "MagicMock/<name>/<id>":
+    # startup's heartbeat restore treats ``_routing_home`` as the launch home and would build a
+    # profile home (state.db, SOUL.md) under the cwd, i.e. the repo checkout. None falls back to
+    # the test's isolated HERMES_HOME.
+    runner.session_store._routing_home = None
     return runner
 
 

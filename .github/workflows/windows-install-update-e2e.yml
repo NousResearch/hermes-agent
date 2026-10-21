@@ -15,6 +15,10 @@ name: Windows install + update E2E
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       strict_acceptance:
         description: >-
           Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
@@ -38,19 +42,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-install-update-e2e-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-install-update-e2e-${{ github.event_name }}-${{ inputs.commit != '' && github.run_id || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E
-    runs-on: windows-latest-32-core
+    runs-on: blacksmith-32vcpu-windows-2025
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
     timeout-minutes: 75
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           # serve.git is a bare clone of this checkout: the installer's treeless clone and
           # `hermes update` need real history and release tags (version identity), as on GitHub.
           fetch-depth: 0

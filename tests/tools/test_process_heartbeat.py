@@ -158,3 +158,16 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_foreground_runs_without_
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+
+
+def test_a_cut_tick_carries_its_omitted_count_as_a_field_and_the_marker_is_rendered_once():
+    from tools.process_registry_notifications import (
+        HEARTBEAT_OUTPUT_CHARS, format_process_notification, heartbeat_output_tail)
+    output, omitted = heartbeat_output_tail("x" * 5 + "y" * HEARTBEAT_OUTPUT_CHARS)
+    assert (output, omitted) == ("y" * HEARTBEAT_OUTPUT_CHARS, 5)
+    beat = {"type": "heartbeat", "session_id": "proc_1", "command": "make", "seq": 1, "elapsed": 60,
+            "interval": 60, "output": output, "omitted": omitted}
+    assert f"heartbeat:\n...(5 earlier characters omitted)\n{output}]" in format_process_notification(beat)
+    # Job text that looks like a marker is output, never a count.
+    literal = "...(10 earlier characters omitted)\n"
+    assert heartbeat_output_tail(literal) == (literal, 0)

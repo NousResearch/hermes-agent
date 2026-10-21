@@ -54,13 +54,8 @@ class SessionRecoveryMixin:
     @staticmethod
     def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
         """Extract the profile namespace encoded in a gateway session key."""
-        if not session_key:
-            return None
-        parts = str(session_key).split(":")
-        if len(parts) < 2 or parts[0] != "agent":
-            return None
-        from gateway.session import profile_from_session_key_namespace
-        return profile_from_session_key_namespace(parts[1] or "main")
+        from hermes_state_keys import profile_from_session_key
+        return profile_from_session_key(session_key)
 
     @staticmethod
     def _active_profile_name() -> str:
@@ -353,10 +348,14 @@ class SessionRecoveryMixin:
         recorder = getattr(db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
+        from gateway.session_api import api_storage_source
+        from gateway.session_a2a import storage_source
         from gateway.session_identity import transport_profile_of
         key_source = self._key_peer_source(session_key, source)
         peer = dict(
-            source=key_source.platform.value, user_id=key_source.user_id, session_key=session_key,
+            source=storage_source(db, key_source, session_id,
+                                  api_storage_source(db, session_id, key_source.platform.value)),
+            user_id=key_source.user_id, session_key=session_key,
             chat_id=key_source.chat_id, chat_type=key_source.chat_type, thread_id=key_source.thread_id)
         try:
             recorder(

@@ -162,16 +162,6 @@ export const SETTINGS_MANIFEST = {
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
     },
-    warmBotBackends: {
-      subpage: 'desktop',
-      keywords: ['pool', 'backends', 'bots', 'warm', 'concurrency', 'limit'],
-      copy: t => ({ label: t.settings.poolLimits.warmBotBackendsTitle })
-    },
-    backendIdleTimeout: {
-      subpage: 'desktop',
-      keywords: ['pool', 'backends', 'idle', 'timeout', 'milliseconds'],
-      copy: t => ({ label: t.settings.poolLimits.backendIdleTimeoutTitle })
-    },
     quickEntry: {
       subpage: 'desktop',
       keywords: ['quick entry', 'global shortcut', 'spotlight', 'summon', 'prompt anywhere'],

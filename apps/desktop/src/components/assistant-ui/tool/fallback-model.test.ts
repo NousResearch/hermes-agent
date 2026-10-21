@@ -107,6 +107,14 @@ describe('buildToolView error confidence', () => {
       [{ result: { meta: { error: 'a previous attempt' }, data: { count: 1 } } }, 'success'],
       [{ toolName: 'read_file', result: { error: 'Permission denied reading /repo/private.ts' } }, 'error'],
       [{ toolName: 'patch', result: { error: 'File not found: /repo/session-view.ts' } }, 'error'],
+      [
+        {
+          toolName: 'skill_manage',
+          result: { success: false, error: 'SKILL.md content is over the limit', file_preview: 'ROLLBACK FAILED notes' }
+        },
+        'notice'
+      ],
+      [{ toolName: 'skill_manage', result: { success: false, error: "batch aborted, ROLLBACK FAILED for 'demo'" } }, 'error'],
       [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
     ]
 

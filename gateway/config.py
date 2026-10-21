@@ -553,25 +553,32 @@ def _has_usable_api_server_key(key: object) -> bool:
         return len(str(key).strip()) >= 16
 
 
-def _needs_extra(*keys: str) -> Callable[[PlatformConfig], bool]:
-    return lambda cfg: all(cfg.extra.get(k) for k in keys)
-
-
-# Built-in "sufficiently configured?" checks; platforms covered by the generic
-# ``token or api_key`` check (Telegram, Discord, Slack, Matrix, ...) need no entry.
+# Core-only "sufficiently configured?" checks (no plugin entry). Plugin platforms declare theirs as
+# ``PlatformEntry.config_connected_fn`` (or rely on the generic ``token or api_key`` check).
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
-    Platform.WEIXIN: lambda cfg: bool(cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))),
-    Platform.WHATSAPP_CLOUD: _needs_extra("phone_number_id", "access_token"),
-    Platform.SIGNAL: _needs_extra("http_url"),
     Platform.API_SERVER: lambda cfg: _has_usable_api_server_key(cfg.extra.get("key") if cfg else None),
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(str(cfg.extra.get("client_state") or "").strip()),
-    Platform.BLUEBUBBLES: _needs_extra("server_url", "password"),
-    Platform.QQBOT: _needs_extra("app_id", "client_secret"),
-    Platform.YUANBAO: _needs_extra("app_id", "app_secret"),
     # Relay dials OUT: "connected" once an endpoint URL is configured. EXPERIMENTAL.
     Platform.RELAY: lambda cfg: bool(cfg.extra.get("relay_url") or cfg.extra.get("url")),
 }
+
+
+def _discovered_registry_entry(platform: Platform):
+    """Registry entry for *platform* after (idempotent) plugin discovery, so a directly-constructed
+    config sees plugin platforms; None when absent or the registry is not initialised yet (early import).
+
+    Enablement gate (#31116): a plugin's ``is_connected`` ("has the user actually configured
+    credentials for this?") is consulted before treating it as connected; ``check_fn`` alone — a
+    passive "is the SDK importable?" probe — must never make a platform the user never opted into
+    look connected (``_platform_status`` was fixed for the same bug class in commit 7849a3d73)."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    with contextlib.suppress(Exception):  # registry not initialised yet during early import
+        from gateway.platform_registry import platform_registry
+        return platform_registry.get(platform.value)
+    return None
 
 
 # Top-level bool-ish keys read verbatim (no nested ``gateway.`` fallback) with their defaults.
@@ -664,42 +671,21 @@ class GatewayConfig:
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
-        # Weixin needs token AND account_id, so it must bypass the generic token branch.
-        if platform == Platform.WEIXIN:
-            return checker(config)
+        if checker is not None:
+            return bool(config.token or config.api_key) or checker(config)
+        entry = _discovered_registry_entry(platform)
+        # ``config_connected_fn`` owns the token shortcut (Weixin needs token AND account_id).
+        if entry is not None and entry.config_connected_fn is not None:
+            return entry.config_connected_fn(config)
         if config.token or config.api_key:
             return True
-        if checker is not None:
-            return checker(config)
-
-        # Plugin platforms; force (idempotent) discovery for directly-constructed configs.
+        if entry is None:
+            return False
+        check = entry.is_connected if entry.is_connected is not None else entry.validate_config
         try:
-            from gateway.platform_registry import platform_registry
-            with contextlib.suppress(Exception):
-                # Iterate built-in platforms plus any registered plugin platforms so plugin authors get the
-                # same shared-key bridging (#24836).
-                # Registry-driven enable for plugin platforms. Built-ins have explicit blocks above. A
-                # plugin platform is enabled when its credentials are configured (``is_connected``) and its
-                # dependencies are either present (passive ``check_fn``) or installable on demand
-                # (``ensure_deps_fn``, run later by ``create_adapter()`` — never here). Plugins that need to
-                # seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's project_id /
-                # subscription_name) can supply ``env_enablement_fn`` on their PlatformEntry — called here
-                # BEFORE adapter construction. Enablement gate (#31116): when a plugin registers
-                # ``is_connected`` (the "has the user actually configured credentials for this?" check), we
-                # MUST consult it before flipping ``enabled = True``. Otherwise ``check_fn`` alone — a
-                # passive "is the SDK importable?" probe — silently enables platforms the user never opted
-                # into, and the gateway then tries to connect to Discord / Teams / Google Chat with no token
-                # and emits noisy retry-forever errors. ``_platform_status`` was already fixed for the same
-                # bug class in commit 7849a3d73; this is the runtime counterpart.
-                from hermes_cli.plugins import discover_plugins
-                discover_plugins()
-            entry = platform_registry.get(platform.value)
-            if entry:
-                check = entry.is_connected if entry.is_connected is not None else entry.validate_config
-                return True if check is None else check(config)
+            return True if check is None else check(config)
         except Exception:
-            pass  # Registry not yet initialised during early import
-        return False
+            return False
 
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         return self.platforms[platform].home_channel if self.platforms.get(platform) else None

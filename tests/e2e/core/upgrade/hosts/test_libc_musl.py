@@ -80,7 +80,7 @@ def alpine_install(tmp_path_factory):
     objects = Path(I.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=H.WORKTREE)) / "objects"
     pull = subprocess.run(["docker", "pull", "-q", IMAGE], capture_output=True, text=True, timeout=600, check=False)
     assert pull.returncode == 0, f"docker pull {IMAGE} failed (network?):\n{pull.stderr[-2000:]}"
-    argv = ["docker", "run", "--rm", "-e", f"ORIGIN={origin}",
+    argv = ["docker", "run", "--rm", "-e", f"ORIGIN={origin}", "-e", "HERMES_INSTALL_CHANNEL=main",
             "-v", f"{origin}:{origin}:ro", "-v", f"{objects}:{objects}:ro", "-v", f"{work}:/work:ro",
             IMAGE, "sh", "-c", SCRIPT]
     cp = subprocess.run(argv, capture_output=True, text=True, timeout=1800, check=False)

@@ -80,7 +80,7 @@ def _cfg_summary(config: dict, section: str, key: str, default, prefix: str) -> 
 def _gateway_summary(config: dict) -> Optional[str]:
     from hermes_cli.gateway import _all_platforms, _platform_status
     # Any non-empty status other than "not configured" counts — WhatsApp ("enabled, not paired"),
-    # Matrix ("configured + E2EE"), Signal ("partially configured") mean setup already started.
+    # Matrix ("configured + E2EE") mean setup already started.
     configured = [
         # Trailing parenthetical qualifiers are stripped from the label.
         plat["label"].split("(", 1)[0].strip() or plat["label"]

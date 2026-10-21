@@ -179,14 +179,14 @@ class WeComMediaMixin:
         return decrypted[:-pad_len]
 
     async def _download_remote_bytes(self, url: str, max_bytes: int) -> tuple[bytes, dict[str, str]]:
-        from gateway.platforms.base import _ssrf_redirect_guard
+        from gateway.platforms.base import ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from plugins.platforms.wecom import adapter as _adapter_mod
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
         if not _adapter_mod.HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
-        client = self._http_client or create_ssrf_safe_async_client(timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]})
+        client = self._http_client or create_ssrf_safe_async_client(timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]})
         try:
             async with client.stream("GET", url, headers={"User-Agent": "HermesAgent/1.0", "Accept": "*/*"}) as response:
                 response.raise_for_status()

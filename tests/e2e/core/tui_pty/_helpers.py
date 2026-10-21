@@ -16,6 +16,7 @@ the tmux server and every process of the pane's session by session id, never by 
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -252,6 +253,7 @@ class TmuxTui:
                    HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_TUI_INLINE="1" if inline else "0",
                    HERMES_TUI_DIR=str(tui_dir or private_tui_dir(root)))
         env.update(env_extra or {})
+        self._gateway_home = env["HERMES_HOME"]  # env_extra may point several TUIs at one home
         argv = [sys.executable, "-m", "hermes_cli.main", "--tui", *args]
         subprocess.run(["tmux", "-S", self.sock, "-f", str(conf), "new-session", "-d", "-s", "p",
                         "-x", str(cols), "-y", str(rows), "-c", str(root / "work"), *argv],
@@ -524,6 +526,13 @@ class TmuxTui:
                     os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only suite
                 except (ProcessLookupError, PermissionError):
                     pass
+        # The TUI's auto-spawned gateway daemon detaches from the pane's session: stop it too, so
+        # nothing outlives the test and the next TUI on this home starts cold.
+        with contextlib.suppress(OSError, ValueError, KeyError, ProcessLookupError):
+            lock = json.loads(Path(self._gateway_home, "gateway.lock").read_text())
+            if lock["hermes_home"] == self._gateway_home:
+                os.kill(int(lock["pid"]), signal.SIGTERM)  # windows-footgun: ok — Linux-only suite
+                poll(lambda: not _alive(int(lock["pid"])), timeout=15, what="sandbox gateway exit")
         return survivors
 
     # -- persisted state -------------------------------------------------------------------------

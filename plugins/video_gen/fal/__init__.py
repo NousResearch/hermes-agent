@@ -268,7 +268,7 @@ def _get_managed_fal_video_client(managed_gateway):
 
 
 def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
-    """Submit via direct credentials or the managed queue gateway; ``.get()`` blocks."""
+    """Submit via direct credentials or the managed queue gateway; ``wait_fal_queue_result`` blocks."""
     client = _load_fal_client()
     headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_video_gateway()
@@ -309,7 +309,8 @@ def _upscale_video(video_url: str, source_request_id: Optional[str] = None) -> O
             if not source_request_id:
                 raise RuntimeError("Managed SeedVR upscale requires the source FAL request id")
             arguments["source_request_id"] = source_request_id
-        result = _submit_fal_video_request(UPSCALER_ENDPOINT, arguments).get()
+        from tools.fal_common import wait_fal_queue_result
+        result = wait_fal_queue_result(_submit_fal_video_request(UPSCALER_ENDPOINT, arguments))
     except Exception as exc:
         logger.warning("Video upscale failed: %s", exc)
         return None
@@ -402,9 +403,10 @@ class FALVideoGenProvider(VideoGenProvider):
         payload = _build_payload(family, prompt=prompt, image_url=image_url_norm, duration=duration, aspect_ratio=aspect_ratio,
                                  resolution=resolution, negative_prompt=negative_prompt, audio=audio, seed=seed)
         try:
+            from tools.fal_common import wait_fal_queue_result
             handle = _submit_fal_video_request(endpoint, payload)
             source_request_id = getattr(handle, "request_id", None)
-            video, url = _video_url_from_result(handle.get())
+            video, url = _video_url_from_result(wait_fal_queue_result(handle))
         except Exception as exc:
             logger.warning("FAL video gen failed (family=%s, endpoint=%s): %s", family_id, endpoint, exc, exc_info=True)
             return _fal_error(f"FAL video generation failed: {exc}", "api_error", prompt, model=family_id, aspect_ratio=aspect_ratio)

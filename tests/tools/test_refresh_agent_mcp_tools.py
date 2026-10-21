@@ -279,6 +279,52 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     ]
 
 
+def test_preserve_prefix_keeps_sent_tool_schemas_byte_identical(monkeypatch):
+    """A between-turns refresh must not rewrite a tool this session already sent.
+
+    The chat template prints every tool schema before the conversation. A local
+    server reuses the previous prompt only when the next one starts with those
+    exact tokens, so a new description on a tool that was already sent makes the
+    follow-up read the whole prompt again. New tools may append at the tail.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+    sent = json.dumps(agent.tools)
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    fresh["function"]["parameters"] = {
+        "type": "object", "properties": {"path": {"type": "string"}},
+    }
+    _serve(monkeypatch, [fresh, _tool("mcp_late")])
+    _registered(monkeypatch, ["read_file", "mcp_late"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools[:1]) == sent
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file", "mcp_late"]
+
+
+def test_explicit_reload_replaces_a_same_name_schema(monkeypatch):
+    """``/reload-mcp`` takes the fresh schema when the tool name stays the same.
+
+    Between-turns refresh freezes the bytes already sent. Reload is the other
+    path (``preserve_prefix`` off): the user already accepted a cache break, so
+    a new description on ``read_file`` has to be what the next request sends.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    _serve(monkeypatch, [fresh])
+    _registered(monkeypatch, ["read_file"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert agent.tools[0]["function"]["description"] == "Read a file. schema v2"
+
+
 def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     """``tool_search``'s description is derived from the session at build time: the
     deferred-tool count, the embedded listing, and whether ``manage_connections`` was
@@ -306,6 +352,27 @@ def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     assert added == {"mcp_late_tool"}
     assert json.dumps(agent.tools[:3], sort_keys=True) == before
     assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
+
+
+def test_preserve_prefix_keeps_a_deactivated_bridge_tool_in_place(monkeypatch):
+    """The bridge tools are synthesized by ``assemble_tool_defs``, never registered. When the
+    deferred set shrinks under the activation threshold (an MCP server drops), the fresh
+    snapshot carries no ``tool_search`` at all; the sent one must still hold its slot, or
+    every tool after it moves and the prefix re-prefills. Search reads the live catalog."""
+    built = _tool("tool_search")
+    built["function"]["description"] = "Search 21 additional tools."
+    agent = _agent(["read_file"])
+    agent.tools.append(built)
+    agent.tools.append(_tool("terminal"))
+    agent.valid_tool_names.update({"tool_search", "terminal"})
+    before = json.dumps(agent.tools, sort_keys=True)
+
+    _serve(monkeypatch, [_tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["read_file", "terminal"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools, sort_keys=True) == before
 
 
 # ---------------------------------------------------------------------------

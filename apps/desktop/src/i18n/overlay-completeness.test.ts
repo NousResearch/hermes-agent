@@ -63,3 +63,11 @@ it('adds no untranslated key to any locale overlay beyond the known gaps', () =>
 
   expect(newGaps).toEqual([])
 })
+
+// The ratchet only shrinks on a translation, so a key deleted from English (a retired surface)
+// would otherwise linger here forever as a phantom gap.
+it('lists no known gap for a key the English catalog no longer has', () => {
+  const english = new Set(translatable(en))
+
+  expect(Object.keys(knownGaps).filter(key => !english.has(key))).toEqual([])
+})

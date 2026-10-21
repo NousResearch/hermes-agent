@@ -591,6 +591,16 @@ const useErrorText = () =>
     return status?.type === 'incomplete' && typeof status.error === 'string' ? status.error : ''
   })
 
+// When the failure was recorded: the settled bubble's completion (the terminal frame's time), else the
+// row's own timestamp for a hydrated card. Never `createdAt`, whose fallback is render time.
+const useErrorFailedAt = () =>
+  useAuiState(s => {
+    const custom = s.message.metadata?.custom as { timelineCompletedAt?: unknown; timelineTimestamp?: unknown }
+    const at = custom?.timelineCompletedAt ?? custom?.timelineTimestamp
+
+    return typeof at === 'number' && Number.isFinite(at) && at > 0 ? at : undefined
+  })
+
 const ErrorCardHeadline: FC = () => {
   const { t } = useI18n()
   const surface = useErrorSurface()
@@ -825,6 +835,7 @@ const ErrorRecoveryActions: FC = () => {
   const copy = t.assistant.thread
   const surface = useErrorSurface()
   const errorText = useErrorText()
+  const failedAt = useErrorFailedAt()
 
   // useNavigate() would throw here when no Router is above us; the deep-link
   // children mount only when one is (see SettingsLinkAction).
@@ -910,10 +921,11 @@ const ErrorRecoveryActions: FC = () => {
     () =>
       formatErrorDiagnostics({
         errorText,
+        failedAt,
         model: model || undefined,
         surface
       }),
-    [errorText, model, surface]
+    [errorText, failedAt, model, surface]
   )
 
   const startNewSession = useCallback(() => {

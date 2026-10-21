@@ -152,9 +152,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
     };
 
-    let update_branch = update_branch_from_args(std::env::args().skip(1))
-        .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
-        .unwrap_or_else(|| "main".to_string());
+    let update_target = update_target_from_args(std::env::args().skip(1));
     let target_app = if cfg!(target_os = "macos") {
         target_app_from_args(std::env::args().skip(1))
     } else {
@@ -202,27 +200,20 @@ async fn run_update(app: AppHandle) -> Result<()> {
     );
 
     // ---- stage 2: hermes update -----------------------------------------
-    // Pass --branch so `hermes update` targets the branch this installer was
-    // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
-    // `main`. The install was a detached-HEAD checkout of a specific commit;
-    // without --branch, `hermes update` switches the checkout to `main` (a
-    // divergent branch that may not even have the desktop CLI command), then
-    // reports "already up to date" against the wrong branch. The desktop
-    // detected the update against this same branch, so we must update against
-    // it too.
+    // Update against exactly what the desktop checked against (see
+    // update_target_from_args), never `hermes update`'s own default.
     emit_log(
         &app,
         Some("update"),
         LogStream::Stdout,
-        &format!("[update] updating against branch {update_branch}"),
+        &format!("[update] updating against {}", update_target.join(" ")),
     );
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
         vec!["update".into(), "--yes".into(), "--gateway".into()];
     // Only historical in-place updaters need the old shim bypass.
     if legacy_install { update_args.push("--force".into()); }
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
+    update_args.extend(update_target);
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
@@ -777,14 +768,29 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     envs
 }
 
-fn update_branch_from_args<I, S>(args: I) -> Option<String>
+/// `hermes update`'s target flags: the channel the desktop checked against
+/// (`--channel`), else a branch (`--branch`, then the build pin
+/// BUILD_PIN_BRANCH, then `main`). A stable install the desktop checked
+/// against its release must not be updated onto the pinned branch: it would
+/// land on main while its channel still names the release.
+fn update_target_from_args<I, S>(args: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    arg_value_from_args(args, "--branch")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let args: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+    let value = |name: &str| {
+        arg_value_from_args(&args, name)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(channel) = value("--channel") {
+        return vec!["--channel".into(), channel];
+    }
+    let branch = value("--branch")
+        .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
+        .unwrap_or_else(|| "main".to_string());
+    vec!["--branch".into(), branch]
 }
 
 fn target_app_from_args<I, S>(args: I) -> Option<PathBuf>
@@ -1165,16 +1171,24 @@ mod tests {
     }
 
     #[test]
-    fn parses_update_branch_from_space_or_equals_args() {
+    fn update_targets_the_checked_channel_before_any_branch() {
         assert_eq!(
-            update_branch_from_args(["--update", "--branch", "bb/test"]),
-            Some("bb/test".to_string())
+            update_target_from_args(["--update", "--branch", "bb/test"]),
+            ["--branch", "bb/test"]
         );
         assert_eq!(
-            update_branch_from_args(["--update", "--branch=main"]),
-            Some("main".to_string())
+            update_target_from_args(["--update", "--branch=main"]),
+            ["--branch", "main"]
         );
-        assert_eq!(update_branch_from_args(["--update"]), None);
+        assert_eq!(
+            update_target_from_args(["--update", "--channel", "stable", "--target-app", "/A.app"]),
+            ["--channel", "stable"]
+        );
+        assert_eq!(
+            update_target_from_args(["--update", "--branch", "main", "--channel=stable"]),
+            ["--channel", "stable"]
+        );
+        assert_eq!(update_target_from_args(["--update"])[0], "--branch");
     }
 
     #[test]

@@ -33,6 +33,7 @@ export const deProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   movedTo: name => `In ${name} verschoben`,
   moveFailed: 'Session konnte nicht verschoben werden',
   moveNoFolder: 'Dieses Projekt hat keinen Ordner, in den verschoben werden kann',
+  moveBusy: 'Beende zuerst den laufenden Durchgang und verschiebe dann den Chat',
   moveNoProjects: 'Keine anderen Projekte',
   reveal: 'Im Ordner anzeigen',
   copyPath: 'Pfad kopieren',

@@ -1,0 +1,27 @@
+name: agent-hint
+repo: https://github.com/dachaimahogany/hermes-agent-hint
+sha: 5601d2353529352fb89c5ad85a1a9d3a68150cbb
+description: "Give the inference engine behind each request a standard, machine-readable view of the agent session that produced it. Injects an X-Agent-Hint header (base64url JSON: session identity and call index, lifecycle state, soft priority, a cache-pinning hint, optional measured statistics) on main LLM requests, and can emit session lifecycle events out of band as local ndjson or as POSTs to a URL you configure. Request bodies are never modified, and nothing is added or sent until the plugin is enabled. Lets a scheduler pin a session to the instance already holding its KV cache, or rank a user-blocked session above background work, without teaching the engine anything about the client. Disclosure — when enabled, every main LLM request carries an X-Agent-Hint header (base64url JSON with the session id, call index, lifecycle state, priority and cache hints) to whatever provider is configured, not only hint-aware engines; with status_sink: http the same session events and usage/latency statistics are POSTed to the status_url you set, and ndjson writes them under $HERMES_HOME."
+maintainer: dachaimahogany
+tier: community
+category: general
+docs_url: https://github.com/dachaimahogany/hermes-agent-hint#readme
+version: "0.5.1"
+requires_hermes: ">=0.21.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+    - pre_tool_call
+    - post_tool_call
+    - pre_approval_request
+    - post_approval_response
+    - subagent_start
+    - subagent_stop
+    - post_api_request
+  provides_middleware:
+    - llm_request
+  requires_env: []

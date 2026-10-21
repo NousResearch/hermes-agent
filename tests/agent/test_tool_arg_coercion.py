@@ -176,6 +176,17 @@ class TestSchemaAcceptsKind:
     def test_non_dict(self):
         assert _schema_accepts_kind(None, "array") is False
 
+    def test_recursive_union_refs_keep_noncyclic_alternatives(self):
+        for union_key in ("anyOf", "oneOf", "allOf"):
+            root = {"$defs": {"Node": {
+                union_key: [{"$ref": "#/$defs/Node"}, {"type": "object"}],
+            }}}
+            schema = {"type": "array", "items": {"$ref": "#/$defs/Node"}}
+            assert _schema_accepts_kind(root["$defs"]["Node"], "array", root) is False
+            assert _normalize_json_strings_for_schema(
+                ['{"street": "Alpha Ave"}'], schema, root,
+            ) == [{"street": "Alpha Ave"}]
+
 
 class TestNormalizeJsonStringsForSchema:
     """Unit tests for _normalize_json_strings_for_schema (the recursive pass)."""
@@ -229,6 +240,142 @@ class TestCoerceToolArgsNested:
             args = {"items": ['{"id": "1", "content": "x"}']}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_object_arg_referenced_via_defs_is_parsed(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {
+                    "Address": {
+                        "type": "object",
+                        "properties": {
+                            "street": {"type": "string"},
+                            "zip": {"type": "string"},
+                        },
+                    },
+                },
+                "properties": {
+                    "address": {"$ref": "#/$defs/Address"},
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"address": '{"street": "Alpha Ave", "zip": "A-001"}'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["address"] == {
+                "street": "Alpha Ave",
+                "zip": "A-001",
+            }
+
+    def test_scalar_args_behind_a_ref_are_coerced(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"Count": {"type": "integer"}, "Flag": {"type": "boolean"}},
+                "properties": {
+                    "count": {"$ref": "#/$defs/Count"},
+                    "verbose": {"$ref": "#/$defs/Flag", "description": "a keyword beside $ref"},
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"count": "5", "verbose": "true"})
+            assert result == {"count": 5, "verbose": True}
+
+    def test_ref_paths_through_arrays_and_percent_escapes_resolve(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"My Type": {"type": "integer"}},
+                "properties": {
+                    "limit": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                    # zod-to-json-schema points a reused schema at its first occurrence by path.
+                    "offset": {"$ref": "#/properties/limit/anyOf/0"},
+                    "page": {"$ref": "#/$defs/My%20Type"},
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"offset": "7", "page": "3"})
+            assert result == {"offset": 7, "page": 3}
+
+    def test_malformed_pointer_escape_is_left_unresolved(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"a~2b": {"type": "integer"}},
+                "properties": {"count": {"$ref": "#/$defs/a~2b"}},
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"count": "5"}) == {"count": "5"}
+
+    def test_sanitized_keys_behind_a_ref_map_back_to_wire_names(self):
+        # Providers reject keys like "first name"; the sanitizer renames them in $defs too.
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"Person": {"type": "object", "properties": {"first name": {"type": "string"}}}},
+                "properties": {"person": {"$ref": "#/$defs/Person"}},
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"person": {"first_name": "Ada"}})
+            assert result == {"person": {"first name": "Ada"}}
+
+    def test_array_item_referenced_via_defs_is_parsed(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {
+                    "Address": {
+                        "type": "object",
+                        "properties": {"street": {"type": "string"}},
+                    },
+                },
+                "properties": {
+                    "addresses": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/Address"},
+                    },
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            args = {"addresses": ['{"street": "Alpha Ave"}']}
+            result = coerce_tool_args("test_tool", args)
+            assert result["addresses"] == [{"street": "Alpha Ave"}]
+
+    def test_external_and_cyclic_refs_are_preserved(self):
+        for ref, definitions in (
+            ("https://example.com/address.json", {}),
+            ("#/$defs/Address", {"Address": {"$ref": "#/$defs/Address"}}),
+        ):
+            schema = {
+                "name": "test_tool",
+                "description": "test",
+                "parameters": {
+                    "type": "object",
+                    "$defs": definitions,
+                    "properties": {"address": {"$ref": ref}},
+                },
+            }
+            with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+                raw = '{"street": "Alpha Ave"}'
+                result = coerce_tool_args("test_tool", {"address": raw})
+                assert result["address"] == raw
 
 
     def test_string_subfield_with_json_content_preserved(self):

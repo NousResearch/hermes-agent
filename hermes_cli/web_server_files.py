@@ -1,15 +1,18 @@
 """Managed-files policy for the dashboard file browser: root resolution, path containment, entry metadata.
 """
 
+import logging
 import mimetypes
 import os
 import stat
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
+logger = logging.getLogger(__name__)
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
@@ -65,6 +68,144 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
         return candidate
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _translate_agent_path(candidate: Path) -> Path | None:
+    """One translation attempt under whatever scope is bound; None off the docker backend.
+
+    The gate keeps a local-backend gateway with leftover ``docker_volumes`` from serving
+    mount sources in place of real host files. Quiet: fs callers also see ordinary host
+    paths, which are not MEDIA misses worth a warning."""
+    from gateway.platforms.base import _docker_env_active, _translate_docker_container_media_path
+    from tools.terminal_tool import _ensure_terminal_env_bridged
+
+    _ensure_terminal_env_bridged()
+    if not _docker_env_active():
+        return None
+    return _translate_docker_container_media_path(candidate, quiet=True)
+
+
+@contextmanager
+def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
+    """Bind the profile whose sandbox a container path names: its home and its terminal policy.
+
+    A requested ``profile_home`` other than the current home binds that home and its complete
+    terminal policy, as MEDIA delivery does (#109024). A home already bound by the caller (a
+    native profile ticket's override) gets its own terminal policy when no scope is bound, so
+    translation never reads the launch profile's ambient ``TERMINAL_DOCKER_VOLUMES``. An
+    override naming the launch home keeps the ambient env, which may carry env-only policy.
+    Translation and the unmapped-path classification both run inside this scope, so they
+    agree about the backend.
+    """
+    from hermes_cli.config import get_hermes_home
+    from hermes_constants import (
+        get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.terminal_scope import get_terminal_scope, install_profile_terminal_scope, reset_terminal_scope
+
+    home_token = scope_token = None
+    if profile_home is not None and Path(profile_home).resolve() != get_hermes_home().resolve():
+        home_token = set_hermes_home_override(str(profile_home))
+    try:
+        foreign_override = (get_hermes_home_override() is not None
+                            and get_hermes_home().resolve() != get_process_hermes_home().resolve())
+        if home_token is not None or (foreign_override and get_terminal_scope() is None):
+            scope_token = install_profile_terminal_scope(get_hermes_home())
+        yield
+    finally:
+        if scope_token is not None:
+            reset_terminal_scope(scope_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
+def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path | None:
+    """Map an agent-visible container path to its host bind mount, or None.
+
+    Docker agents emit container paths (``/workspace/...``, ``/root/...``) in
+    transcripts and MEDIA tags, while the dashboard fs routes stat the gateway
+    HOST filesystem (#85238). Reuse the gateway's MEDIA volume translator inside
+    ``_agent_path_scope(profile_home)``. When no terminal scope is bound even
+    then (``serve --isolated`` after a failed early bridge), retry once under the
+    current profile's complete terminal policy, never replacing an already-bound
+    scope or refusal (retry from #104992).
+
+    Runs on the raw string, before host normalization: on a Windows gateway
+    ``Path("/workspace/x").resolve()`` anchors to the current drive and the
+    container path is gone before translation sees it. ``..`` segments are never
+    translated, so the managed routes keep refusing them.
+    """
+    if not raw.startswith("/") or raw.startswith("//") or ".." in raw.split("/"):
+        return None
+    try:
+        from hermes_cli.config import get_hermes_home
+        from tools.terminal_scope import (
+            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope, set_terminal_scope,
+        )
+
+        candidate = Path(raw)
+        with _agent_path_scope(profile_home):
+            translated = _translate_agent_path(candidate)
+            if translated is not None or get_terminal_scope() is not None:
+                return translated
+            token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
+            try:
+                return _translate_agent_path(candidate)
+            finally:
+                reset_terminal_scope(token)
+    except Exception:  # fail open: translation is additive, the host path still serves
+        logger.debug("agent container path translation failed for %s", raw, exc_info=True)
+        return None
+
+
+SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live inside the agent sandbox"
+
+
+def _agent_fs_path(
+    raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
+) -> Path:
+    """``_fs_path`` for agent-facing reads; container paths resolve to their host
+    mount, so callers' boundary guards see the real host target.
+
+    POSIX: a readable host path wins, and translation only runs when the host
+    lookup misses, so a root-run gateway can still browse its own ``/root``.
+    Windows: a container-shaped path never names a host file (it would anchor to
+    the current drive), so a translation miss is a 404 rather than a drive lookup.
+    """
+    raw = str(raw_path or "").strip()
+    if os.name != "nt":
+        host = _fs_path(raw_path, cwd=cwd)
+        if os.access(host, os.R_OK):
+            return host
+        translated = _agent_container_path(raw, profile_home=profile_home)
+        return translated if translated is not None else host
+    translated = _agent_container_path(raw, profile_home=profile_home)
+    if translated is not None:
+        return translated
+    if _is_unmapped_container_path(raw, profile_home=profile_home):
+        raise HTTPException(status_code=404, detail=SANDBOX_NOT_FOUND)
+    return _fs_path(raw_path, cwd=cwd)
+
+
+def _is_unmapped_container_path(raw: str, *, profile_home: Path | None = None) -> bool:
+    """A docker-backend container path (``/workspace``, ``/root`` or a configured
+    volume target) rather than a host path or a typo elsewhere on the host. Reads
+    the backend and volumes in the same profile scope translation used."""
+    if not raw.startswith("/") or raw.startswith("//"):
+        return False
+    try:
+        from gateway.platforms.base import _docker_env_active, _parse_docker_volume_mounts
+        from tools.environments.local import _msys_to_windows_path
+
+        with _agent_path_scope(profile_home):
+            if not _docker_env_active() or _msys_to_windows_path(raw) != raw:
+                return False
+            roots = {"/workspace", "/root", *(c.as_posix() for _, c in _parse_docker_volume_mounts())}
+    except Exception:  # a refusal scope or import failure: just skip the hint
+        logger.debug("container path classification failed for %s", raw, exc_info=True)
+        return False
+    return any(raw == r or raw.startswith(r.rstrip("/") + "/") for r in roots)
 
 
 def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
@@ -159,11 +300,21 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
 
 
 def _resolve_managed_path(
-    raw_path: str | None, request: Request, *, for_write: bool = False
+    raw_path: str | None, request: Request, *, for_write: bool = False,
+    for_agent_read: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
     policy = _managed_files_policy(request)
     text = _path_text(raw_path)
     root = policy.locked_root
+
+    if for_agent_read and text and not text.startswith("file:") and (
+            os.name == "nt" or not os.access(text, os.R_OK)):
+        # Agent-emitted container paths (/workspace/...) resolve to their host
+        # bind mount before the root checks, so the locked-root refusal below
+        # still governs the translated target (#85238). A readable host path wins.
+        translated = _agent_container_path(text)
+        if translated is not None:
+            text = str(translated)
 
     if root is not None and (not text or text in {".", "/"}):
         candidate = root

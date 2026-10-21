@@ -11,7 +11,7 @@ def build_vault_parser(subparsers) -> None:
         description=(
             "Store login credentials in a locally encrypted vault. The agent "
             "sees handles and login identifiers (metadata); passwords are "
-            "injected server-side by browser_vault_fill on the exact origin "
+            "injected server-side by browser_vault on the exact origin "
             "they were saved for and never enter the conversation."
         ),
     )

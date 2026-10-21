@@ -110,10 +110,15 @@ def test_detached_restart_keeps_force_for_the_replacement(monkeypatch):
 
 @pytest.mark.platforms("linux")
 def test_detached_restart_all_never_runs_the_host_gateway_in_the_caller(monkeypatch, tmp_path):
-    """`restart --all --detach` from the root profile with no service took the in-process path."""
+    """`restart --all --detach` from the root profile with no service took the in-process path.
+    The detached replacement is pinned to the root: a bare child follows the sticky active_profile."""
+    import sys
+
     import hermes_constants
     from hermes_cli import gateway as gw
 
+    (tmp_path / "profiles" / "work").mkdir(parents=True)
+    (tmp_path / "active_profile").write_text("work\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     hermes_constants._default_hermes_root_memo = None
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
@@ -125,10 +130,12 @@ def test_detached_restart_all_never_runs_the_host_gateway_in_the_caller(monkeypa
     monkeypatch.setattr(gw, "_wait_for_api_server_port_free", lambda **k: None)
     monkeypatch.setattr(gw, "_discard_dead_host_record", lambda: False)
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
+    monkeypatch.setattr(gw, "get_python_path", lambda: sys.executable)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: pytest.fail("the caller became the host gateway"))
-    detached = []
-    monkeypatch.setattr(gw, "_spawn_detached_gateway", lambda: detached.append(True) or True)
+    launched = []
+    monkeypatch.setattr(gw.subprocess, "Popen", lambda cmd, **k: launched.append(cmd) or SimpleNamespace())
 
     gw._cmd_restart(SimpleNamespace(system=False, all=True, force=False, detach=True))
 
-    assert detached == [True]
+    assert len(launched) == 1
+    assert launched[0][-5:] == ["--profile", "default", "gateway", "run", "--replace"]

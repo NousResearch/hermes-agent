@@ -1,14 +1,10 @@
 """run_steps exposes cua-driver's native ordered-batch tool through the computer_use wrapper.
 
-Why this exists (2026-10-21, live macOS): sending a multi-key sequence as separate Hermes tool
-calls is NOT equivalent to one batch. The plan is split across calls, so a step can go missing
-from it with nothing reporting the omission — a 7-key calculator sequence planned as separate
-calls produced `270+10` = 280 instead of `270+110` = 380, while the driver log shows every
-emitted key was delivered. One run_steps batch types `270+110` = 380. The driver validates every
-step before running the first one, so a malformed step changes nothing.
+The driver validates every step before running the first one, executes in order, and can return one
+end-of-batch observation. A live macOS Calculator run verified an 8-step batch producing 380.
 
 Covers: step translation (element index -> element_token, keys -> press_key/hotkey, coordinates),
-the hard-block guards applied per step, and refusal on a driver without the tool.
+the hard-block guards applied per step, and refusal when the target or driver capability is missing.
 """
 import json
 from types import SimpleNamespace
@@ -83,6 +79,13 @@ def test_modifier_combo_becomes_hotkey():
     assert step["args"]["keys"] == ["cmd", "s"]
 
 
+def test_key_name_and_modifiers_in_step_become_hotkey():
+    backend = _FakeBackend()
+    backend.run_steps([{"tool": "press_key", "args": {"key": "s", "modifiers": ["cmd"]}}])
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "hotkey", "args": {"keys": ["cmd", "s"]}}
+
+
 def test_element_index_becomes_element_token():
     backend = _FakeBackend()
     backend.run_steps([{"tool": "click", "args": {"element": 7}}])
@@ -137,6 +140,15 @@ def test_more_than_64_steps_refused():
     assert backend._session.calls == []
 
 
+def test_run_steps_requires_an_active_window_target():
+    backend = _FakeBackend()
+    backend.__dict__["_active_window_id"] = None
+    res = backend.run_steps([{"tool": "press_key", "args": {"key": "1"}}])
+    assert res.ok is False
+    assert res.code == "run_steps_target_required"
+    assert backend._session.calls == []
+
+
 def test_driver_without_run_steps_refuses_instead_of_degrading():
     session = _FakeSession(has_run_steps=False)
     backend = _FakeBackend(session)
@@ -171,6 +183,13 @@ def test_steps_never_carry_the_inherited_window():
     step = backend._session.calls[0][1]["steps"][0]
     assert "pid" not in step["args"]
     assert "window_id" not in step["args"]
+
+
+def test_middle_click_alias_translates_button():
+    backend = _FakeBackend()
+    backend.run_steps([{"tool": "middle_click", "args": {"coordinate": [10, 20]}}])
+    step = backend._session.calls[0][1]["steps"][0]
+    assert step == {"tool": "click", "args": {"button": "middle", "x": 10, "y": 20}}
 
 
 def test_role_and_name_targeting_passes_through():

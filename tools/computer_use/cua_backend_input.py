@@ -172,11 +172,10 @@ class _InputMixin:
 
     # ── Batch (run_steps) ───────────────────────────────────────────────────
     # Hermes exposes the driver's native run_steps tool so an ordered sequence of actions runs in ONE
-    # driver call. Sending the same steps as separate Hermes tool calls is NOT equivalent: the plan is
-    # split across calls, and a step can go missing from it with nothing reporting the omission
-    # (observed 2026-10-21 — a 7-key calculator sequence planned as separate calls produced `270+10`
-    # = 280 instead of `270+110` = 380, and the driver log shows every emitted key was delivered).
-    # The driver validates every step before running the first one, so a malformed step changes nothing.
+    # driver call. Separate calls are not a batch: they have no shared up-front validation or single
+    # end-of-batch observation, and parallel tool calls do not promise an input order. A wrong result
+    # alone does not identify which layer omitted or changed a step. The driver validates every step
+    # before running the first one, so a malformed step changes nothing.
     _RUN_STEP_TOOLS = ("click", "double_click", "right_click", "set_value", "type_text", "press_key",
                        "hotkey", "scroll", "drag", "move_cursor")
     # Hermes-level action names the model naturally reaches for, mapped onto the driver's tool names.
@@ -206,10 +205,13 @@ class _InputMixin:
             raw = step.get(tool) or {}
         if not isinstance(tool, str) or not isinstance(raw, dict):
             return None, {}
+        requested_tool = tool
         tool = self._RUN_STEP_ALIASES.get(tool, tool)
         if tool not in self._RUN_STEP_TOOLS:
             return None, {}
         args = dict(raw)
+        if requested_tool == "middle_click":
+            args.setdefault("button", "middle")
         # Hermes `element` is a 1-based SOM index; the driver wants the token from the latest capture.
         idx = args.pop("element", None)
         if isinstance(idx, int):
@@ -235,9 +237,14 @@ class _InputMixin:
         elif isinstance(combo, list):
             tool = "hotkey"
             args["keys"] = combo
+        elif isinstance(args.get("key"), str) and isinstance(args.get("modifiers"), list) and args["modifiers"]:
+            tool = "hotkey"
+            args["keys"] = [*args.pop("modifiers"), args.pop("key")]
         # Hermes `text` is the driver's `type_text` argument; `type` is not a driver tool name.
         if tool == "type_text" and "text" not in args and "value" in args:
             args["text"] = args.pop("value")
+        if tool == "type_text" and "text" not in args and isinstance(args.get("keys"), str):
+            args["text"] = args.pop("keys")
         # Hermes `middle_click` is a `click` carrying button=middle.
         if tool == "click" and "button" not in args and raw.get("button") == "middle":
             args["button"] = "middle"
@@ -256,14 +263,17 @@ class _InputMixin:
         """Run an ordered batch of actions in one driver call (the driver's native ``run_steps`` tool).
 
         Older drivers without the tool refuse with ``run_steps_unsupported`` rather than silently
-        degrading to separate calls — the whole point of the batch is that the plan is validated and
-        executed as one unit, so a fallback that splits it back up would be worse than a clear refusal.
+        splitting a batch into individual calls. Capture or focus an exact target first so the driver
+        has a default window for steps that use role/name addressing.
         """
+        refusal, _ = self._target_args("run_steps", need_window=True)
+        if refusal is not None:
+            return _refuse("run_steps", "run_steps needs a current window target — call capture() or focus_app() first.",
+                           code="run_steps_target_required")
         if not self._session._has_tool("run_steps"):
             return _refuse("run_steps",
                            "This cua-driver does not provide the run_steps batch tool — send the steps one "
-                           "action per call, in order (one sequence split across separate calls is not "
-                           "atomic, so a step can go missing from the plan).",
+                           "action per call and verify the resulting app state after the sequence.",
                            code="run_steps_unsupported")
         if not steps:
             return _refuse("run_steps", "run_steps requires a non-empty `steps` list.")

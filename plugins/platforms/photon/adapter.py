@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import json
 import logging
 import os
@@ -1097,14 +1098,21 @@ class PhotonAdapter(BasePlatformAdapter):
             return
         stdout = proc.stdout
         loop = asyncio.get_event_loop()
+        # readline() blocks for as long as the sidecar is quiet, i.e. for most of its life; on the
+        # shared default executor that pins a worker per served profile and starves every other
+        # to_thread() caller on a small pool (#127018). Read on a thread of our own instead.
+        reader = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="photon-sidecar-log")
         try:
             while True:
-                line = await loop.run_in_executor(None, stdout.readline)
+                line = await loop.run_in_executor(reader, stdout.readline)
                 if not line:
                     break
                 logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
+        finally:
+            # A cancelled pump leaves readline() blocked until the sidecar exits; never wait on it.
+            reader.shutdown(wait=False)
         # A container/supervisor stop signals the whole process tree, so the sidecar (its own
         # session) can die before the gateway's stop flow reaches disconnect(). The runner flips
         # ``_stop_requested_by_signal`` in its signal handler, ahead of any stop work (#127047).

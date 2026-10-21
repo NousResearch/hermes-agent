@@ -713,8 +713,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 if attempt > 0:
                     logger.info("[GoogleChat] Pub/Sub stream reconnected after %d attempts", attempt)
                 attempt = 0
-                # Blocks until stream dies or cancel(); normal completion = disconnect.
-                await asyncio.to_thread(future.result)
+                # Resolves when the stream dies or is cancelled; normal completion = disconnect. Awaited
+                # directly, never via result() on a default-executor thread, which would stay parked for
+                # the whole connection, one per served profile (#127018). Cancelling this task cancels
+                # the stream: safe on the loop, as StreamingPullFuture.cancel() only starts the shutdown.
+                await asyncio.wrap_future(future)
                 if self._shutting_down:
                     return
             except asyncio.CancelledError:

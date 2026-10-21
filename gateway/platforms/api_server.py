@@ -2706,13 +2706,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         dithered Hermes as a full-bleed background, the small animated cobalt
         globe over the Hermes Browser wordmark, Rules display headline, and
         portal-style approve/deny buttons. Content is vertically centered.
+        Below 860px the rail becomes a cobalt header band and the full Hermes
+        moves under the content, bleeding off the bottom-right corner, so the
+        two figures still face each other across the prompt.
 
         Type follows hermes-agent.nousresearch.com: compressed Rules caps for
-        the portal brand, headline and buttons, Rules for UI copy, and a tracked
-        mono for labels. The site's own cuts (Rules Gothic, Rules Variable)
-        are licensed and not redistributed, so the page embeds the Rules
-        Compressed / Rules Expanded files the web dashboard already ships in
-        ``web/public/fonts/``.
+        the portal brand, headline and buttons, the site's body stack for UI
+        copy, and a tracked mono for labels. The site's own cuts (Rules
+        Gothic, Rules Variable) are licensed and not redistributed, so the
+        page embeds the Rules Compressed file the web dashboard already ships
+        in ``web/public/fonts/``.
         """
         import html
 
@@ -2728,8 +2731,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         font_faces = ""
         for family, weight, filename in (
             ("Rules Compressed", 500, "RulesCompressed-Medium.woff2"),
-            ("Rules Expanded", 400, "RulesExpanded-Regular.woff2"),
-            ("Rules Expanded", 700, "RulesExpanded-Bold.woff2"),
             ("JBM", 400, "jbm.woff2"),
         ):
             src = asset(filename)
@@ -2747,9 +2748,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         rail_html = ""
         for label, value in rail_rows or []:
+            row_class = "rail-row"
             if label == "STATUS":
                 value = f'<span class="dot"></span>{value}'
-            rail_html += f'<p class="rail-label">{label}</p><p class="rail-value">{value}</p>'
+                row_class += " rail-row-status"
+            rail_html += f'<div class="{row_class}"><p class="rail-label">{label}</p><p class="rail-value">{value}</p></div>'
         return (
             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -2758,7 +2761,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             + font_faces
             + ":root{color-scheme:light;"
             "--display:'Rules Compressed','Rules Gothic Compressed','Bahnschrift Condensed','Arial Narrow',sans-serif;"
-            "--ui:'Rules Expanded',-apple-system,'Segoe UI',system-ui,sans-serif;"
+            "--ui:'Rules Variable',-apple-system,'Segoe UI',system-ui,sans-serif;"
             "--mono:'JBM','JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
             "*{box-sizing:border-box}"
             "html,body{height:100%}"
@@ -2789,10 +2792,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ".display{font-family:var(--display);text-transform:uppercase;color:#0505e8;"
             "font-weight:500;font-size:clamp(52px,7.4vw,104px);line-height:.9;margin:0 0 22px}"
             ".lede{font-family:var(--ui);color:#3c4254;"
-            "font-size:14px;line-height:1.7;max-width:48ch;text-wrap:pretty;margin:0 0 26px}"
+            "font-size:16px;line-height:1.6;max-width:44ch;text-wrap:pretty;margin:0 0 26px}"
             ".prompt{font-family:var(--ui);color:#3c4254;"
-            "font-size:14px;line-height:1.7;max-width:48ch;text-wrap:pretty;margin:0 0 14px}"
-            ".prompt strong{color:#111;font-weight:700}"
+            "font-size:16px;line-height:1.6;max-width:44ch;text-wrap:pretty;margin:0 0 14px}"
+            ".prompt strong{color:#111;font-weight:600}"
             ".code{display:block;padding:10px 13px;border:1px solid rgba(5,5,232,.25);background:#edeff8;"
             "color:#333;font-family:var(--mono);font-size:11px;letter-spacing:.05em;word-break:break-all;margin:0 0 26px}"
             ".actions{display:flex;gap:16px;flex-wrap:wrap}"
@@ -2806,8 +2809,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ".pane-foot{position:absolute;left:72px;bottom:26px;font-size:9px;letter-spacing:.26em;"
             "text-transform:uppercase;color:#666;margin:0}"
             "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}"
-            "@media(max-width:860px){.frame{grid-template-columns:1fr}.rail{display:none}"
-            ".pane-inner{padding:40px 28px}.pane-foot{left:28px}}"
+            "@media(min-width:861px) and (max-width:1199px){.pane-statue{opacity:.45}}"
+            # Phones and tablets: the rail becomes a header band with the bust
+            # on its left looking right, and the full Hermes sits under the
+            # content looking left.
+            "@media(max-width:860px){"
+            ".frame{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}"
+            ".rail-statue{right:auto;bottom:auto;left:-56px;top:-28px;height:150%;opacity:.3}"
+            ".rail-inner{min-height:0;display:grid;grid-template-columns:1fr auto;"
+            "grid-template-areas:'top bottom' 'mid mid';align-items:start;gap:24px 16px;padding:22px 20px}"
+            ".rail-top{grid-area:top}.rail-bottom{grid-area:bottom}"
+            ".rail-mid{grid-area:mid;margin:0;display:flex;flex-wrap:wrap;gap:14px 28px}"
+            ".rail-row .rail-value{margin:0}"
+            ".brand-chip{width:42px;height:52px}.brand-text{font-size:30px}"
+            ".rail-sub{font-size:9px;margin-top:10px}"
+            ".rail-globe{width:44px;padding:5px;margin:0 0 8px auto}"
+            ".rail-logo{width:116px;margin:0}.rail-foot{display:none}"
+            ".pane{flex-direction:column;align-items:stretch}"
+            ".pane-inner{order:1;padding:36px 20px 0;max-width:none}"
+            ".display{font-size:clamp(52px,16vw,88px)}"
+            ".pane-foot{order:2;position:static;padding:30px 20px 0}"
+            ".pane-statue{order:3;position:static;width:min(640px,112%);height:auto;"
+            "align-self:flex-end;margin:auto -12% 0 0;padding-top:4px;opacity:.85}}"
+            # Phones: session and extension already appear in the prompt.
+            "@media(max-width:600px){.rail-row:not(.rail-row-status){display:none}}"
+            "@media(max-width:860px) and (max-height:500px){.display{font-size:52px;margin-bottom:14px}"
+            ".rail-row:not(.rail-row-status){display:none}.rail-inner{gap:12px 16px;padding:16px 20px}"
+            ".pane-inner{padding-top:20px}}"
+            "@media(prefers-reduced-motion:reduce){.dot{animation:none}}"
             "</style></head>"
             "<body><div class=\"frame\">"
             "<aside class=\"rail\">"

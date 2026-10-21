@@ -44,6 +44,64 @@ def current_provider_catalog_match(model_name: str, current_provider: str) -> Op
         (mid for mid in catalog if "/" in mid and mid.split("/", 1)[1].lower() == wanted), None)
 
 
+def is_publisher_namespace_provider(provider: str) -> bool:
+    """True when *provider*'s catalog ids live in a PUBLISHER namespace (``google/…``,
+    ``nvidia/…``) rather than a vendor-internal one.
+
+    That slug form is also what every aggregator (nous / openrouter / ai-gateway / kilocode)
+    publishes, so a prefix match against such a catalog would silently move the user onto the
+    provider's own billing account — a GCP project for vertex. Such a provider must not be
+    auto-switched TO by inference; it stays reachable by name, in its own picker, and via an
+    explicit model choice for that provider.
+    """
+    from hermes_cli.models_catalog_static import _VENDOR_NAMESPACE_CATALOG_PROVIDERS
+
+    return (provider or "").strip().lower() in _VENDOR_NAMESPACE_CATALOG_PROVIDERS
+
+
+def static_catalog_matches(
+    name: str,
+    current_provider: str,
+    *,
+    for_inference: bool = False,
+    provider_keys: frozenset[str] | set[str],
+    provider_models: dict[str, list[str]],
+    aggregator_providers: frozenset[str],
+    borrowed_model_providers: frozenset[str],
+    model_in_provider_catalog,
+):
+    """Yield every ``(provider_id, name)`` whose static catalog lists *name*, in ladder order.
+
+    Several first-party providers list the same slug (``gpt-5.6-luna`` on ``openai-api`` AND
+    ``openai-codex``); the first is only a guess, so callers that gate on credentials need the
+    siblings too (#102775).
+
+    ``for_inference=True`` is the AUTO-SWITCH ladder: providers whose catalog ids live in a
+    publisher namespace are skipped there, because that slug form is what every aggregator
+    publishes — matching it would silently re-bill the user on the publisher's own account
+    (a GCP project for vertex). The conflict/coherence check reads the full catalog instead.
+    """
+    name_lower = name.lower()
+    current_keys = provider_keys
+    # Step 1: direct static-catalog match. Aggregators list other vendors' models — never
+    # auto-switch TO them. A custom endpoint (custom / custom:*) is never auto-switched away
+    # from: the user configured it deliberately and may serve the same model name there.
+    if current_provider != "custom" and not current_provider.startswith("custom:"):
+        for pid in provider_models:
+            if pid in current_keys or pid in aggregator_providers or pid in borrowed_model_providers:
+                continue
+            if for_inference and is_publisher_namespace_provider(pid):
+                continue
+            if model_in_provider_catalog(name_lower, {pid}):
+                yield (pid, name)
+
+    # Borrow-list providers (re-expose other vendors' models) only after every native-vendor
+    # catalog, and only when one is the current provider.
+    for pid in borrowed_model_providers:
+        if pid not in current_keys and model_in_provider_catalog(name_lower, {pid}):
+            yield (pid, name)
+
+
 def current_provider_owns_vendor(model_name: str, current_provider: str) -> bool:
     """True when *model_name* belongs to the vendor a single-vendor first-party provider natively
     serves (``gpt-6-astra`` on ``openai-codex``, ``grok-4.6`` on ``xai-oauth``).

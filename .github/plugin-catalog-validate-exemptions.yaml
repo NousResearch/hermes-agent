@@ -1,0 +1,17 @@
+# Temporary, maintainer-approved exemptions from `hermes plugins validate` failures in the
+# plugin-catalog CI `pinned-source-validate` job.
+#
+# An exemption covers ONE catalog entry at ONE pinned sha and names the exact failing check(s) it
+# waives; every other check still has to pass. Re-pinning the entry (a new sha) drops the exemption
+# automatically, so each new version is reviewed against the full gate again. This file lives
+# outside plugin-catalog/ on purpose: a PR that edits it is never a catalog-only PR, so it always
+# needs a maintainer's merge.
+
+exemptions:
+  - entry: plugin-catalog/cua-spaces.yaml
+    sha: 859ca585837cfc9c20fe139a70c89f7159f44af2
+    checks: ["no core override"]
+    reason: >-
+      Windows Spaces wrap tools.file_operations.ShellFileOperations methods (the wrap delegates to
+      the original for every non-Windows environment) because terminal backends have no public
+      file-operations hook yet. Approved by Teknium until that hook ships and Cua moves to it.

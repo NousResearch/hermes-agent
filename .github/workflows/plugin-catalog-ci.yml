@@ -257,8 +257,34 @@ jobs:
 
             # Manifest schema + declared-vs-registered capability check.
             if ! timeout 600 hermes plugins validate --install-deps "$PLUGIN_DIR" </dev/null; then
-              echo "::error file=$entry::hermes plugins validate failed"
-              FAILED=1; echo "::endgroup::"; continue
+              # A failure passes only when every failing check is waived for this exact entry and
+              # pinned sha in .github/plugin-catalog-validate-exemptions.yaml (maintainer-approved;
+              # a re-pin drops the waiver). Anything else stays a hard failure.
+              REPORT="$WORKROOT/validate-report.json"
+              timeout 600 hermes plugins validate --install-deps --json "$PLUGIN_DIR" </dev/null > "$REPORT" || true
+              if WAIVED=$(python3 -I - "$entry" "$SHA" "$REPORT" .github/plugin-catalog-validate-exemptions.yaml <<'PYEOF'
+          import json, sys
+          from ruamel.yaml import YAML
+          entry, sha, report_path, exemptions_path = sys.argv[1:5]
+          try:
+              failing = {c["name"] for c in json.load(open(report_path, encoding="utf-8"))["checks"] if not c["ok"]}
+              rules = (YAML(typ="safe").load(open(exemptions_path, encoding="utf-8")) or {}).get("exemptions") or []
+          except Exception:
+              sys.exit(1)
+          waived = set()
+          for rule in rules:
+              if isinstance(rule, dict) and rule.get("entry") == entry and str(rule.get("sha")) == sha:
+                  waived |= {str(c) for c in rule.get("checks") or []}
+          if not failing or not failing <= waived:
+              sys.exit(1)
+          print(", ".join(sorted(failing)))
+          PYEOF
+              ); then
+                echo "::warning file=$entry::validate failure waived for $SHA by .github/plugin-catalog-validate-exemptions.yaml: $WAIVED"
+              else
+                echo "::error file=$entry::hermes plugins validate failed"
+                FAILED=1; echo "::endgroup::"; continue
+              fi
             fi
 
             # UNSCANNABLE-PAYLOAD GATE (README rule 17). A reviewer and the install

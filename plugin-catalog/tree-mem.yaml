@@ -1,6 +1,6 @@
 name: tree-mem
 repo: https://github.com/mauriciobc/hermes-plugin-tree-mem
-sha: 59219f03cce2724e3817f1a6f638293fb3a7945c
+sha: 7cb37d2efde9e390d0a5eb1b7d1ab43461e81847
 subdir: hermes-plugin-tree-mem
 description: UniiChat/OptMem tree memory - the chat log compressed into a binary tree of one-line summaries (<=512 bytes each), with a graded 64-128 KB view injected every turn and zoom/date tools to open any line back down to the message it came from. Implements Victor Taelin's "OptChat" design. Disclosure - the plugin reads the local Hermes state.db and its own store, spawns one detached background process that calls a summarizer model API (the endpoint and model are configurable; each call sends the message text to be compressed), and registers three tools.
 maintainer: mauriciobc

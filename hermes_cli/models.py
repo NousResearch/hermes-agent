@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 from agent.proxy_bypass import is_loopback_host
 from agent.bedrock_service_tiers import BEDROCK_ULTRAFAST_ROUTES, bedrock_fast_mode_overrides
-from hermes_cli.route_identity import normalize_route_base_url
+from hermes_cli.route_identity import is_copilot_plan_route, normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import hermes_user_agent
 from hermes_cli.models_catalog_static import (
@@ -1670,7 +1670,7 @@ def _configured_relay_base_url(provider: str) -> str:
         canonical = {normalize_route_base_url(u) for u in (profile_url, registry_url) if u}
     except Exception:
         return base_url  # lookup failed: stay a relay, never widening where credentials go
-    return "" if normalize_route_base_url(base_url) in canonical else base_url
+    return "" if is_copilot_plan_route(normalized, model_cfg.get("base_url")) or normalize_route_base_url(base_url) in canonical else base_url
 
 
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:

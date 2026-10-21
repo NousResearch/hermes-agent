@@ -127,19 +127,28 @@ _FLAG_PRESENT_RE = {
 }
 
 
-def _ensure_flags(command: str, **flags: str | int | None) -> str:
-    """Return ``command`` with ``--name value`` appended for every flag in ``flags`` whose
-    name is unknown, whose value is ``None``/empty, or which is already present in the
-    command. Recognised names: ``host``, ``port``. Useful for binding Astro ``dev``
-    explicitly to IPv4 127.0.0.1 so ``hermes verify``'s IPv4 readiness probe reaches it
-    (Astro binds to ``[::1]:4321`` by default, which causes connection-refused on the
-    probe).
+def _ensure_flags(command: str, script_body: str = "", **flags: str | int | None) -> str:
+    """Return ``command`` with ``--name value`` appended for every recognised flag that is
+    not already present.
+
+    A flag is skipped when its value is ``None``/empty, when its name is not in
+    :data:`_FLAG_PRESENT_RE`, or when it already appears in ``command`` **or** in
+    ``script_body``. ``script_body`` is the package script the command invokes (the body of
+    ``package.json``'s ``dev`` script, say): the runner command alone hides it (``bun run
+    dev``), so a project that pins the flag itself would otherwise get it appended a second
+    time. A duplicated flag is not a no-op -- ``yargs-parser`` returns an *array* for it and
+    consumers accepting only ``string | boolean`` silently drop the setting (Astro then
+    falls back to its ``[::1]`` bind, the very default this flag exists to override).
+
+    Recognised names: ``host``, ``port``. Useful for binding Astro ``dev`` explicitly to
+    IPv4 127.0.0.1 so ``hermes verify``'s IPv4 readiness probe reaches it.
     """
     tokens = [command]
     for name, value in flags.items():
         if value is None or value == "" or name not in _FLAG_PRESENT_RE:
             continue
-        if _FLAG_PRESENT_RE[name].search(command):
+        present = _FLAG_PRESENT_RE[name]
+        if present.search(command) or present.search(script_body):
             continue
         tokens.append(f"--{name} {value}")
     return " ".join(tokens)
@@ -188,8 +197,13 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
     # Astro binds [::1]:4321 by default; the verify readiness probe hits IPv4 127.0.0.1
     # and would connection-refuse. Force the dev server to listen on 127.0.0.1 and the
     # recipe's resolved port so the probe always reaches it.
-    if start_cmd and kind == "astro":
-        start_cmd = _ensure_flags(start_cmd, host="127.0.0.1", port=inferred_port or default_port)
+    if start_cmd and start_script and kind == "astro":
+        # The pinned script body matters here too: ``bun run dev`` alone cannot reveal a
+        # flag the project already sets inside its own ``dev`` script.
+        start_cmd = _ensure_flags(
+            start_cmd, scripts.get(start_script, ""),
+            host="127.0.0.1", port=inferred_port or default_port,
+        )
     return Recipe(
         name=label, kind=kind, start=start_cmd,
         port=(inferred_port or default_port) if start_script else None,

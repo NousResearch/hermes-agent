@@ -1,6 +1,7 @@
 """Tests for agent/verify/recipes.py — static run-recipe detection."""
 
 import json
+import shlex
 
 import pytest
 
@@ -9,6 +10,29 @@ from agent.verify.recipes import Recipe, detect_package_manager, detect_recipe
 
 def write_pkg(root, data):
     (root / "package.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def expand_runner_command(command, scripts):
+    """Expand ``<runner> [run] <script> [args...]`` into the argv the runner executes.
+
+    The runner splices the script body in front of the arguments it was handed, which is
+    exactly why a flag detection pass over ``command`` alone cannot see flags the project
+    already pins inside its own script.
+    """
+    argv = shlex.split(command)
+    script_at = next(i for i, token in enumerate(argv) if token in scripts)
+    return shlex.split(scripts[argv[script_at]]) + argv[script_at + 1:]
+
+
+def parsed_flag(argv, name):
+    """Model yargs-parser's value for ``--name``: ``None`` absent, ``str`` once, ``list`` repeated."""
+    values = []
+    for i, token in enumerate(argv):
+        if token == f"--{name}":
+            values.append(argv[i + 1] if i + 1 < len(argv) else "")
+        elif token.startswith(f"--{name}="):
+            values.append(token.split("=", 1)[1])
+    return values[0] if len(values) == 1 else (values or None)
 
 
 class TestPackageManagerDetection:
@@ -105,6 +129,66 @@ class TestNodeDetection:
         (tmp_path / "go.mod").write_text("module x\n", encoding="utf-8")
         recipe = detect_recipe(tmp_path)
         assert recipe.kind == "go"
+
+
+class TestAstroFlagsAgainstScriptBody:
+    """A flag the project pins inside its own ``dev`` script must not be appended again.
+
+    ``bun run dev`` hides the script body, so flag detection limited to the resolved
+    command appends ``--host`` a second time after expansion. Astro parses argv with
+    yargs-parser, which collects a repeated flag into a list, and
+    ``flagsToAstroInlineConfig`` accepts only ``string | boolean`` -- the array makes
+    ``server.host`` undefined, so Astro silently falls back to its ``[::1]`` default: the
+    exact bind the flag exists to override.
+    """
+
+    def test_pinned_host_is_not_duplicated(self, tmp_path):
+        scripts = {"dev": "astro dev --host 127.0.0.1"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.start == "bun run dev --port 4321"
+        argv = expand_runner_command(recipe.start, scripts)
+        assert argv == ["astro", "dev", "--host", "127.0.0.1", "--port", "4321"]
+        assert parsed_flag(argv, "host") == "127.0.0.1"
+
+    def test_pinned_host_equals_form_is_not_duplicated(self, tmp_path):
+        scripts = {"dev": "astro dev --host=127.0.0.1"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert "--host" not in recipe.start
+        argv = expand_runner_command(recipe.start, scripts)
+        assert parsed_flag(argv, "host") == "127.0.0.1"
+
+    def test_pinned_port_is_not_duplicated(self, tmp_path):
+        scripts = {"dev": "astro dev --port 4111"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.port == 4111
+        assert recipe.start == "bun run dev --host 127.0.0.1"
+        argv = expand_runner_command(recipe.start, scripts)
+        assert parsed_flag(argv, "port") == "4111"
+        assert parsed_flag(argv, "host") == "127.0.0.1"
+
+    def test_unpinned_flags_are_still_forced(self, tmp_path):
+        scripts = {"dev": "astro dev"}
+        write_pkg(tmp_path, {"devDependencies": {"astro": "5.0.0"}, "scripts": scripts})
+        (tmp_path / "bun.lock").touch()
+
+        recipe = detect_recipe(tmp_path)
+
+        assert recipe.start == "bun run dev --host 127.0.0.1 --port 4321"
+        argv = expand_runner_command(recipe.start, scripts)
+        assert parsed_flag(argv, "host") == "127.0.0.1"
+        assert parsed_flag(argv, "port") == "4321"
 
 
 class TestPythonDetection:

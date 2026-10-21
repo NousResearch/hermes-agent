@@ -2750,7 +2750,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         statue_fill = asset("statue-fill.png")
         fill_html = f'<img class="pane-statue-fill" src="{statue_fill}" alt="" aria-hidden="true">' if statue_fill else ""
         pane_statue_html = (
-            f'<div class="pane-art">{fill_html}<img class="pane-statue" src="{statue}" alt="" aria-hidden="true"></div>'
+            '<div class="pane-art"><p class="pane-mark" aria-hidden="true">Hermes</p>'
+            f'{fill_html}<img class="pane-statue" src="{statue}" alt="" aria-hidden="true"></div>'
             if statue
             else ""
         )
@@ -2813,10 +2814,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "button{font-family:var(--display);font-weight:500;font-size:21px;line-height:1;"
             "letter-spacing:.08em;text-transform:uppercase;padding:12px 30px 11px;cursor:pointer;"
             "border-radius:0;border:2px solid #0505e8}"
-            ".approve{background:#0505e8;color:#fff;box-shadow:4px 4px 0 #b3b5f7}"
-            ".deny{background:#fff;color:#0505e8;box-shadow:4px 4px 0 #c9cbf9}"
+            ".approve{background:#0505e8;color:#fff}"
+            ".deny{background:#fff;color:#0505e8}"
             "button:hover{filter:brightness(1.08)}"
-            "button:active{transform:translate(2px,2px);box-shadow:1px 1px 0 #b3b5f7}"
+            "button:active{transform:translateY(1px)}"
+            "button:focus-visible{outline:2px solid #0505e8;outline-offset:3px}"
             ".pane-foot{position:absolute;left:72px;bottom:26px;font-size:9px;letter-spacing:.26em;"
             "text-transform:uppercase;color:#666;margin:0}"
             "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}"
@@ -2837,15 +2839,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ".rail-sub{font-size:9px;margin-top:10px}"
             ".rail-bottom{display:none}"
             ".pane{flex-direction:column;align-items:stretch}"
-            ".pane-inner{order:1;padding:36px 20px 0;max-width:none}"
+            ".pane-inner{order:1;padding:36px 20px 0;max-width:none;text-align:center}"
+            ".lede,.prompt{margin-left:auto;margin-right:auto}"
+            ".actions{justify-content:center}"
             ".display{font-size:clamp(52px,16vw,88px)}"
-            ".pane-foot{order:2;position:static;padding:30px 20px 0}"
-            ".pane-mark{display:block;position:absolute;left:0;right:0;bottom:22px;margin:0;padding:0 16px;"
-            "font-family:var(--display);font-weight:500;text-transform:uppercase;"
-            # "HERMES" is ~1.82em wide in Rules Compressed: fill the width.
-            "font-size:min(440px,calc((100vw - 32px)/1.86));line-height:.78;color:rgba(5,5,232,.13)}"
-            ".pane-art{order:3;position:relative;inset:auto;z-index:1;align-self:flex-end;"
-            "width:min(480px,74%);margin:auto -8% 0 0;padding-top:40px}"
+            ".pane-foot{order:2;position:static;padding:30px 20px 0;text-align:center}"
+            # The figure is centred and stands in front of HERMES, which runs
+            # across his middle. The mark lives inside .pane-art so its
+            # position tracks the statue at every width.
+            ".pane-art{order:3;position:relative;inset:auto;align-self:center;"
+            "width:min(600px,100%);margin:auto 0 0;padding-top:48px}"
+            ".pane-mark{display:block;position:absolute;left:50%;top:56%;transform:translate(-50%,-50%);"
+            "margin:0;white-space:nowrap;font-family:var(--display);font-weight:500;text-transform:uppercase;"
+            # "HERMES" is ~1.82em wide in Rules Compressed: run it edge to edge.
+            "font-size:min(560px,58vw);line-height:.78;color:rgba(5,5,232,.13)}"
             ".pane-statue{position:relative;inset:auto;display:block;height:auto;opacity:.85}"
             ".pane-statue-fill{display:block;position:absolute;left:0;right:0;bottom:0;width:100%;height:auto}}"
             # Phones: session and extension already appear in the prompt.
@@ -2883,7 +2890,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             + f"{body_extra}"
             "</div>"
             "<p class=\"pane-foot\">Return to Hermes Browser</p>"
-            "<p class=\"pane-mark\" aria-hidden=\"true\">Hermes</p>"
             "</main>"
             "</div></body></html>"
         )

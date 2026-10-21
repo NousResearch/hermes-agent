@@ -13,7 +13,7 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.session_context import clear_session_vars, set_session_vars
 
-GUILD, TEXT, USER = 111111111111111111, "222222222222222222", "333333333333333333"
+GUILD, TEXT, USER = 1001, "2002", "3003"
 
 
 @pytest.fixture
@@ -200,7 +200,7 @@ def test_join_from_dm_uses_profile_scoped_home_channel(runner, monkeypatch):
     launch process env, and binds the voice channel to that home channel's guild."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
 
-    home = "444444444444444444"
+    home = "4004"
     monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
     adapter = _adapter(connected=False)
     adapter._client = MagicMock()
@@ -225,7 +225,7 @@ def _vc(connected=True):
 
 def test_server_channel_never_falls_back_to_another_server(runner):
     """A leave/status from server A must not act on the bot's connection in server B."""
-    other = 555555555555555555
+    other = 5005
     adapter = _adapter(connected=False)
     adapter.is_in_voice_channel = MagicMock(side_effect=lambda gid: gid == other)
     adapter._voice_clients = {other: _vc()}
@@ -269,7 +269,7 @@ def test_server_channel_without_guild_id_never_joins_the_home_server(runner, mon
 
 def test_dm_with_two_voice_connections_is_refused(runner):
     adapter = _adapter(connected=True)
-    adapter._voice_clients = {GUILD: _vc(), 555555555555555555: _vc()}
+    adapter._voice_clients = {GUILD: _vc(), 5005: _vc()}
     runner.adapters[Platform.DISCORD] = adapter
     tokens = _bind(chat="999", scope="")
     try:
@@ -282,7 +282,7 @@ def test_dm_with_two_voice_connections_is_refused(runner):
 def test_dm_with_numeric_scope_still_uses_dm_rules(runner):
     """A DM session carrying a numeric scope id must not act on that id as a guild."""
     adapter = _adapter(connected=True)
-    adapter._voice_clients = {GUILD: _vc(), 555555555555555555: _vc()}
+    adapter._voice_clients = {GUILD: _vc(), 5005: _vc()}
     runner.adapters[Platform.DISCORD] = adapter
     tokens = _bind(chat="999", scope=str(GUILD), chat_type="dm")
     try:

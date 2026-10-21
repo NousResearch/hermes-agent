@@ -125,7 +125,25 @@ class SessionPruneResult(Result):
 
 canonical_method("session.prune", params=SessionPruneParams, result=SessionPruneResult,
                  doc="Local operator only: the owner deletes the ended sessions `hermes sessions prune` "
-                     "selected, skipping busy sessions and retained reset owners.")
+                 "selected, skipping busy sessions and retained reset owners.")
+
+
+class WorkspaceRetireParams(Params):
+    """The tree a launcher is about to remove, and whether the mark goes up or comes down."""
+
+    session_id: str
+    path: str
+    retiring: bool
+
+
+class WorkspaceRetireResult(Result):
+    session_id: str
+    retiring: bool
+
+
+canonical_method("session.workspace.retire", params=WorkspaceRetireParams, result=WorkspaceRetireResult,
+                 doc="Mark this session's workspace as retiring (a launcher removing its worktree): "
+                 "the owner takes no new work in it until the removal finished.")
 
 
 class CommandObserveParams(Params):

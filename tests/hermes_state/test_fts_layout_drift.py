@@ -291,6 +291,31 @@ def test_a_quoted_table_name_in_the_stored_definition_is_still_current(tmp_path,
     assert _stamp(db_path) == str(hermes_state_common.FTS_STORAGE_VERSION)
 
 
+def test_optimize_settle_refuses_pending_backfill(tmp_path):
+    """Settle must not stamp while high_water markers remain."""
+    db = SessionDB(db_path=tmp_path / "fresh.db")
+    try:
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="settle guard needle")
+        # A fresh store is stamped on creation; clear it so the assertion reads settle's own write.
+        db._conn.execute("DELETE FROM state_meta WHERE key = 'fts_storage_version'")
+        db._conn.commit()
+        # Plant markers without going through demote.
+        db.set_meta("fts_rebuild_high_water", "1")
+        db.set_meta("fts_rebuild_progress", "0")
+        # The public contract: optimize returns ok=False when still
+        # pending. Simulate an unfinishable backfill by stubbing the
+        # chunk step to a no-op while markers stay.
+        db.fts_rebuild_step = lambda: False  # type: ignore[method-assign]
+        result = db.optimize_fts_storage(vacuum=False)
+        assert result["ok"] is False
+        assert result.get("reason") == "backfill_incomplete"
+        assert db.get_meta("fts_storage_version") is None
+        assert db.get_meta("fts_rebuild_high_water") is not None
+    finally:
+        db.close()
+
+
 def test_a_stale_base_source_view_is_replaced_before_the_store_is_stamped(tmp_path):
     from hermes_state_common import FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS
 

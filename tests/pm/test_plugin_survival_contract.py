@@ -285,7 +285,7 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
     member.mkdir(parents=True)
     (member / "pyproject.toml").write_text(
         '[project]\nname="profile-dep"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+        'dependencies=[]\n[project.optional-dependencies]\nall=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
     )
     sync_venv(explicit=True)
     recorded = Facts(runtime_facts_path(core), strict=True).get("venv")
@@ -299,7 +299,7 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
     candidate.mkdir(parents=True)
     (candidate / "pyproject.toml").write_text(
         '[project]\nname="new-dep"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+        'dependencies=[]\n[project.optional-dependencies]\nall=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
     )
     _write_enabled(home_a, ["new-dep"])
     assert venv_is_current(project_root=core) is False
@@ -349,7 +349,7 @@ def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
         plugin.mkdir(parents=True)
         (plugin / "pyproject.toml").write_text(
             f'[project]\nname="{name}"\nversion="1"\nrequires-python="{requires}"\n'
-            'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+            'dependencies=[]\n[project.optional-dependencies]\nall=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
         )
     (home / "config.yaml").write_text("# operator note\nplugins:\n  enabled: [fits, too-old]\n", encoding="utf-8")
     profile = home / "profiles" / "work"
@@ -406,7 +406,7 @@ def test_update_sync_survives_unreadable_secondary_profile(admission_env):
     member.mkdir(parents=True)
     (member / "pyproject.toml").write_text(
         '[project]\nname="primary-dep"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+        'dependencies=[]\n[project.optional-dependencies]\nall=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
     )
     _write_enabled(home, ["primary-dep"])
     broken = home / "profiles" / "work" / "config.yaml"
@@ -445,7 +445,7 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
         plugin.mkdir(parents=True)
         (plugin / "pyproject.toml").write_text(
             f'[project]\nname="{name}"\nversion="1"\nrequires-python=">=3.11"\n'
-            'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+            'dependencies=[]\n[project.optional-dependencies]\nall=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
         )
     manifest = home / "plugins" / "needs-newer" / "plugin.yaml"
     manifest.write_text("name: needs-newer\nrequires_hermes: '>=999'\n", encoding="utf-8")

@@ -197,6 +197,8 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
     monkeypatch.setattr(paths, "repo_root", lambda: project)
     core = '[project]\nname="death-proof"\nversion="1"\nrequires-python=">=3.11"\n[tool.uv]\npackage=false\n'
     (project / "pyproject.toml").write_text(core)
+    member_core = (core.replace("death-proof", "example")
+                   + '[project.optional-dependencies]\nall=[]\n')
     client.lock_project(project, offline=True, explicit=True)
     home = tmp_path / "home"
     target = home / "plugins/example"
@@ -215,7 +217,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
     before_tree = tree_digest(target)
     if kind == "selection":
         if rebuild:
-            (target / "pyproject.toml").write_text(core.replace("death-proof", "example"))
+            (target / "pyproject.toml").write_text(member_core)
         arguments = {"plugins": Selection({"home": str(home), "enabled": ["example"], "disabled": []})}
         payload = config
     else:
@@ -223,7 +225,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
         shutil.copytree(target, staged)
         (staged / "code.py").write_text("new")
         if rebuild:
-            (staged / "pyproject.toml").write_text(core.replace("death-proof", "example"))
+            (staged / "pyproject.toml").write_text(member_core)
         arguments = {"plugins": StagedUpdate({
             "target": str(target), "staged": str(staged), "target_digest": before_tree,
             "old_metadata": {"example": {"revision": "old"}}, "new_metadata": {"example": {"revision": "new"}}})}

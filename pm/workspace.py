@@ -254,7 +254,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         # buildable member keeps its declared name — uv verifies it against the
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
-        virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
+        virtual = not declaration.buildable
         changed = declaration.install_requirements != declaration.requirements
         if changed:
             document["project"]["dependencies"] = list(declaration.install_requirements)

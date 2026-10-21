@@ -133,8 +133,15 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _GateAuthError:
+            # The GraphQL read above already proved this login can see the repository,
+            # so a refusal here is the rulesets endpoint being unavailable for the repo
+            # (a private repo on a free plan cannot expose it) — the same "no rules"
+            # state a null branchProtectionRule already tolerates (#132473).
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":

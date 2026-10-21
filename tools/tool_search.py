@@ -27,6 +27,7 @@ from tools.tool_search_validation import (
     local_batch_error, normalize_tool_call_entries, not_deferrable_error, session_unavailable_error,
     unavailable_in_session_reason, validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
+from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
 from tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
 
@@ -306,7 +307,9 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
         _bridge_schema(
             TOOL_CALL_NAME,
             "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per "
-            "invocation (batch independent calls; results come back in order). Arguments match "
+            "invocation (batch independent calls, at most "
+            f"{MAX_CALLS_PER_DISPATCH} entries per call — larger groups are rejected and must be "
+            "split across separate tool_call invocations; results come back in order). Arguments match "
             f"the schema from `{TOOL_DESCRIBE_NAME}`; approvals and hooks apply as usual.",
             {
                 "calls": {
@@ -319,7 +322,8 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                         },
                         "required": ["name", "arguments"],
                     },
-                    "description": "One or more independent deferred tool invocations.",
+                    "description": "One or more independent deferred tool invocations "
+                    f"(at most {MAX_CALLS_PER_DISPATCH}).",
                 },
             },
             ["calls"],

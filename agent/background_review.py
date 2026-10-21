@@ -1003,6 +1003,11 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
+    # DB-detached, the fork cannot load the parent's learned reasoning-field rejections and would
+    # re-learn each with a fresh 400 on every review: inherit them (copied, not shared).
+    review_agent._reasoning_rejecting_routes = {
+        k: set(v) for k, v in (getattr(agent, "_reasoning_rejecting_routes", None) or {}).items()}
+    review_agent._reasoning_rejections_loaded_for = agent.session_id
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.

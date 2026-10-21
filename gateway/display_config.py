@@ -18,7 +18,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
     "reasoning_style": "code",  # "code" (💭 **Reasoning:** + fence), "blockquote" ("> "), "subtext" ("-# " Discord)
-    "tool_preview_length": 0,
+    "tool_preview_length": 40,  # budget for all/new previews; an explicit 0 = no limit
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,

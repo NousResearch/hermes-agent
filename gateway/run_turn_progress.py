@@ -260,10 +260,9 @@ class GatewayTurnProgressMixin:
 
     @staticmethod
     def _preview_cap() -> int:
-        """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
+        """tool_preview_length for the "all"/"new" previews; 0 = no limit (documented contract)."""
         from agent.display import get_tool_preview_max_len
-        pl = get_tool_preview_max_len()
-        return pl if pl > 0 else 40
+        return get_tool_preview_max_len()
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
         """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
@@ -282,7 +281,7 @@ class GatewayTurnProgressMixin:
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
-        if len(cmd_short) > cap:
+        if cap > 0 and len(cmd_short) > cap:
             cmd_short = cmd_short[:cap - 3] + "..."
         elif len(lines) > 1:
             cmd_short += " ..."

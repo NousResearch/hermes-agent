@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.registry import registry, tool_error
 
@@ -70,7 +70,7 @@ def _validation_parameters(tool_name: str) -> Optional[dict]:
     return params
 
 
-def _argument_error(tool_name: str, args: Dict[str, Any], message: str) -> str:
+def _argument_error(tool_name: str, args: dict[str, Any], message: str) -> str:
     """Keep the shared rejection, appending optional correction advice owned by the tool."""
     entry = registry.get_entry(tool_name)
     hint_fn = getattr(entry, "argument_error_hint", None)
@@ -85,7 +85,7 @@ def _argument_error(tool_name: str, args: Dict[str, Any], message: str) -> str:
     return tool_error(message)
 
 
-def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+def validate_tool_args(tool_name: str, args: dict[str, Any]) -> Optional[str]:
     """Check required argument names; return an error JSON or ``None``.
 
     Runs after coercion and middleware. Parameter values remain the handler's contract
@@ -116,7 +116,7 @@ def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def split_tool_args(tool_name: str, args: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:
+def split_tool_args(tool_name: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Separate unsupported top-level keys without mutating the caller's payload."""
     params = _validation_parameters(tool_name)
     if params is None or not isinstance(args, dict):

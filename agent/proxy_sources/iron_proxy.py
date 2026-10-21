@@ -39,7 +39,10 @@ _STARTUP_GRACE_SECONDS = 5
 # setup (0600 at <proxy>/management.token), injected under this env name; empty => daemon refuses to start.
 _MGMT_API_KEY_ENV = "HERMES_IRON_PROXY_MGMT_KEY"
 _MGMT_PORT_OFFSET = 2  # tunnel_port is CONNECT/MITM, +1 is plain-HTTP forward, +2 is management
-# Every request method except CONNECT (the tunnel handshake, which never carries the proxy token).
+# The methods we require a proxy token for.  CONNECT (the tunnel handshake, which never carries the
+# token) is left out; v0.39 rules cannot express "all but CONNECT" (an empty list or ["*"] means all),
+# so a verb outside this tuple skips ``require`` on a mapped host.  The real secret is never injected
+# for it, but a self-supplied credential can reach the upstream.
 _SECRET_RULE_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE")
 _MGMT_RELOAD_TIMEOUT = 15
 

@@ -2,7 +2,8 @@
 paragraph break, and a list may follow a label line directly (CommonMark behaviour)."""
 
 from gateway.config import PlatformConfig
-from plugins.platforms.matrix.adapter import MatrixAdapter, _list_interrupts_paragraph, _standalone_payloads
+from plugins.platforms.matrix.adapter import MatrixAdapter, _standalone_payloads
+from plugins.platforms.matrix.adapter_markdown import _list_interrupts_paragraph
 
 
 def _html(text: str) -> str:

@@ -65,7 +65,42 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             else:
                 busy_deadline = now + max(0.0, timeout_seconds)
 
-        conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
+        def _pin_with_busy_wait(sql: str) -> None:
+            # conn was opened with timeout=0.0 so the busy_deadline above is
+            # the single owner of how long a lock collision may wait; a bare
+            # conn.execute() would surface OperationalError on the first
+            # collision instead of honoring that deadline like the backup()
+            # progress callback does.
+            while True:
+                try:
+                    conn.execute(sql)
+                    return
+                except sqlite3.OperationalError as exc:
+                    if getattr(exc, "sqlite_errorcode", None) not in (
+                        sqlite3.SQLITE_BUSY,
+                        sqlite3.SQLITE_LOCKED,
+                    ):
+                        raise
+                    if time.monotonic() >= busy_deadline:
+                        raise _SQLiteBackupTimeout(
+                            f"database remained locked for {timeout_seconds:g} seconds"
+                        ) from exc
+                    time.sleep(0.1)
+
+        # Pin one read snapshot for the whole copy. Without an explicit
+        # transaction, each backup step opens and releases its own implicit
+        # read transaction, so a writer checkpoint between steps invalidates
+        # the WAL frames the next step needs: it keeps re-reading the same
+        # range and `remaining` never moves -- indefinitely, under a
+        # continuously busy WAL writer, without ever reporting
+        # SQLITE_BUSY/SQLITE_LOCKED to the progress callback above.
+        _pin_with_busy_wait("BEGIN")
+        _pin_with_busy_wait("SELECT 1 FROM sqlite_master LIMIT 1")
+        try:
+            conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
+        finally:
+            with suppress(Exception):
+                conn.execute("ROLLBACK")
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)

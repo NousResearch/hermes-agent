@@ -8,7 +8,9 @@ keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
+import inspect
 import json
 import logging
 import queue
@@ -63,6 +65,67 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 # Slack click handler shows on a dead entry).
 def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
+
+
+def _create_durable_clarify_interaction(
+    *, session_key: str, session_id: str | None, source, fallback_chat_id,
+    metadata: dict | None, question: str, choices,
+):
+    """Persist a Telegram clarify prompt before scheduling its platform send."""
+    from tools.clarify_interaction import create_clarify_interaction
+
+    chat_id = getattr(source, "chat_id", None) or fallback_chat_id
+    thread_id = getattr(source, "thread_id", None)
+    user_id = getattr(source, "user_id", None)
+    durable_metadata = dict(metadata or {})
+    durable_metadata["durable_clarify"] = True
+    return create_clarify_interaction(
+        session_key=session_key,
+        session_id=session_id,
+        platform="telegram",
+        chat_id=str(chat_id) if chat_id is not None else None,
+        thread_id=str(thread_id) if thread_id is not None else None,
+        user_id=str(user_id) if user_id is not None else None,
+        question=question,
+        choices=choices,
+        metadata=durable_metadata,
+    )
+
+
+def _durable_clarify_send_result(future, *, interaction_id: str, timeout: float = 15) -> str:
+    """Return the deferred marker without blocking the agent on a Telegram answer."""
+    from gateway.extensions.deferred_clarify import make_deferred_marker
+    from tools.clarify_interaction import cancel_interaction, set_prompt_message_id
+
+    def persist_late_message_id(completed_future) -> None:
+        try:
+            result = completed_future.result()
+        except Exception:
+            cancel_interaction(interaction_id, reason="late_send_failed")
+            return
+        if not getattr(result, "success", False):
+            cancel_interaction(interaction_id, reason="late_send_failed")
+            return
+        if getattr(result, "message_id", None):
+            set_prompt_message_id(interaction_id, str(result.message_id))
+
+    if future is None:
+        cancel_interaction(interaction_id, reason="send_not_scheduled")
+        return "[clarify prompt could not be delivered]"
+    try:
+        result = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.add_done_callback(persist_late_message_id)
+        return make_deferred_marker(interaction_id)
+    except Exception:
+        cancel_interaction(interaction_id, reason="send_failed")
+        return "[clarify prompt could not be delivered]"
+    if not getattr(result, "success", False):
+        cancel_interaction(interaction_id, reason="send_failed")
+        return "[clarify prompt could not be delivered]"
+    if getattr(result, "message_id", None):
+        set_prompt_message_id(interaction_id, str(result.message_id))
+    return make_deferred_marker(interaction_id)
 
 
 # run_conversation result keys the gateway projection carries verbatim so a finite viewer's
@@ -563,6 +626,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             question = f"{entry['question']}{hint}"
             raw, answered = self._ask_clarify_question(
                 question, entry["choices"], bool(entry["multi_select"]), rearm=index == last)
+            from gateway.extensions.deferred_clarify import is_deferred_clarify_result
+            if is_deferred_clarify_result(raw):
+                # Telegram durable prompts intentionally end this tool call. The
+                # marker is preserved under user_response so the tool round can
+                # suspend the turn without asking the next question.
+                reply["outcome"] = "deferred"
+                answers[entry["qid"]] = raw
+                break
             if raw == CANCELLED:
                 reply["outcome"] = "cancelled"
                 break
@@ -577,43 +648,59 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return reply
 
     def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
-        """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
-        Returns ``(response, answered)``; the caller decides what "no answer" means."""
+        """Send one clarify card; Telegram uses durable suspension, other surfaces wait in-process."""
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
-            # Nothing can render the question: say so, or the batch's blank answers read as
-            # user inactivity (#112684).
             return UNDELIVERED_NO_SURFACE, False
         session_key = ctx.session_key or ""
-        clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
+        platform_value = getattr(getattr(ctx, "source", None), "platform", None)
+        platform_value = getattr(platform_value, "value", platform_value)
+        platform_key = str(platform_value or "").lower()
+        durable = None
+        durable_metadata = ctx._status_thread_metadata
+        if platform_key == "telegram":
+            try:
+                durable = _create_durable_clarify_interaction(
+                    session_key=session_key,
+                    session_id=getattr(ctx, "session_id", None),
+                    source=getattr(ctx, "source", None),
+                    fallback_chat_id=ctx._status_chat_id,
+                    metadata=ctx._status_thread_metadata,
+                    question=question,
+                    choices=choices,
+                )
+                clarify_id = durable.interaction_id
+                durable_metadata = durable.metadata or {}
+            except Exception:
+                logger.exception("Could not persist durable Telegram clarify interaction")
+                return "[clarify prompt could not be delivered]", False
+        else:
+            clarify_id = uuid.uuid4().hex[:10]
         send_kwargs = dict(
             chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-            session_key=session_key, metadata=ctx._status_thread_metadata,
+            session_key=session_key, metadata=durable_metadata,
         )
 
         def _text_fallback():
-            """Schedule the plain-text prompt when the native card cannot render; None = no such path."""
+            """Schedule the plain-text prompt when the native card cannot render."""
             coro = text_fallback_coro(ctx._status_adapter, **send_kwargs)
             return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
-        entry = clarify_mod.register(
-            clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
-            multi_select=bool(multi_select),
-        )
-        # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
-        # below the question; if the re-seed fails the consumer degrades to send() automatically.
+
+        if durable is None:
+            entry = clarify_mod.register(
+                clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
+                multi_select=bool(multi_select),
+            )
+        else:
+            entry = durable
         self._close_native_stream_boundary("Clarify", t("gateway.clarify.native_stream_placeholder"), reopen=True)
-        # Pause typing: a "thinking..." status must not obscure the prompt or block an "Other" reply
-        # on platforms that disable input while typing (Slack Assistant).
         with suppress(Exception):
             ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
-        # Ordering barrier: flush buffered assistant prose BEFORE the poll, which goes out on a
-        # separate agent-thread-blocking path and would otherwise render ABOVE its own explanation.
-        # Best-effort + short timeout so the agent thread never hangs if the consumer isn't running.
         flush = getattr(self._stream_consumer(), "flush_pending_sync", None)
         try:
             if callable(flush):
@@ -624,30 +711,24 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             self._send_shared_clarify(entry, **send_kwargs),
             "Clarify send failed to schedule",
         )
-        # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
-        # have posted with a late ack. Only a definitive failure tears down the registration;
-        # ambiguous falls through to the bounded wait so a late reply resolves. A definitive
-        # failure — immediate or late — retries once as plain text before giving up.
+        if durable is not None:
+            # The persisted interaction remains actionable after this process or
+            # agent turn disappears. A late callback records successful delivery
+            # or closes the interaction when the send definitively fails.
+            return _durable_clarify_send_result(fut, interaction_id=clarify_id), False
         response, answered = _clarify_send_then_wait(
             fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
             fallback=_text_fallback)
         if self._approval_owner is not None:
             authority, session_id, generation = self._approval_owner
             authority.sessions[session_id].controls.snapshot(session_id, generation)
-        # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
-        # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
         if not answered:
-            # No answer arrived (timeout, /new, run end): retire the native card so it stops
-            # looking answerable. Adapters without a persistent card have no such method.
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
                 self._schedule(
                     retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
-            # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
-            # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is
-            # a no-op outside the reopen-pending native state.
             sc = self._stream_consumer()
             if sc is not None:
                 try:
@@ -1333,6 +1414,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
+            "deferred_clarify_interaction_id": result.get("deferred_clarify_interaction_id"),
+            "turn_exit_reason": result.get("turn_exit_reason"),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],
@@ -1356,6 +1439,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
                 **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
             }
+        if result.get("deferred_clarify_interaction_id") or str(
+            result.get("turn_exit_reason") or ""
+        ).startswith("deferred_clarify("):
+            final_response = ""
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)

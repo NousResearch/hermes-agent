@@ -176,6 +176,19 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
+    from gateway.extensions.deferred_clarify import find_deferred_clarify_interaction_id
+    _tool_call_ids: set[str] = {
+        tc_id
+        for tc in assistant_message.tool_calls
+        if isinstance((tc_id := getattr(tc, "id", None)), str) and tc_id
+    }
+    _deferred_clarify_id = find_deferred_clarify_interaction_id(messages, _tool_call_ids)
+    if _deferred_clarify_id:
+        agent._deferred_clarify_interaction_id = _deferred_clarify_id
+        _turn_exit_reason = f"deferred_clarify({_deferred_clarify_id})"
+        final_response = "NO_REPLY"
+        return _verdict("break")
+
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"

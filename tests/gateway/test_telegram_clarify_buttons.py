@@ -89,9 +89,89 @@ class TestTelegramSendClarify:
         assert adapter._clarify_state["cid1"] == "sk1"
 
 
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        # Buttons use the model-provided names; callback payloads remain index-based.
+
+    @pytest.mark.asyncio
+    async def test_choice_names_are_used_and_short_buttons_share_rows(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=101))
+        captured_buttons = []
+        captured_rows = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: captured_buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            lambda rows: captured_rows.extend(rows) or rows,
+        )
+
+        await adapter.send_clarify(
+            chat_id="12345", question="Which option?", choices=["alpha", "beta", "gamma"],
+            clarify_id="cid-labels", session_key="sk-labels",
+        )
+
+        assert [label for label, _ in captured_buttons[:3]] == ["alpha", "beta", "gamma"]
+        assert all(not label.isdigit() for label, _ in captured_buttons)
+        assert captured_rows[:2] == [
+            [captured_buttons[0], captured_buttons[1]],
+            [captured_buttons[2], captured_buttons[3]],
+        ]
+        assert [callback for _, callback in captured_buttons[:3]] == [
+            "cl:cid-labels:0", "cl:cid-labels:1", "cl:cid-labels:2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ui_does_not_truncate_unexpected_long_label(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=102))
+        captured_buttons = []
+        captured_rows = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: captured_buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            lambda rows: captured_rows.extend(rows) or rows,
+        )
+
+        await adapter.send_clarify(
+            chat_id="12345", question="Where?",
+            choices=["Deploy to production with approval\nand monitoring"],
+            clarify_id="cid-long", session_key="sk-long",
+        )
+
+        assert captured_buttons[0][0] == "Deploy to production with approval and monitoring"
+        assert "…" not in captured_buttons[0][0]
+        assert captured_rows == [[captured_buttons[0]], [captured_buttons[1]]]
+
+    @pytest.mark.asyncio
+    async def test_durable_buttons_keep_opaque_callback_payload(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=104))
+        captured_buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: captured_buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows)
+
+        await adapter.send_clarify(
+            chat_id="12345", question="Deploy?", choices=["yes", "no"],
+            clarify_id="cld_0123456789abcdef01234567", session_key="sk-durable",
+            metadata={"durable_clarify": True},
+        )
+
+        assert [label for label, _ in captured_buttons[:2]] == ["yes", "no"]
+        assert len(captured_buttons) == 3
+        assert not captured_buttons[2][0].isdigit()
+        assert [callback for _, callback in captured_buttons[:2]] == [
+            "cld:cld_0123456789abcdef01234567:0",
+            "cld:cld_0123456789abcdef01234567:1",
+        ]
+        assert all(len(callback.encode("utf-8")) <= 64 for _, callback in captured_buttons)
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

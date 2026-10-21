@@ -38,6 +38,7 @@ from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
+from tui_gateway.approval_payload import approval_request_payload as _approval_request_payload
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
@@ -728,22 +729,6 @@ def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
             transport.write(frame)
         except Exception:  # one wedged peer must not stall the rest; disconnect teardown unregisters it
             logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
-
-
-def _approval_request_payload(data: dict | None) -> dict:
-    """Build the client-safe representation of a pending approval."""
-    payload = dict(data or {})
-    if "choices" not in payload:
-        choices = ["once"]
-        if not payload.get("smart_denied") and payload.get("allow_session") is not False:
-            choices.append("session")
-            if payload.get("allow_permanent") is not False:
-                choices.append("always")
-        payload["choices"] = choices + ["deny"]
-    if "command" in payload:
-        from gateway.run import _redact_approval_command
-        payload["command"] = _redact_approval_command(payload.get("command"))
-    return payload
 
 
 def _open_requests(sid: str) -> list[dict]:

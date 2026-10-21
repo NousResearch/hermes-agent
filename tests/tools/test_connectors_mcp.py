@@ -257,10 +257,25 @@ def test_off_desktop_authorize_returns_the_link_at_once_and_opens_no_operation(b
     assert live.current("s1") is None
 
 
-def test_registry_dispatch_never_blocks_and_never_reaches_a_card(backend):
-    # registry.dispatch forwards no callback; the call must return, not block.
-    out = json.loads(registry.dispatch("manage_connections", {"action": "enable", "connectors": [_linear()]}))
-    assert out["targets"][0]["state"] == TargetState.connected.value
+def test_registry_dispatch_without_card_rejects_enable_before_backend(backend):
+    # Registry dispatch has no interactive approval surface: fail closed before enabling MCP.
+    out = json.loads(registry.dispatch(
+        "manage_connections", {"action": "enable", "connectors": [_linear()]}
+    ))
+    assert "requires interactive approval" in out["error"]
+    assert backend.calls == []
+    assert live.current("s1") is None
+
+
+def test_no_card_install_is_rejected_before_backend(backend):
+    # Installation also requires explicit approval from a card-capable surface.
+    out = _off_desktop(
+        {"action": "install", "connectors": [_mcp_target("linear")]},
+        mcp_backend=backend,
+    )
+    assert "requires interactive approval" in out["error"]
+    assert backend.calls == []
+    assert live.current("s1") is None
 
 
 def test_a_managed_action_never_accepts_mcp_targets_and_vice_versa():

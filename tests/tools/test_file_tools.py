@@ -368,6 +368,25 @@ class TestSensitivePathCheck:
 
 
 
+    def test_config_yaml_blocked_when_active_config_path_unresolvable(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.file_tools_write_guards._get_hermes_config_resolved",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.file_tools_write_guards._resolved_or_raw",
+            lambda filepath, task_id: filepath,
+        )
+
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        err = _check_sensitive_path("/home/hermes/.hermes/config.yaml", "default")
+        assert err is not None
+        assert "could not be safely resolved" in err
+
+        # Ordinary files remain subject to the normal rules.
+        assert _check_sensitive_path("/tmp/ordinary.txt", "default") is None
+
     def test_system_path_still_blocked(self, monkeypatch):
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)

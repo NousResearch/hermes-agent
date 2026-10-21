@@ -8,6 +8,7 @@ Contracts:
   what went live; the card never witnesses the outcome
 """
 
+from contextlib import contextmanager
 import json
 import threading
 from pathlib import Path
@@ -22,8 +23,32 @@ from tools.connectors.contract import TargetState
 from tools.connectors.run import apply_answer
 
 
+@contextmanager
+def _catalog_test_target_scope(profile: str):
+    """Lightweight profile binding for catalog tests using FakeInstaller.
+
+    Real profile/secret/terminal scoping is covered by dedicated gateway tests.
+    Avoid importing the gateway server and triggering production bootstrap here.
+    """
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = get_profile_dir(profile)
+    if not home.is_dir():
+        raise FileNotFoundError(f"Test target profile is unavailable: {profile}")
+
+    token = set_hermes_home_override(str(home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
 @pytest.fixture(autouse=True)
-def _clean_live():
+def _clean_live(monkeypatch):
+    import tools.connectors.catalog as catalog
+
+    monkeypatch.setattr(catalog, "target_scope", _catalog_test_target_scope)
     live.reset_for_tests()
     yield
     live.reset_for_tests()

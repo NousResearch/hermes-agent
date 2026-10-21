@@ -307,6 +307,11 @@ def _resolve_output_base(
         file_path = Path(output_path).expanduser()
         if command_provider_config is not None:
             file_path = _configured_command_tts_output_path(file_path, command_provider_config)
+        from tools.file_tools_write_guards import _check_sensitive_path
+        sensitive_path_error = _check_sensitive_path(str(file_path))
+        if sensitive_path_error:
+            return None, _error_json(sensitive_path_error)
+
         from agent.file_safety import is_write_approval_required, is_write_denied
         if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
             return None, _error_json(

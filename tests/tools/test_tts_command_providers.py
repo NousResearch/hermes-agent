@@ -40,6 +40,7 @@ from tools.tts_tool import (
     _get_command_tts_output_format,
     _resolve_command_provider_config,
     _resolve_max_text_length,
+    _resolve_output_base,
     check_tts_requirements,
     text_to_speech_tool,
 )
@@ -442,6 +443,64 @@ class TestTextToSpeechToolWithCommandProvider:
         # The response should not carry the command-provider error text.
         err = (data.get("error") or "").lower()
         assert "tts.providers.broken.command is not configured" not in err
+
+
+class TestTtsOutputPathConfigGuard:
+    def _pin_config_guard(self, monkeypatch, config_path):
+        from tools import file_tools_write_guards as guards
+
+        monkeypatch.setattr(
+            guards,
+            "_get_hermes_config_resolved",
+            lambda: str(config_path.resolve()) if config_path is not None else None,
+        )
+        monkeypatch.setattr(
+            guards,
+            "_resolved_or_raw",
+            lambda filepath, task_id: str(Path(filepath).resolve()),
+        )
+
+    def test_output_path_refuses_active_config(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        self._pin_config_guard(monkeypatch, config_path)
+
+        resolved, error = _resolve_output_base(
+            str(config_path), "openai", None, False
+        )
+
+        assert resolved is None
+        assert error is not None
+        assert "Refusing to write to Hermes config file" in error
+        assert not config_path.exists()
+
+    def test_output_path_allows_normal_audio_file(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.yaml"
+        self._pin_config_guard(monkeypatch, config_path)
+        audio_path = tmp_path / "audio" / "clip.mp3"
+
+        resolved, error = _resolve_output_base(
+            str(audio_path), "openai", None, False
+        )
+
+        assert error is None
+        assert resolved == audio_path
+        assert audio_path.parent.is_dir()
+        assert not audio_path.exists()
+
+    def test_output_path_fails_closed_if_config_path_is_unresolvable(
+        self, tmp_path, monkeypatch
+    ):
+        self._pin_config_guard(monkeypatch, None)
+        config_path = tmp_path / "config.yaml"
+
+        resolved, error = _resolve_output_base(
+            str(config_path), "openai", None, False
+        )
+
+        assert resolved is None
+        assert error is not None
+        assert "could not be safely resolved" in error
+        assert not config_path.exists()
 
 
 class TestCheckTtsRequirements:

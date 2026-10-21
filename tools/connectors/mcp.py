@@ -802,6 +802,11 @@ def run_mcp_operation(
     error = validate_mcp_names(action, names)
     if error:
         return tool_error(error)
+    if connection_callback is None and action in {"install", "enable"}:
+        return tool_error(
+            f"MCP action '{action}' requires interactive approval; no changes were made. "
+            "Run it from a surface that can show the approval card."
+        )
     runner = open_runner(action, backend)
     session_key = operation_session_key(session_id)
     # Every interactive surface that renders the card attaches this callback. Registry dispatch and

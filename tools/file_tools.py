@@ -18,7 +18,11 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from agent.file_safety import get_nt_namespace_error, get_read_block_error
+from agent.file_safety import (
+    get_nt_namespace_error,
+    get_read_block_error,
+    get_write_denied_error,
+)
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
@@ -880,9 +884,18 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     if err:
         return tool_error(err)
     try:
-        # Resolution failure falls back to the legacy unlocked path (the write
-        # still proceeds; the per-task staleness check still runs).
+        # Resolve the target before applying the filesystem safety boundary.
+        # A resolution failure must never fall back to the raw/unresolved path.
         _resolved = _resolve_or_none(path, task_id)
+        if _resolved is None:
+            return tool_error(
+                f"Write denied: unable to safely resolve path {path}."
+            )
+
+        safe_root_err = get_write_denied_error(_resolved)
+        if safe_root_err:
+            return tool_error(safe_root_err)
+
         path_to_resolved = {path: _resolved}
         with ExitStack() as _lock:
             if _resolved:
@@ -897,7 +910,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            result = _get_file_ops(task_id).write_file(_resolved, content)
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]

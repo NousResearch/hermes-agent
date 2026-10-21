@@ -165,7 +165,15 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and hermes_config in candidates:
+    if hermes_config is None:
+        # Unknown active config path must not weaken the config hard-block.
+        if any(os.path.basename(os.path.normpath(c)).lower() == "config.yaml"
+               for c in candidates):
+            return (
+                f"Refusing to write to config file because the active Hermes config path "
+                f"could not be safely resolved: {filepath}\n"
+                "Fix the active profile/config path and retry.")
+    elif hermes_config in candidates:
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

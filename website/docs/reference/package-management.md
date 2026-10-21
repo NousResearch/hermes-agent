@@ -26,6 +26,17 @@ Each file has a separate role:
 A lockfile entry does not prove that a package is installed. `hermes pm doctor`
 compares the installed state with the lock and checks the realized bytes.
 Startup uses a cheaper check. It does not query upstream versions on every launch.
+Externally managed builds such as Nix declare their supplied tools in the
+install stamp's `externalPackages` map (PM package name to absolute executable
+path). Startup checks those paths for executability instead of requiring PM
+download receipts or matching PM's binary pins. The declaration applies only
+to packaged trees with `updateMechanism: "external"`; source checkouts and
+undeclared dependencies retain PM's normal drift checks. A missing declared
+executable still reports drift, and old PM tool receipts do not override the
+external builder's runtime PATH. `hermes pm doctor` uses the same declarations
+and labels healthy tools as `externally managed`, with their executable paths.
+PM identities and content-digest checks still apply to PM-owned tools.
+
 For self-managed source installs, the pre-import launcher compares PM's recorded
 successful dependency stamp with the current inputs. Missing or stale completion
 state triggers a sync, then the same command restarts on the managed Python before
@@ -532,7 +543,7 @@ hermes pm install chromium
 | `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`agent-browser` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` use this. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
-| `pm doctor` | Check installed tool identities, files, and digests against the lock. |
+| `pm doctor` | Check PM-owned tool identities, files, and digests against the lock; check declared externally managed executable paths. |
 | `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
 | `pm gc` | Remove unreferenced tool-store entries, eligible download partials, unused lease-managed Python generations, and the `installs/INSTALL_KEY/` state of deleted checkouts (a worktree removed from a `.worktrees/` dir that still exists, or a clone under the data root; checkouts this process cannot see, such as a host install viewed from a container sharing the data root, are kept, as is any state whose install lock or generation lease is still held). The worktree pruner that runs at startup reclaims those orphaned state dirs too. |

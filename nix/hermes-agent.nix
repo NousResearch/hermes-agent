@@ -73,6 +73,15 @@ let
     distribution = "nix";
     pmRuntime = toString pmRuntime;
     updateMechanism = "external";
+    # These tools belong to Nix, not to PM's download store. Startup checks
+    # their declared executables without comparing against pm/lock.json.
+    externalPackages = {
+      node = lib.getExe hermesNpmLib.nodejs;
+      npm = "${hermesNpmLib.nodejs}/bin/npm";
+      ripgrep = lib.getExe ripgrep;
+      git = lib.getExe git;
+      ffmpeg = lib.getExe ffmpeg;
+    };
     payload = "bootstrap";
     tag = null;
   });

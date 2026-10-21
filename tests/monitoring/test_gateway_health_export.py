@@ -100,7 +100,7 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
 
 
 
-def test_gateway_health_metrics_reach_loopback_collector():
+def test_gateway_health_metrics_reach_loopback_collector(monkeypatch):
     """Exercise the real SDK loader, metric provider and OTLP transport together."""
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -110,6 +110,8 @@ def test_gateway_health_metrics_reach_loopback_collector():
     pytest.importorskip("opentelemetry.sdk.metrics", reason="otlp extra not installed")
     from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
     from agent.monitoring.gateway_health_export import start_gateway_health_export
+    from gateway import loop_health
+    monkeypatch.setattr(loop_health, '_latest', None)
 
     received = []
     delivered = threading.Event()
@@ -146,6 +148,31 @@ def test_gateway_health_metrics_reach_loopback_collector():
                  for resource in request.resource_metrics
                  for scope in resource.scope_metrics for metric in scope.metrics}
         assert "hermes.gateway.up" in names
+        assert not any(name.startswith('hermes.gateway.loop.') for name in names)
+
+        def loop_values():
+            return {metric.name: getattr(metric.gauge.data_points[-1],
+                                        metric.gauge.data_points[-1].WhichOneof('value'))
+                    for _, request in received for resource in request.resource_metrics
+                    for scope in resource.scope_metrics for metric in scope.metrics
+                    if metric.name.startswith('hermes.gateway.loop.')}
+
+        received.clear()
+        loop_health.record_probe(misses=1, response_seconds=10.0)
+        assert runtime.metric_provider.force_flush(timeout_millis=10000)
+        assert loop_values() == {
+            'hermes.gateway.loop.responsive': 0,
+            'hermes.gateway.loop.consecutive_misses': 1,
+            'hermes.gateway.loop.response_seconds': 10.0,
+        }
+        received.clear()
+        loop_health.record_probe(misses=0, response_seconds=0.01)
+        assert runtime.metric_provider.force_flush(timeout_millis=10000)
+        assert loop_values() == {
+            'hermes.gateway.loop.responsive': 1,
+            'hermes.gateway.loop.consecutive_misses': 0,
+            'hermes.gateway.loop.response_seconds': 0.01,
+        }
     finally:
         if runtime is not None:
             runtime.shutdown()

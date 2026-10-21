@@ -22,6 +22,7 @@ integration and explicitly configured Relay subscribers or exporters.
 | Signal | OTLP route | Content |
 | --- | --- | --- |
 | Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/background_work/background_delegations/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
+| Event-loop probes | `/v1/metrics` | `hermes.gateway.loop.responsive/consecutive_misses/response_seconds`, sampled by the existing out-of-loop watchdog; omitted until its first completed probe |
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
 | Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
 | Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), a monotonic catch-up-occurrence count from the scheduler's stale-window branch, enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
@@ -75,6 +76,32 @@ attempt of up to one second so the final state is less likely to be lost.
 Works identically under systemd/launchd/s6 supervision, containers, tmux, or
 a plain `hermes gateway run`: the exporter lives in the gateway process, so
 no sidecar, agent, or collector is required on the host.
+
+## Event-loop stalls and shared clients
+
+The canonical local gateway serves TUI, Desktop and web clients as well as messaging.
+A blocked event loop can disconnect all of them even while the process remains alive.
+The watchdog now logs each missed probe before its restart threshold and logs recovery
+when a subsequent probe succeeds. Enabled gateway diagnostic export classifies these
+warnings as `loop_unresponsive` without exporting request or session content.
+
+`hermes.gateway.loop.responsive` is 1 when the last probe completed and 0 when it timed
+out. `consecutive_misses` resets to zero on recovery. `response_seconds` is the observed
+wait for the most recent probe; on a timeout it is a lower bound, not a completed RPC
+duration. These are process-wide samples, not per-profile or per-client measurements.
+No samples are reported while the watchdog is disabled or before its first probe.
+
+```promql
+# Loop stalled before the watchdog's restart threshold.
+hermes_gateway_loop_responsive == 0
+
+# Escalating stall; clears on the next successful probe.
+hermes_gateway_loop_consecutive_misses >= 2
+```
+
+Include these metric names in any deployment-owned collector allowlist. Phoenix and
+Langfuse agent-call tracing are separate from this opt-in service-health plane; a
+trace-only endpoint does not provide the metrics and logs needed for these alerts.
 
 ## Collecting into DataDog
 

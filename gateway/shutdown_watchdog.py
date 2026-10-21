@@ -22,6 +22,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from gateway import loop_health
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
@@ -94,11 +95,13 @@ def start_loop_liveness_watchdog(
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
     opt-out."""
     stop_event = threading.Event()
+    loop_health.reset_probe()
 
     def _watchdog() -> None:
         strikes = 0
         while not stop_event.wait(timeout=probe_interval):
             probe_event = threading.Event()
+            probe_started = time.perf_counter()
             try:
                 loop.call_soon_threadsafe(probe_event.set)
             except RuntimeError:  # normally closed loop: nothing left to backstop
@@ -114,11 +117,15 @@ def start_loop_liveness_watchdog(
             else:
                 return
             if probe_event.is_set():
+                with contextlib.suppress(Exception):
+                    loop_health.record_probe(misses=0, response_seconds=time.perf_counter() - probe_started)
                 strikes = 0
                 continue
             if stop_event.is_set():  # re-checked before each irreversible step: a late stop() wins
                 return
             strikes += 1
+            with contextlib.suppress(Exception):
+                loop_health.record_probe(misses=strikes, response_seconds=time.perf_counter() - probe_started)
             if strikes < max_strikes:
                 continue
             if stop_event.is_set():

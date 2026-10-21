@@ -53,6 +53,7 @@ def _contains_any(*needles: str) -> Callable[[str], bool]:
 
 # Ordered (predicate, class) rules; first match wins, so auth outranks rate-limit etc.
 _GATEWAY_ERROR_RULES: tuple[tuple[Callable[[str], bool], str], ...] = (
+    (lambda text: 'event loop' in text and 'liveness' in text, 'loop_unresponsive'),
     (_contains_any("auth", "token", "unauthorized", "forbidden", "401", "403"), "auth_failed"),
     (lambda s: "rate" in s and "limit" in s, "rate_limited"),
     (_contains_any("timeout", "timed out"), "timeout"),

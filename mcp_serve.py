@@ -24,6 +24,13 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
 
+# Serving-mode marker: set by every process that serves MCP on stdio (see _enter_serving_mode).
+# A serving process must never run client-side MCP discovery — that discovery spawns the
+# configured servers, including a copy of `hermes mcp serve` itself when one is configured that
+# way — and the depth is exported so the guard survives to discovery-spawned grandchildren.
+MCP_SERVING_ENV = "HERMES_MCP_SERVING"
+MCP_SERVE_DEPTH_ENV = "HERMES_MCP_SERVE_DEPTH"
+
 # mcp 2.0 removed `mcp.server.fastmcp`; `mcp.server.MCPServer` keeps the same
 # `@server.tool()` / `run_stdio_async()` surface (docstring -> description,
 # signature -> input schema).
@@ -739,12 +746,42 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> MCPServer:
     return mcp
 
 
+def _enter_serving_mode() -> None:
+    """Mark this process as the MCP server, and refuse to serve from inside another one.
+
+    A serving process is a SERVER, never a client: it must not run client-side MCP discovery,
+    because that discovery spawns the configured servers — including a copy of
+    ``hermes mcp serve`` itself when one is configured that way — and the parent then blocks on
+    its child's handshake, which blocks on its own child's, forever. The marker is exported so
+    it reaches grandchildren, and a copy spawned by a serving process is always that
+    discovery-spawned duplicate, never a legitimate nested server: refuse it loudly (exit 2)
+    rather than let the chain grow.
+    """
+    try:
+        depth = int(os.environ.get(MCP_SERVE_DEPTH_ENV) or 0)
+    except ValueError:
+        depth = 0
+    if depth >= 1:
+        print(
+            "Error: refusing to serve MCP on stdio — this process was started by another "
+            f"Hermes MCP server (nesting depth {depth + 1}). That means a serving process ran "
+            "client-side MCP discovery and spawned a copy of itself. Configure "
+            "`hermes-messaging` as the only `hermes mcp serve` server, or run `hermes mcp "
+            "serve` outside a session that already has one.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    os.environ[MCP_SERVING_ENV] = "1"
+    os.environ[MCP_SERVE_DEPTH_ENV] = str(depth + 1)
+
+
 def run_mcp_server(verbose: bool = False) -> None:
     """Start the Hermes MCP server on stdio."""
     if not _MCP_SERVER_AVAILABLE:
         print("Error: MCP server requires the 'mcp' package.\n"
               f"Install with: {sys.executable} -m pip install 'mcp'", file=sys.stderr)
         sys.exit(1)
+    _enter_serving_mode()
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
     bridge = EventBridge()
     bridge.start()

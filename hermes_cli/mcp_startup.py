@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from contextlib import contextmanager, nullcontext
@@ -99,6 +100,13 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     Desktop backend) is connected by the next call, which every agent build makes, so a new session
     gets its tools without a reload (#76954). Discovery is additive: live servers are untouched.
     """
+    # A serving process is a SERVER, never a client. Discovery inside it spawns the configured
+    # servers — including a copy of `hermes mcp serve` itself when one is configured that way —
+    # and the parent then blocks on its child's handshake, which blocks on its own child's, so
+    # nothing is ever answered. Cheap env check: no config read, no import.
+    if os.environ.get("HERMES_MCP_SERVING") == "1":
+        return
+
     home_key = hermes_home_key()
     with _mcp_discovery_lock:
         if home_key in _mcp_discovery_started:

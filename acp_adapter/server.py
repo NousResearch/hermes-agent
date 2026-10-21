@@ -760,6 +760,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         os.environ, so concurrent workers can't race a global flag onto the non-interactive
         auto-approve path (GHSA-96vc-wcxf-jjff)."""
         agent = state.agent
+        # ACP clients keep one turn open and only accept new prompts once it ends. A delegation
+        # that returns a background handle would end the turn while its children still run, so
+        # the client goes idle mid-work. Keep delegations in-turn: the prompt stays open until
+        # every child reports, and its results arrive in the same turn.
+        agent._hold_delegations_in_turn = True
         with contextlib.ExitStack() as stack:
             # HERMES_SESSION_KEY scopes per-session caches (interactive sudo password) to this
             # session, not the reused thread. ``cwd`` pins what the system prompt reports as the

@@ -60,6 +60,12 @@ class SessionTitlesMixin:
             raise ValueError(f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})")
         return cleaned
 
+    @classmethod
+    def sanitize_durable_title(cls, title: Optional[str]) -> Optional[str]:
+        """Validate and redact a title before it crosses the durable display boundary."""
+        from hermes_state_messages import _redact_durable_projection
+        return cls.sanitize_title(_redact_durable_projection(cls.sanitize_title(title)))
+
     def _is_compression_ancestor(self, conn, *, ancestor_id: str, descendant_id: str) -> bool:
         """True if *ancestor_id* is a compression predecessor of *descendant_id*, via the
         canonical continuation edge ``_COMPRESSION_CHILD_SQL`` (excludes delegate/branch
@@ -93,7 +99,10 @@ class SessionTitlesMixin:
 
     def _set_session_title_in_transaction(self, conn, session_id: str, title: str, *, source: str):
         """Reuse title rules within an authority-owned transaction; never commit here."""
-        title = self.sanitize_title(title)
+        # Titles are a durable display-only projection. Do not let a manual or
+        # generated label become a second raw-secret persistence path. Validate
+        # before redaction so a long raw title cannot evade the public size limit.
+        title = self.sanitize_durable_title(title)
         is_user = source == self.TITLE_SOURCE_USER
         new_rank = self._title_rank(source) if not is_user else None
         affected = []

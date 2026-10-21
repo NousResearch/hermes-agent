@@ -215,6 +215,8 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         )),
         # GW-18 (package 10, #140968): write-side revision a transcript-derived cache keys on.
         ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
+        # Durable-redaction import identity ships after main's established history.
+        ('33 2026-09-12T15:07Z 5ee7a4473', (('+', 'import_identity_digest', 'origin_json'),)),
         ),
     ),
     "messages": _TableHistory(

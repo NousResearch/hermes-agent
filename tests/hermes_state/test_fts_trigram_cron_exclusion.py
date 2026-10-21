@@ -273,6 +273,28 @@ def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path, old_ver
         migrated.close()
 
 
+def test_v31_to_v32_reruns_historical_trigram_exclusion_repair(tmp_path):
+    """v31 installs can have new DDL but stale cron rows after an interrupted v30 repair."""
+    db_path = tmp_path / "state.db"
+    old = SessionDB(db_path=db_path)
+    if not old._trigram_available:
+        old.close()
+        pytest.skip("trigram tokenizer unavailable in this SQLite build")
+    _install_pre_v27_trigram(old)
+    old.create_session("cron", source="cron")
+    cron_id = old.append_message("cron", role="assistant", content="v31 interrupted repair")
+    assert _trigram_rowids(old) == {cron_id}
+    old._conn.execute("UPDATE schema_version SET version = 31")
+    old._conn.commit()
+    old.close()
+
+    migrated = SessionDB(db_path=db_path)
+    try:
+        assert _trigram_rowids(migrated) == set()
+    finally:
+        migrated.close()
+
+
 def test_delete_of_unindexed_cron_row_keeps_trigram_consistent(db: SessionDB):
     db.create_session("cron", source="cron")
     cron_id = db.append_message("cron", role="user", content="不会进入索引")

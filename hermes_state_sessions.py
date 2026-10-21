@@ -24,6 +24,7 @@ from hermes_state_common import (
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
+from hermes_state_messages import _redact_durable_projection
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -289,6 +290,25 @@ _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
 )
 
 
+def _redact_origin_json(origin_json):
+    """Serialize an origin through the durable redaction boundary.
+
+    ``origin_json`` is a display/recovery projection.  Parse JSON before walking
+    it so sensitive dictionary keys cannot bypass the recursive redactor;
+    malformed input fails closed rather than becoming a raw durable string.
+    """
+    if origin_json is None:
+        return None
+    try:
+        parsed = json.loads(origin_json) if isinstance(origin_json, str) else origin_json
+    except (TypeError, ValueError):
+        parsed = "[REDACTED: invalid durable JSON projection]"
+    projected = _redact_durable_projection(parsed)
+    # Preserve formatting for already-safe operational origins; callers and
+    # SQL-trace compatibility historically retain their exact JSON string.
+    return origin_json if isinstance(origin_json, str) and projected == parsed else json.dumps(projected)
+
+
 def _inherit_col_sql(col: str, extra: str = "") -> str:
     """``col = COALESCE(sessions.col, (SELECT p.col FROM parent))`` (whitespace is part of the SQL text)."""
     pad = " " * (30 + len(col))
@@ -402,6 +422,7 @@ class SessionSessionsMixin:
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
         """
         from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+        origin_json = _redact_origin_json(origin_json)
         params = dict(session_id=session_id, source=source, model=model, model_config=model_config,
                       system_prompt=system_prompt, user_id=user_id, session_key=session_key,
                       chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
@@ -644,7 +665,7 @@ class SessionSessionsMixin:
             "last_activity_description = ?, last_activity_provenance = ? "
             "WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at < ?)",
             (
-                when, bound_activity_description(description),
+                when, _redact_durable_projection(bound_activity_description(description)),
                 normalize_activity_provenance(provenance).value, session_id, when,
             ),
             patience_s=self._ACTIVITY_WRITE_PATIENCE_S,

@@ -53,7 +53,12 @@ def test_structured_worker_receipts_are_atomic_and_scoped(tmp_path):
             'content': 'loser', '_row_id': winner['annotations'][0]['_row_id']}]})
         assert repaired['count'] == 0
         adopted = repaired['annotations'][0]
-        assert adopted[CANONICAL_ROW]['content'] == assistant['content']
+        # Adoption returns the durable winner, whose display projection normalizes
+        # invalid Unicode. The structured codec itself still preserves escaped input.
+        assert db._decode_content(db._encode_content(assistant['content'])) == assistant['content']
+        assert assistant['content'] == [{'type': 'text', 'text': 'canonical winner\ud800'}]
+        assert adopted[CANONICAL_ROW]['content'] == [{'type': 'text', 'text': 'canonical winner\ufffd'}]
+        assert db.get_messages('assigned')[-1]['content'] == adopted[CANONICAL_ROW]['content']
         assert adopted[DB_ROW_SNAPSHOT] and adopted['_row_id'] == winner['annotations'][0]['_row_id']
         terminal = apply(7, 'execution.finish', {})
         assert terminal['status'] == 'terminal'

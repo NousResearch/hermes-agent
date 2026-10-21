@@ -170,9 +170,11 @@ def resolve_and_repair_transcript_batch(
         elif role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
             # Legacy dict (no digest) over a blank assistant row: the interrupted-stream repair. Fill the row
             # from live content with a content-only CAS and never adopt the blank row onto the live dict.
+            # Durable content is a redacted projection; the live message remains literal.
+            from hermes_state_messages import _redact_durable_projection
             wrote = conn.execute(
                 "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND content IS ?",
-                (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
+                (encode_content_fn(_redact_durable_projection(msg.get("content"))), target_id, session_id, target_row["content"]),
             ).rowcount > 0
         else:
             # Legacy dict (no digest: a row-addressed resume, a clone, or a repair_alternation=False

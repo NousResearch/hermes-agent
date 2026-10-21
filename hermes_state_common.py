@@ -286,7 +286,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 # (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -320,6 +320,9 @@ FTS_STORAGE_VERSION = 3
 # integrity checker and the trigger 'delete'/'update' commands in agreement
 # with the stored index forever.
 FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
+# Compatibility marker for databases upgraded from the pre-v3 FTS layout. New
+# FTS projections ignore it; schema migration removes it after rebuilding.
+FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY = "fts_tool_full_content_high_water"
 
 
 def _fts_indexed_content_sql(alias: str) -> str:
@@ -471,6 +474,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     thread_id TEXT,
     display_name TEXT,
     origin_json TEXT,
+    import_identity_digest TEXT,
     expiry_finalized INTEGER DEFAULT 0,
     model TEXT,
     model_config TEXT,

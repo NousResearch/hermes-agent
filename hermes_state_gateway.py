@@ -15,9 +15,52 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_messages import _redact_durable_projection
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
+
+
+def _redact_origin_json(origin_json):
+    """Serialize origin JSON through the durable projection boundary."""
+    if origin_json is None:
+        return None
+    try:
+        parsed = json.loads(origin_json) if isinstance(origin_json, str) else origin_json
+    except (TypeError, ValueError):
+        parsed = "[REDACTED: invalid durable JSON projection]"
+    projected = _redact_durable_projection(parsed)
+    return origin_json if isinstance(origin_json, str) and projected == parsed else json.dumps(projected)
+
+
+def _gateway_routing_entry_projection(entry_json: Any) -> str:
+    """Return the display-safe durable form of a routing entry.
+
+    ``gateway_routing.session_key`` is the narrow operational exception: gateway restart
+    routing must compare the incoming opaque key exactly.  The duplicate ``session_key``
+    inside SessionEntry JSON is not operational -- loaders restore it from that dedicated
+    column -- so remove it before recursively redacting every remaining display projection.
+    """
+    try:
+        parsed = json.loads(entry_json) if isinstance(entry_json, str) else entry_json
+    except (TypeError, ValueError):
+        parsed = "[REDACTED: invalid durable JSON projection]"
+    if isinstance(parsed, dict):
+        parsed = dict(parsed)
+        parsed.pop("session_key", None)
+    return json.dumps(_redact_durable_projection(parsed), ensure_ascii=False)
+
+
+def _gateway_routing_entry_for_live_load(session_key: str, entry_json: str) -> str:
+    """Restore the operational key in memory without ever persisting its JSON duplicate."""
+    try:
+        parsed = json.loads(entry_json)
+    except (TypeError, ValueError):
+        return entry_json
+    if not isinstance(parsed, dict) or not parsed:
+        return entry_json
+    parsed["session_key"] = session_key
+    return json.dumps(parsed, ensure_ascii=False)
 
 # Recursive CTE naming a session plus its compression ancestors (rows a
 # resume must keep on one routing peer); branch/delegate/tool/reset rows stop it
@@ -249,6 +292,7 @@ class SessionGatewayMixin:
         """
         if not session_id or not session_key:
             return
+        origin_json = _redact_origin_json(origin_json)
         identity = (
             session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json,
             transport_profile)
@@ -305,7 +349,7 @@ class SessionGatewayMixin:
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            {'scope': scope, 'key': session_key, **route_retired_params(session_key, entry_json, time.time())},
+            {'scope': scope, 'key': session_key, **route_retired_params(session_key, _gateway_routing_entry_projection(entry_json), time.time())},
         )
 
     def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
@@ -314,7 +358,7 @@ class SessionGatewayMixin:
         the sessions.json mirror must leave out too."""
         from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
-        rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
+        rows = [{'scope': scope, 'key': k, **route_retired_params(k, _gateway_routing_entry_projection(v), now)} for k, v in entries.items() if k and v]
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
             if rows:
@@ -329,7 +373,7 @@ class SessionGatewayMixin:
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
         rows = self._read_all("SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,))
-        return {r["session_key"]: r["entry_json"] for r in rows}
+        return {r["session_key"]: _gateway_routing_entry_for_live_load(r["session_key"], r["entry_json"]) for r in rows}
 
     def list_never_active_keyed_sessions(self, *, older_than_days: float) -> list[dict[str, Any]]:
         """Keyed, still-open rows with no evidence of a single turn (no messages, tokens, tool/API calls,
@@ -627,7 +671,7 @@ class SessionGatewayMixin:
                           parent_session_id = COALESCE(parent_session_id, ?)
                     WHERE id = ? AND session_key IS NULL""",
                 (donor["session_key"], donor["chat_id"], donor["chat_type"], donor["thread_id"],
-                 donor["user_id"], donor["origin_json"], donor["display_name"], donor_id, orphan_id),
+                 donor["user_id"], _redact_origin_json(donor["origin_json"]), donor["display_name"], donor_id, orphan_id),
             )
             # Retire under a reason recovery does NOT treat as resumable — 'agent_close' /
             # 'ws_orphan_reap' would keep it in the running and the orphan could lose the chat again.
@@ -765,11 +809,12 @@ class SessionGatewayMixin:
                         new_json = json.dumps(payload, ensure_ascii=False)
                 conn.execute(
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
-                    (new_session_key, new_json, rowid))
+                    (new_session_key, _gateway_routing_entry_projection(new_json), rowid))
             counts["gateway_routing"] = len(routing)
 
         self._execute_write(_do)
         return counts
+
 
     def purge_profile_state(self, profile: str) -> dict[str, int]:
         """Delete exact profile identity from this state database (#111926, delete side).
@@ -980,6 +1025,7 @@ class SessionGatewayMixin:
         """Bounded existence probe for the handoff watcher's idle gate (the gate fails open on error)."""
         return self._read_one("SELECT 1 FROM sessions WHERE handoff_state = 'pending' LIMIT 1") is not None
 
+
     def complete_handoff(self, session_id: str) -> None:
         """Mark a handoff as completed."""
         self._write_sql(
@@ -998,7 +1044,7 @@ class SessionGatewayMixin:
         states = tuple(only_states) if only_states else ()
         sql = _HANDOFF_FAIL_SQL + "id = ?" + (
             f" AND handoff_state IN ({', '.join('?' for _ in states)})" if states else "")
-        return self._write_rowcount(sql, (error[:500], session_id, *states)) > 0
+        return self._write_rowcount(sql, (_redact_durable_projection(error[:500]), session_id, *states)) > 0
 
     def reclaim_stale_running_handoffs(self, error: str) -> list[str]:
         """Fail every handoff stuck in ``running``; returns the ids reclaimed. Only the gateway watcher sets
@@ -1012,7 +1058,10 @@ class SessionGatewayMixin:
             cur = conn.execute("SELECT id FROM sessions WHERE handoff_state = 'running'")
             ids = [r[0] for r in cur.fetchall()]
             if ids:
-                conn.execute(_HANDOFF_FAIL_SQL + "handoff_state = 'running'", (error[:500],))
+                conn.execute(
+                    _HANDOFF_FAIL_SQL + "handoff_state = 'running'",
+                    (_redact_durable_projection(error[:500]),),
+                )
             return ids
         try:
             return self._execute_write(_do) or []

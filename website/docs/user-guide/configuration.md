@@ -2882,6 +2882,7 @@ Secret redaction and the website blocklist:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  redact_level: basic            # basic | standard | strict; phone masking is separate
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -2889,6 +2890,9 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- `redact_level` — `basic` keeps credential-pattern redaction only; `standard` additionally redacts validated payment cards, SSNs, and IBANs; `strict` additionally redacts email addresses and non-loopback IPv4 addresses. Phone masking is independent of `redact_level`.
+
+Tool operands are never changed by redaction: a tool receives the exact path, command, or file content it was called with. Display/log projections and supported durable transcript projections redact recognized secrets. Canonical tool-call arguments remain literal to preserve execution and replay, and can therefore contain recoverable secrets in `state.db`, its WAL/backups, primary FTS search results, session exports, and recovery/move payloads. This is not full secret removal at rest. Existing backups, exports, filesystem snapshots, and data already sent to tools or providers cannot be recalled by redaction.
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 

@@ -409,7 +409,13 @@ def _run_preflight_passes(
         if not _tc.compression_made_progress(
             _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
         ):
-            _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
+            try:
+                _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
+            except _tc.PreflightCompressionTimedOut as exc:
+                # Preserve the actual post-compaction projection, not the caller's stale history.
+                exc.pending_messages = out.messages
+                exc.pending_history = out.conversation_history
+                raise
             _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved

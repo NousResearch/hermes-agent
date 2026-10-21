@@ -179,7 +179,8 @@ class _Recovery(OverflowVerdict):
                 return self.done("return", deferred)
         if fail_on_timeout and context_compression_timed_out(agent):
             return self.fail_turn(
-                _COMPRESSION_TIMEOUT_FINAL_RESPONSE, turn_exit_reason="context_compression_timeout"
+                _COMPRESSION_TIMEOUT_FINAL_RESPONSE, turn_exit_reason="context_compression_timeout",
+                compression_retryable=True, reason="timeout", retryable=True
             )
         self.conversation_history = conversation_history_after_compression(
             agent, self.messages, self.conversation_history

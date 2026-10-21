@@ -35,6 +35,7 @@ from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_compression_timeout import preflight_timeout_result
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
@@ -1366,23 +1367,6 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
     return user_message, None, persist_user_message
 
 
-def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any]:
-    """Typed recovery result when turn-start preflight compression timed out (#98424): no
-    provider call was sent, and surfaces would otherwise hide the actionable guidance."""
-    logger.warning(
-        "Turn-start preflight compression timed out — ending turn with typed recovery result: %s", exc,
-    )
-    # Clear the tripwire slot note_turn_start registered (the early return skips the persist
-    # funnel). The user row is deliberately NOT persisted (#7100).
-    from agent.agent_runtime_helpers import note_turn_persisted
-    note_turn_persisted(agent)
-    # Not _COMPRESSION_TIMEOUT_FINAL_RESPONSE — that describes a different state
-    # (compression ran, could not reduce); the exception text carries the guidance.
-    return _partial_turn_result(
-        str(exc), list(conversation_history or []), 0,
-        failed=True, compression_exhausted=True, turn_exit_reason="context_compression_timeout",
-        failure_reason="context_overflow", failure_retryable=False,
-    )
 
 
 @dataclass
@@ -1619,7 +1603,7 @@ def _run_conversation_turn(
             title_user_message=title_user_message,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
-        return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+        return preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
     from agent.voice_turn_route import begin_voice_turn_route
@@ -1710,7 +1694,8 @@ def _run_conversation_turn(
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).
-        result.update(error=_COMPRESSION_TIMEOUT_FINAL_RESPONSE, partial=True, compression_exhausted=True)
+        result.update(error=_COMPRESSION_TIMEOUT_FINAL_RESPONSE, partial=True, compression_exhausted=True,
+                      compression_retryable=True, failure_reason="timeout", failure_retryable=True)
     return result
 
 

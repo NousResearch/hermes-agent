@@ -66,10 +66,11 @@ def _clarify_expired_notice() -> str:
 
 
 # run_conversation result keys the gateway projection carries verbatim so a finite viewer's
-# `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS) reads what the in-process path did.
+# The projection also retains transient compression recovery semantics.
 _LEDGER_PASSTHROUGH_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
+    "compression_retryable", "failure_retryable",
 )
 
 

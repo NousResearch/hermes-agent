@@ -18,7 +18,6 @@ class DiscordPlatformEventsMixin:
     name: str
     build_source: Any
 
-
     def _thread_id_and_chat_for_channel(self, channel) -> tuple[Optional[str], Optional[str]]:
         """Return ``(thread_id, chat_id)``; for a thread chat_id is the thread id (dispatch session key)."""
         if channel is None:

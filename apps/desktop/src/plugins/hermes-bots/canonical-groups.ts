@@ -44,7 +44,9 @@ function requireRoute(route: CanonicalGroupRoute): void {
 export function captureCanonicalGroupRoute(): CanonicalGroupRoute {
   const connectionId = host.state.connectionId.get()
 
-  if (connectionId === null) {throw new Error('Canonical groups require an explicit connection')}
+  if (connectionId === null) {
+    throw new Error('Canonical groups require an explicit connection')
+  }
   const route = { connectionId, profile: host.state.profile.get() }
   requireRoute(route)
 
@@ -63,12 +65,16 @@ export async function canonicalGroupRequest<T>(
   }
 
   // The descriptor overload never falls back to the foreground gateway.
-  return host.requestProfile<T>({
-    connectionId: route.connectionId,
-    profile: route.profile,
-    targetProfile: route.profile,
-    mode: route.connectionId === 'local' ? 'local' : 'remote'
-  }, method, { ...params, profile: route.profile })
+  return host.requestProfile<T>(
+    {
+      connectionId: route.connectionId,
+      profile: route.profile,
+      targetProfile: route.profile,
+      mode: route.connectionId === 'local' ? 'local' : 'remote'
+    },
+    method,
+    { ...params, profile: route.profile }
+  )
 }
 
 export async function discoverCanonicalGroups(
@@ -80,12 +86,16 @@ export async function discoverCanonicalGroups(
 
   for (;;) {
     const page = await canonicalGroupRequest<{ rooms: CanonicalRoom[]; next_offset: number | null }>(
-      route, 'groups.list', { limit: 100, offset }
+      route,
+      'groups.list',
+      { limit: 100, offset }
     )
 
     rooms.push(...page.rooms)
 
-    if (page.next_offset === null) {break}
+    if (page.next_offset === null) {
+      break
+    }
 
     if (!Number.isSafeInteger(page.next_offset) || page.next_offset <= offset) {
       throw new Error('Invalid canonical group pagination cursor')
@@ -114,9 +124,11 @@ export async function createCanonicalGroup(
   const roster = members.map(member => {
     const connectionId = member.route?.connectionId ?? member.connectionId
 
-    if ((connectionId !== undefined && connectionId !== route.connectionId) ||
+    if (
+      (connectionId !== undefined && connectionId !== route.connectionId) ||
       (member.connectionId !== undefined && member.connectionId !== route.connectionId) ||
-      (connectionId === undefined && member.remoteSource)) {
+      (connectionId === undefined && member.remoteSource)
+    ) {
       throw new Error('Group members must belong to the same authority connection')
     }
 
@@ -131,14 +143,18 @@ export async function createCanonicalGroup(
     handles.add(handle.toLowerCase())
 
     return {
-      member_id: profile, profile, handle,
+      member_id: profile,
+      profile,
+      handle,
       target: { kind: 'local', profile },
       ...(member.display_name ? { display_name: member.display_name } : {})
     }
   })
 
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: crypto.randomUUID(), name, members: roster
+    room_id: crypto.randomUUID(),
+    name,
+    members: roster
   })
 
   return { binding: { ...route, roomId: room.room_id }, room }
@@ -149,11 +165,21 @@ export async function actCanonicalGroup(
   action: CanonicalPendingAction,
   choice?: 'once' | 'deny'
 ): Promise<Record<string, unknown>> {
-  const methods: Record<string, string> = { retry: 'groups.retry', discard: 'groups.discard', approval: 'groups.approve' }
+  const methods: Record<string, string> = {
+    retry: 'groups.retry',
+    discard: 'groups.discard',
+    approval: 'groups.approve'
+  }
   const method = Object.hasOwn(methods, action.kind) ? methods[action.kind] : undefined
 
-  if (!method || !binding.roomId || !action.member_id || !action.task_id ||
-    !Number.isSafeInteger(action.execution_generation) || action.execution_generation < 1) {
+  if (
+    !method ||
+    !binding.roomId ||
+    !action.member_id ||
+    !action.task_id ||
+    !Number.isSafeInteger(action.execution_generation) ||
+    action.execution_generation < 1
+  ) {
     throw new Error('Invalid canonical group pending action')
   }
 

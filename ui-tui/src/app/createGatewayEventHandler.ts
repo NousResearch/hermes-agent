@@ -604,10 +604,18 @@ function applyDeferredPickOutcome(
     const info = getUiState().info
 
     if (info && typeof update.model === 'string' && update.model) {
-      patchUiState({ info: { ...info, model: update.model, ...(typeof update.provider === 'string' ? { provider: update.provider } : {}) } })
+      patchUiState({
+        info: {
+          ...info,
+          model: update.model,
+          ...(typeof update.provider === 'string' ? { provider: update.provider } : {})
+        }
+      })
     }
 
-    sys(t('slashCmd.session.model.deferredRefused', String(update.target_model ?? ''), String(update.reason ?? 'refused')))
+    sys(
+      t('slashCmd.session.model.deferredRefused', String(update.target_model ?? ''), String(update.reason ?? 'refused'))
+    )
 
     return
   }
@@ -617,17 +625,20 @@ function applyDeferredPickOutcome(
     // The confirmed resend is the same selection: its level commits with the model.
     const arg = `${pick.model ?? ''}${pick.provider ? ` --provider ${pick.provider}` : ''}${pick.reasoning ? ` --reasoning ${pick.reasoning}` : ''}`
 
-    openModelConfirmation(update.confirm_message as string | undefined, String(update.target_model ?? pick.model ?? ''), () =>
-      void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).then(
-        mutation => {
-          // Refused again (a queued turn or another pick moved the session first): say so once,
-          // never re-ask in a loop.
-          if (mutation?.result.status === 'confirmation_required') {
-            sys(t('slashCmd.session.model.confirmStale'))
-          }
-        },
-        (error: unknown) => sys(`error: ${error instanceof Error ? error.message : String(error)}`)
-      )
+    openModelConfirmation(
+      update.confirm_message as string | undefined,
+      String(update.target_model ?? pick.model ?? ''),
+      () =>
+        void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).then(
+          mutation => {
+            // Refused again (a queued turn or another pick moved the session first): say so once,
+            // never re-ask in a loop.
+            if (mutation?.result.status === 'confirmation_required') {
+              sys(t('slashCmd.session.model.confirmStale'))
+            }
+          },
+          (error: unknown) => sys(`error: ${error instanceof Error ? error.message : String(error)}`)
+        )
     )
   }
 }

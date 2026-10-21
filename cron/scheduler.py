@@ -2390,6 +2390,7 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        self._spend_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2400,6 +2401,9 @@ class _CronRunScope:
         # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
         # concurrent jobs); copy_context() carries it into the agent thread.
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
+        # Each run is its own MCP spend "chat" (its approval session key is "" for every job).
+        from tools.mcp_tool_costs import bind_run
+        self._spend_token = bind_run(self.task_id)
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -2411,6 +2415,9 @@ class _CronRunScope:
             self._cron_session_var.reset(self._cron_session_token)
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
+        if self._spend_token is not None:
+            from tools.mcp_tool_costs import unbind_run
+            unbind_run(self._spend_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
 

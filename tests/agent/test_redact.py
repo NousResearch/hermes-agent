@@ -511,6 +511,51 @@ class TestAuthHeaders:
         assert result.count('"') == 2, result  # both quotes survive
         assert result.endswith('"'), result
 
+    def test_template_interpolation_value_preserved(self):
+        # Regression for #133402: the value is a reference, not a credential.
+        # Masking it made the agent write the mask back into the file.
+        text = "headers = {Authorization: Bearer ${token}}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_template_with_env_member_lookup_preserved(self):
+        text = "headers = {Authorization: Bearer ${$env.SOME_KEY}}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_js_and_python_env_reference_values_preserved(self):
+        for value in (
+            "$env.SOME_KEY",
+            "process.env.API_KEY",
+            "{token}",
+            "{{env.API_KEY}}",
+        ):
+            text = f"Authorization: Bearer {value}"
+            assert redact_sensitive_text(text, force=True) == text, value
+
+    def test_backtick_template_literal_scheme_word_preserved(self):
+        # The n8n shape from #133402: the credential group stops at the space
+        # inside the template literal, so the masked span is the scheme word.
+        text = "headers: { Authorization: `Bearer ${$env.SOME_KEY}` }"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_backtick_literal_without_interpolation_still_masked(self):
+        # Fail-closed: a backticked value with no interpolation still masks.
+        text = "Authorization: `Bearer sk-abcdef1234567890`"
+        result = redact_sensitive_text(text, force=True)
+        assert "`Bearer" not in result
+
+    def test_literal_bearer_token_still_masked_alongside_references(self):
+        # Fail-closed companion: the literal token right after a preserved
+        # reference elsewhere in the same text is still masked.
+        text = "ok: Bearer ${token}\nAuthorization: Bearer opaque0123456789abcdef"
+        result = redact_sensitive_text(text, force=True)
+        assert "opaque0123456789abcdef" not in result
+
+    def test_reference_with_trailing_suffix_still_masked(self):
+        # A partial concatenation is not a pure reference — stays masked.
+        text = "Authorization: Bearer ${token}extra"
+        result = redact_sensitive_text(text, force=True)
+        assert "${token}extra" not in result
+
 
 
 class TestApiKeyHeaders:

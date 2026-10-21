@@ -129,8 +129,10 @@ def _run_under_progress_timeout(
     rewrite it. It deep-snapshots on the worker and publishes only via an ADMITTED commit; a no-op/abort
     returns the snapshot unchanged, so the ORIGINAL list is handed back to keep identity semantics."""
     from agent.conversation_compression import (
-        CompressionCommitFence, request_exceeds_model_window, run_compress_context_with_progress_timeout,
+        CompressionCommitFence,
+        run_compress_context_with_progress_timeout,
     )
+    from agent.request_window import request_exceeds_model_window
 
     def _snapshot_worker(fence=None, *, same_turn_fallback_recovery=False):
         # #76354 review F3: the pooled worker must NEVER share the caller's live transcript. Plugin/legacy

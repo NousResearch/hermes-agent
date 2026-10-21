@@ -139,7 +139,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to bundle (vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ). Must exist on the repo.'
+        description: 'Release tag to bundle (vX.Y.Z or canary.YYYYMMDDTHHMMSSZ-vX.Y.Z). Must exist on the repo.'
         required: false
         type: string
         default: ''
@@ -403,11 +403,11 @@ jobs:
               python -m scripts.releases.stable verify
               exit 0
               ;;
-            '') [[ "$TAG" == *+canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
+            '') [[ "$TAG" == canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
             *) echo 'Unknown release phase' >&2; exit 1 ;;
           esac
           case "$TAG" in
-            v[0-9]*.[0-9]*.[0-9]*+canary.20[0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+            canary.20[0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-v[0-9]*.[0-9]*.[0-9]*)
               echo "canary tag: $TAG"
               ;;
             v[0-9]*.[0-9]*.[0-9]*)
@@ -419,7 +419,7 @@ jobs:
               fi
               ;;
             *)
-              echo "::error::'$TAG' is not a release tag (vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ)"
+              echo "::error::'$TAG' is not a release tag (vX.Y.Z or canary.YYYYMMDDTHHMMSSZ-vX.Y.Z)"
               exit 1
               ;;
           esac
@@ -442,11 +442,11 @@ jobs:
           }
           echo "tag-object=$TAG_OBJECT" >> "$GITHUB_OUTPUT"
           case "$TAG" in
-            *+canary.*)
+            canary.*)
               echo "channel=canary" >> "$GITHUB_OUTPUT"
               python - "$TAG" >> "$GITHUB_OUTPUT" <<'PY'
           import datetime as dt, sys
-          instant = dt.datetime.strptime(sys.argv[1].split("+canary.", 1)[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.UTC)
+          instant = dt.datetime.strptime(sys.argv[1].removeprefix("canary.").split("-v", 1)[0], "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.UTC)
           print(f"release-epoch={int(instant.timestamp())}")
           PY
               ;;
@@ -672,7 +672,7 @@ jobs:
           }
           # A canary candidate (the Stable Release pipeline in canary mode) builds the Store package
           # like any candidate; only the legacy direct canary dispatch leaves it out.
-          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and ($env:RELEASE_PHASE -eq 'candidate' -or $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*")) {
+          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and ($env:RELEASE_PHASE -eq 'candidate' -or $env:HERMES_PAYLOAD_TAG -notlike "canary.*")) {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -737,7 +737,7 @@ jobs:
         # A Store-only candidate has no signed package to describe, so no metadata.
         run: |
           args=(--include '*.msix')
-          if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; }; then
+          if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; }; then
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
@@ -1159,7 +1159,7 @@ jobs:
         # The feed input stays in the tag archive until the leg and its smoke pass.
         run: |
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
+          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
@@ -2518,7 +2518,7 @@ jobs:
     # draft no customer sees, never a live build.
     needs: [validate]
     # Never a canary: a canary builds and stages its Store bundle but only stable submits one.
-    if: inputs.release-phase == 'publish' && inputs.skip-store != true && !contains(inputs.tag, '+canary.')
+    if: inputs.release-phase == 'publish' && inputs.skip-store != true && !startsWith(inputs.tag, 'canary.')
     # The Store is not a release gate: a failed submission leaves the release publishable
     # and the summary names the Store package for a manual Partner Center upload.
     continue-on-error: true
@@ -2633,7 +2633,7 @@ jobs:
       always()
       && inputs.build_commit == '' && inputs.channel == ''
       && inputs.upload_release == true
-      && contains(inputs.tag, '+canary.')
+      && startsWith(inputs.tag, 'canary.')
       && needs.validate.outputs.darwin-arm64 == 'true'
       && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
       && needs.validate.outputs.win32-bundle == 'true'

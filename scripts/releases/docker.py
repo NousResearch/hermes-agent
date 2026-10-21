@@ -30,12 +30,11 @@ def require_stable_tag(tag: str) -> str:
 
 
 def is_canary_image_tag(tag: object) -> bool:
-    """A canary's versioned image tag: its git tag with ``+`` (illegal in a Docker tag) as ``-``
+    """A canary's versioned image tag: its git tag, ``canary.<stamp>-vX.Y.Z``, unchanged
     (scripts/releases/stable.py docker_tag)."""
     from hermes_cli.update_channel import is_canary_tag
 
-    return (isinstance(tag, str) and "-canary." in tag and "+" not in tag
-            and is_canary_tag(tag.replace("-canary.", "+canary.", 1)))
+    return is_canary_tag(tag)
 
 
 def require_release_image_tag(tag: str) -> str:

@@ -52,10 +52,12 @@ def flavored_assets(icons: Path, assets: Path):
 
 
 def release_version(_repo: Path, tag: str) -> str:
-    from scripts.termux.deb_version import channel_for_tag
+    from hermes_cli.update_channel import release_version as version_for
 
-    channel_for_tag(tag)  # shared release tag grammar, not a second version parser
-    return tag[1:]
+    version = version_for(tag)
+    if version is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    return version
 
 
 def pnpm_command(node: str) -> list[str]:

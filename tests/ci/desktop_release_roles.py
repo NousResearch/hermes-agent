@@ -24,7 +24,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "desktop-bundled-release.yml"
 SMOKE_WORKFLOW = "./.github/workflows/desktop-bundle-smoke.yml"
 BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
-CANARY_TAG = "v0.28.0+canary.20260818T101010Z"
+CANARY_TAG = "canary.20260818T101010Z-v0.28.0"
 # Native build targets per platform, from the one release-side definition.
 PLATFORM_ARCHES = {platform: tuple(a for p, a in TARGETS if p == platform) for platform, _ in TARGETS}
 PLATFORMS = tuple(PLATFORM_ARCHES)

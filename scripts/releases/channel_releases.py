@@ -132,7 +132,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
     """A callable CLI is not permission to bypass the existing workflow gate."""
     from scripts.releases.semver import is_release_version
     from hermes_cli.release_channels import require_commit, validate_repository
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_cli.update_channel import is_canary_tag, release_version
 
     repository = validate_repository(env.get("GITHUB_REPOSITORY"))
     tag = env.get("RELEASE_TAG", "")
@@ -141,7 +141,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         if parse_attempt_ref(tag) is None:
             raise ChannelError("Invalid protected release tag")
     else:
-        if not tag.startswith("v") or not is_release_version(tag[1:]):
+        if release_version(tag) is None or not is_release_version(release_version(tag)):
             raise ChannelError("Invalid protected release tag")
         if (policy == "canary-release") != is_canary_tag(tag):
             raise ChannelError("Protected release policy/tag mismatch")
@@ -172,6 +172,10 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         controller = f"{repository}/.github/workflows/{stable.CONTROLLER_WORKFLOW}@refs/heads/{default}"
         if env.get("GITHUB_WORKFLOW_REF") == controller:
             expected, required = controller, CANARY_CONTROLLER_NEEDS
+            # A claim that requires green publishes only once every suite passed (admission's
+            # require-green output; stable-release.yml publish-canary gates on the same flag).
+            if env.get("REQUIRE_GREEN", "true") != "false":
+                required = (*required, "acceptance")
         else:
             expected = f"{repository}/.github/workflows/desktop-bundled-release.yml@refs/heads/{default}"
             required = CANARY_NEEDS
@@ -377,13 +381,19 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     if final_claim is not None and not lane_set.advances_desktop(final_claim["lanes"]):
         raise ChannelError("A release that did not build every desktop package the channel serves "
                            "cannot advance a protected head")
-    # A controller canary publishes the accepted candidate exactly as stable does: every lane
-    # (lanes.CANARY), its tag stamp as its epoch, and the feeds promoted from that manifest.
+    # A controller canary publishes the accepted candidate exactly as stable does: its claim's
+    # lanes, its tag stamp as its epoch, and the feeds promoted from that manifest.
     controller_canary = policy == "canary-release" and canary_from_controller(env)
     if final_claim is not None:
         release_epoch, accepted_lanes = final_claim["claim_epoch"], final_claim["lanes"]
     elif controller_canary:
-        release_epoch, accepted_lanes = stable.canary_epoch(tag), lane_set.CANARY
+        # admit_transaction pinned this tag object; its message is the claim admission read.
+        canary_lanes = stable.canary_claim(stable.output(["git", "tag", "-l", tag, "--format=%(contents)"]),
+                                           tag=tag, commit=commit)["lanes"]
+        if not lane_set.advances_desktop(canary_lanes):
+            raise ChannelError("A canary that did not build every desktop package the channel serves "
+                               "cannot advance a protected head")
+        release_epoch, accepted_lanes = stable.canary_epoch(tag), canary_lanes
     else:
         release_epoch, accepted_lanes = None, None
     accepted = accepted_stable(publisher, env, tag, commit, release_epoch, lanes=accepted_lanes) \
@@ -421,11 +431,15 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
                                    lanes=accepted_lanes) == accepted
         return True
 
-    source_version = payload_tag[1:].split("+", 1)[0]
-    log(f"Allocating a protected build on {name} for {payload_tag[1:]} "
+    from hermes_cli.update_channel import release_version, tag_core
+
+    source_version, version = tag_core(payload_tag), release_version(payload_tag)
+    if source_version is None or version is None:
+        raise ChannelError("Invalid protected release tag")
+    log(f"Allocating a protected build on {name} for {version} "
         f"(windows {windows['version']})")
     request = publisher.allocate_protected(name, commit, source_version, release_tag=payload_tag,
-                                           version=payload_tag[1:], windows_version=windows["version"],
+                                           version=version, windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate,
                                            archive_ref=tag if parsed else None)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/",

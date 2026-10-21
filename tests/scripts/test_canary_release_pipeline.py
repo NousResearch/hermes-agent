@@ -1,9 +1,10 @@
 """A canary is a Stable Release run on its own tag: every lane, canary destinations.
 
-canary-release.yml dispatches stable-release.yml with ``vX.Y.Z+canary.<stamp>``. These tests pin
-the parts of the stable controller that branch on that tag: admission (every lane but the
-signed-package upgrade arms, the tag stamp as the epoch, main only), candidate validation (canary
-package versions), the Docker tag, and publication to the canary channels only.
+canary-release.yml dispatches stable-release.yml with ``canary.<stamp>-vX.Y.Z``. These tests pin
+the parts of the stable controller that branch on that tag: admission (the claim message's lanes,
+starting from every lane but the signed-package upgrade arms, and its green policy; the tag stamp
+as the epoch; main only), candidate validation (canary package versions), the Docker tag, and
+publication to the canary channels only.
 """
 from __future__ import annotations
 
@@ -17,7 +18,8 @@ from scripts.releases import lanes as lane_set
 from scripts.releases import stable
 
 BASE = "https://releases.example"
-CANARY = "v1.2.3+canary.20261021T064100Z"
+CANARY = "canary.20261021T064100Z-v1.2.3"
+VERSION = "1.2.3+canary.20261021T064100Z"
 COMMIT = "a" * 40
 TAG_OBJECT = "b" * 40
 CONTROLLER_ENV = {
@@ -29,8 +31,17 @@ CONTROLLER_ENV = {
 }
 
 
-def _git(*, branches="refs/remotes/origin/main", kind="tag"):
+def claim_message(**changes) -> str:
+    """The claim ``scripts/release.py --canary`` writes into the canary tag."""
+    claim = {"schema": 1, "kind": "canary", "version": "1.2.3", "commit": COMMIT,
+             "lanes": sorted(lane_set.CANARY), "lanesRevision": lane_set.LANES_REVISION,
+             "requireGreen": True, **changes}
+    return json.dumps({key: value for key, value in claim.items() if value is not None})
+
+
+def _git(*, branches="refs/remotes/origin/main", kind="tag", message=None):
     ref = f"refs/tags/{CANARY}"
+    message = claim_message() if message is None else message
 
     def git(argv):
         if argv[1] == "ls-remote":
@@ -42,19 +53,20 @@ def _git(*, branches="refs/remotes/origin/main", kind="tag"):
         if argv[1] == "for-each-ref":
             return branches if argv[-1] == "refs/remotes/origin/main" else ""
         if argv[1] == "tag":
-            raise AssertionError("a canary has no claim message to read")
+            assert argv[2:] == ["-l", CANARY, "--format=%(contents)"]
+            return message
         return ""
 
     return git
 
 
-def test_a_canary_claim_runs_every_lane_from_its_tag_stamp_on_main_only():
+def test_a_canary_claim_runs_its_claimed_lanes_from_its_tag_stamp_on_main_only():
     env = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": CANARY, "RELEASE_CLAIM_OBJECT": TAG_OBJECT}
     epoch = int(datetime(2026, 10, 21, 6, 41, tzinfo=UTC).timestamp())
     assert stable.check_claim(env, _git()) == {
-        "claim_tag": CANARY, "tag": CANARY, "version": CANARY[1:], "attempt": None, "commit": COMMIT,
+        "claim_tag": CANARY, "tag": CANARY, "version": VERSION, "attempt": None, "commit": COMMIT,
         "claim_object": TAG_OBJECT, "autopublish": True, "lanes": lane_set.CANARY,
-        "claim_epoch": epoch, "policy": "canary",
+        "require_green": True, "claim_epoch": epoch, "policy": "canary",
     }
     # The canary's tag is its payload tag and archive alike.
     assert stable.stable_context({**env, "RELEASE_TAG": CANARY}, _git())[:2] == (CANARY, COMMIT)
@@ -70,26 +82,68 @@ def test_a_canary_claim_runs_every_lane_from_its_tag_stamp_on_main_only():
         stable.check_claim({**env, "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace(
             "stable-release", "desktop-bundled-release")}, _git())
     with pytest.raises(ValueError, match="calendar"):
-        stable.canary_epoch("v1.2.3+canary.20260231T000000Z")
+        stable.canary_epoch("canary.20260231T000000Z-v1.2.3")
 
 
-def _admitted():
-    return {"claim_tag": CANARY, "tag": CANARY, "version": CANARY[1:], "attempt": None, "commit": COMMIT,
+def test_the_claim_message_carries_the_canary_lanes_and_green_policy():
+    env = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": CANARY, "RELEASE_CLAIM_OBJECT": TAG_OBJECT}
+    narrow = sorted(lane_set.CANARY - {"nix", "termux", "termux-checks"})
+    claim = stable.check_claim(env, _git(message=claim_message(lanes=narrow, requireGreen=False)))
+    assert claim["lanes"] == frozenset(narrow) and claim["require_green"] is False
+    # A canary is its own app identity: no claim may ask for the signed-package upgrade arms.
+    with pytest.raises(ValueError, match="cannot run upgrade"):
+        stable.check_claim(env, _git(message=claim_message(lanes=sorted(lane_set.NAMES))))
+    for bad in (claim_message(requireGreen=None), claim_message(requireGreen="no"),
+                claim_message(version="1.2.4"), claim_message(commit="c" * 40),
+                claim_message(kind="stable"), claim_message(lanesRevision=1),
+                claim_message(extra=True), claim_message(lanes=["windows", "docker"]), "not json"):
+        with pytest.raises(ValueError, match="Canary claim metadata is invalid"):
+            stable.check_claim(env, _git(message=bad))
+
+
+def test_lanes_select_starts_each_policy_from_its_own_base():
+    assert lane_set.select(policy="canary") == lane_set.CANARY
+    assert lane_set.select() == lane_set.DEFAULT
+    assert lane_set.select(policy="canary", without=["termux"]) == lane_set.CANARY - {"termux"}
+    assert lane_set.select(policy="canary", only=["windows", "smoke"]) == {"windows", "smoke"}
+    with pytest.raises(ValueError, match="cannot run upgrade"):
+        lane_set.select(policy="canary", with_=["upgrade"])
+    with pytest.raises(ValueError, match="unknown release policy"):
+        lane_set.select(policy="nightly")
+
+
+def test_a_canary_without_the_full_desktop_set_builds_and_tests_but_publishes_nothing():
+    # A canary only advances channels, so a claim without a package the channel serves still
+    # builds, smokes and runs its suites, and leaves every canary head where it is.
+    for lanes in (lane_set.select(policy="canary", without=["windows"]),
+                  lane_set.select(policy="canary", only=["macos-arm64", "smoke", "ci"])):
+        jobs = lane_set.jobs_to_run(lanes, "canary")
+        assert jobs["candidate-manifest"] and not jobs["publish-canary"]
+        assert stable.gate_expectations(["publish-canary"], lanes, "canary") == {"publish-canary": "skipped"}
+    assert lane_set.jobs_to_run(lane_set.select(policy="canary", without=["termux"]), "canary")["publish-canary"]
+
+
+def _admitted(require_green=True):
+    return {"claim_tag": CANARY, "tag": CANARY, "version": VERSION, "attempt": None, "commit": COMMIT,
             "claim_object": TAG_OBJECT, "autopublish": True, "lanes": lane_set.CANARY,
-            "claim_epoch": stable.canary_epoch(CANARY), "policy": "canary"}
+            "require_green": require_green, "claim_epoch": stable.canary_epoch(CANARY),
+            "policy": "canary"}
 
 
 @pytest.mark.parametrize("draft", [True, False])
-def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_path, monkeypatch, draft):
+@pytest.mark.parametrize("require_green", [True, False])
+def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_path, monkeypatch, draft,
+                                                                           require_green):
     output, summary = tmp_path / "output", tmp_path / "summary"
     env = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_REPOSITORY": "o/r"}
-    monkeypatch.setattr(stable, "check_claim", lambda _env: _admitted())
+    monkeypatch.setattr(stable, "check_claim", lambda _env: _admitted(require_green))
     release = {"tagName": CANARY, "isDraft": draft, "isPrerelease": True, "databaseId": 7}
     monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
     stable.admit(env)
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert emitted["policy"] == "canary"
-    assert emitted["docker-tag"] == "v1.2.3-canary.20261021T064100Z"
+    assert emitted["require-green"] == ("true" if require_green else "false")
+    assert emitted["docker-tag"] == CANARY
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == lane_set.CANARY
     jobs = json.loads(emitted["jobs"])
     assert jobs == lane_set.jobs_to_run(lane_set.CANARY, "canary")
@@ -110,7 +164,7 @@ def test_privileged_phases_see_the_canary_channel(tmp_path, monkeypatch):
     monkeypatch.setattr(stable, "stable_context", lambda _env: (CANARY, COMMIT, _admitted()))
     stable.verify({"GITHUB_OUTPUT": str(output)})
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    assert emitted == {"tag": CANARY, "sha": COMMIT, "channel": "canary", "payload-version": CANARY[1:],
+    assert emitted == {"tag": CANARY, "sha": COMMIT, "channel": "canary", "payload-version": VERSION,
                        "release-epoch": str(stable.canary_epoch(CANARY))}
 
 
@@ -125,7 +179,7 @@ def canary_candidates(tag=CANARY, *, digest="2" * 64):
         packages.append({
             "platform": platform, "arch": arch, "tag": tag, "commit": COMMIT,
             "identity": "NousResearch.HermesBundledCanary",
-            "version": quad if platform == "windows" else tag[1:],
+            "version": quad if platform == "windows" else stable.payload_version(tag),
             **({"executableVersion": quad, "publisher": "CN=Test", "applicationId": "HermesBundledCanary"}
                if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
             "artifact": {"sha256": digest, "url": f"{BASE}/releases/tag/{tag}/{arch}{suffix}"},
@@ -157,7 +211,7 @@ def test_canary_candidates_carry_the_canary_package_versions():
     with pytest.raises(ValueError, match="Windows candidate version"):
         stable.validate_candidates(wrong, CANARY, COMMIT, BASE, archive=CANARY)
     plain = copy.deepcopy(manifest)
-    plain["packages"][-1]["version"] = f"{CANARY[1:]}-1"
+    plain["packages"][-1]["version"] = f"{VERSION}-1"
     with pytest.raises(ValueError, match="Termux"):
         stable.validate_candidates(plain, CANARY, COMMIT, BASE, archive=CANARY)
     # Only the stable shape may ever take a final receipt tag.
@@ -186,8 +240,9 @@ def test_canary_images_get_their_own_tag_and_aliases_and_never_stable_ones():
     from scripts.releases import docker
 
     tag = stable.docker_tag(CANARY)
-    assert tag == "v1.2.3-canary.20261021T064100Z" and stable.docker_tag("rc.2-v1.2.3") == "rc.2-v1.2.3"
-    assert docker.is_canary_image_tag(tag) and not docker.is_canary_image_tag(CANARY)
+    # The canary tag is already a valid Docker tag, so it names its image unchanged.
+    assert tag == CANARY and stable.docker_tag("rc.2-v1.2.3") == "rc.2-v1.2.3"
+    assert docker.is_canary_image_tag(tag) and not docker.is_canary_image_tag("v1.2.3-canary.20261021T064100Z")
     assert docker.require_release_image_tag(tag) == tag
     assert docker.build_manifest(tag, COMMIT, {"amd64": "1" * 64, "arm64": "2" * 64})["tag"] == tag
     with pytest.raises(docker.DockerReleaseError):
@@ -275,11 +330,18 @@ def test_the_canary_controller_custody_is_the_stable_pipeline_after_its_accepted
     from scripts.releases import channel_releases
 
     needs = {"admit": {"result": "success"}, "candidate-manifest": {"result": "success"},
-             # acceptance is not a need of publish-canary: a red suite never blocks it.
-             }
-    env = {**CONTROLLER_ENV, "RELEASE_TAG": CANARY, "RELEASE_TAG_OBJECT": TAG_OBJECT,
+             "acceptance": {"result": "failure"}}
+    # Without require-green, a red suite never blocks the canary's publication.
+    env = {**CONTROLLER_ENV, "RELEASE_TAG": CANARY, "RELEASE_TAG_OBJECT": TAG_OBJECT, "REQUIRE_GREEN": "false",
            "RELEASE_COMMIT": COMMIT, "RELEASE_NEEDS": json.dumps(needs), "GITHUB_ACTIONS": "true"}
     assert channel_releases.admit_transaction("canary-release", env, run=_custody_run()) == (CANARY, COMMIT)
+    # With it (or without the flag at all: custody fails closed), acceptance must have passed.
+    for green in ({"REQUIRE_GREEN": "true"}, {"REQUIRE_GREEN": ""}):
+        with pytest.raises(ValueError, match="acceptance=failure"):
+            channel_releases.admit_transaction("canary-release", {**env, **green}, run=_custody_run())
+    green = {**env, "REQUIRE_GREEN": "true",
+             "RELEASE_NEEDS": json.dumps({**needs, "acceptance": {"result": "success"}})}
+    assert channel_releases.admit_transaction("canary-release", green, run=_custody_run()) == (CANARY, COMMIT)
     assert channel_releases.canary_from_controller(env)
     failed = {**needs, "candidate-manifest": {"result": "failure"}}
     with pytest.raises(ValueError, match="candidate-manifest=failure"):
@@ -303,7 +365,7 @@ def test_the_canary_controller_custody_is_the_stable_pipeline_after_its_accepted
 def test_the_pruner_keeps_the_live_canary_however_old(monkeypatch, capsys):
     from scripts.releases import r2
 
-    live, stale = "v1.2.3+canary.20260101T000000Z", "v1.2.2+canary.20251201T000000Z"
+    live, stale = "canary.20260101T000000Z-v1.2.3", "canary.20251201T000000Z-v1.2.2"
     keys = [f"releases/tag/{live}/x64.msixbundle", f"releases/termux/canary/pool/{live}/hermes.deb",
             f"releases/tag/{stale}/x64.msixbundle", "releases/canary/release-candidates.json"]
     monkeypatch.setattr(r2, "credentials", lambda: (None, "https://r2.example", "bucket"))

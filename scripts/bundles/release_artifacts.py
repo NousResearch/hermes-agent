@@ -21,6 +21,16 @@ from scripts.releases.stable import read_admitted_candidate, accepted_smoke_resu
 from scripts.termux.deb_version import deb_version_for_tag
 
 
+def release_version(tag: str) -> str:
+    """The version a stable or canary tag publishes; packages are named after it."""
+    from hermes_cli.update_channel import release_version as version_for
+
+    version = version_for(tag)
+    if version is None:
+        raise ValueError(f"Not a release tag: {tag!r}")
+    return version
+
+
 def release_channel(tag: str) -> str:
     """The channel an accepted candidate publishes to: ``canary`` for a canary tag, else ``stable``.
 
@@ -50,7 +60,7 @@ def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict |
             raise ValueError("Built package provenance does not match the channel request")
         return
     if (stamp.get("commit") != commit or stamp.get("tag") != tag
-            or stamp.get("baseVersion") != tag.removeprefix("v")):
+            or stamp.get("baseVersion") != release_version(tag)):
         raise ValueError("Built package provenance does not match the release")
 
 
@@ -104,7 +114,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
     row: dict = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
     if platform == "windows":
         package = single(p for p in root.glob(f"*-win-{arch}.msix") if not p.name.startswith("Store-"))
-        if channel_request is None and not package.name.endswith(f"-{tag[1:]}-win-{arch}.msix"):
+        if channel_request is None and not package.name.endswith(f"-{release_version(tag)}-win-{arch}.msix"):
             raise ValueError("Windows artifact filename differs from release tag")
         with zipfile.ZipFile(package) as archive:
             manifest = ET.fromstring(archive.read("AppxManifest.xml"))
@@ -135,7 +145,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         if stamp.get("receiverProtocol") == 1:
             row["receiverProtocol"] = 1
     elif platform == "macos":
-        version = channel_request["version"] if channel_request is not None else tag[1:]
+        version = channel_request["version"] if channel_request is not None else release_version(tag)
         package = single(root.glob(f"*-mac-{arch}.zip"))
         if not package.name.endswith(f"-{version}-mac-{arch}.zip"):
             raise ValueError("macOS artifact filename differs from requested version")

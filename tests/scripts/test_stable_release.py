@@ -257,7 +257,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
     new = candidates("v1.2.4", "b" * 40, "2" * 64, archive="rc.1-v1.2.4")
     require_stable_identity(new["tag"], new["commit"])
-    for tag in ("v1.2.4+canary.20260907T143420Z", "v1.2.4-rc", "rc.1-v1.2.4"):
+    for tag in ("canary.20260907T143420Z-v1.2.4", "v1.2.4-rc", "rc.1-v1.2.4"):
         with pytest.raises(ValueError):
             require_stable_identity(tag, new["commit"])
     transitions = plan_transitions(old, new, BASE)
@@ -449,7 +449,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         # A claim cut before lanes existed reads as the lane set that gated the same jobs.
-        "autopublish": False, "lanes": lane_set.DEFAULT,
+        "autopublish": False, "lanes": lane_set.DEFAULT, "require_green": True,
         "claim_epoch": 1_790_000_000, "policy": "stable",
     }
     # The metadata binds the attempt its ref names.

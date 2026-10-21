@@ -116,7 +116,9 @@ def test_linux_stage_archives_the_appimage_under_its_tag_only(tmp_path, r2_serve
     unpacked = release / f"linux-{arch}-unpacked/resources/agent-payload"
     unpacked.mkdir(parents=True)
     (unpacked / "manifest.json").write_text("{}")
-    image = release / f"HermesBundled-{CANARY_TAG[1:]}-linux-{arch}.AppImage"
+    from hermes_cli.update_channel import release_version
+
+    image = release / f"HermesBundled-{release_version(CANARY_TAG)}-linux-{arch}.AppImage"
     image.write_bytes(b"AppImage transport fixture")
     (release / "builder-debug.yml").write_text("unstaged: true\n")
     staged = {image.name}

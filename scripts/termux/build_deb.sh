@@ -6,7 +6,7 @@
 #
 # Inputs (all required):
 #   --repo <dir>          hermes-agent checkout (tag must exist; provenance)
-#   --tag <tag>           immutable release tag (vX.Y.Z or vX.Y.Z+canary.<UTC timestamp>)
+#   --tag <tag>           immutable release tag (vX.Y.Z or canary.<UTC timestamp>-vX.Y.Z)
 #   --payload <dir>       dir containing python/, node/, app/ (git archive of
 #                         the tag) and wheelhouse/ (from termux_build.sh)
 #   --out <dir>           output dir; <out>/hermes-agent_<v>_aarch64.deb lands here
@@ -97,7 +97,8 @@ else
     unset HERMES_BUILD_COMMIT
     COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
         || fail "tag $TAG not found in $REPO_ABS"
-    PY_VERSION="${TAG#v}"
+    PY_VERSION="$(python3 "$HERE/deb_version.py" --release-version "$TAG")" \
+        || fail "version derivation failed for tag $TAG"
 fi
 [ -n "$TUI_PRODUCT" ] || fail "--tui-product is required (run scripts/termux/build.py)"
 TUI_PRODUCT="$(cd "$TUI_PRODUCT" && pwd)"

@@ -675,7 +675,7 @@ def test_request_inputs_are_rejected_before_allocating():
 def test_canary_native_version_is_derived_from_the_current_tag():
     from scripts.releases.channel_releases import canary_windows_version
 
-    assert canary_windows_version("v0.27.1+canary.20260829T010203Z") == "26.829.1.203"
+    assert canary_windows_version("canary.20260829T010203Z-v0.27.1") == "26.829.1.203"
 
 
 def test_stable_requests_name_the_attempt_archive_only_when_given():

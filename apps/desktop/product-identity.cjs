@@ -36,11 +36,11 @@ const light = variant === 'light'
 const name = variants[store ? 'bundled' : (variant || '')]
 
 // The electron-updater feed channel this build PUBLISHES to. A canary
-// tag (vX.Y.Z+canary.YYYYMMDDTHHMMSSZ) writes canary.yml / light-canary.yml;
+// tag (canary.YYYYMMDDTHHMMSSZ-vX.Y.Z) writes canary.yml / light-canary.yml;
 // stable tags write latest.yml / light.yml. Keyed on the payload tag so
 // the one release workflow serves both channels — a canary build can
 // never overwrite the stable feed file, and vice versa.
-const canary = /\+canary\.20\d{6}T\d{6}Z$/.test(process.env.HERMES_PAYLOAD_TAG || '')
+const canary = /^canary\.20\d{6}T\d{6}Z-v\d+\.\d+\.\d+$/.test(process.env.HERMES_PAYLOAD_TAG || '')
 
 // Nonstable installs own their package family and local desktop state. The
 // seven-character commit suffix also names the CLI and fits MSIX's name cap.

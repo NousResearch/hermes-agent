@@ -170,34 +170,47 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
     prefix, rest = title.split(" release ", 1)
     assert rest == "${{ inputs.tag }}"
     assert evaluate(prefix, {"tag": "rc.1-v1.2.3"}, {}) == "Stable"
-    assert evaluate(prefix, {"tag": "v1.2.3+canary.20261021T064100Z"}, {}) == "Canary"
+    assert evaluate(prefix, {"tag": "canary.20261021T064100Z-v1.2.3"}, {}) == "Canary"
     assert claim_run_title("rc.1-v1.2.3") == "Stable release rc.1-v1.2.3"
 
 
-def test_canary_publication_waits_for_its_candidate_never_for_acceptance_and_never_touches_stable():
+def test_canary_publication_follows_its_claims_green_policy_and_never_touches_stable():
     jobs = workflow("stable-release.yml")["jobs"]
     canary = lane_set.jobs_to_run(lane_set.CANARY, "canary")
     publish = jobs["publish-canary"]
-    assert publish["needs"] == ["admit", "candidate-manifest"]
-    assert "acceptance" not in ancestors(jobs, "publish-canary")
-    admit = {"result": "success", "outputs": {"jobs": json.dumps(canary), "policy": "canary"}}
+    assert publish["needs"] == ["admit", "candidate-manifest", "acceptance"]
+    # Custody re-checks the same flag the job's `if` reads.
+    assert publish["env"]["REQUIRE_GREEN"] == "${{ needs.admit.outputs.require-green }}"
+    assert jobs["admit"]["outputs"]["require-green"] == "${{ steps.admit.outputs.require-green }}"
     manifest = {"result": "success"}
-    # A red suite reports in the same run; it does not hold the canary back.
-    assert gate(publish["if"], {}, {"admit": admit, "candidate-manifest": manifest})
-    # A failed or skipped candidate (a build or smoke went red) publishes nothing.
-    for result in ("failure", "skipped", "cancelled"):
-        assert not gate(publish["if"], {}, {"admit": admit, "candidate-manifest": {"result": result}}), result
-    assert not gate(publish["if"], {}, {"admit": admit, "candidate-manifest": manifest}, cancelled=True)
+
+    def admit_with(green: str) -> dict:
+        return {"result": "success", "outputs": {"jobs": json.dumps(canary), "policy": "canary",
+                                                 "require-green": green}}
+
+    for green, red_suite_publishes in (("false", True), ("true", False)):
+        needs = {"admit": admit_with(green), "candidate-manifest": manifest}
+        # Without require-green a red suite reports in the same run and does not hold the canary
+        # back; with it, publication waits for acceptance exactly as a stable release does.
+        assert gate(publish["if"], {}, {**needs, "acceptance": {"result": "failure"}}) is red_suite_publishes
+        assert gate(publish["if"], {}, {**needs, "acceptance": {"result": "success"}})
+        # A failed or skipped candidate (a build or smoke went red) publishes nothing either way.
+        for result in ("failure", "skipped", "cancelled"):
+            assert not gate(publish["if"], {}, {**needs, "candidate-manifest": {"result": result},
+                                                "acceptance": {"result": "success"}}), result
+        assert not gate(publish["if"], {}, {**needs, "acceptance": {"result": "success"}}, cancelled=True)
+    admit = admit_with("false")
     # A stable release never runs it, and a canary never runs stable publication (Store included).
     stable_admit = {"result": "success", "outputs": {"jobs": json.dumps(lane_set.jobs_to_run(lane_set.NAMES))}}
-    assert not gate(publish["if"], {}, {"admit": stable_admit, "candidate-manifest": manifest})
+    assert not gate(publish["if"], {}, {"admit": stable_admit, "candidate-manifest": manifest,
+                                        "acceptance": {"result": "success"}})
     bundles = jobs["publish-bundles"]
     accepted = {"admit": admit, "acceptance": {"result": "success"}, "candidate-manifest": manifest}
     assert not gate(bundles["if"], {}, accepted)
     store = workflow("desktop-bundled-release.yml")["jobs"]["stable-store"]["if"]
     publish_phase = {"release-phase": "publish", "skip-store": False}
     assert gate(store, {**publish_phase, "tag": "rc.1-v1.2.3"}, {"validate": {"result": "success"}})
-    assert not gate(store, {**publish_phase, "tag": "v1.2.3+canary.20261021T064100Z"},
+    assert not gate(store, {**publish_phase, "tag": "canary.20261021T064100Z-v1.2.3"},
                     {"validate": {"result": "success"}})
     # Publication runs the canary controller under the job's own needs, with the pinned candidate.
     steps = publish["steps"]
@@ -273,7 +286,8 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     summary = tmp_path / "summary"
     admitted = {"claim_tag": "rc.1-v1.2.3", "claim_object": "a" * 40, "tag": "v1.2.3", "commit": "b" * 40,
                 "version": "1.2.3", "attempt": 1, "claim_epoch": 1, "autopublish": False,
-                "lanes": lane_set.select(only=["windows", "docker"]), "policy": "stable"}
+                "lanes": lane_set.select(only=["windows", "docker"]), "require_green": True,
+                "policy": "stable"}
     env = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_REPOSITORY": "o/r"}
     from unittest import mock
     with mock.patch.object(stable, "check_claim", return_value=admitted), \
@@ -444,7 +458,7 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     group = stable["concurrency"]["group"]
     assert stable["concurrency"]["cancel-in-progress"] == "false"
     assert evaluate(group, {"tag": "rc.1-v1.2.3"}, {}) == "stable-release"
-    assert evaluate(group, {"tag": "v1.2.3+canary.20261021T064100Z"}, {}) == "canary-release-pipeline"
+    assert evaluate(group, {"tag": "canary.20261021T064100Z-v1.2.3"}, {}) == "canary-release-pipeline"
     assert {"workflow_dispatch", "workflow_run"} <= set(publication["on"])
     assert publication["on"]["workflow_run"] == {
         "workflows": ["Stable Release"], "types": ["completed"],
@@ -463,7 +477,7 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     assert gate(reconcile["if"], {}, {}, github={"event_name": "workflow_dispatch"})
     for refused in ({"conclusion": "success"}, {"event": "push"}, {"head_repository": {"full_name": "fork/r"}},
                     # A red canary is a Stable Release run too; it must never be reconciled or rerun.
-                    {"display_title": "Canary release v1.2.3+canary.20261021T064100Z"}):
+                    {"display_title": "Canary release canary.20261021T064100Z-v1.2.3"}):
         assert not gate(reconcile["if"], {}, {}, github=run_of(**refused)), refused
     assert gate(reconcile["if"], {}, {}, github=run_of(display_title="Stable release rc.1-v1.2.3"))
     checkout = reconcile["steps"][0]

@@ -166,7 +166,8 @@ def spawn_background_process(
     """
     from tools.process_registry import process_registry
     from tools.terminal_tool import (
-        _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
+        _bare_termination_pattern_note, _redact_terminal_error_text,
+        _resolve_command_cwd, _resolve_notification_flag_conflict,
     )
 
     effective_cwd = _resolve_command_cwd(
@@ -225,6 +226,9 @@ def spawn_background_process(
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
+            bare_note = _bare_termination_pattern_note(watch_patterns)
+            if bare_note:
+                result_data["watch_patterns_note"] = bare_note
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
         return json.dumps({

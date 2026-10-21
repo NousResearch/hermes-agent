@@ -925,6 +925,36 @@ def _resolve_notification_flag_conflict(*, notify_on_complete: bool, watch_patte
     return watch_patterns, ""
 
 
+# Bare termination-intent words collide with ordinary output ("exit 0", "exited with 1",
+# "done in 3s") because patterns match as raw substrings per line, so such a watch
+# re-fires every cooldown window until the strike limit / lifetime cap disables it
+# (#142509). Readiness words ("ready", "listening") are deliberately absent: those are
+# the legitimate one-shot mid-process signals watch_patterns exists for.
+_BARE_TERMINATION_PATTERN_WORDS = frozenset(
+    {"exit", "exited", "terminated", "done", "finished", "complete", "completed"})
+
+
+def _bare_termination_pattern_note(watch_patterns) -> str:
+    """Warning for watch patterns that are bare termination-intent words: each
+    matches every output line containing it, re-firing until the rate-limit cap.
+    Returns "" when every pattern is a specific-enough substring (#142509)."""
+    if not watch_patterns:
+        return ""
+    collisions = [
+        p for p in watch_patterns
+        if isinstance(p, str) and p.strip().lower() in _BARE_TERMINATION_PATTERN_WORDS
+    ]
+    if not collisions:
+        return ""
+    listed = ", ".join(f"'{p}'" for p in collisions)
+    return (
+        f"watch pattern(s) {listed} are bare termination words matched as raw "
+        "substrings against every output line (e.g. 'exit 0'), so they can "
+        "re-fire until the watch hits its rate-limit cap. For one "
+        "notification when the process ends use notify=true instead."
+    )
+
+
 def _rewrite_via_env_mount(path: str, env) -> str | None:
     """Container path for *path* when *env* bind-mounted that host directory."""
     if env is None or not path:
@@ -1595,7 +1625,7 @@ TERMINAL_SCHEMA = {
                 "default": False
             },
             "notify": {
-                "description": "With background=true. true: one notification on exit; use it for anything that ends (builds, tests, deploys), or the job runs silently. ['pattern', ...]: notify when a line matches, only for one-shot readiness on processes that never exit; rate-limited. Omit for servers/daemons.",
+                "description": "With background=true. true: one notification on exit; use it for anything that ends (builds, tests, deploys), or the job runs silently. ['pattern', ...]: notify when a line contains a pattern as a case-sensitive substring; only for one-shot readiness on processes that never exit; rate-limited. A bare common word like 'exit' matches every line containing it (e.g. 'exit 0') — for an exit ping use notify=true. Omit for servers/daemons.",
                 "anyOf": [
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}

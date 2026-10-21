@@ -109,7 +109,9 @@ describe('settings helpers', () => {
 
   it('Reasoning Blocks shows and writes the local key a local /reasoning saved', () => {
     // After a local `/reasoning hide`: the local key wins on every local surface.
-    const config: HermesConfigRecord = { display: { show_reasoning: true, platforms: { cli: { show_reasoning: false } } } }
+    const config: HermesConfigRecord = {
+      display: { show_reasoning: true, platforms: { cli: { show_reasoning: false } } }
+    }
 
     expect(configFieldValue(config, 'display.show_reasoning')).toBe(false)
     const next = setConfigField(config, 'display.show_reasoning', true)
@@ -125,7 +127,10 @@ describe('settings helpers', () => {
 
   it('Reasoning Blocks reads a quoted local value as the gateway does', () => {
     const shown = (value: unknown) =>
-      configFieldValue({ display: { show_reasoning: true, platforms: { cli: { show_reasoning: value } } } } as HermesConfigRecord, 'display.show_reasoning')
+      configFieldValue(
+        { display: { show_reasoning: true, platforms: { cli: { show_reasoning: value } } } } as HermesConfigRecord,
+        'display.show_reasoning'
+      )
 
     for (const off of ['false', 'False', '0', 'no', 'off', ' false ']) {
       expect(shown(off)).toBe(false)

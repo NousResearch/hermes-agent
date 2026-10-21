@@ -91,7 +91,17 @@ function CatalogCardFooter({ entry, action, hero }: { entry: CatalogEntry; actio
   )
 }
 
-export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default', style }: CatalogCardProps) {
+export function CatalogCard({
+  entry,
+  action,
+  accentIndex,
+  onOpen,
+  onCategory,
+  onTag,
+  onSearch,
+  variant = 'default',
+  style
+}: CatalogCardProps) {
   return (
     <article
       className={cn(
@@ -104,11 +114,17 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
       data-entry-id={entry.id}
       style={style}
     >
-      {showsCardImage(entry) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl!} src={entry.imageUrl!} />}
-      {variant !== 'default' && <div className="catalog-card-topline">
-        <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>{entry.author || catalogLabel(entry.source)}</span>
-        {variant !== 'hero' && <span className="relative shrink-0">{action}</span>}
-      </div>}
+      {showsCardImage(entry) && (
+        <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl!} src={entry.imageUrl!} />
+      )}
+      {variant !== 'default' && (
+        <div className="catalog-card-topline">
+          <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>
+            {entry.author || catalogLabel(entry.source)}
+          </span>
+          {variant !== 'hero' && <span className="relative shrink-0">{action}</span>}
+        </div>
+      )}
       <div className="catalog-card-copy flex min-h-0 w-full flex-col gap-2 p-3">
         <div className="flex min-w-0 items-center gap-2.5">
           {/* Its ::after stretches over the whole card, so any empty spot opens the
@@ -119,7 +135,9 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
             className="min-w-0 flex-1 text-left font-semibold leading-snug after:absolute after:inset-0 after:rounded-[inherit] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-primary focus-visible:after:-outline-offset-2"
             onClick={() => onOpen(entry)}
           >
-            <span className="catalog-card-title line-clamp-2 min-w-0 break-words text-lg">{variant === 'default' ? entry.name : catalogLabel(entry.name)}</span>
+            <span className="catalog-card-title line-clamp-2 min-w-0 break-words text-lg">
+              {variant === 'default' ? entry.name : catalogLabel(entry.name)}
+            </span>
           </RowButton>
           {variant === 'default' && action && (
             <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-hover:transition-none group-focus-within:opacity-100 group-focus-within:transition-none">
@@ -129,29 +147,35 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
         </div>
         {/* In a fixed-height grid cell the description is what gives way. */}
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
-          {variant === 'default' && <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
-            <CatalogHeaderMeta entry={entry} />
-            <CatalogRating entry={entry} />
-          </span>}
+          {variant === 'default' && (
+            <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
+              <CatalogHeaderMeta entry={entry} />
+              <CatalogRating entry={entry} />
+            </span>
+          )}
           <span className="catalog-card-description line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
             {entry.description}
           </span>
         </div>
       </div>
-      {variant === 'default' && <div className="catalog-card-metadata px-3 pb-3 [&_button]:relative">
-        <CatalogMetadata
-          entry={entry}
-          onCategory={onCategory}
-          onOpen={() => onOpen(entry)}
-          onSearch={onSearch}
-          onTag={onTag}
-        />
-      </div>}
+      {variant === 'default' && (
+        <div className="catalog-card-metadata px-3 pb-3 [&_button]:relative">
+          <CatalogMetadata
+            entry={entry}
+            onCategory={onCategory}
+            onOpen={() => onOpen(entry)}
+            onSearch={onSearch}
+            onTag={onTag}
+          />
+        </div>
+      )}
       {variant !== 'default' && <CatalogCardFooter action={action} entry={entry} hero={variant === 'hero'} />}
-      {variant === 'default' && <div className="catalog-card-dates mt-auto px-3 pb-3">
-        <CatalogDates entry={entry} />
-      </div>}
+      {variant === 'default' && (
+        <div className="catalog-card-dates mt-auto px-3 pb-3">
+          <CatalogDates entry={entry} />
+        </div>
+      )}
     </article>
   )
 }

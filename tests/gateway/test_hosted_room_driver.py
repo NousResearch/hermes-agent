@@ -383,6 +383,73 @@ def test_stale_lease_cannot_start_or_commit_task(db):
     assert driver.get_task(db, identity)["status"] == "indeterminate"
 
 
+def test_live_settlement_commits_after_plain_lease_expiry(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock, ttl=5)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+
+    clock.advance(5)  # plain expiry of our own unreleased, un-reclaimed lease
+    with pytest.raises(driver.StaleLeaseError):
+        driver.settle_task(
+            db,
+            attempt,
+            settlement_id="settlement-strict",
+            status="settled",
+            result={"text": "late"},
+            clock=clock,
+        )
+    settled = driver.settle_task(
+        db,
+        attempt,
+        settlement_id="settlement-live",
+        status="settled",
+        result={"text": "late"},
+        clock=clock,
+        allow_expired_lease=True,
+    )
+
+    assert settled["status"] == "settled"
+    assert driver.get_task(db, identity)["status"] == "settled"
+
+
+def test_live_settlement_after_expiry_still_fences_on_reclaim(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock, ttl=5)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+
+    clock.advance(5)
+    second = _lease(db, clock, process="process-b")
+    driver.recover_room(db, second, clock=clock)
+
+    with pytest.raises(driver.StaleLeaseError):
+        driver.settle_task(
+            db,
+            attempt,
+            settlement_id="settlement-live",
+            status="settled",
+            result={"text": "late"},
+            clock=clock,
+            allow_expired_lease=True,
+        )
+    assert driver.get_task(db, identity)["status"] == "indeterminate"
+
+
 @pytest.mark.parametrize("status", ["settled", "failed"])
 def test_terminal_settlement_is_idempotent(db, status):
     clock = FakeClock()

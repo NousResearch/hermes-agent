@@ -80,6 +80,11 @@ Override with --force if you accept the risk.
 the listed processes are idle (a reader you started yourself, for example). The same check
 runs when you type `sessions optimize` in the Desktop console.
 
+`hermes sessions prune` is the exception while the gateway is running: the gateway owns
+`state.db`, so prune shows its preview from a read-only view and the gateway itself deletes
+the selected sessions (skipping any with a turn still running). It refuses as above only when
+no gateway is running and some other process holds the database.
+
 ## Files you may find beside `state.db`
 
 | File or directory | What it is | What to do |

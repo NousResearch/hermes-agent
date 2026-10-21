@@ -162,14 +162,19 @@ def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
                for r in (_degraded.get(_key(cron_dir)), _recovered.get(_key(cron_dir))))
 
 
-def forget_homes(home_keys) -> None:
-    """Drop the state of stores whose profile home (``hermes_home_key``) this process no longer
-    ticks, so a profile that left this gateway cannot keep the host-wide gauges at writable=0."""
-    from hermes_constants import hermes_home_key
-    keys = set(home_keys)
+def store_key(home) -> str:
+    """Record key of a profile home's cron store (a symlinked cron/ resolves elsewhere)."""
+    return _key(Path(home) / "cron")
+
+
+def forget_stores(stores) -> None:
+    """Drop the state of ``stores`` (``store_key`` values, resolved while each home existed) whose
+    profile this process no longer ticks, so a profile that left this gateway cannot keep the
+    host-wide gauges at writable=0."""
+    stores = set(stores)
     with _lock:
         for records in (_degraded, _recovered):
-            for store in [s for s in records if hermes_home_key(Path(s).parent) in keys]:
+            for store in [s for s in records if s in stores]:
                 del records[store]
 
 
@@ -273,9 +278,11 @@ def probe_store(cron_dir: Path) -> Optional[OSError]:
         size = jobs_file.stat().st_size + 4096
     except OSError:
         size = 4096
-    target = os.path.realpath(jobs_file)
-    if os.path.exists(target) and not os.access(target, os.W_OK):  # e.g. a read-only symlink target
-        return OSError(errno.EACCES, os.strerror(errno.EACCES), target)
+    # A read-only jobs.json symlink target, or a tick lock the ticker cannot open (root-owned in a
+    # writable dir: the tick skips every run while the dir itself still accepts writes).
+    for target in (os.path.realpath(jobs_file), str(cron_dir / ".tick.lock")):
+        if os.path.exists(target) and not os.access(target, os.W_OK):
+            return OSError(errno.EACCES, os.strerror(errno.EACCES), target)
     tmp = None
     chunk = b"\0" * 65536
     try:

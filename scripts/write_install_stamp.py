@@ -31,7 +31,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so the canary tag shape can come
@@ -39,8 +39,8 @@ from pathlib import Path
 # re-typed regex (hermes_cli/__init__.py is import-light).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli import update_channel  # noqa: E402
-from hermes_cli.steward import UPDATE_MECHANISMS  # noqa: E402
+from hermes_cli import update_channel
+from hermes_cli.steward import UPDATE_MECHANISMS
 
 STAMP_SCHEMA_VERSION = 2
 _REPO_ROOT = Path(__file__).parent.parent.resolve()
@@ -66,7 +66,8 @@ FALLBACK_COMMIT = "0" * 40
 def _run_git(*args: str, cwd: str | Path = _REPO_ROOT) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd)
+            ["git", *args], capture_output=True, text=True, timeout=5, cwd=str(cwd),
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -255,7 +256,7 @@ def build_stamp(
         "commit": commit,
         "commitDate": commit_date,
         "branch": branch,
-        "builtAt": datetime.now(timezone.utc).isoformat(),
+        "builtAt": datetime.now(UTC).isoformat(),
         "dirty": dirty,
         "source": source,
         "distribution": distribution,

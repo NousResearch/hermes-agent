@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-import agent.lsp.manager as manager
+from agent.lsp import manager
 from agent.lsp.manager import LSPService
 from agent.lsp.servers import ServerDef
 

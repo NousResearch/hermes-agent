@@ -20,7 +20,7 @@ def test_harness_runs_on_an_interpreter_without_its_own_site_packages(monkeypatc
     cmd = bu._find_cli()
     assert cmd == [sys.executable, "-m", "browser_harness.run"]
     result = subprocess.run([cmd[0], "-S", *cmd[1:], "--version"], env=bu._base_subprocess_env(),
-                            capture_output=True, text=True, timeout=120)
+                            capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == importlib.metadata.version("browser-harness")
 

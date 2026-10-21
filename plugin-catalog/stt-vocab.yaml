@@ -1,23 +1,24 @@
 name: stt-vocab
 repo: https://github.com/pierrenode/hermes-stt-vocab
-sha: 6145d065d50f196d51b3ab80fe4a76fb2827c115
+sha: 54e83f9289315af6d47c7c6fdeb5714a08b35262
 subdir: stt-vocab
 description: >-
   Puts the names a speech-to-text model mis-hears into the transcription prompt Hermes sends with
   each voice message: terms you list (globally or per surface) and names found in this profile's
   memories/USER.md and MEMORY.md, most important last, within the 896 characters Hermes keeps for
-  Whisper-family backends; your stt.prompt stays in front. Disclosure — register() adds one
-  pre_transcription hook that returns a new prompt string; memory-derived names go only to local
-  backends (faster-whisper, local_command) unless allow_remote is set, and the memory files are
-  not read otherwise; reads at most 256 KB per memory file; no tools, network access,
-  subprocesses or writes; Hermes uploads the prompt with the audio to the configured STT
-  provider.
+  Whisper-family backends; your stt.prompt stays in front. Notes written in German, Spanish,
+  French, Italian, Dutch, Portuguese or Turkish can be named in the languages setting.
+  Disclosure — register() adds one pre_transcription hook that returns a new prompt string;
+  memory-derived names go only to local backends (faster-whisper, local_command) unless
+  allow_remote is set, and the memory files are not read otherwise; reads at most 256 KB per
+  memory file; no tools, network access, subprocesses or writes; Hermes uploads the prompt with
+  the audio to the configured STT provider.
 maintainer: pierrenode
 tier: community
 category: voice
 requires_hermes: ">=0.21"
 docs_url: https://github.com/pierrenode/hermes-stt-vocab
-version: "1.0.0"
+version: "1.1.0"
 image: https://raw.githubusercontent.com/pierrenode/hermes-stt-vocab/6145d065d50f196d51b3ab80fe4a76fb2827c115/docs/card.png
 platforms: []
 capabilities:

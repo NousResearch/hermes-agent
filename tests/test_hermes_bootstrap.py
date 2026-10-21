@@ -96,6 +96,7 @@ class TestWindowsBehavior:
             [sys.executable, "-c", script],
             capture_output=True,
             timeout=15,
+            check=False,
         )
         assert result.returncode == 0, (
             f"Child crashed printing non-ASCII despite UTF-8 bootstrap:\n"
@@ -224,7 +225,7 @@ else:
 """
     result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root), str(entry)],
                             cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "bootstrap-before-app"
 
@@ -248,7 +249,7 @@ def test_library_imports_of_dual_use_entry_modules_stay_side_effect_free(tmp_pat
     env.update({"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PYTHONPATH": str(repo),
                 "HERMES_HOME": str(tmp_path / "home"), "PYTHONDONTWRITEBYTECODE": "1"})
     child = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path), env=env,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=120, check=False)
     assert child.returncode == 0, child.stderr
     assert child.stdout.splitlines()[-1] == '{"bootstrapped": false, "changed": []}'
 
@@ -284,7 +285,7 @@ print('reached-pm')
 """
     result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root)],
                             cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "reached-pm"
 
@@ -329,7 +330,7 @@ except ModuleNotFoundError as exc:
     print('raised', exc.name)
 """
     result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(fake_root), str(entry)],
-                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
 
@@ -426,6 +427,7 @@ class TestEnableWindowsVt:
             [sys.executable, "-c", script, root],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
             timeout=120,
+            check=False,
         )
         if result.returncode == 4:
             pytest.skip("this session cannot create a console")

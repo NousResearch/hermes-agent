@@ -266,23 +266,12 @@ it('carries each install channel from Python publication checks into the source 
       responses.set(`/repos/NousResearch/hermes-agent/commits/${tags[channel]}`, { sha })
     }
 
-    responses.set('/releases/stable/release-candidates.json', { tag: tags.stable, commit: commits[1] })
-    // The 'main' subscription is a source-branch channel record under the R2 protocol.
-    responses.set(
-      '/releases/channels/main.json',
-      JSON.stringify({
-        schema: 1,
-        name: 'main',
-        repository: 'NousResearch/hermes-agent',
-        policy: 'source-branch',
-        state: 'active',
-        revision: 1,
-        nextSequence: 1,
-        identity: null,
-        head: null,
-        delivery: { kind: 'source-branch', branch: 'main' }
-      })
-    )
+    // Stable IS the latest published GitHub release; no R2 record is consulted for it.
+    responses.set('/repos/NousResearch/hermes-agent/releases/latest', {
+      tag_name: tags.stable,
+      draft: false,
+      prerelease: false
+    })
     git(['tag', 'v99.0.0'])
     git(['worktree', 'add', '-b', 'feature/gui', root])
     git(['remote', 'add', 'origin', origin])
@@ -301,25 +290,32 @@ sys.path.append(${JSON.stringify(repository)})
 assert not os.environ.get('HERMES_RUNTIME_DIR')
 import urllib.request
 from urllib.parse import urlsplit
-original_build = urllib.request.build_opener
-passthrough = original_build().open
-def local(request, *args, **kwargs):
-    parsed = urlsplit(request.full_url if isinstance(request, urllib.request.Request) else request)
-    assert parsed.hostname in ('hermes-assets.nousresearch.com', 'api.github.com')
-    url = 'http://127.0.0.1:${address.port}' + parsed.path + ('?' + parsed.query if parsed.query else '')
-    # ChannelReader compares response.geturl() against the ORIGINAL request url:
-    # wrap so the redirect detector still sees the un-rewritten authority.
-    response = passthrough(url, *args, **kwargs)
-    original_url = request.full_url if isinstance(request, urllib.request.Request) else request
-    response.geturl = lambda: original_url
-    return response
-urllib.request.urlopen = local
-def local_build(*args, **kwargs):
-    # ChannelReader resolves through build_opener().open, not module urlopen.
-    opener = original_build(*args, **kwargs)
-    opener.open = local
-    return opener
-urllib.request.build_opener = local_build
+# source_check.py runs this on import, and is imported twice (the CLI entry, then the module
+# source_releases reads GitHub through): install the redirect once, or the second copy wraps the
+# first and sees the already-rewritten loopback URL.
+def install():
+    original_build = urllib.request.build_opener
+    passthrough = original_build().open
+    def local(request, *args, **kwargs):
+        parsed = urlsplit(request.full_url if isinstance(request, urllib.request.Request) else request)
+        assert parsed.hostname in ('hermes-assets.nousresearch.com', 'api.github.com')
+        url = 'http://127.0.0.1:${address.port}' + parsed.path + ('?' + parsed.query if parsed.query else '')
+        # ChannelReader compares response.geturl() against the ORIGINAL request url:
+        # wrap so the redirect detector still sees the un-rewritten authority.
+        response = passthrough(url, *args, **kwargs)
+        original_url = request.full_url if isinstance(request, urllib.request.Request) else request
+        response.geturl = lambda: original_url
+        return response
+    urllib.request.urlopen = local
+    def local_build(*args, **kwargs):
+        # ChannelReader resolves through build_opener().open, not module urlopen.
+        opener = original_build(*args, **kwargs)
+        opener.open = local
+        return opener
+    urllib.request.build_opener = local_build
+if not getattr(urllib.request, '_hermes_loopback', False):
+    urllib.request._hermes_loopback = True
+    install()
 `
     )
     vi.stubEnv('HERMES_MANAGED', '')
@@ -478,9 +474,9 @@ urllib.request.build_opener = local_build
     fs.rmSync(markerPath(home), { force: true })
     fs.rmSync(scriptDirectory, { recursive: true, force: true })
     expect(await strategy.apply()).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
-    // apply() forces a fresh check; under the R2 protocol that re-resolution
-    // touches exactly the channel record — no GitHub or artifact chatter.
-    expect(requests.slice(count)).toEqual(['/releases/channels/main.json', '/releases/channels/main.json'])
+    // main IS the git branch: re-resolving it reads no channel record and makes no
+    // GitHub or artifact request, so a WAF that 403s the record can't stop the update.
+    expect(requests.slice(count)).toEqual([])
   } finally {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()

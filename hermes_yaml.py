@@ -8,7 +8,7 @@ from io import StringIO
 from typing import Any, IO, overload
 
 from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError as YAMLError
+from ruamel.yaml.error import YAMLError
 from ruamel.yaml.resolver import VersionedResolver
 
 

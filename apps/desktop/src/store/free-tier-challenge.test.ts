@@ -26,7 +26,11 @@ describe('runFreeTierChallenge', () => {
     installBridge(run)
     await expect(runFreeTierChallenge({ ...challenge, attempt: 3 }, report)).resolves.toBe('error')
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ attempt: 3 }))
-    expect(report).toHaveBeenCalledWith('free_tier.challenge_result', { url: challenge.url, attempt: 3, outcome: 'error' })
+    expect(report).toHaveBeenCalledWith('free_tier.challenge_result', {
+      url: challenge.url,
+      attempt: 3,
+      outcome: 'error'
+    })
   })
   it('hands a browser challenge to the main process', async () => {
     const run = vi.fn().mockResolvedValue('done')

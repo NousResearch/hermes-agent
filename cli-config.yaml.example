@@ -1173,6 +1173,9 @@ streaming:
 # also create new skills after completing complex tasks.
 #
 skills:
+  # Estimated index-row budget; 0 = unbounded. Descriptions demote, names remain.
+  listing_max_tokens: 0
+
   # Nudge the agent to create skills after complex tasks.
   # Every N tool-calling iterations, remind the model to consider saving a skill.
   # Set to 0 to disable.

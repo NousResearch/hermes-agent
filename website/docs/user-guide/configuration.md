@@ -815,6 +815,21 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](../developer-guide/creating-skills.md#config-settings-configyaml).
 
+### Skills index prompt budget
+
+Set `skills.listing_max_tokens` to a non-negative integer to limit the estimated token cost
+of the skills index rows. The default, `0`, leaves the index unbounded. When over budget,
+category descriptions are demoted to names-only listings, starting with the largest saving.
+Every loadable skill name remains present; `skill_view` and `skills_list` retain full access.
+The instructions surrounding the index and auto-loaded skill bodies are outside this budget.
+If names alone exceed the allowance, Hermes keeps them and logs a warning. This setting is
+read when building an index; an existing conversation's cached system prompt stays unchanged.
+
+```yaml
+skills:
+  listing_max_tokens: 4000
+```
+
 ### Auto-loading skills every session
 
 Pin skills so they are fully loaded at the start of every new session, on every surface:

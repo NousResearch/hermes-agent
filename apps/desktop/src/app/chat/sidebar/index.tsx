@@ -22,7 +22,6 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
-import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -146,9 +145,7 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
-  SIDEBAR_NAV_TRAILING_AREA,
-  type SidebarNavContribution,
-  type SidebarNavTrailingContribution
+  type SidebarNavContribution
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
@@ -190,33 +187,13 @@ import {
   SidebarSessionSkeletons,
   SidebarStorageCorruptNotice
 } from './section-states'
+import { searchResultToSession, stripFtsMarkers } from './search-text'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import { NavTrailingChips } from './nav-trailing'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
 import { useServerSessionSearch } from './use-server-session-search'
-
-/**
- * Does this `sidebar.nav.trailing` decoration belong on this row?
- *
- * Contribution ids are namespaced by the registry (`kanban:nav`), so a plugin
- * that declares `{ navId: 'nav' }` would never match its own row: match the
- * route it asked for, or the id exactly / by its unqualified suffix.
- */
-export function rowOwnsTrailing(
-  item: SidebarNavItem,
-  data: Partial<SidebarNavTrailingContribution> | undefined
-): boolean {
-  if (!data) {
-    return false
-  }
-
-  if (data.navPath) {
-    return data.navPath === item.route
-  }
-
-  return Boolean(data.navId) && (item.id === data.navId || item.id.endsWith(`:${data.navId}`))
-}
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -307,44 +284,6 @@ const HEADER_NAV_BTN =
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
 // by id; the snippet stands in for the preview).
-
-// The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
-// highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
-// The sidebar renders the snippet as plain text, so the markers must be
-// stripped or a search for "foo" paints rows titled ">>>foo<<<".
-// Exported for tests.
-export function stripFtsMarkers(snippet: string): string {
-  return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
-}
-
-// The backend already ships the real session title on every search hit
-// (web_routers/sessions.py add_lineage_result enriches each result via
-// get_session_rich_row). Map it onto the synthesized row so the sidebar
-// paints the actual name; the snippet stays as the preview. Untitled
-// sessions keep today's snippet fallback via sessionTitle().
-// Exported for tests.
-export function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
-
-  return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: result.last_active ?? ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: result.title?.trim() || null,
-    tool_call_count: 0
-  }
-}
 
 export function mergeSearchResults(
   sortedSessions: readonly SessionInfo[],
@@ -439,10 +378,6 @@ export function ChatSidebar({
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
-  // Trailing decorations for those rows (e.g. the Kanban pause badge): a live
-  // render slot, so a plugin's badge can follow state without re-registering
-  // the row (which would tear the nav list down mid-session).
-  const navTrailing = useContributions(SIDEBAR_NAV_TRAILING_AREA)
 
   const contributedNav = useMemo<SidebarNavItem[]>(
     () =>
@@ -1704,16 +1639,7 @@ export function ChatSidebar({
                         size="sm"
                       />
                     )}
-                    {/* Contributed trailing chips for THIS row (sidebar.nav.trailing).
-                        Rendered after the label so `ml-auto` pushes them to the
-                        edge; a throwing decorator is isolated by the boundary. */}
-                    {navTrailing
-                      .filter(c => rowOwnsTrailing(item, c.data as Partial<SidebarNavTrailingContribution> | undefined))
-                      .map(c => (
-                        <ContribBoundary id={c.id} key={c.id} variant="chip">
-                          <ContribRender render={c.render!} />
-                        </ContribBoundary>
-                      ))}
+                    <NavTrailingChips item={item} />
                   </SidebarMenuButton>
                 )
 

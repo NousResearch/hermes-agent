@@ -9,6 +9,7 @@ import re
 from typing import Any, List
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
+from tools.schema_sanitizer import _SCHEMA_CHILD_KEYS
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -68,7 +69,7 @@ def _rewrite_local_refs(node):
 
 # Mapping-valued JSON Schema keywords: the value maps entry NAMES to schemas and is never a
 # schema node itself. Repair must recurse into the map's values only (#110530).
-_SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
+_SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies")
 
 
 def _repair_object_shape(node, *, _object_root=False):
@@ -97,8 +98,10 @@ def _repair_object_shape(node, *, _object_root=False):
             # the whole map would inject a bogus ``"type": "object"`` *entry* when one of its
             # keys is literally named ``properties``/``required`` (#110530).
             repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
-        else:
+        elif key in _SCHEMA_CHILD_KEYS:
             repaired[key] = _repair_object_shape(value)
+        else:
+            repaired[key] = value  # Defaults, consts and extension metadata are literal data.
     # Constraint fragments are returned untouched: repairing them is what destroys them.
     if _object_root or "properties" in repaired or "type" in node:
         if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
@@ -112,6 +115,8 @@ def _repair_object_shape(node, *, _object_root=False):
             props = repaired.get("properties") or {}
             repaired["required"] = ([r for r in required if isinstance(r, str) and r in props]
                                     if isinstance(required, list) else [])
+    if repaired.get("type") == "array" and "items" not in repaired and "prefixItems" not in repaired:
+        repaired["items"] = {}
     return repaired
 
 

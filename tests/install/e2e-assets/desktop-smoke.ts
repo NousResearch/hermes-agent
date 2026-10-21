@@ -346,9 +346,10 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     // `identity.hermesRoot` was asserted against options.root above. For a listener that
     // descends from this app process, on a platform that cannot read the backend's own
     // environment, those two facts are the available evidence; a ledger-attached host
-    // backend is not tied to the app by ancestry and must prove its tree itself.
-    assertBackendOrigin(backend, options.root, options.origin, { appReportedRoot: identity.hermesRoot })
+    // backend is not tied to the app by ancestry and must prove its tree itself; a canonical
+    // gateway whose cwd is unreadable must report the installed commit.
     const provenanceCommit = readInstallationCommit(options.root, options.origin)
+    assertBackendOrigin(backend, options.root, options.origin, { appReportedRoot: identity.hermesRoot, installedCommit: provenanceCommit })
     if (provenanceCommit !== options['expect-commit']) { throw new Error('Installed commit differs from --expect-commit') }
     // Trace only chat actions. Connection probes can return credential-bearing logs.
     await app.context().tracing.start({ screenshots: true, snapshots: false, sources: false })

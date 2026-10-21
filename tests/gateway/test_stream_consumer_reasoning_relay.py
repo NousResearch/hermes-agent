@@ -153,3 +153,54 @@ class TestRelayWiringGates:
     def test_on_reasoning_exists(self):
         consumer = _consumer(MagicMock())
         assert hasattr(consumer, "on_reasoning")
+
+
+# ── safety & entity formatting ───────────────────────────────────────────
+
+
+class TestReasoningEntitySafety:
+    def test_internal_double_pipes_are_sanitized(self):
+        """Internal || (bash, OR, discussion) must be escaped to |\\| so they
+        never collide with Telegram spoiler entities or leave dangling tags."""
+        adapter = _RecordingAdapter()
+        consumer = _consumer(adapter)
+
+        async def scenario():
+            task = asyncio.create_task(consumer.run())
+            consumer.on_reasoning("checking cmd1 || cmd2 in text\n")
+            await asyncio.sleep(0.3)
+            consumer.finish()
+            await task
+
+        _run(scenario())
+        bubbles = _bubbles(adapter)
+        assert bubbles, "expected at least one 💭 bubble"
+        content = bubbles[0][1]
+        assert "|\\|" in content, f"expected escaped pipe |\\| in bubble, got: {content}"
+        assert content.startswith("**> 💭 thinking..."), f"expected leading **>, got: {content}"
+        assert content.endswith("||"), f"expected trailing ||, got: {content}"
+
+    def test_large_reasoning_is_chunked_into_safe_bubbles(self):
+        """Reasoning exceeding ~2000 chars is cleanly chunked into self-contained
+        bubbles so truncate_message never splits a quote and breaks entities."""
+        adapter = _RecordingAdapter()
+        consumer = _consumer(adapter)
+
+        async def scenario():
+            task = asyncio.create_task(consumer.run())
+            # Feed 3500 chars across multiple lines
+            for i in range(35):
+                consumer.on_reasoning(f"line {i:02d} " + ("x" * 90) + "\n")
+            await asyncio.sleep(0.3)
+            consumer.finish()
+            await task
+
+        _run(scenario())
+        bubbles = _bubbles(adapter)
+        assert len(bubbles) >= 2, f"expected at least 2 safe bubbles, got: {len(bubbles)}"
+        assert "💭 thinking..." in bubbles[0][1]
+        assert "💭 thinking... (cont.)" in bubbles[1][1]
+        for idx, (_, b) in enumerate(bubbles):
+            assert b.startswith("**> "), f"bubble {idx} should start with **>, got: {b[:20]}"
+            assert b.endswith("||"), f"bubble {idx} should end with ||, got: {b[-20:]}"
+

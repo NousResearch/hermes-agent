@@ -685,30 +685,48 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         # G-레미's suggestion via dad (2026-10-19).  The
                         # adapter converts "> "-prefixed lines to blockquote
                         # entities; the official MarkdownV2 expandability
-                        # mark is a trailing || on the LAST quoted line
-                        # (core.telegram.org/bots/api).  Short quotes (<3
-                        # lines) simply render as a plain blockquote.
-                        # Dad's 2026-10-21 label idea, take-2 (collapse-safe):
-                        #  - a blank line rendered as bare '>' does NOT match
-                        #    the adapter's blockquote pattern, so it escapes
-                        #    out as a literal '>' and SHATTERS the quote into
-                        #    separate blockquotes — the expandable mark then
-                        #    only covers the last fragment (collapse dies)
-                        #  - so: drop blank lines (keep line breaks between
-                        #    real lines), widen tabs to 4 spaces, and keep the
-                        #    expandability mark on the final line only
-                        _lines = ["💭 thinking..."] + [
+                        # mark is a leading '**>' and trailing '||' on the LAST quoted line
+                        # (core.telegram.org/bots/api).
+                        #
+                        # Collapse-safety & Anti-leak guarantees (Dad & Remi 2026-10-21):
+                        # 1. Sanitize any literal '||' inside reasoning text to prevent
+                        #    accidental Telegram spoiler entities (mosaic blur) or unpaired
+                        #    spoiler errors that break MarkdownV2 parse.
+                        # 2. Prepend '**>' to line 1 and '>' to subsequent lines.
+                        # 3. Chunk reasoning into self-contained <=2000 character bubbles
+                        #    so truncate_message never splits a quote into (1/2) pieces,
+                        #    which would shatter the blockquote and dump raw plain text ("하얀 씽킹").
+                        _sanitized = _rtext.replace("||", "|\\|")
+                        _raw_lines = [
                             ln.replace("\t", "    ")
-                            for ln in _rtext.splitlines() if ln.strip()
+                            for ln in _sanitized.splitlines() if ln.strip()
                         ]
-                        _quoted = "\n".join(
-                            f"> {ln}" + ("||" if _i == len(_lines) - 1 else "")
-                            for _i, ln in enumerate(_lines)
-                        )
-                        _rok = await self._send_commentary(_quoted)
-                        if _rok:
-                            self._reasoning_bubble_count += 1
-                            self.reasoning_delivered = True
+                        if _raw_lines:
+                            _max_chunk_chars = 2000
+                            _bubble_chunks: list[list[str]] = []
+                            _curr_lines: list[str] = []
+                            _curr_len = 0
+                            for ln in _raw_lines:
+                                if _curr_len + len(ln) > _max_chunk_chars and _curr_lines:
+                                    _bubble_chunks.append(_curr_lines)
+                                    _curr_lines = []
+                                    _curr_len = 0
+                                _curr_lines.append(ln)
+                                _curr_len += len(ln)
+                            if _curr_lines:
+                                _bubble_chunks.append(_curr_lines)
+
+                            for _b_idx, _b_lines in enumerate(_bubble_chunks):
+                                _hdr = "💭 thinking..." if (self._reasoning_bubble_count == 0 and _b_idx == 0) else "💭 thinking... (cont.)"
+                                _all_lines = [_hdr] + _b_lines
+                                _quoted = "\n".join(
+                                    (f"**> {ln}" if _i == 0 else f"> {ln}") + ("||" if _i == len(_all_lines) - 1 else "")
+                                    for _i, ln in enumerate(_all_lines)
+                                )
+                                _rok = await self._send_commentary(_quoted)
+                                if _rok:
+                                    self._reasoning_bubble_count += 1
+                                    self.reasoning_delivered = True
                         self._last_edit_time = time.monotonic()
                     if _phase_ended:
                         # New phase starts with the next delta (if any):

@@ -1,0 +1,28 @@
+name: catalogo-it
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: 8da7df4ad6c71399770f9500b13b16bb9ba74fdb
+subdir: plugins/catalogo-it
+version: "1.0.0"
+title: Catalogo Plugin IT
+description: 'Browse the official Hermes plugin catalog inside Hermes Desktop, in Italian: a native
+  page (sidebar row "Catalogo Plugin", route /catalogo, plus a palette command) with search, category
+  and tier filters, a detail panel, and descriptions translated on the fly. Disclosure — translating
+  a description sends that description text (at most about 1500 characters, no personal data) to Google
+  Translate (translate.googleapis.com) and, as a fallback, MyMemory (api.mymemory.translated.net);
+  if both are unavailable it asks the local llama.cpp server instead, reading the llama.cpp API key
+  through this plugin own dashboard backend route. No credentials are stored, no telemetry, nothing
+  is sent anywhere but those three services and only when a description is translated. The interface
+  is Italian by design: this is an Italian-language catalog page. Entries install through the same
+  hermes://plugin/install flow the built-in picker uses. Desktop page plus a FastAPI dashboard backend
+  that serves the local llama.cpp API key; no agent tools, hooks, middleware or environment variables.'
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/catalogo-it
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -36,7 +36,7 @@ from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_env_scope import ProcessEnvScopeMixin
-from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
+from tools.process_registry_output_log import ProcessOutputLogMixin, finish_reader, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -1396,6 +1396,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session.process.wait, lambda: session.process.returncode,
                 proc=session.process)
 
+    _finish_reader = finish_reader
     _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):

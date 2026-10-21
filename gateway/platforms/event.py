@@ -39,6 +39,10 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+    # A pre_gateway_dispatch hook dropped the message before a turn ran (#133475). Distinct
+    # from SUCCESS (the sender must not see an "answered" ack) and from FAILURE (a drop is a
+    # decision, not an error). Adapters should retract the in-progress marker and add nothing.
+    SKIPPED = "skipped"
 
 
 @dataclass

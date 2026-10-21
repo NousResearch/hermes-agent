@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -34,6 +35,8 @@ from _hermes_home import get_hermes_home
 
 SCHEMA_VERSION = 1
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+APPROVED_READONLY_SCOPES = frozenset({GMAIL_READONLY_SCOPE, DRIVE_READONLY_SCOPE})
 ALIAS_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -63,12 +66,14 @@ class AdapterError(RuntimeError):
         api_calls: int = 0,
         identity_verified: bool = False,
         request_shape: dict[str, Any] | None = None,
+        started_at: str | None = None,
     ):
         self.code = code
         self.exit_code = exit_code
         self.api_calls = api_calls
         self.identity_verified = identity_verified
         self.request_shape = request_shape
+        self.started_at = started_at
         super().__init__(code)
 
     def bind_runtime(
@@ -77,10 +82,12 @@ class AdapterError(RuntimeError):
         api_calls: int,
         identity_verified: bool,
         request_shape: dict[str, Any],
+        started_at: str,
     ) -> None:
         self.api_calls = api_calls
         self.identity_verified = identity_verified
         self.request_shape = request_shape
+        self.started_at = started_at
 
 
 @dataclass(frozen=True)
@@ -205,6 +212,40 @@ def _read_private_json(path: Path, *, error_code: str) -> dict[str, Any]:
     return payload
 
 
+def _normalize_account_mapping(payload: dict[str, Any]) -> dict[str, str]:
+    """Normalize the deployed flat map and the versioned nested contract."""
+
+    keys = set(payload)
+    accounts = payload.get("accounts")
+    if not isinstance(accounts, dict) or not accounts:
+        raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+    if keys == {"accounts"}:
+        if not all(isinstance(value, str) for value in accounts.values()):
+            raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+        raw_accounts = accounts
+    elif keys == {"schema_version", "accounts"} and payload.get("schema_version") == 1:
+        if not all(
+            isinstance(value, dict) and set(value) == {"email"}
+            for value in accounts.values()
+        ):
+            raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+        raw_accounts = {alias: value["email"] for alias, value in accounts.items()}
+    else:
+        raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+    normalized: dict[str, str] = {}
+    for alias, email in raw_accounts.items():
+        if (
+            not isinstance(alias, str)
+            or not ALIAS_RE.fullmatch(alias)
+            or not isinstance(email, str)
+            or email != email.strip()
+            or not EMAIL_RE.fullmatch(email)
+        ):
+            raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
+        normalized[alias] = email.lower()
+    return normalized
+
+
 def load_account_context(alias: str, hermes_home: Path | None = None) -> AccountContext:
     """Resolve one named account without accepting an arbitrary credential path."""
 
@@ -229,15 +270,9 @@ def load_account_context(alias: str, hermes_home: Path | None = None) -> Account
     account_map = _read_private_json(
         account_map_path, error_code="UNSAFE_ACCOUNT_MAPPING"
     )
-    if account_map.get("schema_version") != 1 or not isinstance(
-        account_map.get("accounts"), dict
-    ):
-        raise AdapterError("INVALID_ACCOUNT_MAPPING", exit_code=3)
-    account_entry = account_map["accounts"].get(alias)
-    if not isinstance(account_entry, dict):
-        raise AdapterError("ACCOUNT_IDENTITY_MISSING", exit_code=3)
-    expected_email = account_entry.get("email")
-    if not isinstance(expected_email, str) or not EMAIL_RE.fullmatch(expected_email):
+    normalized_accounts = _normalize_account_mapping(account_map)
+    expected_email = normalized_accounts.get(alias)
+    if expected_email is None:
         raise AdapterError("ACCOUNT_IDENTITY_MISSING", exit_code=3)
     payload = _read_private_json(token_path, error_code="UNSAFE_ACCOUNT_CREDENTIALS")
     raw_scopes = payload.get("scopes")
@@ -248,15 +283,13 @@ def load_account_context(alias: str, hermes_home: Path | None = None) -> Account
     ):
         raise AdapterError("GMAIL_SCOPE_MISMATCH", exit_code=3)
     scopes = tuple(dict.fromkeys(raw_scopes))
-    gmail_scopes = {
-        scope
-        for scope in scopes
-        if scope == "https://mail.google.com/"
-        or scope.startswith("https://www.googleapis.com/auth/gmail.")
-    }
-    if gmail_scopes != {GMAIL_READONLY_SCOPE}:
+    scope_set = set(scopes)
+    if (
+        GMAIL_READONLY_SCOPE not in scope_set
+        or not scope_set <= APPROVED_READONLY_SCOPES
+    ):
         raise AdapterError("GMAIL_SCOPE_MISMATCH", exit_code=3)
-    return AccountContext(alias, expected_email.lower(), token_path, payload, scopes)
+    return AccountContext(alias, expected_email, token_path, payload, scopes)
 
 
 def build_service(context: AccountContext, *, timeout_s: float) -> Any:
@@ -294,6 +327,13 @@ def _http_status(exc: BaseException) -> int | None:
         return None
 
 
+def _set_transport_timeout(service: Any, timeout_s: float) -> None:
+    authorized_http = getattr(service, "_http", None)
+    transport = getattr(authorized_http, "http", None)
+    if transport is not None and hasattr(transport, "timeout"):
+        transport.timeout = timeout_s
+
+
 def _is_refresh_error(exc: BaseException) -> bool:
     try:
         from google.auth.exceptions import RefreshError
@@ -314,6 +354,24 @@ def _decode_urlsafe(value: str, *, error_code: str) -> bytes:
         return base64.urlsafe_b64decode(padded.encode("ascii"))
     except (ValueError, UnicodeEncodeError):
         raise AdapterError(error_code) from None
+
+
+def _decode_body_prefix(value: str, max_bytes: int) -> tuple[bytes, bool]:
+    if not isinstance(value, str):
+        raise AdapterError("INVALID_MESSAGE_BODY")
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeEncodeError:
+        raise AdapterError("INVALID_MESSAGE_BODY") from None
+    max_encoded = ((max_bytes + 2) // 3) * 4
+    prefix = encoded[:max_encoded]
+    padded = prefix + b"=" * (-len(prefix) % 4)
+    try:
+        decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError):
+        raise AdapterError("INVALID_MESSAGE_BODY") from None
+    truncated = len(encoded) > len(prefix) or len(decoded) > max_bytes
+    return decoded[:max_bytes], truncated
 
 
 def _headers(payload: dict[str, Any]) -> dict[str, str]:
@@ -343,7 +401,7 @@ def _walk_parts(payload: dict[str, Any]) -> Iterable[dict[str, Any]]:
 def _body_and_attachments(
     payload: dict[str, Any], max_body_bytes: int
 ) -> tuple[str, bool, list[dict[str, Any]]]:
-    candidates: list[tuple[int, str]] = []
+    candidates: dict[int, tuple[str, bool]] = {}
     attachments: list[dict[str, Any]] = []
     seen_attachments: set[str] = set()
     for part in _walk_parts(payload):
@@ -374,19 +432,14 @@ def _body_and_attachments(
         data = body.get("data")
         mime = str(part.get("mimeType") or "").lower()
         if isinstance(data, str) and mime in {"text/plain", "text/html"}:
-            decoded = _decode_urlsafe(data, error_code="INVALID_MESSAGE_BODY")
-            candidates.append(
-                (
-                    0 if mime == "text/plain" else 1,
-                    decoded.decode("utf-8", errors="replace"),
+            priority = 0 if mime == "text/plain" else 1
+            if priority not in candidates:
+                decoded, truncated = _decode_body_prefix(data, max_body_bytes)
+                candidates[priority] = (
+                    decoded.decode("utf-8", errors="ignore"),
+                    truncated,
                 )
-            )
-    text = min(candidates, key=lambda item: item[0])[1] if candidates else ""
-    encoded = text.encode("utf-8")
-    truncated = len(encoded) > max_body_bytes
-    if truncated:
-        encoded = encoded[:max_body_bytes]
-        text = encoded.decode("utf-8", errors="ignore")
+    text, truncated = candidates[min(candidates)] if candidates else ("", False)
     return text, truncated, attachments
 
 
@@ -493,6 +546,7 @@ class GmailReadClient:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        request_timeout_s: float | None = None,
     ) -> None:
         self.service = service
         self.context = context
@@ -500,16 +554,24 @@ class GmailReadClient:
         self.monotonic = monotonic
         self.sleep = sleep
         self.started = monotonic()
+        self.request_timeout_s = min(
+            request_timeout_s if request_timeout_s is not None else limits.deadline_s,
+            limits.deadline_s,
+        )
+        self.last_request_timeout_s = self.request_timeout_s
         self.api_calls = 0
         self.identity_verified = False
 
     def _execute(self, factory: Callable[[], Any]) -> dict[str, Any]:
         for attempt in range(self.limits.attempts):
-            if self.monotonic() - self.started >= self.limits.deadline_s:
+            remaining = self.limits.deadline_s - (self.monotonic() - self.started)
+            if remaining <= 0:
                 raise AdapterError("DEADLINE_EXCEEDED")
             if self.api_calls >= self.limits.max_api_calls:
                 raise AdapterError("API_CALL_BUDGET_EXCEEDED")
             self.api_calls += 1
+            self.last_request_timeout_s = min(self.request_timeout_s, remaining)
+            _set_transport_timeout(self.service, self.last_request_timeout_s)
             try:
                 result = factory().execute()
                 if not isinstance(result, dict):
@@ -570,7 +632,12 @@ class GmailReadClient:
         )
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for item in page.get("messages") or []:
+        raw_messages = page.get("messages") or []
+        if not isinstance(raw_messages, list):
+            raise AdapterError("INVALID_GMAIL_RESPONSE")
+        if len(raw_messages) > max_results:
+            raise AdapterError("RESPONSE_ITEM_BUDGET_EXCEEDED")
+        for item in raw_messages:
             if not isinstance(item, dict):
                 continue
             message_id = _validate_id(item.get("id"), "message")
@@ -886,9 +953,14 @@ def execute(
         gmail = (
             service
             if service is not None
-            else build_service(context, timeout_s=args.timeout)
+            else build_service(context, timeout_s=min(args.timeout, args.deadline))
         )
-        client = GmailReadClient(gmail, context, limits)
+        client = GmailReadClient(
+            gmail,
+            context,
+            limits,
+            request_timeout_s=min(args.timeout, args.deadline),
+        )
         data, handler_shape = handler(args, client, home, context)
         if handler_shape != request_shape:
             raise AdapterError("REQUEST_SHAPE_MISMATCH")
@@ -899,6 +971,7 @@ def execute(
                 client.identity_verified if client is not None else False
             ),
             request_shape=request_shape,
+            started_at=started_at,
         )
         raise
     finished_at = _utcnow()
@@ -998,7 +1071,7 @@ def _persist_error_receipt(
         "account": alias,
         "operation": operation,
         "status": "blocked" if error.exit_code == 3 else "error",
-        "started_at": now,
+        "started_at": error.started_at or now,
         "finished_at": now,
         "identity_verified": error.identity_verified,
         "api_calls": error.api_calls,

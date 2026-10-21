@@ -188,19 +188,30 @@ the owner-only `${HERMES_HOME:-$HOME/.hermes}/google-accounts/accounts.json`:
 
 ```json
 {
-  "schema_version": 1,
   "accounts": {
-    "personal": {"email": "owner@example.com"}
+    "personal": "owner@example.com"
   }
 }
 ```
 
+The optional versioned form is
+`{"schema_version":1,"accounts":{"personal":{"email":"owner@example.com"}}}`.
+Do not mix flat and nested entries or add unrelated top-level fields; malformed
+or ambiguous maps fail closed.
+
 The mapping and each token file must be regular owner-only files. A token's own
 account hint is never an identity authority. The token must carry exactly the
-`gmail.readonly` Gmail scope (unrelated read-only Google scopes are allowed),
-and the adapter verifies `users.getProfile` against the independent mapping
-before every mailbox operation. It writes only body-free receipts plus
+`gmail.readonly` scope plus, optionally, `drive.readonly`; every other scope is
+rejected. The adapter verifies `users.getProfile` against the independent
+mapping before every mailbox operation. It writes only body-free receipts plus
 explicitly fetched attachments under the private account-scoped source cache.
+The request timeout is capped by the remaining total deadline; result, decoded
+body, message, MIME-part, API-call, retry, and attachment sizes are bounded.
+
+The path checks reject static symlinks, hardlinked attachments, broad modes,
+and wrong owners where the OS exposes ownership. They are a fail-closed storage
+guard, not isolation from a hostile process already running as the same OS
+user; use a separate service account when that is the threat boundary.
 
 ```bash
 GMAIL_READ="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/gmail_read_api.py"

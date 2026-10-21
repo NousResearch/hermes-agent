@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -42,21 +43,23 @@ def _write_account(
     *,
     mapping_email=None,
     token_email=None,
+    mapping_shape="flat",
 ):
     accounts_root = home / "google-accounts"
     directory = accounts_root / alias
     directory.mkdir(parents=True)
     mapping = accounts_root / "accounts.json"
-    mapping.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "accounts": {
-                    alias: {"email": mapping_email or email},
-                },
-            }
-        )
-    )
+    expected = mapping_email or email
+    if mapping_shape == "flat":
+        mapping_payload = {"accounts": {alias: expected}}
+    elif mapping_shape == "versioned":
+        mapping_payload = {
+            "schema_version": 1,
+            "accounts": {alias: {"email": expected}},
+        }
+    else:
+        raise AssertionError("unknown fixture mapping shape")
+    mapping.write_text(json.dumps(mapping_payload))
     mapping.chmod(0o600)
     token = directory / "google_token.json"
     token.write_text(
@@ -175,6 +178,8 @@ def _metadata(message_id="m1", thread_id="t1"):
 def test_context_resolves_only_private_named_account(module, tmp_path):
     home = tmp_path / ".hermes"
     token = _write_account(home)
+    mapping = home / "google-accounts" / "accounts.json"
+    mapping_before = mapping.read_bytes()
 
     context = module.load_account_context("personal", home)
 
@@ -182,6 +187,51 @@ def test_context_resolves_only_private_named_account(module, tmp_path):
     assert context.expected_email == "person@example.com"
     assert context.token_path == token
     assert context.source_id == "gmail:personal"
+    assert json.loads(mapping_before) == {
+        "accounts": {"personal": "person@example.com"}
+    }
+    assert mapping.read_bytes() == mapping_before
+
+
+def test_context_supports_versioned_nested_mapping(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home, mapping_shape="versioned")
+
+    context = module.load_account_context("personal", home)
+
+    assert context.expected_email == "person@example.com"
+
+
+@pytest.mark.parametrize(
+    "mapping_payload",
+    [
+        {
+            "accounts": {
+                "personal": "person@example.com",
+                "company": {"email": "company@example.com"},
+            }
+        },
+        {"accounts": {"personal": {"email": "person@example.com"}}},
+        {
+            "schema_version": 1,
+            "accounts": {"personal": "person@example.com"},
+        },
+        {
+            "schema_version": 1,
+            "accounts": {"personal": {"email": "person@example.com"}},
+            "unexpected": True,
+        },
+    ],
+)
+def test_context_rejects_malformed_or_mixed_mapping(module, tmp_path, mapping_payload):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    mapping = home / "google-accounts" / "accounts.json"
+    mapping.write_text(json.dumps(mapping_payload))
+    mapping.chmod(0o600)
+
+    with pytest.raises(module.AdapterError, match="INVALID_ACCOUNT_MAPPING"):
+        module.load_account_context("personal", home)
 
 
 @pytest.mark.parametrize("alias", ["../personal", "Personal", "a/b", "", "a" * 40])
@@ -222,6 +272,8 @@ def test_context_requires_owner_only_independent_mapping(module, tmp_path):
     [
         [DRIVE_READONLY],
         [READONLY, "https://www.googleapis.com/auth/gmail.modify"],
+        [READONLY, "https://www.googleapis.com/auth/calendar.readonly"],
+        [READONLY, "https://www.googleapis.com/auth/drive"],
         ["https://mail.google.com/"],
         "not-a-list",
     ],
@@ -327,6 +379,24 @@ def test_search_receipt_key_binds_exact_page_token(module, tmp_path):
     assert first["receipt"]["path"] != second["receipt"]["path"]
 
 
+def test_search_fails_if_provider_exceeds_result_budget(module, tmp_path):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    service = FakeService(
+        list_response={"messages": [{"id": "m1"}, {"id": "m2"}]},
+        messages={"m1": _metadata("m1"), "m2": _metadata("m2")},
+    )
+
+    with pytest.raises(module.AdapterError, match="RESPONSE_ITEM_BUDGET_EXCEEDED"):
+        module.execute(
+            _args(module, "search", "subject:contract", "--max-results", "1"),
+            service=service,
+            hermes_home=home,
+        )
+
+    assert [name for name, _ in service.calls] == ["profile", "list"]
+
+
 def test_get_recurses_mime_and_lists_attachments(module, tmp_path):
     home = tmp_path / ".hermes"
     _write_account(home)
@@ -380,6 +450,38 @@ def test_get_truncates_body_by_utf8_bytes(module, tmp_path):
 
     assert output["data"]["body"] == "é"
     assert output["data"]["body_truncated"] is True
+
+
+def test_get_bounds_base64_decode_before_allocating_full_body(
+    module, tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    message = _metadata()
+    raw_body = b"x" * 10_000
+    message["payload"].update(
+        {
+            "mimeType": "text/plain",
+            "body": {"data": module.base64.urlsafe_b64encode(raw_body).decode()},
+        }
+    )
+    observed_encoded_lengths = []
+    original_decode = module.base64.b64decode
+
+    def bounded_decode(value, *args, **kwargs):
+        observed_encoded_lengths.append(len(value))
+        return original_decode(value, *args, **kwargs)
+
+    monkeypatch.setattr(module.base64, "b64decode", bounded_decode)
+    output = module.execute(
+        _args(module, "get", "m1", "--max-body-bytes", "10"),
+        service=FakeService(messages={"m1": message}),
+        hermes_home=home,
+    )
+
+    assert output["data"]["body"] == "x" * 10
+    assert output["data"]["body_truncated"] is True
+    assert observed_encoded_lengths == [16]
 
 
 def test_get_rejects_large_message_before_full_read(module, tmp_path):
@@ -526,6 +628,46 @@ def test_retry_and_api_call_budget_are_bounded(module, tmp_path):
         exhausted.search("is:unread", 1, None)
 
 
+def test_request_timeout_is_capped_by_declared_and_remaining_deadline(
+    module, tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    _write_account(home)
+    captured = {}
+    built_service = FakeService()
+    built_service._http = types.SimpleNamespace(
+        http=types.SimpleNamespace(timeout=999.0)
+    )
+
+    def fake_build(_context, *, timeout_s):
+        captured["build_timeout"] = timeout_s
+        return built_service
+
+    monkeypatch.setattr(module, "build_service", fake_build)
+    module.execute(
+        _args(module, "--timeout", "30", "--deadline", "5", "profile"),
+        hermes_home=home,
+    )
+    assert captured["build_timeout"] == 5
+    assert built_service._http.http.timeout <= 5
+
+    clock = iter([0.0, 7.0])
+    remaining_service = FakeService()
+    remaining_service._http = types.SimpleNamespace(
+        http=types.SimpleNamespace(timeout=999.0)
+    )
+    context = module.load_account_context("personal", home)
+    client = module.GmailReadClient(
+        remaining_service,
+        context,
+        module.Limits(10, 10, 1),
+        monotonic=lambda: next(clock),
+        request_timeout_s=30,
+    )
+    client.profile()
+    assert remaining_service._http.http.timeout == 3
+
+
 def test_refresh_error_is_typed_reauth_without_detail(module, tmp_path):
     RefreshError = type(
         "RefreshError",
@@ -554,9 +696,15 @@ def test_refresh_error_is_typed_reauth_without_detail(module, tmp_path):
     assert "invalid_grant" not in str(error)
 
 
-def test_error_receipt_binds_request_and_runtime_state(module, tmp_path):
+def test_error_receipt_binds_request_runtime_and_distinct_times(
+    module, tmp_path, monkeypatch
+):
     home = tmp_path / ".hermes"
     _write_account(home)
+    times = iter(
+        ["2026-10-21T10:00:00Z", "2026-10-21T10:00:05Z", "2026-10-21T10:00:06Z"]
+    )
+    monkeypatch.setattr(module, "_utcnow", lambda: next(times))
     args = _args(
         module,
         "--attempts",
@@ -580,6 +728,8 @@ def test_error_receipt_binds_request_and_runtime_state(module, tmp_path):
     assert receipt["api_calls"] == 2
     assert receipt["identity_verified"] is True
     assert receipt["error_code"] == "GMAIL_API_UNAVAILABLE"
+    assert receipt["started_at"] == "2026-10-21T10:00:00Z"
+    assert receipt["finished_at"] == "2026-10-21T10:00:05Z"
     assert "private-contract" not in receipt_path.read_text()
     other_args = _args(
         module,
@@ -595,6 +745,7 @@ def test_error_receipt_binds_request_and_runtime_state(module, tmp_path):
         api_calls=2,
         identity_verified=True,
         request_shape=module._search_shape(other_args),
+        started_at="2026-10-21T10:00:01Z",
     )
     other_path = module._persist_error_receipt(other_args, other_error, home)
     assert other_path != receipt_path

@@ -14,8 +14,9 @@ the parent can re-dispatch or take over.
 
 Per-call opt-in only (no config default); every continuation turn is
 parent-visible (api_calls/cost fold into the child's entry). Judge failures
-fail OPEN exactly like the kanban loop: the loop stops rather than burn budget
-on an unreachable judge.
+stop the loop on the first unusable assessment rather than spend another child
+turn without a valid continue verdict. Unlike a durable kanban worker, a child
+returns its partial result to the parent for an explicit retry decision.
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ _BUDGET_NOTE = (
 def _judge_available() -> bool:
     """``judge_goal`` fails open (no auxiliary model -> ``"continue"``), which would
     burn the whole child budget against an unreachable judge; so goal_mode refuses
-    to arm unless a judge is actually reachable (mirrors kanban's gate)."""
+    to arm unless a judge client is configured. This is not a network probe;
+    runtime failures are handled by the between-turn judge call."""
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
         client, model = get_text_auxiliary_client("goal_judge")
@@ -92,7 +94,7 @@ def _apply_goal_mode(
 def _child_goal_cfg(task: Dict[str, Any]) -> Optional[Dict[str, int]]:
     """Per-child goal-mode config from its task dict; None keeps the child on the plain path.
     Also gates model-supplied per-task flags (which bypass ``_apply_goal_mode``) on the judge
-    actually being reachable — without it the loop would stop after turn one."""
+    being configured — without it the loop would stop after turn one."""
     if not task.get("goal_mode"):
         return None
     if not _judge_available():
@@ -108,16 +110,19 @@ def _child_goal_cfg(task: Dict[str, Any]) -> Optional[Dict[str, int]]:
 def _judge_child_turn(goal_text: str, response: str, session_id: str) -> Tuple[str, str]:
     """One between-turns judge call for a child. The judge runs OUTSIDE any agent turn:
     bind the child's relay-affinity scope (same shape as the kanban loop / handoff gates)
-    so the relay does not reject the call (#113669). Fail-open -> (\"continue\", reason)."""
+    so the relay does not reject the call (#113669). Unusable assessments stop
+    delegation rather than turning an inference failure into billed child work."""
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
 
     affinity_token = None if get_affinity_scope() else set_affinity_scope(f"delegation-child:{session_id}")
     try:
         from hermes_cli.goals import judge_goal
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, response)
+        verdict, reason, parse_failed, _wait, transport_failed = judge_goal(goal_text, response)
+        if parse_failed or transport_failed:
+            return "judge_unreachable", reason
     except Exception as exc:
-        logger.warning("goal-mode judge call failed (%s); continuing once", exc)
-        return "continue", f"judge error: {type(exc).__name__}"
+        logger.warning("goal-mode judge call failed (%s); stopping", exc)
+        return "judge_unreachable", f"judge error: {type(exc).__name__}"
     finally:
         if affinity_token is not None:
             reset_affinity_scope(affinity_token)
@@ -203,9 +208,11 @@ def run_goal_continuations(
             loop_info["outcome"] = "blocked"
             loop_info["remaining_work"] = _truncate(reason, 500)
             return result, loop_info
+        if verdict == "judge_unreachable":
+            loop_info["outcome"] = "judge_unreachable"
+            return result, loop_info
         if verdict == "skipped":
-            # Judge unreachable/empty goal: fail open by STOPPING (not looping) so an
-            # unreachable judge cannot silently burn the remaining budget.
+            # judge_goal skips only empty goals, not inference failures.
             loop_info["outcome"] = "judge_unavailable"
             return result, loop_info
         if verdict == "done":
@@ -239,6 +246,11 @@ def run_goal_continuations(
 def _remaining_work_note(loop_info: Dict[str, Any]) -> Optional[str]:
     """Structured remaining-work note for a budget-exhausted child: the parent reads this
     to re-dispatch or take over."""
+    if loop_info.get("outcome") == "judge_unreachable":
+        return (
+            "Goal-mode stopped because the judge could not evaluate the partial result; "
+            f"parent must inspect or retry. Last assessment: {loop_info.get('last_reason', '')}"
+        )
     if loop_info.get("outcome") != "budget_exhausted":
         return None
     reason = loop_info.get("last_reason")

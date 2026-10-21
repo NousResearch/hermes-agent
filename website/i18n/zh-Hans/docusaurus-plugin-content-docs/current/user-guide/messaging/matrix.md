@@ -243,15 +243,18 @@ Hermes 支持 Matrix 端对端加密，你可以在加密房间中与机器人�
 
 ### 前提条件
 
-E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
+E2EE 需要带有加密扩展的 `mautrix` 库（即 `[matrix-e2ee]` extra）以及 `libolm` C 库：
 
 ```bash
-# 安装带 E2EE 支持的 mautrix
-python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
+# 安装 E2EE 依赖闭包（mautrix[encryption] → python-olm；仅限 Linux）
+python -c "import pm; pm.sync_venv(['matrix-e2ee'], explicit=True)"
 
 # 或通过 hermes extras 安装
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix-e2ee'], explicit=True)"
 ```
+
+单独的 `[matrix]` extra 只是普通客户端——它不会解析 `python-olm`，因此关闭 E2EE 的部署
+不会安装任何加密依赖，也不需要 C++ 工具链。
 
 你还需要在系统上安装 `libolm`：
 
@@ -330,7 +333,7 @@ Hermes 在启动时会检测到此情况并拒绝启用 E2EE，日志显示：`d
 :::
 
 :::info
-如果未安装 `mautrix[encryption]` 或缺少 `libolm`，机器人会自动回退到普通（未加密）客户端。你会在日志中看到警告。
+如果未安装 `mautrix[encryption]`（`[matrix-e2ee]` extra）或缺少 `libolm`，机器人会自动回退到普通（未加密）客户端。你会在日志中看到警告。默认的 `MATRIX_E2EE_MODE=off` 下不会安装任何相关依赖，也不会记录警告。
 :::
 
 ## 主房间

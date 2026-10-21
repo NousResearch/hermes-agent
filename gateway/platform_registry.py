@@ -12,7 +12,7 @@ import logging
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from hermes_constants import hermes_home_key
 
@@ -76,6 +76,10 @@ class PlatformEntry:
     is_connected: Optional[Callable[[Any], bool]] = None
     required_env: list = field(default_factory=list)  # ``hermes setup`` display
     install_hint: str = ""  # shown when check_fn is False
+    # Extras this platform needs installed, when that depends on configuration rather than the
+    # fixed extra named after the platform (Matrix: ``[matrix-e2ee]`` only with E2EE on). Read by
+    # the updater's configured-features pass; None falls back to ``[name]``.
+    extra_names_fn: Optional[Callable[[], Sequence[str]]] = None
     setup_fn: Optional[Callable[[], None]] = None  # None = _setup_standard_platform / env display
     source: str = "plugin"  # "builtin" or "plugin"
     plugin_name: str = ""  # owning manifest so ``hermes gateway setup`` can auto-enable it

@@ -79,3 +79,70 @@ def test_interactive_setup_explicitly_syncs_matrix(tmp_path, monkeypatch):
     monkeypatch.setattr(pm_extras, "missing", lambda extra: ("asyncpg",))
     matrix_adapter.interactive_setup()
     assert calls == [(["matrix"], {"explicit": True})]
+
+
+@pytest.mark.parametrize("mode,expected_installs,expected_result", [
+    ("off", [], True),           # plain client: no crypto dep, nothing to install
+    ("optional", ["matrix-e2ee"], True),   # best effort: warn, stay up
+    ("required", ["matrix-e2ee"], False),  # fail closed when the closure is unusable
+])
+def test_e2ee_extra_installs_only_when_encryption_is_configured(
+    fresh_dependency_boundary, monkeypatch, mode, expected_installs, expected_result
+):
+    """E2EE deps live in their own extra and are pulled only when E2EE is on.
+
+    Regression: the encryption closure used to sit in the ``[matrix]`` extra, so even
+    ``MATRIX_E2EE_MODE=off`` deployments resolved python-olm (and needed a C++ toolchain).
+    """
+    installed: list[str] = []
+    monkeypatch.setattr(pm_extras, "ensure_import", lambda extra, *a, **kw: installed.append(extra))
+    monkeypatch.setattr(matrix_adapter, "_check_e2ee_deps", lambda: False)
+    monkeypatch.setenv("MATRIX_E2EE_MODE", mode)
+    assert matrix_adapter.ensure_matrix_deps() is expected_result
+    assert [extra for extra in installed if extra == "matrix-e2ee"] == expected_installs
+
+
+def test_extra_names_track_the_e2ee_mode(monkeypatch):
+    """The updater's configured-features pass must ask for [matrix-e2ee] only with E2EE on."""
+    monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
+    monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
+    assert matrix_adapter._extra_names() == ["matrix"]
+    for mode in ("optional", "required"):
+        monkeypatch.setenv("MATRIX_E2EE_MODE", mode)
+        assert matrix_adapter._extra_names() == ["matrix", "matrix-e2ee"]
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("off", True),     # plain client: no crypto dep needed
+    ("optional", False),  # E2EE configured but deps missing → updater must install
+    ("required", False),  # E2EE required and deps missing → updater must install
+])
+def test_matrix_deps_present_reports_e2ee_missing_regardless_of_mode(monkeypatch, mode, expected):
+    """``matrix_deps_present()`` (the registry ``check_fn``) must return False when E2EE deps are
+    missing for ANY non-off mode, so the updater's configured-features pass evaluates
+    ``extra_names_fn`` and proactively installs ``[matrix-e2ee]``.
+
+    Regression: the original gate ``_resolve_e2ee_mode() != "required"`` short-circuited to True
+    for ``optional`` mode, hiding the missing E2EE closure from the updater.
+    """
+    monkeypatch.setattr(matrix_adapter, "_check_e2ee_deps", lambda: False)
+    monkeypatch.setenv("MATRIX_E2EE_MODE", mode)
+    assert matrix_adapter.matrix_deps_present() is expected
+
+
+def test_setup_enabling_e2ee_prepares_the_e2ee_extra(tmp_path, monkeypatch):
+    """Saying yes to E2EE in setup must install the closure, not just the plain SDK."""
+    import pm
+    from hermes_cli import cli_output, config
+
+    answers = iter(["https://matrix.example.test", "test-token", "@bot:example.test",
+                    "@owner:example.test", "!home:example.test"])
+    monkeypatch.setattr(cli_output, "prompt", lambda *args, **kwargs: next(answers))
+    monkeypatch.setattr(cli_output, "prompt_yes_no", lambda *args, **kwargs: True)
+    monkeypatch.setattr(config, "get_env_value", lambda key: None)
+    monkeypatch.setattr(config, "save_env_value", lambda *args: None)
+    calls = []
+    monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
+    monkeypatch.setattr(pm_extras, "missing", lambda extra: ())
+    matrix_adapter.interactive_setup()
+    assert calls == [(["matrix", "matrix-e2ee"], {"explicit": True})]

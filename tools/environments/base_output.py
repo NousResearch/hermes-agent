@@ -7,7 +7,6 @@ stdout drain thread used by ``BaseEnvironment._wait_for_process``.
 
 import codecs
 import os
-import select
 import subprocess
 import threading
 import time
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
+from tools.environments.fd_wait import open_fd_waiter
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -395,17 +395,24 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
-    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle, or
-    when *stop* is set (the pipe is being handed to another reader — yield-to-background)."""
+    """POSIX drain: selector readiness (no FD_SETSIZE ceiling, #94928), stopping ~300ms after
+    bash exits with the pipe idle, or when *stop* is set (the pipe is being handed to another
+    reader — yield-to-background)."""
+    waiter = open_fd_waiter(fd)
+    if waiter is None:
+        return  # fd already closed
+    try:
+        _drain_fd_waiter(proc, fd, waiter, output, decoder, stop)
+    finally:
+        waiter.close()
+
+
+def _drain_fd_waiter(proc, fd: int, waiter, output: _BoundedOutputCollector, decoder, stop) -> None:
     idle_after_exit = 0
     while True:
         if stop is not None and stop.is_set():
             return
-        try:
-            ready, _, _ = select.select([fd], [], [], 0.1)
-        except (ValueError, OSError):
-            return  # fd already closed
-        if ready:
+        if waiter.wait(0.1):
             try:
                 chunk = os.read(fd, 4096)
             except (ValueError, OSError):

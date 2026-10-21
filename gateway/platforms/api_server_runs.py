@@ -1022,9 +1022,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
 
 
 async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> list[int]:
-    """Fold detached delegation rows this session has not handed a caller-history run yet into
-    ``run.conversation_history`` (claimed exactly once; rows the caller already carries are
-    claimed without re-adding). Consecutive user turns are merged by the shared repair pass."""
+    """Claim the session's pending delegation rows once and append those the caller lacks; returns claimed ids."""
     db = await self._ensure_session_db_async()
     if db is None:
         return []
@@ -1041,7 +1039,7 @@ async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> list[int]:
         history = [*run.conversation_history, *folded]
         repair_message_sequence(None, history)
         run.conversation_history = history
-    return [int(row["id"]) for row in rows if row.get("id") is not None]
+    return [int(row["id"]) for row in rows]
 
 
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any, Optional
 
 from agent.message_metadata import stamp_message_uid
@@ -16,6 +17,7 @@ _LINEAGE_MATCH_SQL = """WITH RECURSIVE lineage(id) AS (SELECT ? UNION
     SELECT s.parent_session_id FROM sessions s JOIN lineage l ON s.id = l.id
     JOIN sessions p ON p.id = s.parent_session_id WHERE p.end_reason = 'compression'
 ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id WHERE """
+_CONSUME_META_SQL = "json_remove(json_set(display_metadata, '$.caller_history_consumed', 1), '$.caller_history_reservation')"
 _DELEGATION_DELIVERY_MATCH = ("m.display_kind IN ('async_delegation_complete', 'hidden') AND json_extract(m.display_metadata, "
                               "'$.delegation_id') = ? AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ?")
 
@@ -71,12 +73,10 @@ class SessionDetachedResultsMixin:
 
     def _pending_caller_history_rows(self, conn, lineage, now, limit=None):
         sql = (f"SELECT id, session_id, content, display_metadata FROM messages"
-               f" WHERE session_id IN ({_placeholders(lineage)})" + self._CH_SELECT + " ORDER BY id")
-        params: list = [*lineage, now]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(max(0, int(limit)))
-        return conn.execute(sql, tuple(params)).fetchall()
+               f" WHERE session_id IN ({_placeholders(lineage)}){self._CH_SELECT} ORDER BY id")
+        if limit is None:
+            return conn.execute(sql, (*lineage, now)).fetchall()
+        return conn.execute(sql + " LIMIT ?", (*lineage, now, max(0, int(limit)))).fetchall()
 
     def _caller_history_row(self, row, token=None):
         content = self._decode_content(row["content"])
@@ -88,27 +88,20 @@ class SessionDetachedResultsMixin:
         return out
 
     def claim_caller_history_deliveries(self, session_id: str) -> list[dict[str, Any]]:
-        """Finally consume the lineage's pending delegation rows (skipping live reservations).
-
-        Check and stamp share one writer txn, so each row has exactly one consumer.
-        """
+        """Consume the lineage's pending rows for good in one writer txn (skips live leases)."""
         lineage = self._resume_lineage_ids(session_id)
 
         def _do(conn):
             rows = self._pending_caller_history_rows(conn, lineage, time.time())
-            for row in rows:
-                conn.execute("UPDATE messages SET display_metadata = json_remove(json_set(display_metadata,"
-                             " '$.caller_history_consumed', 1), '$.caller_history_reservation') WHERE id = ?",
-                             (row["id"],))
+            conn.executemany(f"UPDATE messages SET display_metadata = {_CONSUME_META_SQL} WHERE id = ?",
+                             [(row["id"],) for row in rows])
             return [self._caller_history_row(row) for row in rows]
 
         return self._execute_write(_do)
 
     def reserve_caller_history_deliveries(self, session_id: str, owner: str, ttl_seconds: float,
                                           limit: Optional[int] = None) -> list[dict[str, Any]]:
-        """Lease pending rows to ``owner`` for ``ttl_seconds``; commit or release them under the
-        returned ``reservation_token``. Expired leases are reclaimable by any caller."""
-        import uuid
+        """Lease pending rows to ``owner`` for ``ttl_seconds`` under one ``reservation_token``."""
         lineage = self._resume_lineage_ids(session_id)
         token = uuid.uuid4().hex
 
@@ -116,61 +109,49 @@ class SessionDetachedResultsMixin:
             now = time.time()
             rows = self._pending_caller_history_rows(conn, lineage, now, limit)
             lease = json.dumps({"token": token, "owner": str(owner), "until": now + float(ttl_seconds)})
-            for row in rows:
-                conn.execute("UPDATE messages SET display_metadata = json_set(display_metadata,"
-                             " '$.caller_history_reservation', json(?)) WHERE id = ?", (lease, row["id"]))
+            conn.executemany("UPDATE messages SET display_metadata = json_set(display_metadata,"
+                             " '$.caller_history_reservation', json(?)) WHERE id = ?",
+                             [(lease, row["id"]) for row in rows])
             return [self._caller_history_row(row, token) for row in rows]
 
         return self._execute_write(_do)
 
-    def _held_reservation_where(self, token_or_ids, owner):
-        clause = (" AND json_extract(display_metadata, '$.caller_history_consumed') IS NULL"
-                  " AND json_extract(display_metadata, '$.caller_history_reservation.owner') = ?")
+    def _settle_reservation(self, new_metadata_sql, token_or_ids, owner) -> int:
+        """Rewrite metadata of unconsumed rows leased to ``owner``; returns rows changed."""
+        where = ("json_extract(display_metadata, '$.caller_history_consumed') IS NULL"
+                 " AND json_extract(display_metadata, '$.caller_history_reservation.owner') = ?")
         if isinstance(token_or_ids, str):
-            # A re-reserve replaces the token, so a matching token proves nobody took the rows over:
-            # its holder may settle them even after the lease ran out (e.g. after a consumer restart).
-            return ("json_extract(display_metadata, '$.caller_history_reservation.token') = ?" + clause,
-                    [token_or_ids, str(owner)])
-        clause += " AND json_extract(display_metadata, '$.caller_history_reservation.until') > ?"
-        ids = [int(i) for i in token_or_ids or ()]
-        if not ids:
-            return None, None
-        return (f"id IN ({_placeholders(ids)})" + clause, [*ids, str(owner), time.time()])
+            # A re-reserve replaces the token, so its holder may settle even after the lease expired.
+            where += " AND json_extract(display_metadata, '$.caller_history_reservation.token') = ?"
+            params: tuple = (str(owner), token_or_ids)
+        else:
+            ids = [int(i) for i in token_or_ids or ()]
+            if not ids:
+                return 0
+            where += (f" AND json_extract(display_metadata, '$.caller_history_reservation.until') > ?"
+                      f" AND id IN ({_placeholders(ids)})")
+            params = (str(owner), time.time(), *ids)
+        return self._execute_write(lambda conn: conn.execute(
+            f"UPDATE messages SET display_metadata = {new_metadata_sql} WHERE {where}", params).rowcount)
 
     def commit_caller_history_deliveries(self, reservation_token_or_ids, owner: str) -> int:
         """Mark rows still leased to ``owner`` delivered for good; returns rows committed."""
-        where, params = self._held_reservation_where(reservation_token_or_ids, owner)
-        if where is None:
-            return 0
-        return self._execute_write(lambda conn: conn.execute(
-            "UPDATE messages SET display_metadata = json_remove(json_set(display_metadata,"
-            " '$.caller_history_consumed', 1), '$.caller_history_reservation') WHERE " + where,
-            tuple(params)).rowcount)
+        return self._settle_reservation(_CONSUME_META_SQL, reservation_token_or_ids, owner)
 
     def release_caller_history_deliveries(self, session_id: Optional[str] = None,
                                           row_ids: Optional[list[int]] = None, *,
                                           reservation_token: Optional[str] = None,
                                           owner: Optional[str] = None) -> int:
-        """Return rows to pending: ``(session_id, row_ids)`` undoes a claim; ``reservation_token=``
-        + ``owner=`` (or ``row_ids`` + ``owner``) drops a lease held by ``owner``."""
+        """Return rows to pending: with ``owner`` drop its lease, else undo a ``(session_id, row_ids)`` claim."""
         if owner is not None:
-            where, params = self._held_reservation_where(
-                reservation_token if reservation_token is not None else (row_ids or []), owner)
-            if where is None:
-                return 0
-            return self._execute_write(lambda conn: conn.execute(
-                "UPDATE messages SET display_metadata = json_remove(display_metadata,"
-                " '$.caller_history_reservation') WHERE " + where, tuple(params)).rowcount)
+            return self._settle_reservation("json_remove(display_metadata, '$.caller_history_reservation')",
+                                            reservation_token if reservation_token is not None else row_ids, owner)
         ids = [int(i) for i in row_ids or ()]
         if not ids or not session_id:
             return 0
         lineage = self._resume_lineage_ids(session_id)
-
-        def _do(conn):
-            return conn.execute(
-                "UPDATE messages SET display_metadata = json_remove(display_metadata, '$.caller_history_consumed')"
-                f" WHERE id IN ({_placeholders(ids)}) AND session_id IN ({_placeholders(lineage)})"
-                " AND json_extract(display_metadata, '$.caller_history_consumed') IS NOT NULL",
-                (*ids, *lineage)).rowcount
-
-        return self._execute_write(_do)
+        return self._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_metadata = json_remove(display_metadata, '$.caller_history_consumed')"
+            f" WHERE id IN ({_placeholders(ids)}) AND session_id IN ({_placeholders(lineage)})"
+            " AND json_extract(display_metadata, '$.caller_history_consumed') IS NOT NULL",
+            (*ids, *lineage)).rowcount)

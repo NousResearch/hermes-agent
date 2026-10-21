@@ -1,5 +1,6 @@
 """A detached API result must have an addressable consumer and one durable row."""
 import asyncio
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -98,44 +99,40 @@ async def test_delivery_replay_is_atomic_across_continuation_and_busy_turn(tmp_p
         db.close()
 
 
-def _fold_adapter(db):
+async def _deliver(db, sid, text, delegation_id):
+    await persist_delegation_delivery(SimpleNamespace(_ensure_session_db=lambda: db), text=text, session_id=sid,
+                                      evt={"type": "async_delegation", "delegation_id": delegation_id})
+
+
+async def _fold(db, history):
+    """Fold ``db``'s pending deliveries for session ``s1`` into a copy of ``history``; returns the result."""
+    from gateway.platforms.api_server_runs import _RunLaunch, _fold_caller_history_deliveries
+
     async def ensure():
         return db
-    return SimpleNamespace(_ensure_session_db_async=ensure)
-
-
-def _launch(history, session_id="s1"):
-    from gateway.platforms.api_server_runs import _RunLaunch
-    return _RunLaunch(None, "run", None, session_id, None, False, "next", history, True,
-                      agent_kwargs={}, request_profile=None, browser_control_principal=None,
-                      browser_control_transport_family=None, fold_deliveries=True)
+    run = _RunLaunch(None, "run", None, "s1", None, False, "next", list(history), True,
+                     agent_kwargs={}, request_profile=None, browser_control_principal=None,
+                     browser_control_transport_family=None, fold_deliveries=True)
+    await _fold_caller_history_deliveries(SimpleNamespace(_ensure_session_db_async=ensure), run)
+    return run.conversation_history
 
 
 @pytest.mark.asyncio
 async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
-    from gateway.platforms.api_server_runs import _fold_caller_history_deliveries
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("s1", source="api_server")
         db.append_message("s1", "user", "go")
         db.append_message("s1", "assistant", "dispatched")
-        adapter = SimpleNamespace(_ensure_session_db=lambda: db)
-        await persist_delegation_delivery(adapter, text="RESULT-A", session_id="s1",
-                                          evt={"type": "async_delegation", "delegation_id": "a"})
-        await persist_delegation_delivery(adapter, text="RESULT-B", session_id="s1",
-                                          evt={"type": "async_delegation", "delegation_id": "b"})
+        await _deliver(db, "s1", "RESULT-A", "a")
+        await _deliver(db, "s1", "RESULT-B", "b")
         caller = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "dispatched"},
                   {"role": "user", "content": "RESULT-B"}]  # caller already stored B
-        run = _launch(list(caller))
-        await _fold_caller_history_deliveries(_fold_adapter(db), run)
-        history = run.conversation_history
+        history = await _fold(db, caller)
         assert sum("RESULT-A" in m["content"] for m in history) == 1
         assert sum("RESULT-B" in m["content"] for m in history) == 1
-        from itertools import pairwise
         assert all(a["role"] != b["role"] for a, b in pairwise(history))
-        again = _launch(list(caller))
-        await _fold_caller_history_deliveries(_fold_adapter(db), again)
-        assert again.conversation_history == caller  # both rows already consumed
+        assert await _fold(db, caller) == caller  # both rows already consumed
         # Rows stay in the transcript for pollers and session-history continuations.
         contents = [m["content"] for m in db.get_messages_as_conversation("s1")]
         assert contents.count("RESULT-A") == 1 and contents.count("RESULT-B") == 1
@@ -145,24 +142,16 @@ async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
 
 @pytest.mark.asyncio
 async def test_caller_history_fold_and_reservation_deliver_single_copy(tmp_path):
-    from gateway.platforms.api_server_runs import _fold_caller_history_deliveries
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("s1", source="api_server")
-        adapter = SimpleNamespace(_ensure_session_db=lambda: db)
-        await persist_delegation_delivery(adapter, text="RESULT-R", session_id="s1",
-                                          evt={"type": "async_delegation", "delegation_id": "r"})
+        await _deliver(db, "s1", "RESULT-R", "r")
         lease = db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60)
         caller = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "ok"}]
-        run = _launch(list(caller))
-        await _fold_caller_history_deliveries(_fold_adapter(db), run)
-        assert run.conversation_history == caller  # reserved for the wake turn, not folded
+        assert await _fold(db, caller) == caller  # reserved for the wake turn, not folded
         assert db.commit_caller_history_deliveries(lease[0]["reservation_token"], "webui") == 1
-        await persist_delegation_delivery(adapter, text="RESULT-F", session_id="s1",
-                                          evt={"type": "async_delegation", "delegation_id": "f"})
-        run = _launch(list(caller))
-        await _fold_caller_history_deliveries(_fold_adapter(db), run)
-        assert sum("RESULT-F" in m["content"] for m in run.conversation_history) == 1
+        await _deliver(db, "s1", "RESULT-F", "f")
+        assert sum("RESULT-F" in m["content"] for m in await _fold(db, caller)) == 1
         assert db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60) == []
     finally:
         db.close()
@@ -174,13 +163,16 @@ async def test_authority_admitted_run_keeps_caller_history_and_folds_or_releases
 ):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
+    from gateway import session_api_turn
     from gateway.platforms import api_server_runs
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
-
     from gateway.session_api import bind_api_session
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
     async def no_execution(*_a, **_kw):
         pass
+
+    async def unavailable(*_a, **_kw):
+        raise RuntimeStoreError("storage_unavailable")
 
     monkeypatch.setattr(api_server_runs, "_execute_run", no_execution)
     bind_api_session(owner, "s-auth")
@@ -189,20 +181,12 @@ async def test_authority_admitted_run_keeps_caller_history_and_folds_or_releases
     history = [{"role": "user", "content": "CALLER"}, {"role": "assistant", "content": "REPLY"}]
     app = web.Application()
     app.router.add_post("/v1/runs", api._handle_runs)
-    import gateway.session_api_turn as sat_mod
-    orig_admit_async = sat_mod.admit_api_turn_async
+    body = {"session_id": "s-auth", "input": "NEXT", "conversation_history": history}
     async with TestClient(TestServer(app)) as client:
-        monkeypatch.setattr(
-            sat_mod, "admit_api_turn_async",
-            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeStoreError("storage_unavailable")),
-        )
-        r_fail = await client.post("/v1/runs", json={
-            "session_id": "s-auth", "input": "NEXT", "conversation_history": history})
-        assert r_fail.status == 503
-        monkeypatch.setattr(sat_mod, "admit_api_turn_async", orig_admit_async)
-        r_ok = await client.post("/v1/runs", json={
-            "session_id": "s-auth", "input": "NEXT", "conversation_history": history})
-        assert r_ok.status == 202
+        with monkeypatch.context() as m:  # failed admission releases the claimed delivery
+            m.setattr(session_api_turn, "admit_api_turn_async", unavailable)
+            assert (await client.post("/v1/runs", json=body)).status == 503
+        assert (await client.post("/v1/runs", json=body)).status == 202
     row, = list_session_admissions(owner.db, session_id="s-auth")
     stored = row["payload"]["api_turn_v1"]["history"]
     assert stored is not None and any("DELIV-AUTH" in m["content"] for m in stored)

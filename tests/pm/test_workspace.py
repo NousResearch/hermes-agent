@@ -105,6 +105,45 @@ def test_classify_network_failure_stays_generic():
     assert not isinstance(err, ResolutionConflict)
 
 
+def test_failed_build_names_the_error_not_the_warning_after_it():
+    """Regression for #132820: the reason was the tail of uv's log, which a failed
+    sdist build ends with the build backend's held-back setuptools warnings. A
+    missing clang++ therefore read as a license problem, and the extra looked
+    un-installable for the wrong reason."""
+    from pm.environment import BuildFailure, classify_uv_failure
+
+    output = "\n".join([
+        "  x Failed to build `python-olm==3.2.16`",
+        "  |-> The build backend returned an error",
+        "  `-> Call to `setuptools.build_meta:build_wheel` failed (exit status: 1)",
+        "",
+        "      [stderr]",
+        "      creating build/temp.linux-x86_64-cpython-312/olm",
+        "      error: [Errno 2] No such file or directory: 'clang++'",
+        "      .../setuptools/dist.py:759: SetuptoolsDeprecationWarning: License classifiers "
+        "are deprecated.",
+        "      !!",
+        "              Please consider removing the following classifiers in favor of a SPDX "
+        "license expression:",
+        "              Apache Software License",
+    ])
+    error = classify_uv_failure("sync", 1, output)
+    assert isinstance(error, BuildFailure)
+    assert error.cause.splitlines()[-1].endswith("No such file or directory: 'clang++'"), \
+        "the line that stopped the build is the reason"
+    assert "python-olm" in error.cause, "uv's header names the package that could not build"
+    assert "Apache Software License" not in error.cause, "the trailing packaging warning is not the reason"
+
+
+def test_failure_without_a_named_line_keeps_the_bounded_tail():
+    """The tail stays the fallback: output that never reports a failure must not
+    lose the diagnostics the streamed capture exists for."""
+    from pm.environment import classify_uv_failure
+
+    error = classify_uv_failure("sync", 1, "warning: something\nfinal diagnostic")
+    assert "final diagnostic" in str(error)
+
+
 def test_core_only_generation_carries_no_release_age_cutoff(layout):
     """A core-only install (hermes update) is a frozen sync: the cutoff there only gates the build
     tools uv fetches, and a mirror without upload times rejects every one of them (#135589)."""

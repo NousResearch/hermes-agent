@@ -894,6 +894,35 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 if task else t("gateway.plan.ack_conversation"))
         return await self._hm_rewrite_turn_to_prompt(event, source, "plan", _ack, lambda: build_plan_prompt(task))
 
+    # /seal and /unseal: ack, rewrite the turn to the handoff-protocol prompt, fall through to
+    # the agent. The gateway stays thin — the agent does the reasoning and file writes; the
+    # handoff is keyed by platform+chat (stable across /new), never by the session id.
+    async def _hm_cmd_seal(self, event, source, _quick_key):
+        from agent.seal_prompt import build_seal_prompt
+
+        note = event.get_command_args().strip()
+        _ack = t("gateway.seal.ack_note") if note else t("gateway.seal.ack_conversation")
+        return await self._hm_rewrite_turn_to_prompt(
+            event, source, "seal", _ack,
+            lambda: build_seal_prompt(
+                note, session_id=_quick_key,
+                chat_key=f"{getattr(source.platform, 'value', 'cli')}:{getattr(source, 'chat_id', '') or _quick_key}",
+            ),
+        )
+
+    async def _hm_cmd_unseal(self, event, source, _quick_key):
+        from agent.seal_prompt import build_unseal_prompt
+
+        note = event.get_command_args().strip()
+        _ack = t("gateway.unseal.ack_note") if note else t("gateway.unseal.ack_conversation")
+        return await self._hm_rewrite_turn_to_prompt(
+            event, source, "unseal", _ack,
+            lambda: build_unseal_prompt(
+                note, session_id=_quick_key,
+                chat_key=f"{getattr(source.platform, 'value', 'cli')}:{getattr(source, 'chat_id', '') or _quick_key}",
+            ),
+        )
+
     async def _hm_cmd_init(self, event, source, _quick_key):
         # /init builds the prompt first: the ack wording depends on whether AGENTS.md exists.
         from hermes_cli.init_command import build_init_prompt_for_cwd
@@ -996,6 +1025,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
         "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "seal", "unseal",
     })
 
     async def _hm_dispatch_canonical_command(

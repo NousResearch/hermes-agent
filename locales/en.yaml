@@ -804,6 +804,14 @@ gateway:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning from this conversation's context…"
 
+  seal:
+    ack_note: "Sealing this conversation, with your note…"
+    ack_conversation: "Sealing this conversation into a handoff…"
+
+  unseal:
+    ack_note: "Resuming from the handoff, with your note…"
+    ack_conversation: "Resuming from the last handoff…"
+
   init:
     start_failed: "Could not start /init — please try again."
     ack_update: "Updating AGENTS.md from a project scan…"

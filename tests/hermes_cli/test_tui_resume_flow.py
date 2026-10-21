@@ -89,6 +89,43 @@ def test_termux_fast_cli_launch_oneshot_forwards_fallback_list(monkeypatch, main
     ]
 
 
+@pytest.mark.parametrize(
+    "fallbacks, expected_message",
+    [
+        (["missing-slash"], "invalid fallback override"),
+        (
+            [
+                "openai-codex/gpt-5.6-sol",
+                "openai-codex/gpt-5.6-sol",
+            ],
+            "duplicate fallback override",
+        ),
+    ],
+)
+def test_oneshot_reports_invalid_fallbacks_as_cli_usage_errors(
+    monkeypatch, capsys, main_mod, fallbacks, expected_message
+):
+    import hermes_cli.oneshot as oneshot
+
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: pytest.fail("invalid fallbacks reached the agent"),
+    )
+    monkeypatch.setattr(main_mod, "_cleanup_oneshot_runtime", lambda: None)
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", _raise_exit)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod._run_and_exit_oneshot("hello", fallbacks=fallbacks)
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("hermes -z: ")
+    assert expected_message in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_main_top_level_oneshot_forwards_fallback_list(monkeypatch, main_mod):
     captured = {}
 

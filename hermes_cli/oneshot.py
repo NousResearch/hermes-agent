@@ -193,6 +193,16 @@ def run_oneshot(
 
     Returns the exit code.  The caller owns process termination.
     """
+    # Validate invocation-only routing before stderr is redirected. Invalid
+    # values are CLI usage errors, not agent failures; the classic chat path
+    # applies the same exit-2 contract around HermesCLI construction.
+    if fallbacks is not None:
+        try:
+            get_fallback_chain({}, fallbacks)
+        except ValueError as exc:
+            sys.stderr.write(f"hermes -z: {exc}\n")
+            return 2
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to

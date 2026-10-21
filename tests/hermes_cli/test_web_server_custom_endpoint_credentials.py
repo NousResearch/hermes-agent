@@ -88,6 +88,41 @@ class TestCustomEndpointCredentialReferences:
             assert load_env()[env_var] == "shared-placeholder"
 
     @pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+    def test_submitting_a_key_replaces_a_hand_written_credential_reference(self, credential_field):
+        """A pasted key supersedes every earlier credential spelling.
+
+        The entry must point at the dedicated ``.env`` slot alone: an alias left behind
+        would name a second credential, and the shared variable it named stays for its
+        other consumers.
+        """
+        from hermes_cli.config import custom_endpoint_key_env, load_config, load_env, read_raw_config, save_config, save_env_value
+        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+        save_env_value("SHARED_ENDPOINT_KEY", "shared-placeholder")
+        cfg = load_config()
+        cfg["providers"] = {"local": {
+            "name": "Local", "base_url": "http://127.0.0.1:8000/v1", "model": "local-model",
+            credential_field: "SHARED_ENDPOINT_KEY",
+        }}
+        save_config(cfg)
+
+        response = self.client.post("/api/providers/custom-endpoints", json={
+            "id": "local", "name": "Local", "base_url": "http://127.0.0.1:8000/v1",
+            "model": "local-model", "api_key": "pasted-key-placeholder",
+        })
+        assert response.status_code == 200, response.text
+
+        env_var = custom_endpoint_key_env("local")
+        raw_entry = read_raw_config()["providers"]["local"]
+        assert raw_entry["key_env"] == env_var
+        assert not {"api_key", "api_key_env"}.intersection(raw_entry)
+        assert _get_named_custom_provider("custom:local")["api_key"] == "pasted-key-placeholder"
+        assert self._listed("local")["api_key_preview"] == f"${{{env_var}}}"
+        env = load_env()
+        assert env[env_var] == "pasted-key-placeholder"
+        assert env["SHARED_ENDPOINT_KEY"] == "shared-placeholder"
+
+    @pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
     def test_delete_custom_endpoint_clears_hand_written_model_credential(self, credential_field):
         """Delete drops the main-slot mirror under either spelling (#62269 for the alias)."""
         from hermes_cli.auth import _model_level_key_env

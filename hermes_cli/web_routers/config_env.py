@@ -696,8 +696,11 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
             raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
         save_env_value(env_var, submitted_key)
+        # The pasted key supersedes every earlier credential spelling; an
+        # alias left behind would name a second credential.
         entry["key_env"] = env_var
         entry.pop("api_key", None)
+        entry.pop("api_key_env", None)
     elif submitted_key is not None:
         # Blank clears both credential-reference spellings. Omission preserves
         # them; a shared env variable is left for its other consumers.

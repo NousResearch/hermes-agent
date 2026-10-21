@@ -53,7 +53,8 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
-                    args[key] = coerced
+                    # Parsed a JSON-encoded array: its elements may be JSON strings too.
+                    args[key] = _normalize_json_strings_for_schema(coerced, prop_schema, root_schema=parameters)
                     continue
                 if value.strip().startswith("["):
                     logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "

@@ -755,7 +755,7 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     if expires is None or (now - expires) < grace_seconds:
         return []
     lock = str(_task_field(task, "claim_lock", "") or "")
-    if not lock.startswith(kb._host_prefix()):
+    if not kb._is_local_lock(lock):
         return []
     hb = kb._to_epoch(_task_field(task, "last_heartbeat_at", None))
     if hb is not None and (now - hb) <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:

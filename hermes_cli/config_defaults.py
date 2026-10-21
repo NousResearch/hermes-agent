@@ -1578,7 +1578,7 @@ DEFAULT_CONFIG = {
             "max_dispatches": 10,  # cap on recovered messages dispatched per reconnect
             "max_attempts": 3,  # lifetime re-dispatch cap for one message, whatever its outcome
         },
-        "reactions": True,  # add 👀/✅/❌ reactions to messages during processing
+        "reactions": True,  # 👀/✅/❌ processing reactions; "ack" = 👀 only on answered messages; False = none
         # Gateway transport health probe: inspects the WebSocket's ready/open/heartbeat state (never
         # REST) as proof events still arrive. Any value 0 disables it.
         "websocket_liveness_interval_seconds": 15,

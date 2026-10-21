@@ -1264,6 +1264,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # messages. Keep its unmentioned continuation chunks eligible for the
         # existing text batcher during this short, sender-scoped window.
         self._bot_tag_debounce_until: dict[str, float] = {}
+        # ``reactions: ack`` bookkeeping: when processing began per inbound message, and when we
+        # last posted a conversational message per channel/thread (to tell a reply from silence).
+        self._ack_started_at: dict[str, float] = {}
+        self._last_conversational_send_at: dict[str, float] = {}
         self._voice_text_channels: dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: dict[int, dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -3179,22 +3183,43 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("[%s] remove_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    def _reaction_mode(self) -> str:
+        """``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``: ``"full"`` (default,
+        👀 then ✅/❌), ``"ack"`` (👀 only, kept on messages the bot answered), or ``"off"``."""
+        extra = getattr(self.config, "extra", None)
+        configured = _extra_or_secret(extra if isinstance(extra, dict) else None, "reactions", "DISCORD_REACTIONS", None)
+        if configured is None:
+            return "full"
+        if isinstance(configured, bool):
+            return "full" if configured else "off"
+        text = str(configured).strip().lower()
+        if text in {"ack", "seen", "eyes"}:
+            return "ack"
+        return "off" if text in {"false", "0", "no", "off"} else "full"
+
     def _reactions_enabled(self) -> bool:
-        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
-        return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
+        """Full 👀→✅/❌ lifecycle reactions (``reactions: true``, the default)."""
+        return self._reaction_mode() == "full"
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
         acked = False
-        if self._reactions_enabled() and hasattr(message, "add_reaction"):
+        mode = self._reaction_mode()
+        if mode != "off" and hasattr(message, "add_reaction"):
             acked = await self._add_reaction(message, "👀")
+            if mode == "ack" and getattr(message, "id", None) is not None:
+                self._ack_started_at[str(message.id)] = time.monotonic()
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for final reaction and durable state."""
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
+        mode = self._reaction_mode()
+        if mode == "ack":
+            await self._finish_ack_reaction(event, outcome)
+            return
+        if mode != "full":
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
@@ -3203,6 +3228,26 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+
+    async def _finish_ack_reaction(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """``reactions: ack`` — leave 👀 as a lasting "seen it" marker on messages the bot answered,
+        never add ✅. Remove it when the turn ended in silence (the message turned out not to be
+        for the bot) or was cancelled; swap it for ❌ on failure so nothing looks stuck in progress."""
+        message = event.raw_message
+        if not hasattr(message, "add_reaction"):
+            return
+        started = self._ack_started_at.pop(str(getattr(message, "id", "")), None)
+        if outcome == ProcessingOutcome.FAILURE:
+            await self._remove_reaction(message, "👀")
+            await self._add_reaction(message, "❌")
+            return
+        chat_keys = {str(getattr(event.source, "chat_id", "") or ""), str(getattr(event.source, "thread_id", "") or "")}
+        chat_keys.discard("")
+        replied = started is not None and any(
+            self._last_conversational_send_at.get(key, float("-inf")) >= started for key in chat_keys
+        )
+        if outcome != ProcessingOutcome.SUCCESS or not replied:
+            await self._remove_reaction(message, "👀")
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> discord.MessageReference:
@@ -3313,6 +3358,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     await self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
+                    self._last_conversational_send_at[str(_target_id)] = time.monotonic()
             # Connection-shaped failure (WS drop / closed session): use the ledger's runtime-retryable
             # marker so the reconnect sweep can replay this final response instead of stranding it until a
             # process restart (#95382 silent partial loss).
@@ -5126,20 +5172,58 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         content = getattr(message, "content", "") or ""
         return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
 
+    def _self_managed_role_ids(self, message: Any) -> set:
+        """IDs of the guild role Discord auto-creates for this bot (``tags.bot_id == self``).
+
+        Discord gives every bot a managed role with the bot's name, and the composer's
+        ``@`` autocomplete lists it right beside the bot user, so people often pick the role
+        by accident. A ``<@&role>`` ping of that role is aimed at this bot and nothing else.
+        """
+        if not self._client or not self._client.user:
+            return set()
+        self_id = str(self._client.user.id)
+        ids = set()
+        guild = getattr(message, "guild", None)
+        self_role = getattr(guild, "self_role", None) if guild is not None else None
+        candidates = [self_role] if self_role is not None else []
+        candidates.extend(getattr(message, "role_mentions", None) or [])
+        for role in candidates:
+            tags = getattr(role, "tags", None)
+            if tags is not None and str(getattr(tags, "bot_id", "")) == self_id:
+                ids.add(str(role.id))
+        return ids
+
+    def _raw_mentioned_role_ids(self, message: Any) -> set:
+        """Extract role-mention IDs (``<@&ID>``) from raw content."""
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@&(\d+)>", content)}
+
+    def _self_role_is_mentioned(self, message: Any) -> bool:
+        """True when the content pings this bot's own managed role (a typed ``<@&role>``)."""
+        role_ids = self._raw_mentioned_role_ids(message)
+        if not role_ids:
+            return False
+        return bool(role_ids & self._self_managed_role_ids(message))
+
     def _self_is_explicitly_mentioned(self, message: Any) -> bool:
-        """True when the bot is in ``message.mentions`` or raw-mentioned in the content."""
+        """True when the bot is in ``message.mentions``, raw-mentioned in the content, or its
+        own managed role is pinged."""
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        return self._self_role_is_mentioned(message)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
-        """True only for a literal ``<@bot>`` token: reply-pings add us to ``message.mentions``
-        without one, and the bot admission gate must tell those apart."""
+        """True only for a literal ``<@bot>`` (or ``<@&own-role>``) token: reply-pings add us
+        to ``message.mentions`` without one, and the bot admission gate must tell those apart."""
         if not self._client or not self._client.user:
             return False
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        return self._self_role_is_mentioned(message)
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
@@ -6123,6 +6207,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if self._client.user:
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+                for role_id in self._self_managed_role_ids(message):
+                    normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

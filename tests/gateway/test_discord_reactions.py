@@ -141,3 +141,86 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+
+
+def _ack_raw_message(message_id):
+    return SimpleNamespace(id=message_id, add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_ack_mode_keeps_eyes_on_answered_message_and_never_ticks(adapter, monkeypatch):
+    """reactions=ack: 👀 stays as a "seen it" marker once the bot replied; no ✅."""
+    monkeypatch.setenv("DISCORD_REACTIONS", "ack")
+    raw_message = _ack_raw_message(11)
+    event = _make_event("11", raw_message)
+
+    await adapter.on_processing_start(event)
+    adapter._last_conversational_send_at["123"] = __import__("time").monotonic()
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert [c.args for c in raw_message.add_reaction.await_args_list] == [("👀",)]
+    raw_message.remove_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ack_mode_removes_eyes_when_turn_was_silent(adapter, monkeypatch):
+    """A silent turn means the message was not for the bot: take the 👀 back off."""
+    monkeypatch.setenv("DISCORD_REACTIONS", "ack")
+    raw_message = _ack_raw_message(12)
+    event = _make_event("12", raw_message)
+    adapter._last_conversational_send_at["123"] = 0.0  # an older reply must not count
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert [c.args for c in raw_message.add_reaction.await_args_list] == [("👀",)]
+    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
+
+
+@pytest.mark.asyncio
+async def test_ack_mode_failure_swaps_to_cross(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "ack")
+    raw_message = _ack_raw_message(13)
+    event = _make_event("13", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert [c.args for c in raw_message.add_reaction.await_args_list] == [("👀",), ("❌",)]
+    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
+
+
+@pytest.mark.asyncio
+async def test_ack_mode_end_to_end_with_reply(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "ack")
+    raw_message = _ack_raw_message(14)
+
+    async def handler(_event):
+        await asyncio.sleep(0)
+        return "on it"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    async def fake_send(chat_id, *_a, **_k):
+        adapter._last_conversational_send_at[str(chat_id)] = __import__("time").monotonic()
+        return SendResult(success=True, message_id="999")
+
+    adapter.set_message_handler(handler)
+    adapter.send = AsyncMock(side_effect=fake_send)
+    adapter._keep_typing = hold_typing
+
+    event = _make_event("14", raw_message)
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert [c.args for c in raw_message.add_reaction.await_args_list] == [("👀",)]
+    raw_message.remove_reaction.assert_not_awaited()
+
+
+@pytest.mark.parametrize("value,mode", [
+    ("ack", "ack"), ("seen", "ack"), ("true", "full"), ("false", "off"), ("off", "off"),
+])
+def test_reaction_mode_parsing(adapter, monkeypatch, value, mode):
+    monkeypatch.setenv("DISCORD_REACTIONS", value)
+    assert adapter._reaction_mode() == mode
+    assert adapter._reactions_enabled() is (mode == "full")

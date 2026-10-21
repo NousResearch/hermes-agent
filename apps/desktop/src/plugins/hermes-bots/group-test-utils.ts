@@ -470,6 +470,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
     gatewayActivationEpoch: () => 0,
+    useGatewayActivationEpoch: () => 0,
     host,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,

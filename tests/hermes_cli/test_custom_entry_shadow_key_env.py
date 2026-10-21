@@ -75,7 +75,7 @@ def test_shadowing_entry_auxiliary_client_never_borrows_builtin_key(tmp_path, mo
     _home(tmp_path, monkeypatch, name, builtin_env)
     if not entry_key_set:
         monkeypatch.delenv("ENTRY_KEY_VAR")
-    from agent.auxiliary_client import _named_custom_api_key
+    from agent.auxiliary_named_route import _named_custom_api_key
     from hermes_cli.runtime_provider import _get_named_custom_provider
 
     entry = _get_named_custom_provider(f"custom:{name}")
@@ -418,7 +418,7 @@ def test_bare_route_skips_an_unusable_inline_key_for_the_declared_key_env(tmp_pa
 def test_aux_named_entry_skips_an_unusable_inline_key_for_the_declared_key_env(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, "mydeep", "DEEPSEEK_API_KEY",
           entry_extra={"key_env": "ENTRY_KEY_VAR", "api_key": "placeholder"})
-    from agent.auxiliary_client import _named_custom_api_key
+    from agent.auxiliary_named_route import _named_custom_api_key
     from hermes_cli.runtime_provider import _get_named_custom_provider
 
     assert _named_custom_api_key(_get_named_custom_provider("custom:mydeep"), "mydeep", ENDPOINT) == ENTRY_KEY

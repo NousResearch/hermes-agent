@@ -2671,6 +2671,10 @@ def probe_api_models(
     candidates: list[tuple[str, bool]] = [(normalized, False)]
     if alternate_base and alternate_base != normalized:
         candidates.append((alternate_base, True))
+    if api_mode == "anthropic_messages" and alternate_base.endswith("/v1"):
+        # Anthropic lists models at <base>/v1/models; the bare <base>/models is the OpenAI shape,
+        # which an Anthropic relay answers with a 404 on every listing.
+        candidates.reverse()
 
     tried: list[str] = []
     _neg_key = _probe_neg_key(normalized)

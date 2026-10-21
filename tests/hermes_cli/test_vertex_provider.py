@@ -36,7 +36,7 @@ def test_vertex_registered_in_provider_registry():
 
 def test_vertex_registered_in_hermes_overlays():
     """hermes_cli.providers.get_provider("vertex") backs
-    _preserve_provider_with_base_url() in agent/auxiliary_client.py, which
+    _preserve_provider_with_base_url() in agent/auxiliary_named_route.py, which
     decides whether a MoA slot's resolved Vertex (base_url, api_key) pair
     keeps its "vertex" provider identity or silently collapses to "custom" —
     losing the identity _refresh_provider_credentials() needs to re-mint an

@@ -302,18 +302,17 @@ def test_feasibility_check_passes_live_main_runtime():
         agent._emit_status = lambda msg: None
         agent._check_compression_model_feasibility()
 
-    mock_get_client.assert_called_once_with(
-        "compression",
-        main_runtime={
-            "model": "gpt-5.4",
-            "provider": "openai-codex",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "codex-token",
-            "api_mode": "codex_responses",
-            "auth_mode": "",
-            "session_id": "",
-        },
-    )
+    mock_get_client.assert_called_once()
+    assert mock_get_client.call_args.args == ("compression",)
+    runtime = mock_get_client.call_args.kwargs["main_runtime"]
+    # The live route; owner and capabilities ride along (agent.runtime_projection).
+    assert {k: runtime.get(k) for k in ("model", "provider", "base_url", "api_key", "api_mode")} == {
+        "model": "gpt-5.4",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "codex-token",
+        "api_mode": "codex_responses",
+    }
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)

@@ -19,6 +19,8 @@ def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
+            # The map the session had, so a restore through ``switch_model`` does not clear it.
+            "capabilities": dict(getattr(agent, "capabilities", None) or {}),
             "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
 
 

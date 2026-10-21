@@ -26,6 +26,7 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
@@ -66,6 +67,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),

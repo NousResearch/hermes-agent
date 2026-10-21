@@ -601,6 +601,40 @@ def get_custom_provider_model_capability(
     return None
 
 
+def custom_provider_is_anthropic_oauth_relay(
+    base_url: str,
+    custom_providers: Optional[list[dict[str, Any]]] = None,
+    config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether *base_url* is the own endpoint of an entry declaring ``anthropic_oauth_proxy``.
+
+    Endpoint-level, unlike the per-model wire policy: a ``true`` on the entry or on any of its
+    models makes the server an Anthropic Messages relay behind its own key, which answers only an
+    authenticated ``/v1/models`` — so the OpenAI / Ollama / local-server metadata probes must not
+    run against it. Matching follows ``same_provider_endpoint`` (origin, path modulo one ``/v1``),
+    because the probes derive the server root from the configured URL. Read-only; never raises.
+    """
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_cli.route_identity import same_provider_endpoint
+    from hermes_cli.runtime_provider_custom import _lift_model_capabilities
+    if not base_url:
+        return False
+    try:
+        if custom_providers is None:
+            custom_providers = get_compatible_custom_providers(config if config is not None else load_config_readonly())
+        for entry in custom_providers or ():
+            if not isinstance(entry, dict) or not same_provider_endpoint(entry.get("base_url"), base_url):
+                continue
+            models = entry.get("models")
+            for model in (None, *(models if isinstance(models, dict) else ())):
+                lifted: dict[str, Any] = {}
+                _lift_model_capabilities(entry, model, lifted)
+                if lifted.get("capabilities", {}).get("anthropic_oauth_proxy") is True:
+                    return True
+    except Exception:
+        logger.debug("anthropic_oauth_proxy endpoint lookup failed", exc_info=True)
+    return False
+
+
 def is_provider_enabled(provider_cfg: Optional[dict[str, Any]]) -> bool:
     """Whether a ``providers.<name>`` block is enabled: default True; only an explicit
     ``enabled: false`` hides it from the picker, ``/models``, runtime resolver and doctor."""

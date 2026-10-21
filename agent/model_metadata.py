@@ -523,6 +523,17 @@ def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
 
+def _anthropic_oauth_relay(base_url: str) -> bool:
+    """A configured Anthropic OAuth relay (``capabilities.anthropic_oauth_proxy``) answers only an
+    authenticated Anthropic ``/v1/models``: OpenAI ``/models``, Ollama and local-server probes draw
+    a 401/404/400 from it on every new process, since no failure is cached."""
+    try:
+        from hermes_cli.config import custom_provider_is_anthropic_oauth_relay
+        return custom_provider_is_anthropic_oauth_relay(base_url)
+    except Exception:
+        return False
+
+
 def _lmstudio_server_root(base_url: str) -> str:
     """LM Studio server root for native ``/api/v1`` endpoints."""
     root = _normalize_base_url(base_url)
@@ -734,7 +745,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         return cached[0]
     # Blackholed host: skip the waterfall. Deliberately NOT written to the
     # hour-long verdict cache, which would pin "undetected" after it comes back.
-    if _endpoint_blackholed(server_url):
+    if _endpoint_blackholed(server_url) or _anthropic_oauth_relay(base_url):
         return None
     disk_hit = _local_probe_disk_get("server_type", server_url)
     if isinstance(disk_hit, str):
@@ -1026,6 +1037,31 @@ def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return cache
 
 
+def _anthropic_relay_models(normalized: str, api_key: object) -> dict[str, dict[str, Any]]:
+    """An Anthropic OAuth relay's ``/v1/models`` (``max_input_tokens`` is the window), sent with the
+    relay's own key as a Bearer, its auth contract, plus ``anthropic-version``. ``{}`` without a key:
+    the auxiliary pricing path passes none, and an unauthenticated request can only draw a 401."""
+    headers = _auth_headers(api_key)
+    if not headers:
+        return {}
+    headers["anthropic-version"] = "2023-06-01"
+    url = normalized.removesuffix("/v1").rstrip("/") + "/v1/models"
+    try:
+        response = model_metadata_http.get(url, headers=headers, params={"limit": 1000}, timeout=(5, 10),
+                                           verify=model_metadata_http.resolve_verify(normalized))
+        if response.status_code != 200:
+            logger.debug("Anthropic relay model listing at %s answered HTTP %s", url, response.status_code)
+            return {}
+        cache = _parse_models_payload(response.json())
+    except Exception as exc:
+        _note_if_connect_timeout(exc, normalized)
+        logger.debug("Anthropic relay model listing at %s failed: %s", url, exc)
+        return {}
+    if cache and not is_local_endpoint(normalized):
+        _endpoint_disk_cache_put(normalized, cache)
+    return cache
+
+
 def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     """Model metadata from an OpenAI-compatible ``/models`` endpoint (cached per base URL)."""
     normalized = _normalize_base_url(base_url)
@@ -1043,6 +1079,8 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
+    if _anthropic_oauth_relay(normalized):
+        return _remember_endpoint_models(memo_key, _anthropic_relay_models(normalized, api_key))
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates = [normalized] + ([alternate] if alternate != normalized else [])
     headers = _auth_headers(api_key)
@@ -1487,7 +1525,7 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
 def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Uncached body of ``_query_ollama_api_show`` — one POST to ``/api/show``."""
     server_url = _server_root(base_url)
-    if _endpoint_blackholed(server_url):
+    if _endpoint_blackholed(server_url) or _anthropic_oauth_relay(base_url):
         return None
     data = _ollama_show(server_url, api_key, model, timeout=5.0, note_blackhole=True)
     # Hosted Ollama: the GGUF max is authoritative (the operator may have capped num_ctx arbitrarily).
@@ -1594,7 +1632,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     model = _strip_provider_prefix(model)
     server_url = _server_root(base_url)
     lmstudio_url = _localhost_to_ipv4(_lmstudio_server_root(base_url))
-    if _endpoint_blackholed(server_url):
+    if _endpoint_blackholed(server_url) or _anthropic_oauth_relay(base_url):
         return None
     try:
         server_type = detect_local_server_type(base_url, api_key=api_key)

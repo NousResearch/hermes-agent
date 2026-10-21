@@ -2327,17 +2327,15 @@ def _resolve_runtime_agent_kwargs() -> dict:
                     runtime.get("provider") or fallback_entry.get("provider") or "unknown",
                     fallback_entry.get("model") or "default")}
 
-    capabilities = runtime.get("capabilities")
-    capabilities = (
-        {k: v for k, v in capabilities.items() if isinstance(k, str) and isinstance(v, bool)}
-        if isinstance(capabilities, dict) else {})
-
-    return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities}
+    return _runtime_agent_kwargs(runtime)
 
 
 def _runtime_agent_kwargs(runtime: dict) -> dict:
     """AIAgent constructor kwargs shared by every runtime-provider resolution.
-    ``request_overrides`` passes through as resolved so the provider's request body reaches each turn."""
+    ``request_overrides`` passes through as resolved so the provider's request body reaches each turn;
+    ``capabilities`` too (boolean flags only), or a route's wire policy (``anthropic_oauth_proxy``)
+    is lost on every path that builds its kwargs here, the local-session launch policy included."""
+    capabilities = runtime.get("capabilities")
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -2347,7 +2345,9 @@ def _runtime_agent_kwargs(runtime: dict) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
-        "request_overrides": runtime.get("request_overrides")}
+        "request_overrides": runtime.get("request_overrides"),
+        "capabilities": {k: v for k, v in capabilities.items() if isinstance(k, str) and isinstance(v, bool)}
+        if isinstance(capabilities, dict) else {}}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2458,8 +2458,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
         **_runtime_agent_kwargs(runtime),
-        "request_overrides": dict(runtime.get("request_overrides") or {}),
-        "capabilities": dict(runtime.get("capabilities") or {})}
+        "request_overrides": dict(runtime.get("request_overrides") or {})}
 
 
 def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:

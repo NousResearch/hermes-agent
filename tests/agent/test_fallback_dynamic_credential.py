@@ -47,3 +47,36 @@ def test_anthropic_fallback_keeps_callable_without_treating_it_as_oauth_text():
         agent._anthropic_client.close()
     finally:
         client.close()
+
+
+def test_fallback_rebuild_keeps_the_tenant_query():
+    """A query-bearing fallback URL (…/t?team=a) lives in the client as base_url + _custom_query.
+    _client_kwargs must carry both, or every rebuild — and every child built from them — calls
+    the tenant-less URL (review 6 of the OAuth-proxy work, finding 1)."""
+    seen = []
+
+    def respond(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"id": "fixture", "choices": []})
+
+    client = OpenAI(api_key="k", base_url="https://relay.example.com/t", default_query={"team": "a"})
+    agent = SimpleNamespace()
+    _swap_fallback_clients(agent, client, "relay", "fixture", str(client.base_url), "chat_completions")
+    assert agent._client_kwargs["default_query"] == {"team": "a"}
+    rebuilt = OpenAI(**agent._client_kwargs, http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+    try:
+        rebuilt.chat.completions.create(model="fixture", messages=[])
+        assert seen == ["https://relay.example.com/t/chat/completions?team=a"]
+    finally:
+        client.close()
+        rebuilt.close()
+
+
+def test_fallback_without_a_query_adds_no_default_query():
+    client = OpenAI(api_key="k", base_url="https://relay.example.com/t")
+    agent = SimpleNamespace()
+    try:
+        _swap_fallback_clients(agent, client, "relay", "fixture", str(client.base_url), "chat_completions")
+        assert "default_query" not in agent._client_kwargs
+    finally:
+        client.close()

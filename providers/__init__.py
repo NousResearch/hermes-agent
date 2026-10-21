@@ -453,6 +453,54 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
         _discovering = prior_discovering
 
 
+def _plugin_disabled(plugin_dir: Path) -> bool:
+    """Whether the authoritative plugin selection (``plugins.disabled``) disables *plugin_dir*.
+
+    ``_discover_entry_point_providers`` already honours the deny-list; the filesystem scan must too,
+    or a plugin the user explicitly disabled keeps executing its import-time code and registering a
+    provider (#137671). Names mirror ``gate_manifest``'s ``{lookup_key, manifest.name}``: a flat
+    install keys by its manifest name, the legacy ``plugins/model-providers/<dir>/`` layout keys as
+    ``model-providers/<dir>``.
+    """
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins
+    except ImportError:
+        return False
+    disabled = _get_disabled_plugins()  # malformed/absent config degrades to the empty set inside
+    if not disabled:
+        return False
+    names = {plugin_dir.name, f"model-providers/{plugin_dir.name}"}
+    for filename in ("plugin.yaml", "plugin.yml"):
+        manifest = plugin_dir / filename
+        if not manifest.is_file():
+            continue
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            break
+        name = None
+        try:
+            from utils import fast_safe_load
+
+            data = fast_safe_load(text)
+            name = data.get("name") if isinstance(data, dict) else None
+        except Exception:  # health: allow BLE001 -- a malformed third-party manifest must not crash provider discovery; the line scan below recovers the name
+            name = None  # parse failed: recover via the line scan below
+        if name is None:
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or ":" not in stripped:
+                    continue
+                key, _, value = stripped.partition(":")
+                if key.strip() == "name":
+                    name = value.strip().strip("\"'")
+                    break
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+        break
+    return bool(names & disabled)
+
+
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
     digest = hashlib.sha1(home_key.encode("utf-8")).hexdigest()[:10]
     return f"_hermes_user_provider_{digest}_{plugin_dir.name.replace('-', '_')}"
@@ -466,6 +514,9 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     global _current_source
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
+        return
+    if source != "bundled" and _plugin_disabled(plugin_dir):
+        logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
         return
     if source != "bundled":
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode

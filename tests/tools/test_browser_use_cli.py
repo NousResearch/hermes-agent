@@ -138,6 +138,43 @@ class TestSubprocessEnvironment:
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
 
+    def test_subprocess_env_injects_agent_browser_idle_timeout(self, monkeypatch):
+        """The BU lane forks a resident agent-browser daemon that outlives the CLI. Without
+        the daemon-side idle timer injected here it never self-exits, and the orphan reaper
+        cannot see it either (no socket dir), so one leaked run pins a whole headless Chrome
+        tree at full CPU indefinitely. Mirrors the native lane's _agent_browser_command_env."""
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = dict
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        session = ModuleType("tools.browser_tool_session")
+        session._daemon_idle_timeout_seconds = lambda: 120
+        monkeypatch.setitem(sys.modules, "tools.browser_tool_session", session)
+
+        env = bu_cli._base_subprocess_env()
+
+        assert env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "120000"
+
+    def test_subprocess_env_keeps_explicit_agent_browser_idle_timeout(
+        self, monkeypatch
+    ):
+        """A user-set AGENT_BROWSER_IDLE_TIMEOUT_MS (secret scope / .env passthrough) must
+        win over the computed default — same not-in guard as the native lane."""
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {
+            "AGENT_BROWSER_IDLE_TIMEOUT_MS": "45000"
+        }
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+
+        env = bu_cli._base_subprocess_env()
+
+        assert env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "45000"
+
     def test_subprocess_env_replaces_parent_python_import_paths(self, monkeypatch):
         """#83427/#84841/#86006/#86104: an inherited PYTHONPATH/PYTHONHOME must never reach the
         harness child; PYTHONPATH is replaced by the harness's own site dir, unrelated vars survive."""

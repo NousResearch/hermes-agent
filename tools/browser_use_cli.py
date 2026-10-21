@@ -173,6 +173,13 @@ def _base_subprocess_env() -> dict:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    # Browser-Use lane also forks a resident agent-browser daemon; without the daemon-side
+    # idle timer it leaks forever (no self-exit, no reaper-visible socket dir).
+    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
+        idle_seconds = _lazy_call("tools.browser_tool_session", "_daemon_idle_timeout_seconds",
+                                  None, "agent-browser idle-timeout lookup failed")
+        if idle_seconds is not None:
+            env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(idle_seconds * 1000)
     return env
 
 

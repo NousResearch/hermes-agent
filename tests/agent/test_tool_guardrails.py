@@ -130,6 +130,150 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+_TOOL_ERROR = '{"error":"server is unreachable"}'
+# Not in FAILURE_TOLERANT_TOOL_NAMES, so same_tool_failure may halt it.
+_BATCH_TOOL = "mcp_odoo_search_records"
+
+
+def _batch_controller(**overrides):
+    """Controller that halts on same-tool failures and warns from the first."""
+    kwargs = {
+        "hard_stop_enabled": True,
+        "same_tool_failure_warn_after": 1,
+        "same_tool_failure_halt_after": 8,
+        # Keep the exact-args counters out of the way so the decisions we read
+        # back are always the same-tool ones.
+        "exact_failure_warn_after": 99,
+        "exact_failure_block_after": 99,
+    }
+    kwargs.update(overrides)
+    return ToolCallGuardrailController(ToolCallGuardrailConfig(**kwargs))
+
+
+def test_parallel_batch_failures_count_as_one_observation():
+    # A batch is emitted before any of its results exist, so eight failures
+    # inside it are one observation, not eight retries.
+    controller = _batch_controller()
+    controller.begin_tool_batch()
+
+    for i in range(8):
+        decision = controller.after_call(_BATCH_TOOL, {"domain": i}, _TOOL_ERROR, failed=True)
+        assert decision.action == "warn"
+        assert decision.code == "same_tool_failure_warning"
+        assert decision.count == 1
+
+    assert controller.halt_decision is None
+
+
+def test_parallel_browser_exec_batch_failing_on_startup_does_not_halt():
+    # Reproduction reported on #88357: eight differently parameterised browser_exec
+    # calls in ONE assistant response, all failing on the same browser-startup
+    # prerequisite, halted at count 8 before the model could see a single failure.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(
+        hard_stop_enabled=True, same_tool_failure_warn_after=3, same_tool_failure_halt_after=8,
+    ))
+    startup_error = '{"error":"browser failed to start"}'
+
+    controller.begin_tool_batch()
+    decisions = [
+        controller.after_call("browser_exec", {"code": f"goto('https://example.com/{i}')"}, startup_error, failed=True)
+        for i in range(8)
+    ]
+
+    assert [(d.action, d.count) for d in decisions] == [("allow", 1)] * 8
+    assert controller.halt_decision is None
+
+    # Retries made after SEEING those failures are the 2nd and 3rd observations.
+    for attempt in ("retry-1", "retry-2"):
+        controller.begin_tool_batch()
+        retry = controller.after_call("browser_exec", {"code": attempt}, startup_error, failed=True)
+    assert (retry.action, retry.code, retry.count) == ("warn", "same_tool_failure_warning", 3)
+
+
+def test_sequential_failures_across_batches_still_halt():
+    controller = _batch_controller(same_tool_failure_halt_after=3)
+
+    for i in range(2):
+        controller.begin_tool_batch()
+        assert controller.after_call(_BATCH_TOOL, {"domain": i}, _TOOL_ERROR, failed=True).action != "halt"
+
+    controller.begin_tool_batch()
+    decision = controller.after_call(_BATCH_TOOL, {"domain": 99}, _TOOL_ERROR, failed=True)
+
+    assert decision.action == "halt"
+    assert decision.code == "same_tool_failure_halt"
+    assert decision.count == 3
+
+
+def test_partially_failed_batch_counts_once():
+    controller = _batch_controller(same_tool_failure_halt_after=2)
+
+    controller.begin_tool_batch()
+    controller.after_call(_BATCH_TOOL, {"domain": 1}, '{"ok":true}', failed=False)
+    controller.after_call(_BATCH_TOOL, {"domain": 2}, _TOOL_ERROR, failed=True)
+    controller.after_call(_BATCH_TOOL, {"domain": 3}, _TOOL_ERROR, failed=True)
+    assert controller.halt_decision is None
+
+    controller.begin_tool_batch()
+    decision = controller.after_call(_BATCH_TOOL, {"domain": 4}, _TOOL_ERROR, failed=True)
+
+    assert decision.action == "halt"
+    assert decision.count == 2
+
+
+def test_failure_after_mid_batch_success_is_counted_afresh():
+    # A success resets the counter; the failures that follow it in the same batch
+    # are again one observation, not zero (already counted) and not one each.
+    controller = _batch_controller()
+    controller.begin_tool_batch()
+    assert controller.after_call(_BATCH_TOOL, {"domain": 1}, _TOOL_ERROR, failed=True).count == 1
+
+    controller.begin_tool_batch()
+    assert controller.after_call(_BATCH_TOOL, {"domain": 2}, _TOOL_ERROR, failed=True).count == 2
+    controller.after_call(_BATCH_TOOL, {"domain": 3}, '{"ok":true}', failed=False)
+    assert controller.after_call(_BATCH_TOOL, {"domain": 4}, _TOOL_ERROR, failed=True).count == 1
+    assert controller.after_call(_BATCH_TOOL, {"domain": 5}, _TOOL_ERROR, failed=True).count == 1
+
+
+def test_distinct_tools_in_one_batch_keep_separate_counters():
+    controller = _batch_controller()
+    controller.begin_tool_batch()
+
+    first = controller.after_call(_BATCH_TOOL, {"domain": 1}, _TOOL_ERROR, failed=True)
+    second = controller.after_call("web_search", {"query": "x"}, _TOOL_ERROR, failed=True)
+
+    assert first.count == 1
+    assert second.count == 1
+
+
+def test_failures_without_declared_batch_count_per_call():
+    # Fail-safe: a dispatch path that never declares a batch keeps the
+    # pre-existing per-call counting instead of capping every counter at 1.
+    controller = _batch_controller(same_tool_failure_halt_after=3)
+
+    for i in range(2):
+        assert controller.after_call(_BATCH_TOOL, {"domain": i}, _TOOL_ERROR, failed=True).action != "halt"
+
+    decision = controller.after_call(_BATCH_TOOL, {"domain": 9}, _TOOL_ERROR, failed=True)
+
+    assert decision.action == "halt"
+    assert decision.count == 3
+
+
+def test_reset_for_turn_clears_batch_bookkeeping():
+    controller = _batch_controller(same_tool_failure_halt_after=2)
+    controller.begin_tool_batch()
+    controller.after_call(_BATCH_TOOL, {"domain": 1}, _TOOL_ERROR, failed=True)
+
+    controller.reset_for_turn()
+
+    controller.begin_tool_batch()
+    decision = controller.after_call(_BATCH_TOOL, {"domain": 1}, _TOOL_ERROR, failed=True)
+
+    assert decision.action != "halt"
+    assert decision.count == 1
+
+
 
 
 

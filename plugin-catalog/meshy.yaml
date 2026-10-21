@@ -1,7 +1,7 @@
 name: meshy
 title: Meshy
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: adfe0378fdaaee40da4892f9e41884680ef8c9cb
+sha: 6108b7b4c75a604890e40934a9305752692f6aca
 subdir: meshy
 version: "0.4.0"
 description: >-
@@ -22,7 +22,7 @@ tier: official
 category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/meshy
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/adfe0378fdaaee40da4892f9e41884680ef8c9cb/assets/meshy.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/6108b7b4c75a604890e40934a9305752692f6aca/assets/meshy.jpg
 platforms: [windows, macos, linux]
 capabilities:
   provides_tools: []

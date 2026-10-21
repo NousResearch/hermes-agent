@@ -27,12 +27,16 @@ export interface NativeProcess {
  * or the canonical gateway this home's `gateway_state.json` names). */
 export interface BackendProcess extends NativeProcess {
   ownership: 'child' | 'host-ledger' | 'host-gateway'
+  /** For a canonical gateway: the commit it stamped into its own `gateway_state.json` (`code_sha`). */
+  codeSha?: string
 }
 
 /** What the caller already knows about the app that owns this listener. */
 export interface OriginEvidence {
   /** The root the app itself reported resolving, from its own UI/identity channel. */
   appReportedRoot?: string
+  /** The commit the expected installation records (`readInstallationCommit`). */
+  installedCommit?: string
 }
 
 function nativeText(command: string, args: string[]): string {
@@ -183,6 +187,7 @@ function processStartTime(pid: number): number | null {
 const gatewayStateSchema = z.object({
   pid: z.number().int().positive(), kind: z.literal('hermes-gateway'),
   gateway_state: z.string(), start_time: z.number().nullable().optional(),
+  code_sha: z.string().nullable().optional(),
 }).passthrough()
 
 /** Whether `pid` is still the incarnation `gateway.status._get_process_start_time` recorded:
@@ -209,8 +214,8 @@ function gatewayIncarnationMatches(pid: number, recorded: number | null | undefi
 /** The running canonical gateway (`hermes gateway run`) recorded for `homes`. Desktop reaches a
  * local backend through `hermes gateway ensure`, which attaches to that daemon or starts it
  * detached, so it is neither an Electron descendant nor a `serve` spawn-ledger record. */
-function canonicalGatewayPids(homes: string[], processes: NativeProcess[]): number[] {
-  return [...new Set(homes)].flatMap((home: string): number[] => {
+function canonicalGateways(homes: string[], processes: NativeProcess[]): Map<number, string | undefined> {
+  return new Map([...new Set(homes)].flatMap((home: string): Array<[number, string | undefined]> => {
     try {
       const state = gatewayStateSchema.parse(JSON.parse(
         fs.readFileSync(path.join(home, 'gateway_state.json'), 'utf8').replace(/^\uFEFF/, '')))
@@ -218,9 +223,9 @@ function canonicalGatewayPids(homes: string[], processes: NativeProcess[]): numb
       const live = state.gateway_state === 'running' && processes.some(candidate => candidate.pid === state.pid)
         && gatewayIncarnationMatches(state.pid, state.start_time)
 
-      return live ? [state.pid] : []
+      return live ? [[state.pid, state.code_sha ?? undefined]] : []
     } catch { return [] /* Missing/unreadable state provides no attachment evidence. */ }
-  })
+  }))
 }
 
 /** Identify the actual listener, not a healthy helper or a command recorded before spawn. */
@@ -236,7 +241,7 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
   // its own child. Registration is only a candidate: the OS listener and the
   // caller's existing installed-tree checks must independently agree.
   let registered: number[] = []
-  let gateways: number[] = []
+  let gateways = new Map<number, string | undefined>()
 
   if (hermesHome) {
     // The product writes one machine-root ledger for every profile, and the app
@@ -244,7 +249,7 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
     // where a `<root>/profiles/<name>` home resolves to `<root>`).
     const ledgerRoot = resolveDesktopHermesHome({ home: os.homedir(), env: { HERMES_HOME: hermesHome } })
     // A named profile is served by the root's multiplexer; a standalone one by its own gateway.
-    gateways = canonicalGatewayPids([hermesHome, ledgerRoot], processes)
+    gateways = canonicalGateways([hermesHome, ledgerRoot], processes)
 
     try {
       registered = parseSpawnLedger(fs.readFileSync(path.join(ledgerRoot, SPAWN_LEDGER_FILENAME), 'utf8'))
@@ -266,7 +271,7 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
   }
 
   const candidates = processes.filter(candidate => children.includes(candidate) || registered.includes(candidate.pid)
-    || gateways.includes(candidate.pid))
+    || gateways.has(candidate.pid))
 
   let pids: number[]
 
@@ -288,6 +293,10 @@ export function localBackendProcess(port: number, electronPid: number, hermesHom
 
   const ownership = children.includes(matches[0]) ? 'child' : registered.includes(matches[0].pid) ? 'host-ledger' : 'host-gateway'
   const backend: BackendProcess = { ...matches[0], ownership }
+
+  if (ownership === 'host-gateway') {
+    backend.codeSha = gateways.get(backend.pid)
+  }
 
   if (process.platform === 'linux') {
     backend.executable = fs.readlinkSync(`/proc/${backend.pid}/exe`)
@@ -321,8 +330,18 @@ function appVouchesForBackend(backend: BackendProcess, evidence: OriginEvidence,
   const processEvidenceUnreadable = backend.cwd === undefined
     && backend.pythonPath === undefined && backend.virtualEnv === undefined
 
-  return processEvidenceUnreadable && backend.ownership === 'child'
-    && evidence.appReportedRoot !== undefined && sameTree(evidence.appReportedRoot)
+  if (!processEvidenceUnreadable || evidence.appReportedRoot === undefined || !sameTree(evidence.appReportedRoot)) {
+    return false
+  }
+
+  // A canonical gateway is not the app's descendant (`gateway ensure` starts it detached),
+  // and Windows cannot read its cwd, the evidence `main` uses for it. It must vouch for
+  // itself: the commit it stamped into its own gateway_state.json is the installed one.
+  if (backend.ownership === 'host-gateway') {
+    return evidence.installedCommit !== undefined && backend.codeSha === evidence.installedCommit
+  }
+
+  return backend.ownership === 'child'
 }
 
 export function assertBackendOrigin(backend: BackendProcess, root: string, origin: 'source' | 'bundled',

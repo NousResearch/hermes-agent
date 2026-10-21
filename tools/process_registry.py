@@ -1319,8 +1319,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         blocks until EOF, landing "live" output in one burst at exit. Orphaned-pipe
         guard: a backgrounded grandchild (``node server.js &``) inherits our pipe's write
         end so EOF never arrives while it lives, which would park this thread and never
-        fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
-        after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
+        fire ``notify_on_complete``; on POSIX we wait on an ``fd_wait`` selector (no FD_SETSIZE
+        cap, #94928) and stop draining shortly after the direct child exits.
         Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net (#68915, #8340).
         """
         # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
@@ -1337,6 +1337,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 chunk = self._clean_shell_noise(chunk)
                 head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
+        _waiter = None
         try:
             proc = session.process
             if proc is None or proc.stdout is None:
@@ -1358,20 +1359,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
-            if fd is not None:
-                import select as _select
-                session._reader_selectable = True
+            from tools.environments.fd_wait import open_fd_waiter
+            _waiter = open_fd_waiter(fd) if fd is not None else None
+            session._reader_selectable = _waiter is not None
             idle_after_exit = 0
             drained_after_request = 0
             while True:
-                if fd is not None:
-                    try:
-                        # Once a finish is requested, read only what is already buffered: the exited
-                        # child's tail, never an orphaned grandchild's future writes.
-                        wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
-                        ready, _, _ = _select.select([fd], [], [], wait_s)
-                    except (ValueError, OSError):
-                        break  # fd already closed
+                if _waiter is not None:
+                    # Once a finish is requested, read only what is already buffered: the exited
+                    # child's tail, never an orphaned grandchild's future writes.
+                    wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
+                    ready = _waiter.wait(wait_s)
                     if not ready:
                         if session._reader_finish_requested.is_set():
                             break
@@ -1399,6 +1397,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            if _waiter is not None:
+                _waiter.close()
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
                 session.process.wait, lambda: session.process.returncode)

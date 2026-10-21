@@ -408,36 +408,75 @@ class TestWslInteropPaths:
 
         assert result == []
 
-    def test_which_resolved_tool_dirs_and_system32_set_are_included(self, monkeypatch):
+    def test_system32_set_is_included_and_which_not_consulted(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(
             "PATH",
             "/usr/local/bin:/mnt/d/heavy-app/bin:/mnt/c/WINDOWS/system32",
         )
 
-        def fake_which(name):
-            resolved = {
-                "powershell.exe": "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe",
-                "cmd.exe": "/mnt/c/WINDOWS/system32/cmd.exe",
-                "explorer.exe": "/mnt/c/WINDOWS/explorer.exe",
-                "wsl.exe": "/mnt/c/Windows/System32/wsl.exe",
-            }
-            return resolved.get(name)
+        def fail_which(name):
+            raise AssertionError(f"which({name!r}) consulted although System32 provides it")
 
-        monkeypatch.setattr(gateway_cli.shutil, "which", fake_which)
+        monkeypatch.setattr(gateway_cli.shutil, "which", fail_which)
         monkeypatch.setattr(Path, "exists", lambda self: True)
 
         result = gateway_cli._build_wsl_interop_paths(["/mnt/d/heavy-app/bin"])
 
-        # which()-resolved dirs land even when absent from the caller's PATH entry list.
-        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0" in result
-        assert "/mnt/c/WINDOWS/system32" in result
         # Hardcoded System32 family, gated on existence like on a real install.
-        assert "/mnt/c/WINDOWS" in result
-        assert "/mnt/c/WINDOWS/System32/Wbem" in result
-        # Heavy shell-PATH /mnt/ entries never enter, and dedupe keeps out the
-        # entry the caller already has.
-        assert "/mnt/d/heavy-app/bin" not in result
+        assert result == [
+            "/mnt/c/WINDOWS/system32",
+            "/mnt/c/WINDOWS",
+            "/mnt/c/WINDOWS/System32/Wbem",
+            "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/",
+            "/mnt/c/WINDOWS/System32/OpenSSH/",
+        ]
+
+    def test_which_is_the_fallback_when_system32_set_is_missing(self, monkeypatch):
+        """Windows not on C: — the hardcoded family doesn't exist, which() finds the tools."""
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+
+        def fake_which(name):
+            resolved = {
+                "powershell.exe": "/mnt/d/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+                "cmd.exe": "/mnt/d/Windows/system32/cmd.exe",
+                "explorer.exe": "/mnt/d/Windows/explorer.exe",
+                "wsl.exe": "/mnt/d/Windows/system32/wsl.exe",
+            }
+            return resolved.get(name)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", fake_which)
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+
+        result = gateway_cli._build_wsl_interop_paths([])
+
+        # which()-resolved dirs land, deduped (cmd.exe and wsl.exe share a dir).
+        assert result == [
+            "/mnt/d/Windows/System32/WindowsPowerShell/v1.0",
+            "/mnt/d/Windows/system32",
+            "/mnt/d/Windows",
+        ]
+
+    def test_result_does_not_depend_on_invoking_shell_path(self, monkeypatch):
+        """An interactive shell carries the Windows PATH, a systemd/cron context doesn't.
+        The generated unit must be identical in both, or systemd_unit_is_current()
+        flags it as outdated depending on who asks."""
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setattr(Path, "exists", lambda self: str(self).startswith("/mnt/c/WINDOWS"))
+
+        interactive = {
+            "powershell.exe": "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "cmd.exe": "/mnt/c/WINDOWS/system32/cmd.exe",
+            "explorer.exe": "/mnt/c/WINDOWS/explorer.exe",
+            "wsl.exe": "/mnt/c/WINDOWS/system32/wsl.exe",
+        }
+        monkeypatch.setattr(gateway_cli.shutil, "which", interactive.get)
+        from_interactive_shell = gateway_cli._build_wsl_interop_paths([])
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+        from_service_context = gateway_cli._build_wsl_interop_paths([])
+
+        assert from_interactive_shell == from_service_context
 
     def test_outside_wsl_nothing_is_added(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)

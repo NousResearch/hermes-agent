@@ -9,7 +9,7 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 `hermes claw migrate` imports your OpenClaw (or legacy Clawdbot/Moldbot) setup into Hermes. This guide covers exactly what gets migrated, the config key mappings, and what to verify after migration.
 
 :::note
-Coming from **Claude Code** or **OpenAI Codex CLI** instead? Use [`hermes import-agent`](../user-guide/import-from-other-agents.md).
+Coming from **Claude Code**, **OpenAI Codex CLI** or **Cursor** instead? Use [`hermes import-agent`](../user-guide/import-from-other-agents.md) from the `agent-importers` plugin.
 :::
 
 :::tip

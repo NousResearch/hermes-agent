@@ -164,8 +164,7 @@ def test_unreadable_config_is_refused_not_overwritten(tmp_path: Path):
     ``load_yaml_file`` returned ``{}`` for an absent file AND for one it could
     not parse; the config-mutating steps read, merge and write the whole
     mapping back, so a YAML syntax error meant every existing setting was
-    replaced by just the merged section.  Same defect as the ported twin in
-    ``hermes_cli/agent_import.py``.
+    replaced by just the merged section.
     """
     mod = load_module()
     migrator, config_path = _allowlist_migrator(

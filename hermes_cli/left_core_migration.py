@@ -182,6 +182,13 @@ def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     return configured.lower() == "singularity"
 
 
+def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """*home* registered a ``hermes import-agent`` source for ``--sync`` (its ``import-sync.json``,
+    which scheduled syncs read). A one-shot import leaves no other trace, and installing the plugin
+    for every home would add a command nobody asked for; the old spelling names the install."""
+    return (home / "import-sync.json").is_file()
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -209,8 +216,9 @@ class LeftCoreFeature:
     # prefixes it shared with the feature's tools (stripped only when the source runs the adapter).
     enable_env: tuple[str, ...] = ()
     channel_env_prefixes: tuple[str, ...] = ()
-    # Top-level command the plugin registers in place of core's ``hermes auth <cli>`` login
-    # (``hermes <cli> login|status|logout``); :func:`moved_command_hint` points the old spelling at it.
+    # Top-level command the plugin registers: in place of core's ``hermes auth <cli>`` login
+    # (``hermes <cli> login|status|logout``), or core's own top-level command kept under the same name
+    # (``hermes import-agent``). :func:`moved_command_hint` points the old spelling at the plugin.
     cli: str = ""
     # Top-level command the plugin registers in place of core's nested ``old_command``
     # (``hermes mcp serve`` -> ``hermes mcp-serve``); :func:`moved_command_hint` points the old spelling at it.
@@ -258,6 +266,11 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="terminal.backend: singularity, terminal.singularity_image (TERMINAL_SINGULARITY_IMAGE) "
                   "and the container_* limits are unchanged",
         terminal_backend="singularity",
+    ),
+    LeftCoreFeature(
+        plugin="agent-importers", label="`hermes import-agent`", in_use=agent_imports_in_use,
+        unchanged="`hermes import-agent`, its flags and your import-sync.json sync sources are unchanged",
+        cli="import-agent",
     ),
 )
 

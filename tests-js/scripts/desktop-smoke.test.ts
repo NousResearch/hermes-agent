@@ -218,6 +218,68 @@ test.runIf(process.platform === 'linux' || process.platform === 'darwin')('a hos
   }
 })
 
+test.runIf(process.platform === 'linux' || process.platform === 'darwin')('the canonical gateway gateway_state.json names is the listener, for its own incarnation only', async (): Promise<void> => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-host-gateway-'))
+  // A named profile: the root's multiplexer serves it and records its own state there.
+  const home = path.join(root, 'profiles', 'work')
+  fs.mkdirSync(home, { recursive: true })
+  const spawnedAt = Date.now() / 1000
+  const child = spawn(process.execPath, ['-e', 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>console.log(s.address().port))'], { stdio: ['ignore', 'pipe', 'pipe'] })
+
+  try {
+    const port = await new Promise<number>((resolve, reject): void => {
+      child.once('error', reject)
+      child.stdout.once('data', (data: Buffer): void => resolve(Number(data.toString().trim())))
+    })
+
+    // gateway.status._get_process_start_time: raw start ticks on Linux, centiseconds elsewhere.
+    const startTime = process.platform === 'linux'
+      ? Number(fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8').split(')').pop()!.trim().split(/\s+/)[19])
+      : Math.round(spawnedAt * 100)
+
+    const state = { pid: child.pid, kind: 'hermes-gateway', gateway_state: 'running', start_time: startTime }
+    const statePath = path.join(root, 'gateway_state.json')
+    // `gateway ensure` leaves the daemon outside the app's tree and out of the spawn ledger.
+    expect(() => localBackendProcess(port, child.pid!, home)).toThrow('found 0')
+
+    for (const invalid of [{ ...state, gateway_state: 'stopped' }, { ...state, kind: 'other' },
+      { ...state, pid: process.pid }, { ...state, start_time: startTime + 360_000 }]) {
+      fs.writeFileSync(statePath, JSON.stringify(invalid))
+      expect(() => localBackendProcess(port, child.pid!, home)).toThrow('found 0')
+    }
+
+    fs.writeFileSync(statePath, JSON.stringify(state))
+    const backend = localBackendProcess(port, child.pid!, home)
+    expect(backend.pid).toBe(child.pid)
+    expect(backend.ownership).toBe('host-gateway')
+    // The gateway is not tied to the app by ancestry: its own tree evidence is still required.
+    expect(() => assertBackendOrigin(backend, root, 'source', { appReportedRoot: root })).toThrow('source tree')
+    fs.writeFileSync(statePath, 'invalid')
+    expect(() => localBackendProcess(port, child.pid!, home)).toThrow('found 0')
+  } finally {
+    child.kill()
+    await new Promise<void>((resolve): void => { child.once('exit', (): void => resolve()) })
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a canonical gateway proves its tree by the cwd `gateway ensure` starts it in', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-gateway-origin-'))
+
+  try {
+    // spawn_unmanaged_gateway: `sys.executable -m hermes_cli.main --profile default gateway run`, cwd=<install root>.
+    // The interpreter is the managed one beside the checkout, so argv never names the root.
+    const executable = path.join(os.tmpdir(), 'hermes-tools', 'python', 'bin', 'python3.14')
+
+    const backend = { pid: 2, parentPid: 1, executable, cwd: root, ownership: 'host-gateway' as const,
+      command: [executable, '-m', 'hermes_cli.main', '--profile', 'default', 'gateway', 'run', '--quiet'].map(arg => JSON.stringify(arg)).join(' ') }
+
+    expect(() => assertBackendOrigin(backend, root, 'source', { appReportedRoot: root })).not.toThrow()
+    // The app's own report never vouches for a listener that is not its descendant.
+    expect(() => assertBackendOrigin({ ...backend, cwd: os.tmpdir() }, root, 'source', { appReportedRoot: root })).toThrow('different source tree')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('a backend bound to the tree by environment needs no root in argv', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
 

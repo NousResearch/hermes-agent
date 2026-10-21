@@ -454,13 +454,12 @@ class PluginContext:
     def register_tool(
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
-        description: str = "", emoji: str = "", override: bool = False, include_in_messaging_toolsets: bool = False,
-    ) -> Optional[PluginRegistration]:
+        description: str = "", emoji: str = "", override: bool = False,
+        include_in_messaging_toolsets: bool = False) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194).
-        ``include_in_messaging_toolsets=True`` also exposes it on CLI, cron and every messaging platform."""
+        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
                 f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "

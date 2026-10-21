@@ -260,6 +260,8 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 
+A client that does work the user cannot see while a call is in flight — waiting out a rate limit, reconnecting, switching credentials — can say so on the turn's status rail (the CLI status line and `status_callback` for the TUI, desktop and messaging gateway) with `agent.status_output.notify_turn_status(message, kind="lifecycle" | "warn" | "activity")`. `lifecycle`/`warn` print a status line; `activity` updates the transient thinking/spinner line instead (`thinking_callback` — it never becomes a message, so use it for a line that updates while a wait counts down). It returns `False` outside a provider call and never raises; keep it to one short line and throttle it yourself.
+
 ### Picker rows for non-api-key plugins
 
 Every registered profile joins `CANONICAL_PROVIDERS` by slug (a plugin re-declaring a built-in slug such as `bedrock` is deduped, never doubled), so external-process and OAuth plugins appear in `hermes model`, `/model` and the Desktop model selector alongside `copilot-acp`. Visibility is gated by credentials, not by `auth_type`:

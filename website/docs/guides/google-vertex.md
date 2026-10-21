@@ -153,6 +153,21 @@ The Gemini 3.x preview models are served through the `global` endpoint. Regional
 
 Vertex exposes Gemini's thinking budget through the OpenAI-compatible surface. Hermes maps its reasoning-effort setting onto `extra_body.google.thinking_config` automatically, so `reasoning_effort` works the same way it does on other Gemini surfaces.
 
+## Priority PayGo
+
+Vertex's shared Standard PayGo pool serves every customer, so a busy pool answers some requests with `429 RESOURCE_EXHAUSTED`. Google's other consumption options are Provisioned Throughput (reserved capacity, an upfront commitment) and Priority PayGo.
+
+Priority PayGo sends the `X-Vertex-AI-LLM-Shared-Request-Type: priority` header, which prioritises your traffic over the shared pool without an upfront commitment. **It is billed at a higher per-token rate than Standard PayGo**, so it is off by default and must be enabled explicitly:
+
+```yaml
+vertex:
+  project_id: my-gcp-project
+  region: global
+  priority_paygo: true
+```
+
+It is supported on the `global`, `us` and `eu` endpoints. Leave it off unless the capacity 429s are actually costing you more than the rate difference.
+
 ## Diagnostics
 
 ```bash

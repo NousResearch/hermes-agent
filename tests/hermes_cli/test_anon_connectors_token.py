@@ -20,13 +20,22 @@ from hermes_cli import anon_auth, anon_challenge
 from hermes_cli import auth as auth_mod
 from hermes_cli.auth_nous import resolve_nous_runtime_credentials
 
-from tests.hermes_cli.anon_portal import WELCOME, install_portal, make_jwt
+from tests.hermes_cli.anon_portal import WELCOME, claimed_trial, install_portal, make_jwt
 
 
 @pytest.fixture
 def nas(monkeypatch, tmp_path):
+    """A connectors-only guest: the free model is not active for it."""
     fake = install_portal(monkeypatch, tmp_path)
     assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+    return fake
+
+
+@pytest.fixture
+def trial(monkeypatch, tmp_path):
+    """A guest that claimed the welcome trial on the desktop's local backend: the free model is live."""
+    fake = install_portal(monkeypatch, tmp_path)
+    claimed_trial(monkeypatch)
     return fake
 
 
@@ -110,8 +119,9 @@ class TestConnectorsCallers:
         assert auth_mod.resolve_nous_access_token() == token
         assert len(nas.token_requests) == 1
 
-    def test_account_reads_use_the_connectors_token(self, nas, presented):
+    def test_account_reads_use_the_connectors_token(self, trial, presented):
         from hermes_cli.nous_account import get_nous_portal_account_info, reset_nous_portal_account_info_cache
+        nas = trial
         nas.challenge_required = True
         auth_mod.resolve_nous_access_token()
         reset_nous_portal_account_info_cache()
@@ -129,7 +139,8 @@ class TestConnectorsCallers:
 
 
 class TestInferenceCallers:
-    def test_still_work_the_challenge_and_never_take_the_connectors_token(self, nas, presented):
+    def test_still_work_the_challenge_and_never_take_the_connectors_token(self, trial, presented):
+        nas = trial
         connectors = auth_mod.resolve_nous_access_token()
         nas.challenge_required = True
         nas.challenge_statuses = ["pending"]
@@ -138,15 +149,17 @@ class TestInferenceCallers:
         assert [c.url for c in presented] == [nas.challenge_url]
         assert _purposes(nas) == ["connectors", "inference", "inference"]
 
-    def test_a_held_inference_token_satisfies_connectors_callers(self, nas, monkeypatch):
+    def test_a_held_inference_token_satisfies_connectors_callers(self, trial, monkeypatch):
+        nas = trial
         creds = resolve_nous_runtime_credentials()
         _forget_memo(monkeypatch)
         assert auth_mod.resolve_nous_access_token() == creds["api_key"]
         assert len(nas.token_requests) == 1
 
-    def test_a_connectors_mint_leaves_a_pending_inference_challenge_alone(self, nas, presented):
+    def test_a_connectors_mint_leaves_a_pending_inference_challenge_alone(self, trial, presented):
         """The connectors grant says nothing about the inference check: the desktop's hidden window
         must keep the ticket it was handed."""
+        nas = trial
         nas.challenge_required = True
         nas.challenge_never_clears = True
         with anon_challenge.background_caller(), pytest.raises(anon_auth.AuthError):
@@ -155,8 +168,9 @@ class TestInferenceCallers:
         auth_mod.resolve_nous_access_token()
         assert anon_challenge.pending_challenge()["url"] == nas.challenge_url
 
-    def test_a_connectors_caller_never_queues_behind_an_inference_challenge(self, nas, monkeypatch):
+    def test_a_connectors_caller_never_queues_behind_an_inference_challenge(self, trial, monkeypatch):
         """The wait runs outside the auth locks and its work lock is the inference mint's alone."""
+        nas = trial
         nas.challenge_required = True
         nas.challenge_statuses = ["pending"]
         during_wait: list[str] = []
@@ -171,7 +185,8 @@ class TestInferenceCallers:
         assert [_scope(t) for t in during_wait] == ["connectors:invoke"]
 
     def test_an_inference_give_up_cooldown_does_not_fail_connectors_callers_fast(
-            self, nas, presented, monkeypatch):
+            self, trial, presented, monkeypatch):
+        nas = trial
         nas.challenge_required = True
         nas.challenge_never_clears = True
         monkeypatch.setattr(anon_challenge, "CHALLENGE_WAIT_SECONDS", 0)
@@ -183,6 +198,14 @@ class TestInferenceCallers:
 
 class TestNoInferenceIntent:
     """Paths that are not a free-model call never mint inference in the foreground or on a timer."""
+
+    def test_a_connectors_only_guest_never_mints_inference(self, nas, presented):
+        """Without a claimed trial the free model is not this guest's: the inference path refuses
+        before any exchange, and the identity stays for connectors."""
+        with pytest.raises(anon_auth.AuthError):
+            resolve_nous_runtime_credentials()
+        assert nas.token_requests == [] and presented == []
+        assert anon_auth.is_guest_state(anon_auth.current_nous_state())
 
     def test_the_keepalive_never_mints_for_a_guest(self, nas):
         from hermes_cli.nous_auth_keepalive import refresh_nous_auth_keepalive_once
@@ -201,7 +224,8 @@ class TestNoInferenceIntent:
 class TestOlderNas:
     """A NAS from before #1516 drops the unknown ``purpose`` key and mints today's token."""
 
-    def test_an_inference_token_for_a_connectors_mint_fills_the_inference_slot(self, nas, monkeypatch):
+    def test_an_inference_token_for_a_connectors_mint_fills_the_inference_slot(self, trial, monkeypatch):
+        nas = trial
         nas.honours_purpose = False
         token = auth_mod.resolve_nous_access_token()
         assert _scope(token) == "inference:invoke"
@@ -219,7 +243,8 @@ class TestOlderNas:
 
 
 class TestPersistedState:
-    def test_state_written_by_current_releases_loads_unchanged(self, nas):
+    def test_state_written_by_current_releases_loads_unchanged(self, trial):
+        nas = trial
         from tools.managed_tool_gateway import peek_nous_access_token
         token = _persist_guest_tokens(inference=900)["inference"]
         assert peek_nous_access_token() == token

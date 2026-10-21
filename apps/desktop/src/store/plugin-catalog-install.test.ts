@@ -60,7 +60,13 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
 
   it('falls back to the live catalog feed on a backend without the lookup, and rejects unknown names', async () => {
     const feed = JSON.stringify([
-      { name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }
+      {
+        name: 'weather',
+        repo: 'https://github.com/x/weather',
+        sha: 'a'.repeat(40),
+        subdir: '',
+        description: 'Shows the  weather\nfor a city. Disclosure — calls a public API.'
+      }
     ])
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(feed, { status: 200 }))
@@ -80,7 +86,12 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
 
     await requestPluginCatalogInstallFromDeepLink('weather', lookup)
 
-    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', repo: 'https://github.com/x/weather' })
+    // The dialog's one line is the description's first sentence, never its disclosure.
+    expect($pluginInstallRequest.get()).toMatchObject({
+      catalogName: 'weather',
+      repo: 'https://github.com/x/weather',
+      summary: 'Shows the weather for a city.'
+    })
   })
 })
 
@@ -107,5 +118,15 @@ describe('openCatalogPluginInstall', () => {
 
     expect($pluginInstallRequest.get()).toBeNull()
     expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
+  })
+
+  it("carries the caller's stay-in-place choice to the install dialog", () => {
+    $agentPlugins.set([])
+
+    openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather' }, 'workbot', {
+      stayAfterInstall: true
+    })
+
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', stayAfterInstall: true })
   })
 })

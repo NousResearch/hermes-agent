@@ -1,21 +1,26 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
+import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
+import { dePluginUpdate } from './de_plugin_update'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
   sharedMetrics: deSharedMetrics,
+  firstRun: deFirstRun,
   intro: introDe,
   connectors: deConnectorCard,
   connectorsPage: {
@@ -489,14 +494,6 @@ export const deOverrides = {
     }
   },
   ...deNotices,
-  billingBlock: {
-    titleNous: 'Keine Nous-Credits mehr',
-    titleProvider: provider => `Keine Credits mehr — ${provider}`,
-    fallbackMessage: 'Auf Ihrem Konto sind keine Credits mehr übrig. Fügen Sie Credits hinzu, um fortzufahren.',
-    openBilling: 'Billing öffnen',
-    addCredits: 'Credits hinzufügen',
-    dismiss: 'Schließen'
-  },
   sendDiagnostics: {
     title: 'Diagnosedaten an Nous senden',
     privacyNotice:
@@ -787,11 +784,6 @@ export const deOverrides = {
         profileLabel: 'Für Profil installieren',
         agentTargetLocal: (profile, dir) => `Wird in das Backend ${profile} installiert (${dir})`,
         agentTargetRemote: profile => `Installiert in das verbundene ${profile}-Backend`,
-        catalogPinned: (name, sha) =>
-          `Hermes-Katalog-Eintrag „${name}" — die Agent-Komponente wird am geprüften Pin installiert${sha ? ` ${sha}` : ''}, nicht an der Spitze des Branches.`,
-        reviewedHeading: 'Geprüfter Katalog-Eintrag',
-        reviewedIntro:
-          'Dieser Eintrag wurde an seinem gepinnten Commit von einem Menschen geprüft. Sie können den genauen Code trotzdem unten ansehen.',
         toolsConnected: n => (n === 1 ? '1 Tool verbunden' : `${n} Tools verbunden`),
         skillsReady: names => (names.length === 1 ? `Skill ${names[0]} bereit` : `${names.length} Skills bereit`),
         nextChat: 'weitere Tools in Ihrem nächsten Chat verfügbar',
@@ -804,13 +796,11 @@ export const deOverrides = {
         desktopOnlyNote: 'Nur-Desktop-Pakete installieren kein Backend-Agent-Plugin.',
         insecureWarning:
           'Diese URL verwendet ein unsicheres oder lokales Schema. Für Produktionsinstallationen bevorzuge https:// oder git@.',
-        securityHeading: 'Vor der Installation',
         securityIntro:
           'Installieren Sie nur aus Quellen, denen Sie vertrauen – prüfen Sie das Repository unten, wenn Sie sehen möchten, was hinzugefügt wird.',
         sourceHeading: 'Quellcode',
         viewRepository: 'Repository ansehen',
         viewPluginFiles: 'Plugin-Dateien ansehen',
-        gitCloneLabel: 'Git-Clone-URL',
         enableAgent: 'Agent-Plugin nach der Installation aktivieren',
         forceReinstall: 'Neuinstallation erzwingen (ersetzen, falls bereits installiert)',
         pinToCommit: 'An Commit binden (optional)',
@@ -832,7 +822,17 @@ export const deOverrides = {
           'Hermes wartet nicht mehr auf das Installationsergebnis, aber das Plugin wird möglicherweise noch installiert. Schließe dieses Fenster und aktualisiere die Pluginliste, bevor du die Installation erneut startest.',
         desktopFailed: 'Installation des Desktop-Plugins fehlgeschlagen',
         missingEnv: (name, vars) =>
-          `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`
+          `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`,
+        verified: 'Verifiziert',
+        unverified: 'Nicht verifiziert',
+        reviewedByNous: 'Von Nous geprüft.',
+        installsAndEnables: profile => `Wird für ${profile} installiert und sofort eingeschaltet.`,
+        installsOnly: profile => `Wird für ${profile} installiert.`,
+        advanced: 'Erweitert',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Geprüfter Pin ${sha}` : 'Geprüfter Pin'),
+        latestCommit: 'Neuester Commit',
+        nothingToInstall: 'Dieses Paket hat hier nichts zu installieren.'
       }
     },
     vault: {
@@ -1208,9 +1208,7 @@ export const deOverrides = {
         maxLines: 'Datei-Seitenlimit',
         maxLineLength: 'Zeilenlängenlimit'
       },
-      codeExecution: {
-        mode: 'Code-Ausführungsmodus'
-      },
+      codeExecution: { mode: 'Code-Ausführungsmodus' },
       approvals: {
         mode: 'Genehmigungsmodus',
         timeout: 'Genehmigungs-Timeout',
@@ -1481,12 +1479,6 @@ export const deOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Bot-Backends vorwärmen',
-      warmBotBackendsTitle: 'Bot-Backends vorwärmen',
-      backendIdleTimeoutAria: 'Leerlauf-Timeout des Backends in Millisekunden',
-      backendIdleTimeoutTitle: 'Leerlauf-Timeout des Backends'
-    },
     customEndpoints: {
       active: 'Aktiv',
       apiKeySet: 'API-Schlüssel gesetzt',
@@ -1571,13 +1563,7 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
-      showOptions: 'Optionen anzeigen',
-      developerTitle: 'Entwickler',
-      resetOnboardingTitle: 'Onboarding zurücksetzen',
-      resetOnboardingDesc:
-        'Löscht die Einrichtungs-Chats, baut das Einrichtungsprofil neu auf und startet die Ersteinrichtung erneut. Ihre eigenen Profile, Chats und Plugins bleiben erhalten.',
-      resetOnboardingAction: 'Zurücksetzen',
-      resetOnboardingFailed: 'Onboarding konnte nicht zurückgesetzt werden'
+      showOptions: 'Optionen anzeigen'
     },
     hudModifier: {
       title: 'Tippen, um das HUD aufzurufen',
@@ -1949,69 +1935,7 @@ export const deOverrides = {
       deepLinkErrorUrl: 'Nur http:// und https:// Server-URLs sind erlaubt.',
       deepLinkErrorTooLarge: 'Die Config-Payload überschreitet das 32-KB-Limit.'
     },
-    model: {
-      setupProviderFallback: 'Anbieter',
-      setUpProvider: name => `${name} einrichten`,
-      staleAuxBefore: (count, names) =>
-        `${count} Hilfsaufgabe${count === 1 ? '' : 'n'} (${names}) ${count === 1 ? 'läuft' : 'laufen'} noch auf `,
-      staleAuxAfter: ', nicht auf Ihrem Hauptmodell.',
-      staleAuxOtherProviders: 'anderen Anbietern',
-      moaEnabled: 'Aktiviert',
-      moaSetDefault: 'Als Standard festlegen',
-      moaNewPresetPlaceholder: 'neue Vorlage',
-      moaAddPreset: 'Vorlage hinzufügen',
-      customModel: 'Eigenes Modell…',
-      customModelPlaceholder: 'Modell-ID',
-      chooseFromList: 'Aus Liste wählen',
-      moaDefault: 'Standard:',
-      moaReferenceToggle: (enabled, index) => `Referenz ${index} ${enabled ? 'deaktivieren' : 'aktivieren'}`,
-      moaReferenceTitle: index => `Referenz ${index}`,
-      moaAddReference: 'Referenzmodell hinzufügen',
-      loading: 'Modellkonfiguration wird geladen…',
-      appliesDesc:
-        'Gilt für neue Sessions. Verwenden Sie die Modellauswahl im Composer, um im aktiven Chat schnell zu wechseln.',
-      provider: 'Anbieter',
-      model: 'Modell',
-      applying: 'Wird angewendet…',
-      mainAppliedTitle: 'Hauptmodell aktualisiert',
-      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
-      defaultsLabel: 'Voreinstellungen',
-      reasoning: 'Denken',
-      reasoningOff: 'Aus',
-      speed: 'Geschwindigkeit',
-      speedStandard: 'Standard',
-      defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
-      loadFailed: 'Modelle konnten nicht geladen werden',
-      restartRequired:
-        'Dieses Backend führt nach einem Update alten Code aus. Starten Sie es neu, um den neuen Code zu laden.',
-      restartBackend: 'Backend neu starten',
-      restartingBackend: 'Backend wird neu gestartet…',
-      restartFailed: 'Das Backend konnte nicht neu gestartet werden',
-      auxiliaryTitle: 'Hilfsmodelle',
-      resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
-      staleAuxDismiss: 'Nicht erneut anzeigen',
-      auxiliaryDesc:
-        'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
-      setToMain: 'Auf Hauptmodell setzen',
-      change: 'Ändern',
-      autoUseMain: 'automatisch · Hauptmodell verwenden',
-      inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
-      inheritsFrom: task => `erbt von ${task}`,
-      followTask: task => `${task} folgen`,
-      providerDefault: '(Anbietervorgabe)',
-      fallbackAdd: 'Fallback hinzufügen',
-      fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
-      notInCatalog:
-        'ist nicht in der Modellliste dieses Anbieters enthalten — Aufrufe können auf ein Backup ausweichen.',
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Voreinstellung',
-      moaDescription:
-        'Konfigurieren Sie benannte Vorlagen, die als Modelle unter dem Anbieter „Mixture of Agents“ erscheinen. Der Aggregator ist das handelnde Modell – er führt jeden Schritt der Tool-Schleife aus, und fast alle Kosten des Laufs werden seinem Anbieter berechnet. Referenzen beraten standardmäßig nur einmal pro Benutzer-Turn.',
-      moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'handelndes Modell · wird für den Lauf berechnet',
-      moaReferenceHint: 'berät standardmäßig einmal pro Turn',
-      tasks: deAuxTasks
-    },
+    model: deModelSettings,
     localModels: deLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/Monat`,
@@ -2582,26 +2506,12 @@ export const deOverrides = {
         unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
-      catalogTitle: 'Plugin-Katalog',
-      catalogBrowse: 'Durchsuchen',
-      catalogHide: 'Katalog-Browser ausblenden',
-      catalogHint:
-        'Klicken Sie bei einem Plugin auf „+ Zu diesem Agenten hinzufügen“ – geprüfte Einträge werden an ihrem gepinnten Commit in das gewählte Profil installiert. Gebündelte Agent+Desktop-Plugins bieten beide Hälften an.',
       alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
       catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
-      tierOfficial: 'offiziell',
-      tierCommunity: 'Community',
-      updateToPin: sha => `Auf ${sha} aktualisieren`,
-      updateFailed: name => `${name} konnte nicht aktualisiert werden`,
-      updated: name =>
-        `${name} wurde auf den aktuellen Katalog-Pin aktualisiert. Starten Sie das Gateway neu, damit es wirksam wird.`,
-      updateConsentTitle: (name: string) => `${name} fordert mehr an`,
-      updateConsentBody: (name: string, sha: string) =>
-        `Der neue Katalog-Pin von ${name} (${sha}) fügt Oberflächen hinzu, die die installierte Version nicht hat. Wenden Sie ihn nur an, wenn Sie ihnen vertrauen:`,
-      updateConsentConfirm: 'Update anwenden',
+      ...dePluginUpdate,
       uninstall: 'Deinstallieren',
       uninstallTip: (name: string, profile: string) => `${name} aus ${profile} deinstallieren`,
       uninstallConfirmTitle: (name: string) => `${name} deinstallieren?`,
@@ -3833,6 +3743,7 @@ export const deOverrides = {
     openDirective: 'Öffnen',
     queueMessage: 'Nachricht einreihen',
     steer: 'Laufenden Lauf steuern',
+    redirect: 'Laufenden Lauf umleiten',
     stop: 'Stopp',
     send: 'Senden',
     speaking: 'Spricht',
@@ -3981,6 +3892,12 @@ export const deOverrides = {
     queueDelete: 'Löschen',
     queueResume: 'Fortsetzen',
     queueResumeTip: 'Durch Stopp pausiert — fortsetzen, um die eingereihten Turns zu senden',
+    queueLostNote: 'Turn beim Neustart verloren',
+    restoreImageDraft: 'Bildentwurf wiederherstellen',
+    queueCancelFailed: 'Der wartende Zug konnte nicht entfernt werden',
+    queueLostDiscard: 'Verwerfen',
+    queueLostDiscardTip:
+      'Das Gateway wurde mitten im Turn neu gestartet und kann ihn nicht abschließen. Verwirf ihn, damit die eingereihten Turns dahinter laufen.',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',
@@ -4154,7 +4071,7 @@ export const deOverrides = {
       heartbeatEveryHours: hours => `alle ${hours}h`,
       heartbeatEverySeconds: seconds => `alle ${seconds}s`,
       heartbeatNext: time => `nächstes ${time}`,
-      heartbeatDueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
+      dueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
       heartbeatActions: 'Heartbeat-Aktionen',
       pauseHeartbeat: 'Heartbeat pausieren',
       resumeHeartbeat: 'Heartbeat fortsetzen',
@@ -4383,20 +4300,6 @@ export const deOverrides = {
       noReturn:
         'Das Backend kam nicht wieder online. Das Update wurde möglicherweise nicht abgeschlossen — prüfen Sie den Backend-Host.'
     }
-  },
-  handoffTour: {
-    localTitle: 'Dieser Rechner kann Modelle lokal ausführen',
-    localText: (model: string) =>
-      `${model} passt zu Ihrer Hardware. Es läuft kostenlos, und Chats verlassen Ihren Computer nie. Wählen Sie es jederzeit hier im Modellmenü.`,
-    profileTitle: 'Ihre erste Aufgabe läuft im Standardprofil',
-    profileText:
-      'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgaben-Session lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
-    sessionsTitle: 'Jedes Profil führt seine eigenen Sessions',
-    sessionsText:
-      'Diese Liste gehört zum Standardprofil. „Neue Session“ startet eine im jeweils gewählten Profil. Wechseln Sie Profile über die Leiste, und die Liste ändert sich mit.',
-    stayTitle: 'Hermes ist einen Klick entfernt',
-    stayText:
-      'Wechseln Sie ins Einrichtungsprofil und öffnen Sie „Willkommen bei Hermes“, wenn Sie Hilfe brauchen. Es bleibt dort.'
   },
   install: {
     stageStates: {
@@ -5142,6 +5045,10 @@ export const deOverrides = {
           title: 'Hermes ist in einer Schleife hängen geblieben',
           body: 'Die Antwort hat dieselben Schritte wiederholt, daher hat Hermes sie gestoppt. Versuchen Sie es erneut oder starten Sie einen neuen Chat, wenn es wieder passiert.'
         },
+        cron_session_read_only: {
+          title: 'Dieser Chat gehört zu einer geplanten Aufgabe',
+          body: 'Er führt nur diese Aufgabe aus, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
+        },
         SESSION_NOT_OWNED: {
           title: 'Dieser Chat ist woanders offen',
           body: 'Dieser Chat ist gerade in einem anderen Hermes-Fenster oder Terminal geöffnet. Schließen Sie ihn dort und senden Sie Ihre Nachricht erneut, oder starten Sie hier einen neuen Chat.'
@@ -5256,49 +5163,8 @@ export const deOverrides = {
         `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
       alwaysAllow: 'Immer erlauben'
     },
-    clarify: {
-      notReady: 'Klärungsanfrage ist noch nicht bereit',
-      gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
-      sendFailed: 'Klärungsantwort konnte nicht gesendet werden',
-      loadingQuestion: 'Frage wird geladen…',
-      other: 'Anderes (Antwort eingeben)',
-      placeholder: 'Geben Sie Ihre Antwort ein…',
-      skip: 'Überspringen',
-      skipped: 'Übersprungen',
-      noAnswer: 'Keine Antwort',
-      confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      singleSelectHint: 'Eines auswählen',
-      multiSelectHint: 'Alle Treffer auswählen',
-      oneQuestion: '1 Frage',
-      questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      notDelivered:
-        'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Akzentfarbe',
-        connectors: 'Apps',
-        layout: 'Layout',
-        plugins: 'Plugins',
-        theme: 'Erscheinungsbild'
-      },
-      loading: 'Optionen werden geladen…',
-      unavailable: 'Diese Liste ist gerade nicht verfügbar. Antworten Sie stattdessen im Chat.',
-      findApp: 'App suchen',
-      customColor: 'Eigene Farbe',
-      plugin: 'Plugin',
-      startsLater: 'Wir richten sie ein, wenn Sie loslegen.'
-    },
-    startChat: {
-      starting: title => `„${title}“ wird gestartet…`,
-      startingUntitled: 'Chat wird gestartet…',
-      untitled: 'Neuer Chat',
-      notStarted: 'Der Chat wurde nicht gestartet',
-      inProfile: profile => `In ${profile}`,
-      open: 'Öffnen',
-      openFailed: 'Der Chat konnte nicht geöffnet werden',
-      retry: 'Erneut versuchen'
-    },
+    clarify: deClarify,
+    themePicker: deThemePicker,
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',
       install: 'Installieren',
@@ -5315,10 +5181,7 @@ export const deOverrides = {
         plugin: 'Plugin',
         skill: 'Skill'
       },
-      tier: {
-        official: 'offiziell',
-        community: 'Community'
-      },
+      tier: { official: 'offiziell', verified: 'verifiziert', community: 'Community' },
       targetProfile: (profile: string) => `Wird in Ihr Profil ${profile} installiert`,
       sendFailed: 'Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.',
       commitLabel: 'Commit',
@@ -5499,12 +5362,6 @@ export const deOverrides = {
           pending: 'Durchsucht Session-Verlauf',
           pendingAction: 'Durchsucht'
         },
-        setup_choose: {
-          done: 'Einrichtungsfrage gestellt',
-          pending: 'Stellt eine Einrichtungsfrage',
-          pendingAction: 'Fragt'
-        },
-        start_chat: { done: 'Chat gestartet', pending: 'Startet einen Chat', pendingAction: 'Startet' },
         terminal: {
           done: 'Befehl ausgeführt',
           pending: 'Führt Befehl aus',

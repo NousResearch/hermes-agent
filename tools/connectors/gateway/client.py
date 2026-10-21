@@ -36,6 +36,10 @@ EXECUTE_TIMEOUT_SECONDS = 60.0
 # Search is on every enabled tool-search path and must degrade to local-only results.
 SEARCH_TIMEOUT_SECONDS = 30.0
 SCHEMAS_TIMEOUT_SECONDS = 10.0
+STORAGE_TIMEOUT_SECONDS = 60.0
+_STORAGE_CHUNK_BYTES = 64 * 1024
+_STORAGE_PUT_ROUTE = "connectors.storage.put"
+_STORAGE_GET_ROUTE = "connectors.storage.get"
 
 _MAX_RETRIES = 1
 # Execute retries these once under the same idempotency key; the gateway replays a settled call.
@@ -70,6 +74,21 @@ class Transport(Protocol):
     ) -> Any: ...
 
 
+class StorageTransport(Protocol):
+    """Plain HTTP to presigned storage URLs: never carries the gateway's auth headers."""
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Optional[dict] = None,
+        data: Optional[bytes] = None,
+        timeout: Optional[float] = None,
+        stream: bool = False,
+    ) -> Any: ...
+
+
 def _default_transport() -> Transport:
     return requests
 
@@ -100,8 +119,10 @@ class ConnectorClient:
         call: Optional[CallRef] = None,
         initiator: Optional[str] = None,
         sleep: Callable[[float], None] = time.sleep,
+        storage: Optional[StorageTransport] = None,
     ) -> None:
         self._transport = transport or _default_transport()
+        self._storage = storage or requests
         self._endpoint_resolver = endpoint_resolver or _default_endpoint_resolver
         self._header_provider = header_provider or _default_header_provider
         # The model call this client serves, and who asked for a connect; both go on the wire.
@@ -172,6 +193,56 @@ class ConnectorClient:
                 return None
             raise
         return self._checked(wire.ConnectorAccount, reply, "connector account").model_dump(by_alias=True)
+
+    def stage_file(self, *, toolkit: str, tool: str, filename: str, mimetype: str, size: int) -> dict[str, Any]:
+        """A presigned upload for one file input: ``{upload_url, headers, descriptor, expires_at}``.
+        Never retried: each stage mints a new storage key."""
+        body = wire.ConnectorFileUploadRequest(
+            toolkit=toolkit, tool=tool, filename=filename, mimetype=mimetype, size=size,
+        ).model_dump(by_alias=True)
+        reply = self._post(wire.CONNECTOR_FILE_UPLOAD_PATH, body, retries=0)
+        return self._checked(wire.ConnectorFileUploadResponse, reply, "connector file upload").model_dump()
+
+    def put_file(self, url: str, headers: Mapping[str, str], body: bytes) -> None:
+        """PUT the bytes to a presigned storage URL with exactly the headers the gateway returned."""
+        try:
+            response = self._storage.request("PUT", url, headers=dict(headers), data=body,
+                                             timeout=STORAGE_TIMEOUT_SECONDS)
+        except requests.RequestException as exc:
+            log_connector_outcome(_STORAGE_PUT_ROUTE, None, code="TRANSPORT_ERROR", call=self._call)
+            raise ToolGatewayError(f"storage upload failed: {type(exc).__name__}", code="TRANSPORT_ERROR") from exc
+        status = int(getattr(response, "status_code", 0))
+        failed = not 200 <= status < 300
+        log_connector_outcome(_STORAGE_PUT_ROUTE, status, code=f"HTTP_{status}" if failed else None, call=self._call)
+        if failed:
+            raise ToolGatewayError(f"storage upload answered {status}", code=f"HTTP_{status}", status=status)
+
+    def get_file(self, url: str, sink: Callable[[bytes], None], *, max_bytes: int) -> None:
+        """Stream a presigned storage GET into ``sink``; more than ``max_bytes`` raises ``TOO_LARGE``."""
+        try:
+            response = self._storage.request("GET", url, headers={}, timeout=STORAGE_TIMEOUT_SECONDS, stream=True)
+        except requests.RequestException as exc:
+            log_connector_outcome(_STORAGE_GET_ROUTE, None, code="TRANSPORT_ERROR", call=self._call)
+            raise ToolGatewayError(f"download failed: {type(exc).__name__}", code="TRANSPORT_ERROR") from exc
+        status = int(getattr(response, "status_code", 0))
+        try:
+            if not 200 <= status < 300:
+                log_connector_outcome(_STORAGE_GET_ROUTE, status, code=f"HTTP_{status}", call=self._call)
+                raise ToolGatewayError(f"download answered {status}", code=f"HTTP_{status}", status=status)
+            received = 0
+            for chunk in response.iter_content(chunk_size=_STORAGE_CHUNK_BYTES):
+                received += len(chunk)
+                if received > max_bytes:
+                    log_connector_outcome(_STORAGE_GET_ROUTE, status, code="TOO_LARGE", call=self._call)
+                    raise ToolGatewayError(f"file is larger than {max_bytes // (1024 * 1024)} MiB",
+                                           code="TOO_LARGE", status=status)
+                sink(chunk)
+        except requests.RequestException as exc:
+            log_connector_outcome(_STORAGE_GET_ROUTE, status, code="TRANSPORT_ERROR", call=self._call)
+            raise ToolGatewayError(f"download failed: {type(exc).__name__}", code="TRANSPORT_ERROR") from exc
+        finally:
+            response.close()
+        log_connector_outcome(_STORAGE_GET_ROUTE, status, call=self._call)
 
     def _checked(self, model: Any, reply: _Reply, what: str) -> Any:
         """Parse a 2xx body and write its outcome line: a body that does not parse is a failure,

@@ -24,14 +24,8 @@ description: >-
   Measured on 2026-10-22 against Hermes 3166d61: Python 3.14 62 passed; Python 3.11 54 passed,
   1 skipped; `hermes plugins validate` reports no warning other than one known false positive (a
   test template that quotes a "curl | sh" instruction as data and never runs it).
-  A labelled synthetic evaluation — 600 generated scenarios on two held-out seeds, with the acceptance
-  floors fixed before the run — puts precision at 1.000 on the second seed for the default link set,
-  with recall 1.00 on verbatim, paraphrase-with-operative-token and two-hop-via-curator cases, against
-  0.385 when every link is recorded. A real model was then run through the plugin, 60 runs per plugin
-  build: pre-registered false links fell from 53/60 to 6/60 and clean ones from 10/60 to 2/60
-  (Fisher exact, two-sided, 4.1e-19 and 0.029), with the two batches being independent samples. Raw
-  output in eval/results-seed2.json, eval/results-seed4-v013.json and eval/real/, reproducible with
-  `python eval/run_eval.py --seed 2 --per-label 100`. A manual end-to-end run in an isolated HERMES_HOME
+  Evaluation (generated scenarios and 120 real-model runs) in the README; raw output in eval/.
+  A manual end-to-end run in an isolated HERMES_HOME
   (one real session creating a skill through skill_manage, then
   status/trace/descendants/report/verify/head) passed, raw output in tests/smoke-2026-10-21.txt.
   Disclosure — four read-only hooks (on_session_start, pre_llm_call, pre_tool_call, post_tool_call);

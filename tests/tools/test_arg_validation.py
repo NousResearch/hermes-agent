@@ -13,6 +13,11 @@ def _call(name, args, task_id):
     return json.loads(handle_function_call(name, args, task_id=task_id))
 
 
+def _read_first(path, task_id):
+    """write_file refuses to overwrite a file this task has not fully read."""
+    handle_function_call("read_file", {"path": str(path)}, task_id=task_id)
+
+
 def test_missing_required_argument_is_rejected_before_the_tool_runs(tmp_path):
     for name, args, missing in [("search_files", {"path": str(tmp_path)}, "pattern"),
                                 ("web_search", {"queries": ["x"]}, "query"),
@@ -35,6 +40,7 @@ def test_unknown_search_key_is_reported_after_search_runs(tmp_path):
 def test_write_file_runs_supported_write_and_reports_unused_edit_keys(tmp_path):
     target = tmp_path / "big.txt"
     target.write_text("keep me\n" * 100)
+    _read_first(target, "t-wf")
     result = _call("write_file", {"path": str(target), "content": "x", "old_string": "keep", "new_string": "y"}, "t-wf")
     assert "old_string, new_string" in result["_warning"]
     assert "WERE NOT USED" in result["_warning"]
@@ -118,6 +124,7 @@ def test_rewrites_reject_missing_arguments_but_report_ignored_write_keys(tmp_pat
         name, args = "write_file", {"path": str(target), "content": "replacement"}
         rewrite = lambda args: {**args, "old_string": "keep me"}
     _install_argument_rewrite(monkeypatch, phase, rewrite)
+    _read_first(target, f"rewrite-{phase}-{invalid}")
     result = json.loads(handle_function_call(name, args, task_id=f"rewrite-{phase}-{invalid}", skip_tool_request_middleware=True))
     if invalid == "missing_required":
         assert "pattern" in result["error"] and "NOT invoked" in result["error"]
@@ -140,6 +147,7 @@ def test_invalid_writes_report_validation_errors(tmp_path, monkeypatch, shape):
         args["old_string"] = "original"
     else:
         _install_argument_rewrite(monkeypatch, "execution", lambda args: {**args, "old_string": "original"})
+    _read_first(target, f"invalid-observer-{shape}")
     events = []
     monkeypatch.setattr(lifecycle, "has_hook", lambda name: name in {"post_tool_call", "transform_tool_result"})
     monkeypatch.setattr(lifecycle, "invoke_hook", lambda name, **kwargs: (events.append(kwargs) or [])

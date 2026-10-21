@@ -17,7 +17,8 @@ from agent import tool_executor as te
 def test_inline_arguments_checked_before_execution_without_stalling_start_order(monkeypatch, args, invalid):
     calls, starts = [], []
     agent = SimpleNamespace(_tool_guardrails=SimpleNamespace(
-        before_call=lambda *a: SimpleNamespace(allows_execution=True)), _touch_activity=lambda *a: None)
+        before_call=lambda *a: SimpleNamespace(allows_execution=True)), _touch_activity=lambda *a: None,
+        tool_progress_callback=None)
     monkeypatch.setattr(te, "_pre_tool_block", lambda agent, ref: (None, ref.args))
     monkeypatch.setattr(te, "_begin_tool_execution", lambda *a: None)
     name = "memory" if invalid is None else "delegate_task"
@@ -48,7 +49,7 @@ def test_inline_arguments_checked_before_execution_without_stalling_start_order(
 def test_inline_validation_checks_arguments_after_hook_rewrites(monkeypatch):
     calls = []
     agent = SimpleNamespace(_tool_guardrails=SimpleNamespace(
-        before_call=lambda *a: SimpleNamespace(allows_execution=True)))
+        before_call=lambda *a: SimpleNamespace(allows_execution=True)), tool_progress_callback=None)
     args = {"goal": "Summarize"}
     monkeypatch.setattr(te, "_begin_tool_execution", lambda *args: None)
     monkeypatch.setattr(te, "_pre_tool_block", lambda agent, ref: (

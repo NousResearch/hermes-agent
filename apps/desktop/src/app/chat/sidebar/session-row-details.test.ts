@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionRowDetails, type SessionRowFormatters } from './session-row-details'
+import { sessionRowDetails, sessionRowEstimate, type SessionRowFormatters } from './session-row-details'
 
 const en: SessionRowFormatters = {
   messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
@@ -27,6 +27,23 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 })
 
 describe('session row details', () => {
+  it('provides density-aware virtual row estimates', () => {
+    // Cover two title lines with glyph-safe leading, then metadata and preview.
+    const titleWithPadding = 2 * 13 * 1.35 + 4
+    const metadata = 10 * 1.35 + 2
+    const preview = 10 * 1.35 + 4
+    expect(sessionRowEstimate('compact')).toBe(Math.ceil(titleWithPadding))
+    expect(sessionRowEstimate('comfortable')).toBe(Math.ceil(titleWithPadding + metadata))
+    expect(sessionRowEstimate('detailed')).toBe(Math.ceil(titleWithPadding + metadata + preview))
+  })
+
+  it('keeps the detailed estimate even when preview is omitted as a title duplicate', () => {
+    const details = sessionRowDetails(session({ title: null }), en)
+
+    expect(details.preview).toBeNull()
+    expect(sessionRowEstimate('detailed')).toBeGreaterThanOrEqual(sessionRowEstimate('comfortable'))
+  })
+
   it('formats deterministic metadata without ambiguous call wording', () => {
     expect(sessionRowDetails(session({ git_branch: 'feature/menu' }), en)).toEqual({
       metadata: 'feature/menu · gemini-3.1-pro · 26 messages · 8 tool calls',

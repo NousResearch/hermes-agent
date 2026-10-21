@@ -58,10 +58,7 @@ export interface VirtualSessionListProps {
   sortable: boolean
 }
 
-// Matches the card's typical rendered height (four lines when a preview
-// exists) so long card lists don't jump under the scroll thumb before
-// self-measurement catches up. Kept at/above the wrapped-title worst case —
-// see SESSION_CARD_ROW_ESTIMATE_PX (#88473).
+// Card height estimate lives with session-row-details and includes two title lines.
 const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 

@@ -291,7 +291,6 @@ def test_dm_with_numeric_scope_still_uses_dm_rules(runner):
         clear_session_vars(tokens)
     assert "error" in out and "more than one server" in out["error"]
     adapter.leave_voice_channel.assert_not_awaited()
-    adapter.leave_voice_channel.assert_not_awaited()
 
 
 def test_failed_join_with_older_connection_is_not_success(runner):

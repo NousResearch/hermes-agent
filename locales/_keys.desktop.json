@@ -2548,7 +2548,6 @@
     "promptNotices.desktopCommands.unknownPath",
     "promptNotices.legacySendUnconfirmed",
     "promptNotices.mcpReloadDeferred",
-    "promptNotices.mcpReloadNotInChat",
     "promptNotices.mcpReloadUnavailable",
     "promptNotices.sessionCommands.busy",
     "promptNotices.sessionCommands.busyCompressing",

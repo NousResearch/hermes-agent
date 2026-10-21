@@ -115,7 +115,35 @@ def test_pyproject_without_python_dependencies_is_not_a_workspace_member(tmp_pat
         encoding="utf-8",
     )
 
-    assert read_python_declaration(plugin).is_member is False
+    declaration = read_python_declaration(plugin)
+    assert declaration.buildable is False
+    assert declaration.is_member is False
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '[build-system]\nrequires=[]\nbuild-backend="backend"\n',
+        "[tool.uv]\npackage=true\n",
+    ],
+    ids=["build-system", "uv-package"],
+)
+def test_buildable_pyproject_without_dependencies_stays_a_workspace_member(tmp_path, extra):
+    """A wheel to build is Python work even when the plugin has no dependencies.
+
+    Dropping these members would leave their wheel unbuilt and their imports and
+    console scripts missing at runtime (#141981).
+    """
+    plugin = tmp_path / "buildable"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="buildable"\nversion="1"\ndependencies=[]\n' + extra,
+        encoding="utf-8",
+    )
+
+    declaration = read_python_declaration(plugin)
+    assert declaration.buildable is True
+    assert declaration.is_member is True
 
 
 def test_optional_dependency_group_keeps_a_pyproject_in_the_workspace(tmp_path):

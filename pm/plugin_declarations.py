@@ -59,6 +59,7 @@ class PythonDeclaration:
     manifest: dict
     requires_python: str | None = None
     extras: tuple[str, ...] = ()
+    buildable: bool = False
 
     @property
     def external(self) -> bool:
@@ -72,7 +73,10 @@ class PythonDeclaration:
     def is_member(self) -> bool:
         # A pyproject that only carries tool config (pytest, ruff) declares no Python
         # work for uv. Joining anyway hashes and copies the plugin on every launch.
-        return not self.external and (bool(self.install_requirements) or bool(self.extras))
+        # A buildable project still has a wheel to produce even with no dependencies.
+        return not self.external and (
+            bool(self.install_requirements) or bool(self.extras) or self.buildable
+        )
 
     def python_error(self, version: str) -> str | None:
         """Why this member cannot join a workspace built for *version*; uv intersects every
@@ -154,8 +158,12 @@ def read_python_declaration(plugin_dir: Path) -> PythonDeclaration:
                 for group in extras.values()
             ):
                 raise ValueError(f"invalid project.optional-dependencies: {project}")
+            buildable = (
+                "build-system" in document
+                or document.get("tool", {}).get("uv", {}).get("package") is True
+            )
             return PythonDeclaration(tuple(files), project, tuple(specs), manifest, requires_python,
-                                     tuple(extras))
+                                     tuple(extras), buildable)
     specs = []
     for key in ("pip_dependencies", "python_dependencies"):
         values = manifest.get(key, [])

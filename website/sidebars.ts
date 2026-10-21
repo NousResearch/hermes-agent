@@ -35,6 +35,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-wsl-quickstart',
         'user-guide/switching-to-source',
         'user-guide/configuration',
+        'user-guide/which-file-does-what',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
         {
@@ -755,6 +756,7 @@ const sidebars: SidebarsConfig = {
         'guides/run-nemotron-3-ultra-free',
         'guides/run-hermes-with-nous-portal',
         'guides/tips',
+        'guides/secure-hermes-on-a-work-machine',
         'guides/local-llm-on-mac',
         'guides/daily-briefing-bot',
         'guides/team-telegram-assistant',
@@ -767,6 +769,7 @@ const sidebars: SidebarsConfig = {
         'guides/cron-script-only',
         'guides/automation-blueprints',
         'guides/cron-troubleshooting',
+        'guides/troubleshooting-agent-quality',
         'guides/work-with-skills',
         'guides/delegation-patterns',
         'guides/agent-email-address',

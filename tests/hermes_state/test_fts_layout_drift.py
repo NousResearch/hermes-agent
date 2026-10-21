@@ -457,6 +457,28 @@ def test_a_stale_source_view_does_not_replace_a_newer_base_index(tmp_path):
     assert _stamp(db_path) == str(FTS_STORAGE_VERSION + 1)
 
 
+def test_optimize_storage_on_a_newer_layout_finishes_its_work_without_restamping(tmp_path):
+    """Leftover old-index tables on a downgraded store are torn down and reported as done; the stamp stays."""
+    from hermes_state_common import FTS_STORAGE_VERSION
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _seed(db)
+    _install_newer_base_layout(db)
+    db._conn.execute("CREATE TABLE fts_v22_trash_messages_fts_data (docid INTEGER PRIMARY KEY, block BLOB)")
+    db._conn.commit()
+    db.close()
+
+    db = SessionDB(db_path=db_path)
+    try:
+        result = db.optimize_fts_storage(vacuum=False)
+        assert result["ok"] is True, result
+        assert not db._has_fts_trash(db._conn)
+    finally:
+        db.close()
+    assert _stamp(db_path) == str(FTS_STORAGE_VERSION + 1)
+
+
 def test_doctor_offers_the_resume_after_backfill_before_teardown(tmp_path, monkeypatch):
     """optimize-storage interrupted after backfill but before trash teardown: doctor agrees with the update notice."""
     from hermes_cli import doctor_state

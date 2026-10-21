@@ -612,7 +612,7 @@ def test_native_password_login_full_roundtrip(pw_gated_client):
 def test_native_password_login_wrong_password_keeps_pending(pw_gated_client):
     """A failed credential attempt must not consume the pending
     authorization — the user retypes and succeeds on the same broker."""
-    verifier, challenge = _make_pkce()
+    _verifier, challenge = _make_pkce()
     cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
 
     r = pw_gated_client.post(

@@ -91,20 +91,52 @@ async def test_messages_endpoint_reports_corruption(malformed_db):
     assert excinfo.value.status_code == 503
 
 
+class _CorruptAuthorityDB:
+    """Authority store whose first write fails the way a corrupt file really fails."""
+
+    db_path = "/nonexistent/state.db"
+
+    def _validate_import_payload(self, sessions):  # pragma: no cover - import only
+        return sessions, []
+
+
+def _mutation_request(monkeypatch):
+    """Delete/rename never open a SessionDB in the handler: they admit through the session
+    authority, so corruption surfaces from the authority write, not from a handler-opened store."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    import gateway.session_mutations as _mutations
+
+    authority = SimpleNamespace(db=_CorruptAuthorityDB(), profile_id="p", epoch=1)
+    principal = object()
+    monkeypatch.setattr(_web_server_sessions, "_session_mutation_context", lambda request, profile: (authority, principal))
+
+    async def _mutate(*_args, **_kwargs):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(_mutations, "mutate_session", _mutate)
+    return SimpleNamespace()
+
+
 @pytest.mark.asyncio
-async def test_delete_does_not_claim_success_on_a_corrupt_store(malformed_db):
+async def test_delete_does_not_claim_success_on_a_corrupt_store(monkeypatch):
+    request = _mutation_request(monkeypatch)
     with pytest.raises(HTTPException) as excinfo:
-        await sessions_router.delete_session_endpoint("20260830_180820_744f05")
+        await sessions_router.delete_session_endpoint(
+            "20260830_180820_744f05", request, request_id="r1", expected_revision=1
+        )
     assert excinfo.value.status_code == 503
 
 
 @pytest.mark.asyncio
-async def test_rename_endpoint_reports_corruption(malformed_db):
+async def test_rename_endpoint_reports_corruption(monkeypatch):
     from hermes_cli.web_models import SessionRename
 
+    request = _mutation_request(monkeypatch)
     with pytest.raises(HTTPException) as excinfo:
         await sessions_router.rename_session_endpoint(
-            "20260830_180820_744f05", SessionRename(title="neu")
+            "20260830_180820_744f05", SessionRename(title="neu", request_id="r1", expected_revision=1), request
         )
     assert excinfo.value.status_code == 503
 

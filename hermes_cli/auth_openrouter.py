@@ -67,7 +67,7 @@ def _openrouter_headless_code(auth_url: str) -> str:
     return code
 
 
-def _openrouter_loopback_code(auth_url_params: Dict[str, str], *, open_browser: bool, timeout_seconds: float) -> str:
+def _openrouter_loopback_code(auth_url_params: dict[str, str], *, open_browser: bool, timeout_seconds: float) -> str:
     nonce = secrets.token_urlsafe(16)
     path = f"/callback/{nonce}"
     handler_cls, result = _make_loopback_callback_handler(path, display_name="OpenRouter")
@@ -98,7 +98,7 @@ def _openrouter_loopback_code(auth_url_params: Dict[str, str], *, open_browser: 
     return code
 
 
-def _openrouter_pkce_login(*, open_browser: bool = True, timeout_seconds: float = 300.0) -> Dict[str, Any]:
+def _openrouter_pkce_login(*, open_browser: bool = True, timeout_seconds: float = 300.0) -> dict[str, Any]:
     """Run the PKCE flow and return ``{"api_key": ...}`` for the credential-pool add path."""
     code_verifier = _pkce_code_verifier()
     params = {"code_challenge": _pkce_code_challenge(code_verifier), "code_challenge_method": "S256"}

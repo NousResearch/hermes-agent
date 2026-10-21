@@ -1,0 +1,22 @@
+name: hermes-fleet-connector
+title: Hermes Fleet Connector
+repo: https://github.com/tony-simons-aiowa/hermes-fleet-connector
+sha: "9a4b6f76c4c880d5cade1a0f43b5749112cb7be9"
+description: "Owner-approved universal phone pairing and bundled read-only Live Operations reporting for selected Hermes profiles. Disclosure — paired phones get broad fleet:operator access over the internet, including cron jobs (unattended runs), Kanban task dispatch and media reads, and see live session titles/previews and subagent goals from the profiles you select for reporting; any messaging account you make an owner (with a one-time claim code from `hermes fleet claim`) can create pairing links and approve phones from a private chat, so that account's security is your host's security. Runs an explicitly activated background connector/reverse proxy behind your HTTPS origin and may launch a local Hermes backend; legacy QR flow opens a private local browser. Keeps an owner-only control socket in the system temp directory, plus pairing/owner state and shared local snapshots; reads selected profiles' session registries through private read-only imports. `hermes fleet reporting configure --apply` edits the selected profiles' config.yaml (with a backup). Local idle/retirement maintenance is explicit and not exposed to phones. Reporting adds no control power."
+maintainer: tony-simons-aiowa
+tier: community
+category: platform
+requires_hermes: ">=0.21.6"
+version: "0.3.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Native platform/auth-provider operation requires plugins.isolation: in_process; host-isolated and mixed/multiplexed reporting contexts fail closed. Isolation is never downgraded."
+  - "macOS local acceptance includes existing phone pairing continuity and nine healthy idle reporting processes; Linux and other runtime/OS results are separate CI evidence. Active agent/delegation acceptance is not claimed."
+  - "Private read-only Hermes registry imports can break on future releases. Validator retains a service caution and private-import warnings; no core runtime override is detected."
+  - "Trusted HTTPS origin reachable from host and phone is required. Legacy QR display additionally requires qrencode and an authenticated GUI/browser; terminal approval-code pairing does not require Telegram. Native Windows is unsupported; WSL browser display is experimental."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

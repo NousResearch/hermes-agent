@@ -103,7 +103,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         # Safety net: a writer in the update's mutation window replaced agent-job prompts
         # with the job NAME while the count stayed identical, so the count-based net above
         # passed it undetected (issue #82990). Restore only the degraded prompt fields.
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         prompt_restore = restore_cron_prompt_fields_if_degraded(pre_update_snapshot_id)
         if prompt_restore:
             print()
@@ -120,7 +120,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
             print()
             print(f"  ⚠️  Profile '{_restored['profile']}': {_cron_line(_restored)}")
     with _best_effort('Sibling cron prompt-field auto-restore check failed: %s'):
-        from hermes_cli.backup import restore_cron_prompt_fields_all_profiles
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_all_profiles
         for _prompt_restored in restore_cron_prompt_fields_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_prompt_restored['profile']}': {_prompt_line(_prompt_restored)}")

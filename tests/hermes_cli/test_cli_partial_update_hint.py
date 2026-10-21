@@ -1,10 +1,8 @@
 """Chat startup must explain a mixed-version ImportError (#96900).
 
-A half-updated install can ship a newer ``cli.py`` that imports
-``resolve_turn_limit`` / ``split_model_config_default`` from
-``hermes_cli.config`` while the older ``config.py`` does not export them.
-Construction of ``HermesCLI`` then dies before the agent-setup mixin can
-print ``partial_update_hint``. ``cmd_chat`` is the load-bearing catch:
+A half-updated install can ship a newer ``cli.py`` (or launcher) importing
+config helpers that the older ``hermes_cli.config`` does not export. ``cmd_chat``
+(around ``cli.main``) and the ``-z`` transport launch are the load-bearing catches:
 bare ``hermes`` and ``hermes chat`` (including the fast-chat launch path)
 all go through it.
 """
@@ -59,6 +57,12 @@ def _missing_config_name_error(name: str = "resolve_turn_limit") -> ImportError:
     return exc
 
 
+def _install_boom(monkeypatch, boom):
+    """``hermes chat`` runs main's ``cli.main``; ``-z`` keeps the gateway transport launcher."""
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=lambda **_kw: boom(None)))
+    monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", boom)
+
+
 @pytest.fixture
 def main_mod(monkeypatch):
     import hermes_cli.main as mod
@@ -95,16 +99,17 @@ def test_emit_hint_stays_silent_for_third_party_import_error():
     "name",
     ["resolve_turn_limit", "split_model_config_default"],
 )
+@pytest.mark.parametrize("entry", ["cmd_chat", "_run_oneshot_from_args"])
 def test_cmd_chat_prints_update_hint_when_config_helper_is_missing(
-    main_mod, monkeypatch, capsys, name
+    main_mod, monkeypatch, capsys, name, entry
 ):
-    def boom(**_kwargs):
+    def boom(_args):
         raise _missing_config_name_error(name)
 
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=boom))
+    _install_boom(monkeypatch, boom)
 
     with pytest.raises(SystemExit) as excinfo:
-        main_mod.cmd_chat(_chat_args())
+        getattr(main_mod, entry)(_chat_args())
 
     assert excinfo.value.code == 1
     err = capsys.readouterr().err
@@ -112,16 +117,17 @@ def test_cmd_chat_prints_update_hint_when_config_helper_is_missing(
     assert "hermes update" in err
 
 
-def test_cmd_chat_still_reraises_unrelated_import_errors(main_mod, monkeypatch):
+@pytest.mark.parametrize("entry", ["cmd_chat", "_run_oneshot_from_args"])
+def test_cmd_chat_still_reraises_unrelated_import_errors(main_mod, monkeypatch, entry):
     exc = ImportError("cannot import name 'dumps' from 'requests'")
     exc.name = "requests"
 
-    def boom(**_kwargs):
+    def boom(_args):
         raise exc
 
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=boom))
+    _install_boom(monkeypatch, boom)
 
     with pytest.raises(ImportError) as excinfo:
-        main_mod.cmd_chat(_chat_args())
+        getattr(main_mod, entry)(_chat_args())
 
     assert excinfo.value is exc

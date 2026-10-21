@@ -29,7 +29,7 @@ import pytest
 
 
 @pytest.fixture
-def hermes_env(tmp_path, monkeypatch):
+def hermes_env(tmp_path, monkeypatch, cron_owner):
     """Isolate HERMES_HOME for each test so jobs/scripts/snapshots don't leak."""
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -72,7 +72,8 @@ def _install_agent_stubs(monkeypatch, observed: dict):
 
     class FakeAgent:
         def __init__(self, **kwargs):
-            pass
+            self.session_id = kwargs["session_id"]
+            self.task_id = self.session_id
 
         def run_conversation(self, prompt, *_a, **_kw):
             observed["agent_runs"] += 1
@@ -243,7 +244,7 @@ def _make_monitor_job(hermes_env, script_body: str):
 
     _write_script(hermes_env, "mon.sh", script_body)
     return create_job(
-        prompt="Summarize what changed",
+        prompt="Summarize what changed", model="test-model",
         schedule="every 5m",
         monitor_script="mon.sh",
         deliver="local",
@@ -257,7 +258,7 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
     observed: dict = {}
     _install_agent_stubs(monkeypatch, observed)
 
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, error = run_job(job)
     assert success is True
     assert error is None
     assert observed["agent_runs"] == 1
@@ -356,7 +357,7 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     # Mutate the monitored source, then fire again.
     _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
     job = get_job(job["id"])
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, _error = run_job(job)
     assert success is True
     assert observed["agent_runs"] == 2
     prompt = observed["prompts"][1]
@@ -389,7 +390,7 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
 
     job = cron.jobs.get_job(job["id"])
     assert job["monitor_state"]["last_output_hash"]
-    success, doc, final, error = cron.scheduler.run_job(job)
+    success, _doc, final, _error = cron.scheduler.run_job(job)
     assert success is True
     assert final == cron.scheduler.SILENT_MARKER
     assert observed["agent_runs"] == 1  # still suppressed after restart
@@ -409,7 +410,7 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     # Break the source: non-zero exit must be an error, never a "change".
     _write_script(hermes_env, "mon.sh", "echo boom >&2\nexit 3\n")
     job = get_job(job["id"])
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, error = run_job(job)
     assert success is False
     assert error is not None
     assert observed["agent_runs"] == 1  # agent NOT invoked on source failure

@@ -460,9 +460,10 @@ def mark_stop_requested(token: dict, pids, markers: dict | None = None) -> None:
 
 
 def mark_stop_sent(token: dict, pid) -> None:
-    """Persist that *pid*'s stop request was issued (its planned-stop marker is on disk): from here a
-    live *pid* is draining and keeps its restart debt until it exits. Best effort: the marker itself
-    is evidence until this lands; its consumer checkpoints before unlinking it."""
+    """Persist that *pid*'s stop request was issued (its planned-stop marker is on disk, or the
+    POSIX pause records it just before its socket request): from here a live *pid* is draining and
+    keeps its restart debt until it exits. Best effort: the marker itself is evidence until this
+    lands; its consumer checkpoints before unlinking it."""
     token["stop_sent"] = sorted({*map(str, token.get("stop_sent") or []), str(int(pid))})
     try:
         write(token, owner=identity())
@@ -786,6 +787,8 @@ def _live_pids(token: dict) -> set[str]:
 def _without(token: dict, pids: set[str]) -> dict:
     token["profiles"] = {p: pid for p, pid in (token.get("profiles") or {}).items() if str(pid) not in pids}
     token["unmapped"] = [u for u in (token.get("unmapped") or []) if str(u.get("pid")) not in pids]
+    if "posix_units" in token:  # supervised POSIX entries (update_cmd_posix_pause) are judged like the rest
+        token["posix_units"] = [u for u in token["posix_units"] or [] if str(u.get("pid")) not in pids]
     return token
 
 
@@ -852,11 +855,12 @@ def drop_never_stopped(token: dict) -> dict:
 
 
 def split_draining(token: dict) -> dict:
-    """Remove and return ``{"profiles", "unmapped"}`` whose recorded process is still running: it was
-    asked to stop and has not exited yet, so it can only be restarted once it has."""
+    """Remove and return ``{"profiles", "unmapped", "posix_units"}`` whose recorded process is still
+    running: it was asked to stop and has not exited yet, so it can only be restarted once it has."""
     live = _live_pids(token)
     draining = {"profiles": {p: pid for p, pid in (token.get("profiles") or {}).items() if str(pid) in live},
-                "unmapped": [u for u in (token.get("unmapped") or []) if str(u.get("pid")) in live]}
+                "unmapped": [u for u in (token.get("unmapped") or []) if str(u.get("pid")) in live],
+                "posix_units": [u for u in (token.get("posix_units") or []) if str(u.get("pid")) in live]}
     _without(token, live)
     return draining
 
@@ -894,6 +898,10 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
         token["cold_start_if_installed"] = True
         if "attested_generation" in adopted:
             token.setdefault("attested_generation", adopted["attested_generation"])
+    if adopted.get("platform"):  # a POSIX set (update_cmd_posix_pause): its supervised units ride along
+        token["platform"] = adopted["platform"]
+        units = token.setdefault("posix_units", [])
+        units.extend(u for u in adopted.get("posix_units") or [] if u not in units)
     services = token.setdefault("services", [])
     services.extend(s for s in adopted.get("services") or [] if s not in services)
     if services:
@@ -905,7 +913,7 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
 
 def _has_work(token: dict) -> bool:
     return bool(token.get("profiles") or any(u.get("argv") for u in token.get("unmapped") or [])
-                or token.get("services") or token.get("cold_start_if_installed") or token.get("cold_start_profiles"))
+                or token.get("services") or token.get("posix_units") or token.get("cold_start_if_installed") or token.get("cold_start_profiles"))
 
 
 def _resume_claimed(claim_path: Path, body: dict) -> None:
@@ -959,18 +967,22 @@ _RELAUNCH_RETRY_MAX_S = 3600.0
 
 def _relaunch_keys(token: dict) -> set[str]:
     return ({f"profile:{name}" for name in token.get("profiles") or {}}
-            | {f"unmapped:{u.get('pid')}" for u in token.get("unmapped") or [] if u.get("argv")})
+            | {f"unmapped:{u.get('pid')}" for u in token.get("unmapped") or [] if u.get("argv")}
+            | {f"unit:{u.get('unit') or u.get('label')}" for u in token.get("posix_units") or []})
 
 
 def _hold_backing_off(token: dict, held: dict) -> None:
-    """Move the profile/unmapped entries still inside their relaunch backoff from *token* into *held*
-    (beside the draining ones): owed, not relaunched by this launch."""
+    """Move the profile/unmapped/supervised entries still inside their relaunch backoff from *token*
+    into *held* (beside the draining ones): owed, not relaunched by this launch."""
     now = time.time()
     waiting = {key for key, state in (token.get("relaunch_retry") or {}).items() if now < float(state.get("next_at") or 0)}
     held["profiles"].update({n: p for n, p in token["profiles"].items() if f"profile:{n}" in waiting})
     held["unmapped"].extend(u for u in token["unmapped"] if u.get("argv") and f"unmapped:{u.get('pid')}" in waiting)
     token["profiles"] = {n: p for n, p in token["profiles"].items() if f"profile:{n}" not in waiting}
     token["unmapped"] = [u for u in token["unmapped"] if u not in held["unmapped"]]
+    if units := token.get("posix_units"):
+        held["posix_units"].extend(u for u in units if f"unit:{u.get('unit') or u.get('label')}" in waiting)
+        token["posix_units"] = [u for u in units if u not in held["posix_units"]]
 
 
 def _back_off_unready(token: dict, attempted: set[str], held: dict) -> None:
@@ -997,7 +1009,10 @@ def _hand_back(claim_path: Path, body: dict, token: dict, draining: dict) -> Non
     has exited and been restarted. A failed rewrite leaves our claimer line, dead once we exit."""
     token["profiles"] = {**(token.get("profiles") or {}), **draining["profiles"]}
     token["unmapped"] = [*(token.get("unmapped") or []), *draining["unmapped"]]
-    owed = bool(token.get("resume_needed") or token.get("resume_deferred") or draining["profiles"] or draining["unmapped"])
+    if draining.get("posix_units"):
+        token["posix_units"] = [*(token.get("posix_units") or []), *draining["posix_units"]]
+    owed = bool(token.get("resume_needed") or token.get("resume_deferred") or draining["profiles"]
+                or draining["unmapped"] or draining.get("posix_units"))
     with suppress(OSError), _mutex():
         if owed:
             kept = {key: value for key, value in token.items() if key not in ("recovery", "resume_deferred")}

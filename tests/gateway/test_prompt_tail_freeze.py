@@ -18,6 +18,7 @@ is guarded by the parity test below.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -105,7 +106,7 @@ def _stable_discord_tools(monkeypatch):
 
 
 def _key(runner, context, redact_pii=False):
-    return runner._ephemeral_change_key(context, redact_pii)  # noqa: SLF001
+    return runner._ephemeral_change_key(context, redact_pii)
 
 
 def _render(context, redact_pii=False):
@@ -181,8 +182,8 @@ class TestSessionContextPin:
     def test_pin_hit_returns_identical_object(self):
         runner = _make_runner()
         ctx = _make_context()
-        first = runner._pinned_session_context_prompt(ctx, False, "sk")  # noqa: SLF001
-        second = runner._pinned_session_context_prompt(_make_context(), False, "sk")  # noqa: SLF001
+        first = runner._pinned_session_context_prompt(ctx, False, "sk")
+        second = runner._pinned_session_context_prompt(_make_context(), False, "sk")
         # Identity, not just equality: the pinned bytes are reused verbatim,
         # immunizing against renderer nondeterminism.
         assert second is first
@@ -220,31 +221,144 @@ def _vc_event():
 class TestVoiceChannelSidecarNote:
     def test_first_sighting_injects(self):
         runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         assert note and "dev-vc (2 members)" in note
 
     def test_unchanged_state_injects_nothing(self):
         runner, _ = _vc_runner("**Voice:** dev-vc (2 members)")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
+        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
+        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None
 
     def test_member_change_injects_again(self):
         runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         adapter.value = "**Voice:** dev-vc (3 members)"
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         assert note and "dev-vc (3 members)" in note
 
     def test_leaving_channel_injects_disconnect_note(self):
         runner, adapter = _vc_runner("**Voice:** dev-vc (2 members)")
-        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         adapter.value = ""
-        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")  # noqa: SLF001
+        note = runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk")
         assert note
 
     def test_never_in_channel_injects_nothing(self):
         runner, _ = _vc_runner("")
-        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
+        assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None
+
+    def test_secondary_profile_reads_its_own_bot_voice_context(self):
+        # Multiplexed gateway: the voice binding lives on the adapter whose bot is
+        # in the call, so the note must be read from the adapter that answers the
+        # source -- not from the default profile's adapter map.
+        primary = _VcAdapter("")
+        secondary = _VcAdapter("**Voice:** dev-vc (2 members)")
+        runner = _make_runner(
+            adapters={Platform.DISCORD: primary},
+            _profile_adapters={"otto": {Platform.DISCORD: secondary}},
+        )
+        source = _source()
+        source._transport_adapter_ref = lambda: secondary
+        note = runner._voice_channel_sidecar_note(_vc_event(), source, "sk")
+        assert note and "dev-vc (2 members)" in note
+
+
+def _multiplex_vc_runner(primary_vc, secondary_vc):
+    primary = _VcAdapter(primary_vc)
+    secondary = _VcAdapter(secondary_vc)
+    runner = _make_runner(adapters={Platform.DISCORD: primary})
+    runner._profile_adapters = {"otto": {Platform.DISCORD: secondary}}
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    return runner, primary, secondary
+
+
+def _secondary_source():
+    return SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="c1",
+        chat_type="channel",
+        user_id="u1",
+        profile="otto",
+    )
+
+
+class TestVoiceChannelSidecarNoteMultiplexed:
+    """#139345: the note must never be read from another bot's call state.
+
+    The two negative halves of the report, ported from the competing draft
+    #139359 (closed in favour of this one, whose author offered them there).
+    """
+
+    def test_secondary_never_borrows_the_primary_call(self):
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "**Voice:** ops-vc (5 members)", ""
+        )
+        note = runner._voice_channel_sidecar_note(_vc_event(), _secondary_source(), "sk")
+        assert note is None
+
+    def test_disconnected_secondary_fails_closed(self):
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "**Voice:** ops-vc (5 members)", ""
+        )
+        runner._profile_adapters = {}
+        note = runner._voice_channel_sidecar_note(_vc_event(), _secondary_source(), "sk")
+        assert note is None
+
+
+class _AckAdapter:
+    """A Discord bot bound to text channel c1's voice call in guild 77."""
+
+    def __init__(self, bound):
+        self._voice_text_channels = {77: "c1"} if bound else {}
+        self.acks = []
+
+    def voice_mixer_active(self, guild_id):
+        return guild_id in self._voice_text_channels
+
+    async def play_ack_in_voice(self, guild_id):
+        self.acks.append(guild_id)
+
+
+class TestVoiceAckFollowsTheAnsweringBot:
+    """#139345, same class: the first-tool-call verbal ack resolves its guild on, and plays through,
+    the bot whose call is bound to the turn's text channel, not the default profile's bot."""
+
+    def _runner(self, primary_bound, secondary_bound):
+        primary, secondary = _AckAdapter(primary_bound), _AckAdapter(secondary_bound)
+        runner = _make_runner(adapters={Platform.DISCORD: primary})
+        runner._profile_adapters = {"otto": {Platform.DISCORD: secondary}}
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        return runner, primary, secondary
+
+    def test_secondary_in_call_gets_its_guild(self):
+        runner, _primary, secondary = self._runner(False, True)
+        source = _secondary_source()
+        source._transport_adapter_ref = lambda: secondary
+        assert runner._voice_ack_guild_for(source) == 77
+
+    def test_secondary_never_borrows_the_primary_call(self):
+        runner, _primary, secondary = self._runner(True, False)
+        source = _secondary_source()
+        source._transport_adapter_ref = lambda: secondary
+        assert runner._voice_ack_guild_for(source) is None
+
+    def test_ack_plays_through_the_answering_bot(self):
+        from gateway.run_turn_progress import GatewayTurnProgressMixin
+        runner, _primary, secondary = self._runner(True, True)
+        source = _secondary_source()
+        source._transport_adapter_ref = lambda: secondary
+        scheduled = []
+        progress = SimpleNamespace(
+            _runner=runner,
+            _ctx=SimpleNamespace(_voice_ack_fired=[False], _voice_ack_guild=[77], _run_still_current=lambda: True,
+                                 _voice_ack_loop=None, source=source),
+            _schedule=lambda coro, msg, loop=None: scheduled.append(coro),
+        )
+        GatewayTurnProgressMixin.voice_ack_callback(progress, "call1", "web_search", {})
+        assert len(scheduled) == 1
+        asyncio.run(scheduled[0])
+        assert secondary.acks == [77]
+        assert _primary.acks == []
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +368,9 @@ class TestVoiceChannelSidecarNote:
 class TestSidecarNoteStaging:
     def test_set_then_consume_once(self):
         runner = _make_runner()
-        runner._set_pending_turn_sidecar_notes("sk", ["[System note: reset]"])  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("sk") == ["[System note: reset]"]  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
+        runner._set_pending_turn_sidecar_notes("sk", ["[System note: reset]"])
+        assert runner._consume_pending_turn_sidecar_notes("sk") == ["[System note: reset]"]
+        assert runner._consume_pending_turn_sidecar_notes("sk") == []
 
 
 # ---------------------------------------------------------------------------

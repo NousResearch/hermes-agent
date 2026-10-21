@@ -23,7 +23,7 @@ for (const platform of ['windows', 'macos']) {
   if (text.length > 1024 * 1024) throw new Error('Bundle manifest exceeds size limit')
   const data = JSON.parse(text)
   const manifest = validateBundleInputs(data, platform, data.arch)
-  if (manifest.new.commit !== process.env.GITHUB_SHA) throw new Error(`${platform}: candidate commit must equal the tested workflow SHA`)
+  if (manifest.new.commit !== (process.env.HERMES_TESTED_COMMIT || process.env.GITHUB_SHA)) throw new Error(`${platform}: candidate commit must equal the tested workflow SHA`)
   await appendFile(process.env.GITHUB_OUTPUT, `${platform}=${JSON.stringify(bundledMatrix(platform, manifest.old.tag))}\n${platform}-arch=${manifest.arch}\n`)
   await appendFile(process.env.GITHUB_STEP_SUMMARY, `\n${platform}/${manifest.arch} packaged-app → open-app-update: ${manifest.old.tag} → ${manifest.new.tag} (${manifest.new.commit}).\n`)
 }

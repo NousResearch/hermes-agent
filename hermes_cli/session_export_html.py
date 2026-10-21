@@ -691,7 +691,7 @@ def _collapsible(kind: str, icon: str, title: str, inner: str, indent: str, oute
 {indent}"""
 
 
-def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
+def _generate_messages_html(messages: list[dict[str, Any]]) -> str:
     html_list = []
     for i, msg in enumerate(messages):
         role = msg.get("role", "unknown")
@@ -728,7 +728,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(html_list)
 
 
-def _sidebar_item_html(s: Dict[str, Any]) -> str:
+def _sidebar_item_html(s: dict[str, Any]) -> str:
     sid = str(s.get("id", "N/A"))
     title = s.get("title") or s.get("preview") or "Untitled Session"
     title = title[:47] + "..." if len(title) > 50 else title
@@ -743,7 +743,7 @@ def _sidebar_item_html(s: Dict[str, Any]) -> str:
             """
 
 
-def _sidebar_html(sessions: List[Dict[str, Any]]) -> str:
+def _sidebar_html(sessions: list[dict[str, Any]]) -> str:
     return f"""
         <aside class="sidebar">
             <div class="sidebar-header">
@@ -762,7 +762,7 @@ def _sidebar_html(sessions: List[Dict[str, Any]]) -> str:
         """
 
 
-def _session_view_html(s: Dict[str, Any], is_multi: bool) -> str:
+def _session_view_html(s: dict[str, Any], is_multi: bool) -> str:
     escaped_sid = _escape_html(str(s.get("id", "N/A")))
     system_html = _collapsible(
         "system-prompt", ICON_SHIELD, "System Prompt (Persona)",
@@ -787,7 +787,7 @@ def _session_view_html(s: Dict[str, Any], is_multi: bool) -> str:
         """
 
 
-def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
+def generate_multi_session_html_export(sessions: list[dict[str, Any]]) -> str:
     if not sessions:
         return "<html><body><h1>No sessions to export.</h1></body></html>"
     is_multi = len(sessions) > 1
@@ -802,6 +802,6 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
     )
 
 
-def generate_html_export(session_data: Dict[str, Any]) -> str:
+def generate_html_export(session_data: dict[str, Any]) -> str:
     """Single-session export (legacy entry point)."""
     return generate_multi_session_html_export([session_data])

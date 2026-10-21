@@ -336,7 +336,7 @@ class TestJudgeGoalWithSubgoals:
             return _FakeResp()
 
         with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
-            verdict, reason, parse_failed, _wd, _tf = goals.judge_goal(
+            verdict, _reason, _parse_failed, _wd, _tf = goals.judge_goal(
                 "ship the feature",
                 "ok shipped",
                 subgoals=["write tests", "update docs"],
@@ -880,7 +880,7 @@ class TestContractAndBackgroundCompose:
         }]
         with patch("agent.auxiliary_client.call_llm",
                    side_effect=self._capture_call_llm(captured)):
-            verdict, reason, parse_failed, wait_directive, _tf = goals.judge_goal(
+            verdict, _reason, _parse_failed, wait_directive, _tf = goals.judge_goal(
                 "ship the PR",
                 "I pushed and started the CI watcher; waiting on it now.",
                 contract=GoalContract(verification="PR CI goes green"),

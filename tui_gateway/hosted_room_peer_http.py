@@ -347,7 +347,7 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer room source must be bot_room")
         self._require_room_grant(grant)
         logical_session = "roomlink_" + hashlib.sha256(
-            f"{room_id}\0{profile}".encode("utf-8")).hexdigest()[:32]
+            f"{room_id}\0{profile}".encode()).hexdigest()[:32]
         if expected_session_id and expected_session_id != logical_session:
             raise PeerRunsHTTPError("peer room session identity changed")
         return {"session_id": logical_session, "title": f"Group: {room_id}", "source": source}
@@ -472,6 +472,8 @@ class PeerRunsHTTPClient:
         entry = {"delay": delay, "next_poll_at": now + delay}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
+            if full.get("status") == "unknown" and str(full.get("run_id") or "") == run_id:
+                full = self._resolve_unknown(record, full, grant)
             status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
             if (
                 str(status.get("run_id") or "") != run_id
@@ -486,6 +488,14 @@ class PeerRunsHTTPClient:
             self._terminal_receipts.add(
                 (str(record["task_id"]), int(record["execution_generation"])))
         return status
+
+    def _resolve_unknown(self, record: Mapping[str, Any], full: Mapping[str, Any], grant: str) -> dict[str, Any]:
+        """A member gateway that restarted mid-turn reports the run ``unknown`` and holds its later
+        turns behind it. The room cannot resume that lost execution: acknowledge exactly the polled
+        admission (``stop`` grant; an exact retry replays the receipt) and settle it interrupted."""
+        self._request(_run_path(record, "resolve-unknown"), method="POST", room_grant=grant, body={
+            "admission_id": full.get("admission_id"), "execution_generation": full.get("execution_generation")})
+        return {"run_id": full["run_id"], "status": "interrupted", "error": "member gateway restarted"}
 
     def history(
         self, *, room_id: str, profile: str, session_id: str, grant: str,

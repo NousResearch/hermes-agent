@@ -45,7 +45,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 ```
 /tools list
 /tools disable browser
-/tools enable spotify
+/tools enable discord
 ```
 
 ## 核心工具集
@@ -73,7 +73,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `search` | `web_search` | 仅网页搜索（不含提取）。 |
 | `session_search` | `session_search` | 搜索历史会话记录。 |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | 技能的增删改查与浏览。 |
-| `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | 原生 Spotify 控制（播放、队列、搜索、播放列表、专辑、音乐库）。由内置 `spotify` 插件注册。 |
 | `terminal` | `process`, `terminal` | Shell 命令执行和后台进程管理。 |
 | `todo` | `todo` | 会话内任务列表管理。 |
 | `tts` | `text_to_speech` | 文本转语音音频生成。 |

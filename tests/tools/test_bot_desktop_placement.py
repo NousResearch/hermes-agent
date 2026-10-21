@@ -197,7 +197,7 @@ def test_sandbox_screen_that_cannot_come_up_is_an_error_not_a_host_browser(monke
 
     _placed(monkeypatch, "terminal", "docker")
     monkeypatch.setattr(runtime, "sandbox_screen_running", lambda: False)
-    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    monkeypatch.setattr(runtime, "published_env", dict)
 
     def _boom(**kw):
         raise RuntimeError("Bot Desktop needs Xvnc inside the terminal backend's sandbox")

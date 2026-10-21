@@ -23,7 +23,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 FAST_OVERRIDES = {"service_tier": "priority"}
 

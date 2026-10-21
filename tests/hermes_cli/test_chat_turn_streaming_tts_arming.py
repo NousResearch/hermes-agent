@@ -25,7 +25,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from cli import HermesCLI, _ChatTurn  # noqa: E402
+from cli import HermesCLI, _ChatTurn
 
 
 class _StreamingTTSArming:
@@ -57,7 +57,7 @@ def _arm_turn(monkeypatch, requirements, sounddevice_factory=None):
     and records that the arm gate called it at all — the gate must never call it,
     so the raise doubles as proof that arming does not depend on the import.
     """
-    import tools.tts_tool as tts_tool
+    from tools import tts_tool
 
     probe = []
 
@@ -126,7 +126,7 @@ def test_streaming_tts_stays_off_when_provider_unavailable(monkeypatch):
 
 def test_streaming_tts_not_armed_without_voice_tts(monkeypatch):
     """Non-voice-tts turns are untouched: no probe, no queue, no thread."""
-    import tools.tts_tool as tts_tool
+    from tools import tts_tool
 
     probe = []
     monkeypatch.setattr(tts_tool, "_import_sounddevice",

@@ -33,7 +33,7 @@ from tool_search_livetest_ue_hard import register_epic_tools_adversarial
 
 N_REPS = int(os.environ.get("TS_BENCH_REPS", "3"))
 
-SCENARIOS: List[Dict[str, Any]] = [
+SCENARIOS: list[dict[str, Any]] = [
     # ---- D: discovery under paraphrase (tool exists; zero name overlap)
     {
         "id": "D1_sparkly_brighter",
@@ -103,7 +103,7 @@ SCENARIOS: List[Dict[str, Any]] = [
 ]
 
 
-def score_survey(resp: str, truth: Dict[str, bool]) -> bool:
+def score_survey(resp: str, truth: dict[str, bool]) -> bool:
     import re
     resp_l = resp.lower()
     for key, expected in truth.items():
@@ -115,7 +115,7 @@ def score_survey(resp: str, truth: Dict[str, bool]) -> bool:
     return True
 
 
-def _bridge_query_text(call: Dict[str, Any]) -> str:
+def _bridge_query_text(call: dict[str, Any]) -> str:
     """Render current multi-query calls and legacy saved transcript calls."""
     args = call.get("args") or {}
     queries = args.get("queries")
@@ -136,18 +136,18 @@ def run_one(scenario, mode, rep, out_dir: Path):
 
     from tools.registry import registry
     original_dispatch = registry.dispatch
-    call_log: List[str] = []
+    call_log: list[str] = []
 
     def logging_dispatch(name, args, **kw):
         call_log.append(name)
         return original_dispatch(name, args, **kw)
     registry.dispatch = logging_dispatch
 
-    usage_log: List[Dict[str, Any]] = []
+    usage_log: list[dict[str, Any]] = []
     started = time.time()
     error = None
     final_response = ""
-    messages_out: List[Dict[str, Any]] = []
+    messages_out: list[dict[str, Any]] = []
     _orig_norm = None
     try:
         from run_agent import AIAgent

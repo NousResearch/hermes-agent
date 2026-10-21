@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from gateway.platforms.api_server import _resolve_media_to_data_urls  # noqa: E402
+from gateway.platforms.api_server import _resolve_media_to_data_urls
 
 # 1x1 transparent PNG
 _PNG_BYTES = base64.b64decode(

@@ -57,7 +57,7 @@ def _run(tmp_path: Path, strict: str | None) -> dict[str, str]:
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", str(cell), "-rA", "-q", "-p", "no:cacheprovider",
          "-p", "no:randomly", "-o", "addopts=", "--rootdir", str(tmp_path)],
-        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120, check=False)
     if strict and strict not in ("0",):
         assert "known gap is not excused" not in proc.stdout or f"HERMES_E2E_STRICT_ACCEPTANCE={strict.strip()}:" in proc.stdout
     outcomes = {}

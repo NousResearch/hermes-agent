@@ -89,7 +89,6 @@ async def test_two_bots_same_chat_have_distinct_lanes_and_stop_cannot_cross(rig)
 
     async def handler(event):
         seen.append((identity_of(event.source).transport_profile, event.text))
-        return None
 
     for bot in (rig.bot_a, rig.bot_b):
         bot.set_message_handler(handler)
@@ -148,7 +147,6 @@ async def test_shared_bot_routed_chat_runs_as_satellite_and_unserved_route_is_dr
 
     async def handler(event):
         calls.append(event.text)
-        return None
 
     async def busy(event, session_key):
         calls.append(("busy", session_key, identity_of(event.source).runtime_profile))

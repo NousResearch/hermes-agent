@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 import pm
-import pm.client as client
-import pm.extras as extras
+from pm import client
+from pm import extras
 
 
 # ---- per-extra platform gates ([tool.hermes.extras-platforms]) ----

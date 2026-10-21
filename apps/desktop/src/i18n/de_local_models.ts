@@ -29,13 +29,11 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
     'best-quality-resident':
       'Das Modell mit der höchsten Qualität, das komplett auf Ihrer GPU mit voller Geschwindigkeit läuft. Die Auswahl wägt Qualität gegen die erwartete Geschwindigkeit auf dieser Hardware ab.',
     'speed-gated-quality':
-      'Ein besseres Modell würde auf diesen Rechner passen, aber bei seiner Speicherbandbreite zu langsam reagieren — das ist das beste Modell, das schnell bleibt.',
-    'fastest-resident':
-      'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im GPU-Speicher.'
+      'Ein besseres Modell würde auf diesen Rechner passen, aber bei seiner Speicherbandbreite zu langsam reagieren — das ist das beste Modell, das schnell bleibt.'
   },
   noRecommendationTitle: 'Keine automatische Empfehlung für diesen Rechner',
   noRecommendationDetail:
-    'Die automatische Einrichtung braucht ein kuratiertes Modell, das vollständig in den Grafikspeicher oder den gemeinsamen Speicher passt. Sie können unten trotzdem ein Modell wählen oder weitere Modelle durchsuchen.',
+    'Die automatische Einrichtung braucht ein kuratiertes Modell, das vollständig im Grafikspeicher oder im gemeinsamen Speicher mit voller Geschwindigkeit läuft. Sie können unten trotzdem ein Modell wählen oder weitere Modelle durchsuchen.',
   noRecommendationAction: 'Modelle durchsuchen',
   downloaded: 'Heruntergeladen',
   downloadAction: size => `Download · ${size}`,

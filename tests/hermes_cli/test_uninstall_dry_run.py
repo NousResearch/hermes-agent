@@ -23,7 +23,7 @@ def test_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(uninstall, "get_project_root", lambda: project_root)
     monkeypatch.setattr(uninstall, "get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr(uninstall, "_is_default_hermes_home", lambda home: False)
-    monkeypatch.setattr(uninstall, "_discover_named_profiles", lambda: [])
+    monkeypatch.setattr(uninstall, "_discover_named_profiles", list)
     monkeypatch.setattr(uninstall, "_perform_uninstall", _fail_if_called)
 
     uninstall.run_uninstall(SimpleNamespace(dry_run=True, yes=True, full=True))

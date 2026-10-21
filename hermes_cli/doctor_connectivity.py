@@ -109,7 +109,7 @@ def _build_apikey_providers_list() -> list:
             if {_normalize_provider(a) for a in (_pp.name, *(_pp.aliases or ()))} & _dedicated_canonical:
                 continue
             # Key vars vs base-URL vars: the first found value goes out as Authorization: Bearer, never a URL.
-            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+            _is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
             _key_vars = tuple(v for v in _pp.env_vars if not _is_url(v))
             if not _key_vars:
                 continue

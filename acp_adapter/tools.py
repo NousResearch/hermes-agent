@@ -15,7 +15,7 @@ from agent.display import build_tool_preview
 logger = logging.getLogger(__name__)
 
 # Hermes tool name -> ACP ToolKind (anything unlisted is "other").
-TOOL_KIND_MAP: Dict[str, ToolKind] = {
+TOOL_KIND_MAP: dict[str, ToolKind] = {
     name: kind
     for kind, names in {
         "read": ("read_file", "skill_view", "skills_list", "browser_snapshot", "browser_vision",
@@ -55,7 +55,7 @@ _POLISHED_TOOLS = {
 }
 
 _EMPTYISH = (None, "", [], {})
-Args = Dict[str, Any]
+Args = dict[str, Any]
 _Formatter = Callable[[str, Optional[str], Optional[Args]], Optional[str]]
 
 
@@ -521,7 +521,7 @@ def _format_media_or_cron_result(tool_name: str, data: Args, args: Args) -> Opti
     return "\n".join([f"✅ {tool_name} completed", *(f"- **{k}:** {data.get(k)}" for k in keys if data.get(k))])
 
 
-def _format_structured_value(key: str, value: Any, *, indent: int = 0, max_depth: int = 3, max_items: int = 8) -> List[str]:
+def _format_structured_value(key: str, value: Any, *, indent: int = 0, max_depth: int = 3, max_items: int = 8) -> list[str]:
     """Render nested JSON-ish values as compact Markdown bullets, not inline blobs."""
     pad = "  " * indent
     bullet = f"{pad}- "
@@ -530,7 +530,7 @@ def _format_structured_value(key: str, value: Any, *, indent: int = 0, max_depth
     def _line(text: str) -> str:
         return f"{bullet}{label} {text}" if label else f"{bullet}{text}"
 
-    def _child(child_key: str, child_value: Any, extra_indent: int) -> List[str]:
+    def _child(child_key: str, child_value: Any, extra_indent: int) -> list[str]:
         return _format_structured_value(child_key, child_value, indent=indent + extra_indent, max_depth=max_depth - 1,
                                         max_items=max_items)
 
@@ -617,7 +617,7 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str], *, 
     return _truncate_text("\n".join(lines), limit=7000)
 
 
-_COMPLETION_FORMATTERS: Dict[str, _Formatter] = {
+_COMPLETION_FORMATTERS: dict[str, _Formatter] = {
     "todo": _format_todo_result,
     "read_file": _format_read_file_result,
     "write_file": _format_edit_result,
@@ -636,10 +636,10 @@ _COMPLETION_FORMATTERS: Dict[str, _Formatter] = {
 }
 
 
-def _parse_unified_diff_content(diff_text: str) -> List[Any]:
+def _parse_unified_diff_content(diff_text: str) -> list[Any]:
     """Convert unified diff text into ACP diff content blocks (one per ``---``/``+++`` pair)."""
-    content: List[Any] = []
-    state: Dict[str, Any] = {"old": None, "new": None, "old_lines": [], "new_lines": []}
+    content: list[Any] = []
+    state: dict[str, Any] = {"old": None, "new": None, "old_lines": [], "new_lines": []}
 
     def _flush() -> None:
         old_path, new_path = state["old"], state["new"]
@@ -674,7 +674,7 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
 
 def _build_tool_complete_content(
     tool_name: str, result: Optional[str], *, function_args: Optional[Args] = None, snapshot: Any = None
-) -> List[Any]:
+) -> list[Any]:
     """Build structured ACP completion content, falling back to plain text."""
     if tool_name == "skill_manage":
         try:
@@ -697,7 +697,7 @@ def _build_tool_complete_content(
 # --- ToolCallStart / ToolCallProgress events ---------------------------------
 
 
-def _more(items: list, shown: int, unit: str = "") -> List[str]:
+def _more(items: list, shown: int, unit: str = "") -> list[str]:
     """``["... N more<unit>"]`` trailer when ``items`` overflowed the ``shown`` cap, else ``[]``."""
     return [f"... {len(items) - shown} more{unit}"] if len(items) > shown else []
 
@@ -724,7 +724,7 @@ def _start_skill_manage(args: Args) -> Any:
         target = str(args.get("file_path") or "file")
         return acp.tool_diff_content(path=f"skills/{name}/{target}", new_text=str(args.get("file_content") or ""))
     if action in {"delete", "remove_file"}:
-        return f"Removing {str(args.get('file_path') or file_path)} from skill '{name}'"
+        return f"Removing {args.get('file_path') or file_path!s} from skill '{name}'"
     return f"Running skill_manage action '{action}' on skill '{name}' ({file_path})"
 
 
@@ -751,7 +751,7 @@ def _preview(label: str, value: str, limit: int) -> str:
 # Per-tool start-content builders returning text or one ACP content block. ``None`` means the
 # title/location already identify the target (read_file, web_extract): a synthetic content block
 # would make Zed render an unhelpful Output section before completion.
-_START_CONTENT_BUILDERS: Dict[str, Optional[Callable[[Args], Any]]] = {
+_START_CONTENT_BUILDERS: dict[str, Optional[Callable[[Args], Any]]] = {
     "patch": lambda a: (
         f"Preparing {a.get('mode', 'replace')} edit for {a.get('path') or 'patch input'}. Approval prompt shows the diff."
     ),
@@ -787,7 +787,7 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
     (mirrors ``get_cute_tool_message`` in ``agent/display.py``)."""
     try:
         return _build_tool_start(tool_call_id, tool_name, arguments, edit_diff=edit_diff)
-    except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
+    except Exception as exc:
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
         return acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
@@ -846,7 +846,7 @@ def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
     )
 
 
-def extract_locations(arguments: Args) -> List[ToolCallLocation]:
+def extract_locations(arguments: Args) -> list[ToolCallLocation]:
     """Extract file-system locations from tool arguments."""
     if not (path := arguments.get("path")):
         return []

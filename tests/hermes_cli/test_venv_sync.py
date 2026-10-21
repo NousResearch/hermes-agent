@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _run_bare(snippet: str) -> subprocess.CompletedProcess:
     program = f"import sys\nsys.path.insert(0, {str(REPO_ROOT)!r})\n" + textwrap.dedent(snippet)
     return subprocess.run([sys.executable, '-I', '-S', '-c', program],
-                          capture_output=True, text=True, cwd=REPO_ROOT, timeout=120)
+                          capture_output=True, text=True, cwd=REPO_ROOT, timeout=120, check=False)
 
 
 def test_bare_import_and_passive_paths(tmp_path):
@@ -155,6 +155,7 @@ class TestCliContract:
             capture_output=True,
             text=True,
             cwd=REPO_ROOT,
+            check=False,
         )
 
         assert proc.returncode == 0, proc.stderr
@@ -173,6 +174,7 @@ class TestCliContract:
             capture_output=True,
             text=True,
             cwd=REPO_ROOT,
+            check=False,
         )
 
         assert proc.returncode == 1

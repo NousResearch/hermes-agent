@@ -37,7 +37,7 @@ PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 def _api_key_env_fields(pp: Any) -> tuple[tuple, str]:
     """Split a profile's ``env_vars`` into (api-key vars, base-URL var); the URL var may be ""."""
-    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
     return (tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
             next((v for v in pp.env_vars if is_url(v)), None) or "")
 
@@ -182,7 +182,13 @@ def dispatch_plugin_auth(action: str, args: Any, provider: str) -> bool:
 
     True = the plugin owned the action (core prints nothing more). False = run the built-in path. A
     handler exception becomes a readable ``SystemExit`` naming provider and action.
+    ``<plugin>:<id>`` names an OAuth client a plugin declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`).
     """
+    from hermes_cli.plugin_oauth import handle_auth_action
+
+    owned = handle_auth_action(action, args, provider)
+    if owned is not None:
+        return owned
     handler = plugin_auth_handler(provider)
     if handler is None:
         return False

@@ -17,6 +17,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def _drop_row(db, session_id):
+    """The row vanishes under the agent WITHOUT a retirement tombstone (in-place store rebuild,
+    profile-repair move). A canonical delete retires the id instead; see the last test."""
+    def _do(conn):
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        assert conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount == 1
+    db._execute_write(_do)
+
+
 def _make_agent(session_db, session_id):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
@@ -45,8 +54,8 @@ def test_flush_recreates_row_deleted_under_live_agent():
         history = []
         for n in ("one", "two", "three"):
             if history:
-                # Row removed under the idle live agent (sessions delete / Desktop / prune).
-                assert db.delete_session("sess-live") is True
+                # Row removed under the idle live agent (store rebuild / repair move).
+                _drop_row(db, "sess-live")
             tail = [{"role": "user", "content": f"turn {n}"}, {"role": "assistant", "content": f"answer {n}"}]
             messages = list(history) + tail
             assert agent._flush_messages_to_session_db(messages, history) is True
@@ -55,7 +64,7 @@ def test_flush_recreates_row_deleted_under_live_agent():
 
         # A heal during a muted notification turn hides only that turn's new rows; the replayed
         # history rows (and their in-memory dicts) keep their visibility.
-        assert db.delete_session("sess-live") is True
+        _drop_row(db, "sess-live")
         agent._mute_notification_reply = True
         tail = [{"role": "user", "content": "notif"}, {"role": "assistant", "content": "muted"}]
         assert agent._flush_messages_to_session_db(list(history) + tail, history) is True
@@ -82,7 +91,7 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         turn1 = [{"role": "user", "content": "a"}]
         agent._flush_messages_to_session_db(turn1, [])
         assert len(db.get_messages("sess-gone")) == 1
-        assert db.delete_session("sess-gone") is True
+        _drop_row(db, "sess-gone")
 
         # Row creation inside the heal now raises (transient store trouble).
         def _broken_create(*a, **kw):
@@ -108,7 +117,7 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         retry = _make_agent(db, "sess-retry")
         t1 = [{"role": "user", "content": "one"}, {"role": "assistant", "content": "a1"}]
         assert retry._flush_messages_to_session_db(t1, []) is True
-        assert db.delete_session("sess-retry") is True
+        _drop_row(db, "sess-retry")
         real_append, calls = db.append_messages_batch, []
 
         def _fk_then_locked(*a, **kw):
@@ -160,4 +169,22 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
 
         monkeypatch.setattr(db, "get_session", _parent_lookup_raises)
         assert child._flush_messages_to_session_db([{"role": "user", "content": "y"}], []) is False
+        db.close()
+
+
+def test_retired_session_is_never_resurrected_by_a_stale_writer():
+    """A canonical delete retires the id; the heal must not bring the session back from a
+    leftover in-memory agent (the owner evicts live agents before retiring)."""
+    from hermes_state import SessionDB
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = SessionDB(db_path=Path(tmpdir) / "test.db")
+        agent = _make_agent(db, "sess-retired")
+        turn1 = [{"role": "user", "content": "a"}]
+        assert agent._flush_messages_to_session_db(turn1, []) is True
+        assert db.delete_session("sess-retired") is True
+        turn2 = turn1 + [{"role": "user", "content": "b"}]
+        assert agent._flush_messages_to_session_db(turn2, turn1) is False
+        assert db.get_session("sess-retired") is None
+        assert db.get_messages("sess-retired") == []
         db.close()

@@ -12,6 +12,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
 )
+from agent.i18n import t
 from gateway.config import GatewayConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
@@ -613,3 +614,117 @@ async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails
         "first question",
         "retry me",
     ]
+
+
+def _paused_runner_with_exchange(tmp_path, monkeypatch, session_id, rows):
+    """Bare runner whose session holds one plain user/assistant exchange; returns
+    ``(gw, store, session_entry)`` with the transcript snapshot taken before /retry."""
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+    store._db.create_session(session_id=session_id, source="test")
+    for role, content in rows:
+        store._db.append_message(session_id, role, content)
+
+    gw = GatewayRunner.__new__(GatewayRunner)
+    gw.config = config
+    gw.session_store = store
+    session_entry = MagicMock(session_id=session_id)
+    session_entry.last_prompt_tokens = 111
+    gw.session_store.get_or_create_session = MagicMock(return_value=session_entry)
+    gw._handle_message = AsyncMock()
+    return gw, store, session_entry
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_paused_refusal_leaves_transcript_unchanged(tmp_path, monkeypatch):
+    """The estop pause refuses the re-sent plain-text turn (the /retry command itself passes the
+    gate as a canonical command); /retry must answer it BEFORE the rewrite or the transcript
+    ends up shorter and the user's turn is lost."""
+    gw, store, session_entry = _paused_runner_with_exchange(
+        tmp_path, monkeypatch, "retry-paused-session",
+        [("user", "retry me"), ("assistant", "old answer")],
+    )
+    before = store._db.get_messages("retry-paused-session", include_inactive=True)
+    paused_notice = "⏸️ Hermes is paused. New work is on hold; run `hermes resume`."
+    monkeypatch.setattr("agent.estop.paused_reply", lambda: paused_notice)
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == paused_notice
+    assert store._db.get_messages("retry-paused-session", include_inactive=True) == before
+    gw._handle_message.assert_not_awaited()
+    assert session_entry.last_prompt_tokens == 111
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_paused_refusal_leaves_carrier_rewind_untouched(
+    tmp_path, monkeypatch
+):
+    """Same pause pre-check on the composite-carrier path: the carrier-aware rewind must not run
+    either, or the retained scaffold is swapped for the pure scaffold with the ask gone."""
+    gw, store, session_entry = _paused_runner_with_exchange(
+        tmp_path, monkeypatch, "retry-paused-carrier-session",
+        [("user", _composite_carrier()["content"]), ("assistant", "failed answer")],
+    )
+    before = store._db.get_messages("retry-paused-carrier-session", include_inactive=True)
+    paused_notice = "⏸️ Hermes is paused. New work is on hold; run `hermes resume`."
+    monkeypatch.setattr("agent.estop.paused_reply", lambda: paused_notice)
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == paused_notice
+    assert store._db.get_messages("retry-paused-carrier-session", include_inactive=True) == before
+    gw._handle_message.assert_not_awaited()
+    assert session_entry.last_prompt_tokens == 111
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_draining_refusal_leaves_transcript_unchanged(tmp_path, monkeypatch):
+    """An externally drained gateway refuses NEW turns after canonical command dispatch, so the
+    /retry re-send is refused; answering that refusal before the rewrite keeps the exchange."""
+    gw, store, session_entry = _paused_runner_with_exchange(
+        tmp_path, monkeypatch, "retry-draining-session",
+        [("user", "retry me"), ("assistant", "old answer")],
+    )
+    before = store._db.get_messages("retry-draining-session", include_inactive=True)
+    gw._external_drain_active = True
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == t("gateway.busy.draining_maintenance")
+    assert store._db.get_messages("retry-draining-session", include_inactive=True) == before
+    gw._handle_message.assert_not_awaited()
+    assert session_entry.last_prompt_tokens == 111
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_session_cap_refusal_leaves_transcript_unchanged(
+    tmp_path, monkeypatch
+):
+    """max_concurrent_sessions rejects the re-sent turn's slot claim; the same cap message must
+    be answerable before the rewrite so the exchange survives for a later /retry."""
+    gw, store, session_entry = _paused_runner_with_exchange(
+        tmp_path, monkeypatch, "retry-cap-session",
+        [("user", "retry me"), ("assistant", "old answer")],
+    )
+    before = store._db.get_messages("retry-cap-session", include_inactive=True)
+    limit_message = "⏸️ Active session limit reached (4/4)."
+    gw._active_session_limit_message = MagicMock(return_value=limit_message)
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == limit_message
+    assert store._db.get_messages("retry-cap-session", include_inactive=True) == before
+    gw._handle_message.assert_not_awaited()
+    assert session_entry.last_prompt_tokens == 111

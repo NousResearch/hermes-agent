@@ -11,21 +11,23 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from tools.plugin_guard_context import (
-    STEP_DOWN, catalog_cap, is_agent_facing, is_base64_media, is_ci_workflow, is_coin_name_only, is_data_decode,
-    is_doc_prose, is_google_installed_app_secret, is_hex_in_char_class, is_inert_fixture_line,
-    is_json_prose_value, is_locale_catalog,
-    is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token,
-    is_self_uninstall_doc, is_test_tree, logical_line, prose_cap)
+    STEP_DOWN, catalog_cap, is_agent_facing, is_authorized_keys_prose, is_base64_archive_roundtrip,
+    is_base64_media, is_benign_lazy_os_import, is_ci_workflow, is_coin_name_only,
+    is_disclosed_config_note, is_doc_prose, is_env_dump_in_safety_clause, is_google_installed_app_secret,
+    is_hex_in_char_class, is_inert_fixture_line, is_json_prose_value, is_locale_catalog,
+    is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal,
+    is_quoted_injection_phrase, is_regex_alternation_token, is_repo_root_traversal,
+    is_self_uninstall_doc, is_sudo_inert, is_test_tree, is_trusted_installer_pipe, logical_line, prose_cap)
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v9"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v11"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -106,7 +108,7 @@ MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
 MAX_PLUGIN_SINGLE_FILE_KB = 1024       # 1MB single file
 
 
-def _walk(plugin_dir: Path) -> Iterator[Tuple[Path, str]]:
+def _walk(plugin_dir: Path) -> Iterator[tuple[Path, str]]:
     """Yield (path, "a/b/c" relative path) for every non-excluded entry under plugin_dir."""
     for f in plugin_dir.rglob("*"):
         try:
@@ -157,16 +159,17 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     return lines
 
 
-def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) -> List[Finding]:
+def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) -> list[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
     # A CI workflow definition runs on the forge's runner, not the host: same cap as a README.
-    doc_prose = is_doc_prose(rel_path) or is_ci_workflow(rel_path)
+    is_ci = is_ci_workflow(rel_path)
+    doc_prose = is_doc_prose(rel_path) or is_ci
     locale_catalog = is_locale_catalog(rel_path)
     lines = _file_lines(file_path) if findings else []
-    out: List[Finding] = []
+    out: list[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
@@ -182,6 +185,10 @@ def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) ->
                                        locale_catalog)
         if _is_defensive_documentation(f, rel_path):
             f.severity = _comment_severity(f)
+            # A quoted injection phrase in a defensive doc (``"ignore previous instructions"`` in a
+            # CHANGELOG / code comment describing the filter that refuses it) is a note, not caution.
+            if is_quoted_injection_phrase(f, line):
+                f.severity = _at_most(f.severity, "medium")
         # Last and critical-only: a one-step cap that can never re-raise a finding an
         # earlier remap already lowered.
         if (
@@ -209,7 +216,7 @@ def _comment_severity(f: Finding) -> str:
     return sev if is_agent_facing(f) else STEP_DOWN.get(sev, sev)
 
 
-def _file_lines(file_path: Path) -> List[str]:
+def _file_lines(file_path: Path) -> list[str]:
     """Full source lines (``Finding.match`` is truncated to 120 chars); unreadable → []."""
     try:
         return file_path.read_text(encoding="utf-8-sig").split("\n")
@@ -222,7 +229,7 @@ def _context_severity(f: Finding, rel_path: str, line: str, joined: str, doc_pro
     """Severity after the inert-context demotions (``plugin_guard_context``). Each rule only
     ever lowers, and every finding stays in the report; the order runs from the broadest
     context (where the text lives) to the narrowest (what the token sits inside). *joined* is
-    the logical shell line (``line`` plus its ``\\``-continuations)."""
+    the logical shell line (``line`` plus its ``\\\\``-continuations)."""
     sev = f.severity
     if doc_prose:
         sev = (catalog_cap(f) if locale_catalog else prose_cap(f)) or sev
@@ -235,24 +242,41 @@ def _context_severity(f: Finding, rel_path: str, line: str, joined: str, doc_pro
         # plugin's own tests reject (#89610): a note. Executable test code steps down once.
         inert = f.category == "credential_exposure" or is_inert_fixture_line(f, line, is_code, rel_path)
         sev = _at_most(sev, "medium") if inert else STEP_DOWN.get(sev, sev)
-    if f.pattern_id == "encoded_exfil" and is_base64_media(line):
-        sev = "low"
     if is_code and is_regex_alternation_token(f, line):
         sev = STEP_DOWN.get(sev, sev)
-    if f.pattern_id == "base64_decode_pipe" and is_data_decode(line):
-        sev = STEP_DOWN.get(sev, sev)
-    if is_loopback_only(f, line):
-        sev = "low"    # 127.0.0.0/8 is a local service, not egress
-    if is_loopback_continuation(f, line, joined):
-        sev = "low"    # `curl -H "Bearer $KEY" \` + `http://localhost:8080/health`: local health check
-    if is_hex_in_char_class(f, line):
-        sev = "low"    # `[\x00-\x1F\x7F]`: a control-char filter, not an assembled payload
-    if is_coin_name_only(f, line):
-        sev = _at_most(sev, "medium")    # "monero gateway" in a connector index, no miner on the line
+    return _inert_context_cap(f, rel_path, line, joined, is_code, doc_prose, sev)
+
+
+# Narrow inert-context demotions, each a ``(predicate, target severity)`` that only ever lowers. See
+# ``plugin_guard_context`` for the shape each recognises and the attack twin that keeps full severity.
+def _inert_context_cap(f: Finding, rel_path: str, line: str, joined: str, is_code: bool,
+                       doc_prose: bool, sev: str) -> str:
+    if f.pattern_id == "encoded_exfil" and is_base64_media(line):
+        return "low"
+    to_low = (
+        is_loopback_only(f, line)                 # 127.0.0.0/8 is a local service, not egress
+        or is_loopback_continuation(f, line, joined)   # loopback health check over a `\`-continuation
+        or is_hex_in_char_class(f, line)          # `[\x00-\x1F]`: a control-char filter, not a payload
+        or (is_code and is_pip_install_in_prose_literal(f, line))  # "no pip install is needed" message
+    )
+    if to_low:
+        return "low"
+    # Each predicate recognises a disclosed/inert shape that lands at a note (medium), never a block.
+    to_medium = (
+        is_base64_archive_roundtrip(f, line)      # `tar c… | base64 | base64 -d | tar x`: transport
+        or is_coin_name_only(f, line)             # "monero gateway" in a connector index, no miner
+        or is_trusted_installer_pipe(f, line)     # `curl … hermes/ollama/bun install.sh | sh`
+        or is_sudo_inert(f, line, rel_path)       # advisory `sudo apt install` hint / "never … sudo"
+        or is_env_dump_in_safety_clause(f, line)  # `env`/`printenv` in a "never inspect env" rule
+        or is_repo_root_traversal(f, line)        # `../../..` to the repo root, no sensitive leaf
+        or is_benign_lazy_os_import(f, line)      # `__import__("os").environ.get(...)` one member
+        or is_disclosed_config_note(f, rel_path)  # disclosed scoped config-write in install docs
+        or is_authorized_keys_prose(f, line, doc_prose)  # `authorized_keys` in a UI string, no write
+    )
+    if to_medium:
+        return _at_most(sev, "medium")
     if is_google_installed_app_secret(f, line):
-        sev = _at_most(sev, "high")    # public installed-app OAuth client secret, reviewable caution
-    if is_code and is_pip_install_in_prose_literal(f, line):
-        sev = "low"    # "no pip install is needed" in a user-facing message
+        return _at_most(sev, "high")    # public installed-app OAuth client secret, reviewable caution
     return sev
 
 
@@ -275,7 +299,7 @@ def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
     return True
 
 
-def _dangerous_findings_summary(findings: List[Finding]) -> str:
+def _dangerous_findings_summary(findings: list[Finding]) -> str:
     """Describe the critical findings that made a plugin install dangerous."""
     critical = [finding for finding in findings if finding.severity == "critical"]
     pattern_ids = sorted({finding.pattern_id for finding in critical})
@@ -283,9 +307,9 @@ def _dangerous_findings_summary(findings: List[Finding]) -> str:
     return f"{len(critical)} critical of {len(findings)} findings{names}"
 
 
-def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
+def _check_plugin_structure(plugin_dir: Path) -> list[Finding]:
     """Structural checks sized for plugin repositories."""
-    findings: List[Finding] = []
+    findings: list[Finding] = []
     file_count = 0
     total_size = 0
     resolved_root = plugin_dir.resolve()
@@ -328,7 +352,7 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
 
 def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
     """Scan a plugin directory (typically the temp clone); every external plugin is ``community`` trust."""
-    all_findings: List[Finding] = []
+    all_findings: list[Finding] = []
     if plugin_dir.is_dir():
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
@@ -342,7 +366,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         summary = f"{plugin_dir.name}: clean scan, no threats detected"
     result = ScanResult(
         skill_name=plugin_dir.name, source=source or plugin_dir.name, trust_level="community",
-        verdict=verdict, findings=all_findings, scanned_at=datetime.now(timezone.utc).isoformat(),
+        verdict=verdict, findings=all_findings, scanned_at=datetime.now(UTC).isoformat(),
         summary=summary)
     result.scan_provenance = {
         "scanner_version": PLUGIN_SCANNER_VERSION, "verdict": verdict, "source": result.source}
@@ -350,7 +374,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
 
 
 def should_allow_plugin_install(
-    result: ScanResult, force: bool = False) -> Tuple[Optional[bool], str]:
+    result: ScanResult, force: bool = False) -> tuple[Optional[bool], str]:
     """Map a verdict to ``(allowed, reason)``: True installs, None asks to confirm, False blocks."""
     n = len(result.findings)
     if result.verdict == "safe":
@@ -365,4 +389,8 @@ def should_allow_plugin_install(
 
 
 __all__ = [
-    "scan_plugin", "should_allow_plugin_install", "format_scan_report", "PLUGIN_SCANNER_VERSION"]
+    "PLUGIN_SCANNER_VERSION",
+    "format_scan_report",
+    "scan_plugin",
+    "should_allow_plugin_install",
+]

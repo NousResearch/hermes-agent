@@ -25,7 +25,7 @@ from tests.e2e.core.platforms._helpers import Director, GatewayUnderTest
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 # scenario -> (rig fixture, runner(rig, tag, tmp_dir))
-SCENARIOS: Dict[str, Tuple[str, Callable[..., None]]] = {
+SCENARIOS: dict[str, tuple[str, Callable[..., None]]] = {
     "dm_one_reply": ("rig", lambda r, t, d: C.dm_gets_exactly_one_reply(r, t)),
     "group_require_mention": ("rig", lambda r, t, d: C.group_obeys_require_mention(r, t)),
     "long_reply_split": ("rig", lambda r, t, d: C.long_reply_is_split_in_order(r, t)),
@@ -51,13 +51,13 @@ SCENARIOS: Dict[str, Tuple[str, Callable[..., None]]] = {
 _SDK = {"telegram": "python-telegram-bot", "discord": "discord.py", "slack": "slack-bolt"}
 
 
-def scenario_params(skip: Optional[Dict[str, str]] = None) -> List[Any]:
+def scenario_params(skip: Optional[dict[str, str]] = None) -> list[Any]:
     return [pytest.param(name, id=name, marks=[pytest.mark.skip(reason=skip[name])] if skip and name in skip else [])
             for name in SCENARIOS]
 
 
 def run_scenario(name: str, request: pytest.FixtureRequest, tmp_path: Path,
-                 known: Optional[Dict[str, Tuple[str, str]]] = None) -> None:
+                 known: Optional[dict[str, tuple[str, str]]] = None) -> None:
     fixture, runner = SCENARIOS[name]
     rig = request.getfixturevalue(fixture)
     assert rig.gw.alive(), f"gateway died before {name}\n{rig.gw.tail()}"
@@ -80,10 +80,10 @@ def _short_root(factory: pytest.TempPathFactory, name: str) -> Path:
     return factory.mktemp(name)
 
 
-def rig_fixtures(driver_cls: type) -> Tuple[Any, Any]:
+def rig_fixtures(driver_cls: type) -> tuple[Any, Any]:
     """``(rig, rig_stream)`` module-scoped fixtures for ``driver_cls``."""
 
-    def _make(factory: pytest.TempPathFactory, label: str, extra_cfg: Dict[str, Any], extra_env: Dict[str, str]):
+    def _make(factory: pytest.TempPathFactory, label: str, extra_cfg: dict[str, Any], extra_env: dict[str, str]):
         # The gateway child runs this interpreter: without the adapter's SDK it only times out later.
         # (A distribution lookup: the unit-test conftest may leave an SDK stub in sys.modules.)
         sdk = _SDK[driver_cls.name]

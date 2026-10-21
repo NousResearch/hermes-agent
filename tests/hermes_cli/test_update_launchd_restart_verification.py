@@ -25,7 +25,7 @@ import subprocess
 import pytest
 
 import hermes_cli.gateway as gateway_cli
-import hermes_cli.update_cmd as update_cmd
+from hermes_cli import update_cmd
 
 LABEL = "ai.hermes.gateway"
 
@@ -172,6 +172,11 @@ def _patch_launchd_env(
     )
     monkeypatch.setattr(
         gateway_cli, "launchd_gateway_labels_for_install", lambda: [LABEL]
+    )
+    # The gateway under test is never this updater's ancestor; a real ancestry walk would make it one
+    # whenever a fake pid (4242) happens to be a live ancestor of the worker on the host.
+    monkeypatch.setattr(
+        gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
     )
 
     calls = {"restart": 0, "verify": 0, "label": None}

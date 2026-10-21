@@ -48,7 +48,7 @@ def test_cron_env_settings_resolve_from_the_served_profile(two_homes):
     from cron.jobs import _oneshot_run_claim_ttl_seconds
     from cron.scheduler_preflight import _preflight_check_provider_key
 
-    root, alpha = two_homes
+    _root, alpha = two_homes
     captured = {}
 
     def fake_resolve(**kw):

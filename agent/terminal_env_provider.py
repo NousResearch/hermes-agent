@@ -38,11 +38,26 @@ class TerminalEnvironmentProvider(ProviderBase):
       spawns so a model-authored command can never read them.
     * ``session_isolated_when_nonpersistent`` — non-persistent mode gives each session its own
       sandbox identity; opt in when a shared name would let two ephemeral runs destroy each other.
+    * ``default_cwd`` — where commands start when ``terminal.cwd`` is unset or unusable there: an
+      absolute in-sandbox path, or ``"~"`` for each sandbox's own home. With ``"~"``,
+      ``create_environment`` receives ``cwd="~"`` (never expanded on the host) and the environment sets
+      ``self.cwd`` to the absolute home it resolved; commands may also arrive with ``cwd="~"``.
+      ``None`` keeps the generic ``/root``.
+    * ``supports_streams`` — environments implement ``exec_prefix(*, user=None, interactive=True)``:
+      a local argv that runs its remainder (``bash -c <script>``, passed through as separate words)
+      inside the sandbox with stdin/stdout open, or ``None`` when it cannot right now. Bot Desktop,
+      ``computer_use`` and the browser then follow the terminal into this backend, as they do for
+      docker/ssh/singularity, instead of refusing.
+
+    ``default_cwd`` home resolution and ``exec_prefix`` need the environment object itself, so they
+    work for in-process plugins only; under ``plugins.isolation: host`` the environment reaches Hermes
+    as an opaque placeholder and Bot Desktop placement refuses a ``supports_streams`` backend.
     """
 
     is_remote: bool = True
     is_container: bool = True
     session_isolated_when_nonpersistent: bool = False
+    supports_streams: bool = False
 
     @property
     def description(self) -> str:
@@ -58,6 +73,10 @@ class TerminalEnvironmentProvider(ProviderBase):
         return None
 
     @property
+    def default_cwd(self) -> Optional[str]:
+        return None
+
+    @property
     def strip_env_keys(self) -> frozenset:
         return frozenset()
 
@@ -70,22 +89,22 @@ class TerminalEnvironmentProvider(ProviderBase):
     def is_available(self) -> bool:
         """True when this backend can service commands. Cheap, NO network calls: runs during UI paints."""
 
-    def check_requirements(self, config: Dict[str, Any]) -> bool:
+    def check_requirements(self, config: dict[str, Any]) -> bool:
         """Full requirements check with the merged terminal env config; log actionable errors before returning False."""
         return self.is_available()
 
-    def probe(self) -> Tuple[str, str]:
+    def probe(self) -> tuple[str, str]:
         """Dashboard picker health ``(status, detail)``; status ``ready``/``needs_setup``/``unavailable``. Never raise; <~2s."""
         return ("ready", "") if self.is_available() else ("needs_setup", f"{self.display_name} is not configured.")
 
-    def setup_instructions(self) -> List[str]:
+    def setup_instructions(self) -> list[str]:
         """Lines printed by ``hermes setup`` after selection (the wizard persists ``terminal.backend`` itself)."""
         return []
 
     def post_setup(self) -> None:
         """Optional interactive hook run by ``hermes setup`` after selection (prompt for tokens, install SDKs)."""
 
-    def doctor_checks(self) -> List[Tuple[bool, str, str]]:
+    def doctor_checks(self) -> list[tuple[bool, str, str]]:
         """``hermes doctor`` rows ``(ok, label, detail)``; default reflects :meth:`is_available`."""
         try:
             ok = bool(self.is_available())
@@ -96,7 +115,7 @@ class TerminalEnvironmentProvider(ProviderBase):
     @abc.abstractmethod
     def create_environment(
         self, *, cwd: str, timeout: int, task_id: str = "default", image: Optional[str] = None,
-        container_config: Optional[Dict[str, Any]] = None, **kwargs: Any,
+        container_config: Optional[dict[str, Any]] = None, **kwargs: Any,
     ):
         """Create an execution environment (``BaseEnvironment`` duck type). MUST accept ``**kwargs`` and ignore
         unknown keys so the factory can evolve without breaking older plugins. ``task_id`` keys reuse/persistence;

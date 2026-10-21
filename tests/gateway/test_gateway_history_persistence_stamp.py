@@ -20,6 +20,6 @@ def test_db_flush_collect_does_not_recollect_gateway_history_rows():
         _persist_user_message_idx=None,
         _pending_cli_user_message=None,
     )
-    rows, msgs = _db_flush_collect(agent, list(history) + [new], None)
+    _rows, msgs = _db_flush_collect(agent, list(history) + [new], None)
 
     assert msgs == [new]

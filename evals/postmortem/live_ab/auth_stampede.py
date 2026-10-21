@@ -18,7 +18,7 @@ os.environ["HERMES_STREAM_RETRIES"] = "0"
 
 def jwt(exp, sub="acct-A"):
     # `sub` matters: pre-expiry adoption (#103526 round 2) only swaps to a key for the SAME account.
-    b = lambda o: base64.urlsafe_b64encode(json.dumps(o).encode()).rstrip(b"=").decode()  # noqa: E731
+    b = lambda o: base64.urlsafe_b64encode(json.dumps(o).encode()).rstrip(b"=").decode()
     return f"{b({'alg':'none'})}.{b({'exp':exp,'sub':sub})}.s"
 
 

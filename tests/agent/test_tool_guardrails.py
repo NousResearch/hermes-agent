@@ -238,7 +238,7 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
 
 # ── Per-turn runaway-loop caps (Claude Code v2.1.212, Week 29) ──────────────
 
-from agent.tool_guardrails import LoopCapConfig  # noqa: E402
+from agent.tool_guardrails import LoopCapConfig
 
 
 
@@ -286,7 +286,7 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 # distinct red commands, and browser retry-after-action — while the pure
 # replay (same call, nothing changed between attempts) is still stopped.
 
-_HARD = lambda: ToolCallGuardrailController(  # noqa: E731
+_HARD = lambda: ToolCallGuardrailController(
     ToolCallGuardrailConfig(hard_stop_enabled=True)
 )
 _PYTEST = {"command": "pytest tests/test_x.py -q"}

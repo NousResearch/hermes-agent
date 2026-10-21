@@ -51,6 +51,9 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
         "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
         "XDG_DATA_HOME": str(home / "data"), "XDG_STATE_HOME": str(home / "state"),
         "UV_CACHE_DIR": str(cache / "python/runtime"),
+        # vcpkg's default binary cache is under LOCALAPPDATA, which moved into the
+        # job-local home above; keep its archives in the transported native domain.
+        "VCPKG_DEFAULT_BINARY_CACHE": str(cache / "native/vcpkg-archives"),
         "npm_config_cache": str(cache / "npm"),
         "npm_config_userconfig": os.devnull,
         "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
@@ -82,6 +85,7 @@ def run_preparation(source: Path, work: Path, cache: Path, request_file: Path,
          str(source), str(cache), str(request_file.resolve()), str(Path(__file__).resolve()),
          str(worker or source / "scripts/bundles/desktop_prepare.py")],
         cwd=source, env=environment, stdin=subprocess.DEVNULL,
+        check=False,
     ).returncode
 
 
@@ -121,6 +125,34 @@ def prepare_tools(source: Path, work: Path, cache: Path,
     return binaries["python"], binaries["node"], prepared
 
 
+def _msvc_identity() -> dict[str, str] | None:
+    """The newest VC toolset vswhere reports, with its default tools version."""
+    from hermes_platform.resolver import locate_command
+    from hermes_platform.resolver.known_dirs import visual_studio_installer_dirs
+
+    vswhere = locate_command("vswhere.exe", known_dirs=visual_studio_installer_dirs())
+    if not vswhere.found:
+        print("warning: MSVC cache identity unavailable: vswhere.exe was not found", file=sys.stderr, flush=True)
+        return None
+    try:
+        result = subprocess.run([*vswhere.command, "-latest", "-products", "*", "-requires",
+                                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-format", "json"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=30, stdin=subprocess.DEVNULL, check=False)
+        instances = json.loads(result.stdout or "[]")
+        if not instances:
+            print("warning: MSVC cache identity unavailable: vswhere found no matching installations",
+                  file=sys.stderr, flush=True)
+            return None
+        instance = instances[0]
+        tools = Path(instance["installationPath"], "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+        return {"installationVersion": instance["installationVersion"],
+                "VCToolsVersion": tools.read_text(encoding="utf-8-sig").strip()}
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError, KeyError) as error:
+        print(f"warning: MSVC cache identity unavailable: {error}", file=sys.stderr, flush=True)
+        return None
+
+
 def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
     """Partition built wheels by observed native inputs, not just the OS label.
 
@@ -139,8 +171,15 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
                 "libc": platform.libc_ver(), "inputs": selected, "probes": [], "openssl": {}}
     commands = [["rustc", "-vV"]]
     if target.startswith("win32"):
-        commands.append(["cl", "/Bv"])
-        complete = bool(env.get("WindowsSDKVersion") and env.get("VCToolsVersion"))
+        if env.get("VCToolsVersion"):
+            commands.append(["cl", "/Bv"])
+            complete = bool(env.get("WindowsSDKVersion"))
+        else:
+            # No developer environment (win32-x64 builds never run VsDevCmd): rustc's cc
+            # crate finds MSVC through vswhere, so identify the toolchain the same way.
+            msvc = _msvc_identity()
+            identity["msvc"] = msvc
+            complete = msvc is not None
     else:
         commands.extend([[env.get("CC") or "cc", "--version"], [env.get("CXX") or "c++", "--version"]])
         complete = True
@@ -166,7 +205,7 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
     for command in commands:
         try:
             result = subprocess.run(command, env=dict(env), capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=30, stdin=subprocess.DEVNULL)
+                                    errors="replace", timeout=30, stdin=subprocess.DEVNULL, check=False)
             output = result.stdout + result.stderr
             # cl /Bv reports its identity and exits 2 when no source is supplied.
             valid = result.returncode in ((0, 2) if command == ["cl", "/Bv"] else (0,)) and bool(output.strip())

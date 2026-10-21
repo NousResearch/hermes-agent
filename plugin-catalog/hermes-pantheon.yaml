@@ -1,0 +1,24 @@
+name: hermes-pantheon
+title: Pantheon
+repo: https://github.com/Adolanium/hermes-pantheon
+sha: c19043955225211d199921c21b4f8440ad0d6b98
+description: "Eighteen Hermes Desktop themes in dithered classical marble, one god each: all twelve Olympians plus Hades, Nyx, Helios, Selene and Medusa. Install once, then switch with /skin <name>. Disclosure — theme-only desktop plugin: it registers eighteen themes through the plugin SDK, and their stylesheets restyle parts of Desktop's own UI (sidebar art, tabs, composer, wordmark) only while a Pantheon theme is active. Fonts and art are bundled; no network requests, no agent tools or hooks."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Adolanium/hermes-pantheon#readme
+version: "0.3.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/media/shots/olympus.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/media/shots/hera.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/media/shots/mars.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/media/shots/demeter.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/media/shots/hades.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-pantheon/c19043955225211d199921c21b4f8440ad0d6b98/media/shots/caduceus.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

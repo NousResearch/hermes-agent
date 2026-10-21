@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.web_tools as web_tools
+from tools import web_tools
 from tools import web_tools_rescue
 from plugins.web import keyless_mcp
 from plugins.web.keenable.provider import KeenableWebSearchProvider

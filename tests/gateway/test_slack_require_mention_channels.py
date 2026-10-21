@@ -44,11 +44,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
 
 BOT_USER_ID = "U_BOT"
 CHANNEL_ID = "C_FORCED"

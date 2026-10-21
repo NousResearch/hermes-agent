@@ -90,6 +90,19 @@ class LiveTail:
     def flush(self) -> None:
         return None
 
+    def discard(self) -> None:
+        """Clear the status line without a success or failure verdict.
+
+        Used when a bytecode-compile failure will be retried. Closing as a
+        failure here would report a recovered install as failed.
+        """
+        if self._partial:
+            self._line(self._partial)
+            self._partial = ""
+        if self.live:
+            self._draw("")
+            self._emit("\r")
+
     def close(self, ok: bool) -> None:
         if self._partial:
             self._line(self._partial)

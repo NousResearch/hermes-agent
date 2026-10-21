@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ``identity -> (name, ZoneInfo | None)`` value, so racing resolvers can never publish a mixed
 # identity/value pair. Call reset_cache() after in-place config changes.
 _cache_lock = threading.Lock()
-_tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
+_tz_cache: dict[tuple[str, str], tuple[str, Optional[ZoneInfo]]] = {}
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 # ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
@@ -75,7 +75,7 @@ def _env_timezone() -> str:
     return os.getenv("HERMES_TIMEZONE", "").strip()
 
 
-def _timezone_cache_identity() -> Tuple[str, str]:
+def _timezone_cache_identity() -> tuple[str, str]:
     tz_env = _env_timezone()
     return ("environment", tz_env) if tz_env else ("config", str(get_config_path()))
 
@@ -106,7 +106,7 @@ def _resolve_timezone_name() -> str:
     return ""
 
 
-def _timezone_entry() -> Tuple[str, Optional[ZoneInfo]]:
+def _timezone_entry() -> tuple[str, Optional[ZoneInfo]]:
     """Cached ``(configured name, ZoneInfo | None)`` for the active profile."""
     cache_identity = _timezone_cache_identity()
     with _cache_lock:

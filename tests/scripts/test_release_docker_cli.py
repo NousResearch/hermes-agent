@@ -25,7 +25,7 @@ def test_cli_manifest_and_verify(tmp_path):
 
     def cli(*args):
         return subprocess.run([sys.executable, '-m', 'scripts.releases.docker', *args],
-                              cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=30)
+                              cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
 
     for extra in ([], archives):
         result = cli('manifest', *identity, *digests, *extra)
@@ -79,13 +79,13 @@ def test_promotion_reuses_the_receipt_digest_without_rebuilding():
             return ''
         raise AssertionError(argv)
 
-    promote_stable('v1.2.3', digest, run=run)
+    promote_stable('rc.1-v1.2.3', digest, 'v1.2.3', run=run)
     create = next(argv for argv in calls if argv[3] == 'create')
     assert create[-1] == f'nousresearch/hermes-agent@{digest}'
     assert all('build' not in argv for argv in calls)
 
     with pytest.raises(DockerReleaseError, match='versioned tag'):
-        promote_stable('v1.2.3', digest, run=lambda _argv: 'sha256:' + 'e' * 64)
+        promote_stable('rc.1-v1.2.3', digest, 'v1.2.3', run=lambda _argv: 'sha256:' + 'e' * 64)
 
 
 def test_promotion_preserves_independent_desktop_digest():
@@ -105,12 +105,13 @@ def test_promotion_preserves_independent_desktop_digest():
             return ''
         raise AssertionError(argv)
 
-    promote_stable('v1.2.3', slim, run=run)
-    assert f'nousresearch/hermes-agent:v1.2.3-desktop' in inspected
+    promote_stable('rc.1-v1.2.3', slim, 'v1.2.3', run=run)
+    assert 'nousresearch/hermes-agent:rc.1-v1.2.3-desktop' in inspected
     assert {tuple(cmd[4:]) for cmd in created} == {
-        ('-t', 'nousresearch/hermes-agent:stable', '-t', 'nousresearch/hermes-agent:latest',
-         f'nousresearch/hermes-agent@{slim}'),
-        ('-t', 'nousresearch/hermes-agent:stable-desktop', '-t',
+        ('-t', 'nousresearch/hermes-agent:v1.2.3', '-t', 'nousresearch/hermes-agent:stable',
+         '-t', 'nousresearch/hermes-agent:latest', f'nousresearch/hermes-agent@{slim}'),
+        ('-t', 'nousresearch/hermes-agent:v1.2.3-desktop', '-t',
+         'nousresearch/hermes-agent:stable-desktop', '-t',
          'nousresearch/hermes-agent:latest-desktop', f'nousresearch/hermes-agent@{desktop}'),
     }
     assert 'nousresearch/hermes-agent:stable-desktop' in inspected
@@ -131,7 +132,7 @@ def test_promotion_requires_desktop_version_before_moving_any_alias():
         return ''
 
     with pytest.raises(DockerReleaseError, match='desktop'):
-        promote_stable('v1.2.3', 'sha256:' + 'd' * 64, run=run)
+        promote_stable('rc.1-v1.2.3', 'sha256:' + 'd' * 64, 'v1.2.3', run=run)
     assert not created
 
 

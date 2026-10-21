@@ -238,6 +238,8 @@ The child process runs with a **minimal environment**. API keys, tokens, and cre
 
 Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, or `AUTH` in their names are excluded. Only safe system variables (`PATH`, `HOME`, `LANG`, `SHELL`, `PYTHONPATH`, `VIRTUAL_ENV`, etc.) are passed through.
 
+Approvals: gateway sessions approve a script as a whole before it runs. In a local CLI, TUI, Desktop or ACP session, a turn you typed gets no whole-script prompt: Python-level file and process operations in the script run unprompted and only its `terminal()` calls ask. Injected and automation turns keep the whole-script prompt. See [`execute_code` scripts](../security.md#execute-code-scripts).
+
 ### Skill Environment Variable Passthrough
 
 When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` child processes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code.

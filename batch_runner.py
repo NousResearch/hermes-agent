@@ -8,7 +8,7 @@ statistics aggregated across all batches. See ``main`` (fire CLI) for usage.
 
 # hermes_bootstrap must be the very first import — UTF-8 stdio on Windows, no-op on POSIX.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not).
     if exc.name != "hermes_bootstrap":
@@ -65,7 +65,7 @@ _AGENT_PASSTHROUGH = (
 )
 
 
-def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+def _normalize_tool_stats(tool_stats: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
     """All possible tools with zero defaults (consistent HF schema), plus any unexpected tools."""
     normalized = {
         tool: tool_stats[tool].copy() if tool in tool_stats else DEFAULT_TOOL_STATS.copy()
@@ -77,7 +77,7 @@ def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Di
     return normalized
 
 
-def _normalize_tool_error_counts(tool_error_counts: Dict[str, int]) -> Dict[str, int]:
+def _normalize_tool_error_counts(tool_error_counts: dict[str, int]) -> dict[str, int]:
     """All possible tools with zero defaults, plus any unexpected tools."""
     normalized = {tool: tool_error_counts.get(tool, 0) for tool in ALL_POSSIBLE_TOOLS}
     for tool, count in tool_error_counts.items():
@@ -86,7 +86,7 @@ def _normalize_tool_error_counts(tool_error_counts: Dict[str, int]) -> Dict[str,
     return normalized
 
 
-def _merge_tool_stats(total: Dict[str, Dict[str, int]], tool_stats: Dict[str, Dict[str, int]]) -> None:
+def _merge_tool_stats(total: dict[str, dict[str, int]], tool_stats: dict[str, dict[str, int]]) -> None:
     """Add per-tool count/success/failure from *tool_stats* into *total* in place."""
     for tool_name, stats in tool_stats.items():
         agg = total.setdefault(tool_name, DEFAULT_TOOL_STATS.copy())
@@ -95,7 +95,7 @@ def _merge_tool_stats(total: Dict[str, Dict[str, int]], tool_stats: Dict[str, Di
         agg["failure"] += stats["failure"]
 
 
-def _merge_reasoning_stats(total: Dict[str, int], reasoning_stats: Dict[str, Any]) -> None:
+def _merge_reasoning_stats(total: dict[str, int], reasoning_stats: dict[str, Any]) -> None:
     """Add the turn counters from *reasoning_stats* into *total* in place."""
     for key in total:
         total[key] += reasoning_stats.get(key, 0)
@@ -120,7 +120,7 @@ def _tool_call_succeeded(content) -> bool:
     return content_json.get("success") is not False
 
 
-def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+def _extract_tool_stats(messages: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     """Per-tool call counts and success/failure tallies from a message history."""
     tool_stats = {}
     tool_calls_map = {}  # tool_call_id -> tool name
@@ -141,14 +141,14 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
     return tool_stats
 
 
-def _turn_has_reasoning(msg: Dict[str, Any]) -> bool:
+def _turn_has_reasoning(msg: dict[str, Any]) -> bool:
     """``<REASONING_SCRATCHPAD>`` in content, or a non-empty native ``reasoning`` field."""
     if "<REASONING_SCRATCHPAD>" in (msg.get("content", "") or ""):
         return True
     return bool(msg.get("reasoning", "").strip()) if msg.get("reasoning") else False
 
 
-def _extract_reasoning_stats(messages: List[Dict[str, Any]]) -> Dict[str, int]:
+def _extract_reasoning_stats(messages: list[dict[str, Any]]) -> dict[str, int]:
     """Count assistant turns with reasoning vs without."""
     assistant_turns = [msg for msg in messages if msg.get("role") == "assistant"]
     total = len(assistant_turns)
@@ -161,7 +161,7 @@ def _extract_reasoning_stats(messages: List[Dict[str, Any]]) -> Dict[str, int]:
     }
 
 
-def _failure_result(prompt_index: int, batch_num: int, error: str) -> Dict[str, Any]:
+def _failure_result(prompt_index: int, batch_num: int, error: str) -> dict[str, Any]:
     """Result dict for a prompt that produced no trajectory."""
     return {
         "success": False,
@@ -175,8 +175,8 @@ def _failure_result(prompt_index: int, batch_num: int, error: str) -> Dict[str, 
 
 
 def _prepare_container_image(
-    prompt_index: int, prompt_data: Dict[str, Any], batch_num: int, task_id: str, config: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
+    prompt_index: int, prompt_data: dict[str, Any], batch_num: int, task_id: str, config: dict[str, Any]
+) -> Optional[dict[str, Any]]:
     """Register the dataset row's per-prompt container image (``image``/``docker_image``)
     for this task's sandbox (Docker, Modal, Singularity, Daytona).
 
@@ -194,6 +194,7 @@ def _prepare_container_image(
             probe = _sp.run(
                 ["docker", "image", "inspect", container_image],
                 capture_output=True, timeout=10,
+                check=False,
             )
             if probe.returncode != 0:
                 if config.get("verbose"):
@@ -201,6 +202,7 @@ def _prepare_container_image(
                 pull = _sp.run(
                     ["docker", "pull", container_image],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
+                    check=False,
                 )
                 if pull.returncode != 0:
                     return _failure_result(
@@ -229,10 +231,10 @@ def _prepare_container_image(
 
 def _process_single_prompt(
     prompt_index: int,
-    prompt_data: Dict[str, Any],
+    prompt_data: dict[str, Any],
     batch_num: int,
-    config: Dict[str, Any]
-) -> Dict[str, Any]:
+    config: dict[str, Any]
+) -> dict[str, Any]:
     """Run the agent on one prompt; returns trajectory, stats and metadata (or a failure result)."""
     prompt = prompt_data["prompt"]
     task_id = f"task_{prompt_index}"
@@ -299,7 +301,7 @@ def _process_single_prompt(
         return _failure_result(prompt_index, batch_num, str(e))
 
 
-def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
     """Append one JSON row and fsync so a crash never loses an acknowledged prompt."""
     with open(path, 'a', encoding='utf-8') as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -307,7 +309,7 @@ def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
         os.fsync(f.fileno())
 
 
-def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
+def _process_batch_worker(args: tuple) -> dict[str, Any]:
     """Pool worker: process one batch of ``(index, prompt_data)`` sequentially.
 
     ``args`` is ``(batch_num, batch_data, output_dir, completed_prompts, config)``.
@@ -387,7 +389,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
     }
 
 
-def _entry_prompt_text(entry: Dict) -> str:
+def _entry_prompt_text(entry: dict) -> str:
     """Human prompt text from a dataset/trajectory entry: flat ``prompt``, ShareGPT
     ``conversations`` (from/value), chat ``conversations``/``messages`` (role/content),
     or a no-reasoning discard tombstone."""
@@ -414,7 +416,7 @@ def _banner(title: str) -> None:
     print("=" * 70)
 
 
-def _chunk(entries: List[Tuple[int, Dict[str, Any]]], size: int) -> List[List[Tuple[int, Dict[str, Any]]]]:
+def _chunk(entries: list[tuple[int, dict[str, Any]]], size: int) -> list[list[tuple[int, dict[str, Any]]]]:
     """Split ``(index, entry)`` tuples into batches of *size*, preserving original indices."""
     return [entries[i:i + size] for i in range(0, len(entries), size)]
 
@@ -429,22 +431,22 @@ class BatchRunner:
         run_name: str,
         distribution: str = "default",
         max_iterations: int = 10,
-        base_url: str = None,
-        api_key: str = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         model: str = "claude-opus-4-20250514",
         num_workers: int = 4,
         verbose: bool = False,
-        ephemeral_system_prompt: str = None,
+        ephemeral_system_prompt: str | None = None,
         log_prefix_chars: int = 100,
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
-        provider_sort: str = None,
+        providers_allowed: list[str] | None = None,
+        providers_ignored: list[str] | None = None,
+        providers_order: list[str] | None = None,
+        provider_sort: str | None = None,
         openrouter_min_coding_score: Optional[float] = None,
 
-        reasoning_config: Dict[str, Any] = None,
-        prefill_messages: List[Dict[str, Any]] = None,
-        max_samples: int = None,
+        reasoning_config: dict[str, Any] | None = None,
+        prefill_messages: list[dict[str, Any]] | None = None,
+        max_samples: int | None = None,
     ):
         """Load the dataset (truncated to *max_samples*), validate *distribution*, create batches.
 
@@ -484,7 +486,7 @@ class BatchRunner:
             prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
             print(f"   🔒 Ephemeral system prompt: '{prompt_preview}'")
 
-    def _load_dataset(self) -> List[Dict[str, Any]]:
+    def _load_dataset(self) -> list[dict[str, Any]]:
         """Load JSONL entries that have a ``prompt`` field; skip blank/invalid lines."""
         if not self.dataset_file.exists():
             raise FileNotFoundError(f"Dataset file not found: {self.dataset_file}")
@@ -510,14 +512,14 @@ class BatchRunner:
 
         return dataset
 
-    def _create_batches(self) -> List[List[Tuple[int, Dict[str, Any]]]]:
+    def _create_batches(self) -> list[list[tuple[int, dict[str, Any]]]]:
         """Split the dataset into batches of ``(index, entry)`` tuples."""
         return _chunk(list(enumerate(self.dataset)), self.batch_size)
 
-    def _empty_checkpoint(self) -> Dict[str, Any]:
+    def _empty_checkpoint(self) -> dict[str, Any]:
         return {"run_name": self.run_name, "completed_prompts": [], "batch_stats": {}, "last_updated": None}
 
-    def _load_checkpoint(self) -> Dict[str, Any]:
+    def _load_checkpoint(self) -> dict[str, Any]:
         """Checkpoint data (completed prompt indices), or an empty one if missing/unreadable."""
         if not self.checkpoint_file.exists():
             return self._empty_checkpoint()
@@ -529,7 +531,7 @@ class BatchRunner:
             print(f"⚠️  Warning: Failed to load checkpoint: {e}")
             return self._empty_checkpoint()
 
-    def _save_checkpoint(self, checkpoint_data: Dict[str, Any], lock: Optional[Lock] = None):
+    def _save_checkpoint(self, checkpoint_data: dict[str, Any], lock: Optional[Lock] = None):
         """Atomically write *checkpoint_data* (stamped ``last_updated``), under *lock* if given."""
         checkpoint_data["last_updated"] = datetime.now().isoformat()
         from utils import atomic_json_write
@@ -571,7 +573,7 @@ class BatchRunner:
 
         return completed_prompts
 
-    def _filter_dataset_by_completed(self, completed_prompts: set) -> Tuple[List[Dict], List[int]]:
+    def _filter_dataset_by_completed(self, completed_prompts: set) -> tuple[list[dict], list[int]]:
         """Return ``([(index, entry)] not yet completed, [skipped indices])``."""
         filtered_dataset = []
         skipped_indices = []
@@ -616,7 +618,7 @@ class BatchRunner:
         print("=" * 70 + "\n")
         return True
 
-    def _worker_config(self) -> Dict[str, Any]:
+    def _worker_config(self) -> dict[str, Any]:
         """Picklable agent configuration for worker processes.
 
         ``self.api_key`` may be a zero-arg callable (Azure Foundry Entra ID bearer provider
@@ -640,7 +642,7 @@ class BatchRunner:
             config[key] = getattr(self, key)
         return config
 
-    def _run_pool(self, config, checkpoint_data, completed_prompts_set, checkpoint_lock) -> List[Dict[str, Any]]:
+    def _run_pool(self, config, checkpoint_data, completed_prompts_set, checkpoint_lock) -> list[dict[str, Any]]:
         """Process all batches in a worker pool, checkpointing after each result."""
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
 
@@ -704,7 +706,7 @@ class BatchRunner:
                     root_logger.setLevel(original_level)
         return results
 
-    def _combine_batch_files(self) -> Tuple[int, int]:
+    def _combine_batch_files(self) -> tuple[int, int]:
         """Merge ALL ``batch_*.jsonl`` (old runs + resume) into ``trajectories.jsonl``.
 
         Drops corrupted entries (hallucinated tool names, invalid JSON) and discard
@@ -857,35 +859,35 @@ class BatchRunner:
         self._print_summary(results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time)
 
 
-def _split_csv(value: Optional[str]) -> Optional[List[str]]:
+def _split_csv(value: Optional[str]) -> Optional[list[str]]:
     """Comma-separated CLI string to a list of stripped items; ``None`` when empty."""
     return [p.strip() for p in value.split(",")] if value else None
 
 
 def main(
-    dataset_file: str = None,
-    batch_size: int = None,
-    run_name: str = None,
+    dataset_file: str | None = None,
+    batch_size: int | None = None,
+    run_name: str | None = None,
     distribution: str = "default",
     model: str = "anthropic/claude-sonnet-4.6",
-    api_key: str = None,
+    api_key: str | None = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
     num_workers: int = 4,
     resume: bool = False,
     verbose: bool = False,
     list_distributions: bool = False,
-    ephemeral_system_prompt: str = None,
+    ephemeral_system_prompt: str | None = None,
     log_prefix_chars: int = 100,
-    providers_allowed: str = None,
-    providers_ignored: str = None,
-    providers_order: str = None,
-    provider_sort: str = None,
+    providers_allowed: str | None = None,
+    providers_ignored: str | None = None,
+    providers_order: str | None = None,
+    provider_sort: str | None = None,
 
-    reasoning_effort: str = None,
+    reasoning_effort: str | None = None,
     reasoning_disabled: bool = False,
-    prefill_messages_file: str = None,
-    max_samples: int = None,
+    prefill_messages_file: str | None = None,
+    max_samples: int | None = None,
 ):
     """
     Run batch processing of agent prompts from a dataset.

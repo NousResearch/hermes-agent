@@ -9,7 +9,7 @@ import pytest
 
 from pm.downloader import Download, DownloadError, Source
 from tests.pm._fixtures import threaded_server
-from tests.pm._range_server import dl_server  # noqa: F401 — fixture
+from tests.pm._range_server import dl_server
 
 
 @pytest.mark.parametrize("reply", ["whole-body", "wrong-bounds", "changed-size", "changed-etag", "short-body"])

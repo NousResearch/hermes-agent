@@ -108,7 +108,7 @@ def test_inherited_hard_interrupt_bypasses_legacy_subclass_override() -> None:
 
 
 def test_tui_subagent_interrupt_is_an_explicit_hard_stop() -> None:
-    import tools.delegate_tool as delegate_tool
+    from tools import delegate_tool
 
     agent = _ModernAgent()
     subagent_id = "sa-hard-stop-test"

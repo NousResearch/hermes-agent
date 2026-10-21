@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as data from './data'
 import type { GroupActivityEntry } from './group-activity'
@@ -68,6 +68,10 @@ function feed(room: Room, group: string): ActivityRow[] {
 
 beforeEach(() => {
   runTimersInline()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 describe('turn arc', () => {
@@ -218,6 +222,19 @@ describe('turn arc', () => {
 
 describe('epoch scoping', () => {
   it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
+    // A frozen clock with ever-SMALLER entry ids: every row lands in the same
+    // millisecond and the gateway mirror merge (sort by `at`, then by id)
+    // would order each new row before the last. A busy CI runner reached
+    // this by chance (same-ms appends, random UUIDs) and the reordered log
+    // fed the member its follow-up twice.
+    let uuid = 0xffff
+
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(
+      () =>
+        `${(uuid--).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000` as `${string}-${string}-${string}-${string}-${string}`
+    )
+
     let release!: (reply: string) => void
 
     const first = new Promise<string>(resolve => {

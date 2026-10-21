@@ -44,6 +44,10 @@ test('level 0 is exactly 100 percent (Chromium actual-size baseline)', () => {
   assert.equal(percentToZoomLevel(100), 0)
 })
 
+test('the shipped default zoom level is 100 percent', () => {
+  assert.equal(zoomLevelToPercent(DEFAULT_ZOOM_LEVEL), 100)
+})
+
 test('percentToZoomLevel rejects garbage by falling back to the shipped default', () => {
   assert.equal(percentToZoomLevel(NaN), DEFAULT_ZOOM_LEVEL)
   assert.equal(percentToZoomLevel(0), DEFAULT_ZOOM_LEVEL)

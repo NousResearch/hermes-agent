@@ -27,7 +27,7 @@ def _fmt_pending(pending: list) -> str:
     return "\n".join(lines)
 
 
-def _resolve_origin() -> Optional[Dict[str, Any]]:
+def _resolve_origin() -> Optional[dict[str, Any]]:
     """Best-effort current-chat origin from session env (cron's ``_origin_from_env``, which also
     withholds non-push surfaces such as api_server) so an accepted job delivers back to the
     accepting chat; None lets create_job use the home channel."""
@@ -98,7 +98,7 @@ _USAGE = (
 
 
 def handle_suggestions_command(
-    args: str, *, origin: Optional[Dict[str, Any]] = None, surface: str = "cli") -> str:
+    args: str, *, origin: Optional[dict[str, Any]] = None, surface: str = "cli") -> str:
     """Dispatch a ``/suggestions`` invocation (``args`` = text after the command word); returns
     text to show the user. ``origin`` defaults to the session environment's chat."""
     if origin is None:

@@ -227,6 +227,73 @@ async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypa
         authority.db.close()
 
 
+_THREAD_SOURCE = dict(_SOURCE, chat_id='100', chat_type='thread', thread_id='100',
+                      parent_chat_id='90', scope_id='80')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['completion', 'async_delegation'])
+@pytest.mark.parametrize('origin_fields,current_fields', [
+    ({}, {}),
+    ({'chat_name': 'old title'}, {'chat_name': 'new title'}),
+    ({}, {'chat_topic': 'new topic'}),
+    ({'chat_topic': 'old topic'}, {}),
+    ({'chat_topic': 'old topic'}, {'chat_topic': 'new topic'}),
+    ({'auto_thread_created': True, 'auto_thread_initial_name': 'initial title'}, {}),
+    ({'chat_name': 'old title', 'chat_topic': 'old topic', 'auto_thread_created': True,
+      'auto_thread_initial_name': 'initial title'},
+     {'chat_name': 'new title', 'chat_topic': 'new topic'}),
+], ids=['unchanged', 'title', 'topic-added', 'topic-removed', 'topic-renamed', 'auto-thread', 'combined'])
+async def test_thread_wake_ignores_display_drift(tmp_path, monkeypatch, kind, origin_fields, current_fields):
+    """Origin-derived wakes survive display changes, preserving the committed route and proof."""
+    from gateway.session_automation import committed_route_envelope
+    from gateway.session_identity import replace_source
+    runner, authority, _adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', {**_THREAD_SOURCE, **current_fields})
+    try:
+        route, sid = metadata['gateway_session_key'], metadata['gateway_session_id']
+        entry = runner.session_store._entries[route]
+        committed = committed_route_envelope(authority, entry)
+        assert committed is not None
+        entry.origin = replace_source(source, chat_name=None, chat_topic=None)
+        entry.origin = replace_source(entry.origin, **origin_fields)
+        evt = dict(type=kind, session_id='proc_fixture', delegation_id='delegate_fixture',
+                   session_key=route, platform='discord', chat_id='100', chat_type='thread',
+                   parent_session_id=sid, started_at=1.0, exit_code=0, output='done')
+        assert await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True) is True
+        assert await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True) is True
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(sid), pending_only=False)
+        notices = [row['payload']['native_text_v1'] for row in rows
+                   if row['payload'].get('native_text_v1', {}).get('automation')]
+        assert len(notices) == 1
+        envelope = notices[0]
+        assert envelope['source'] == {k: v for k, v in committed['source'].items() if k != 'message_id'}
+        assert envelope['provenance'] == committed['provenance']
+        assert envelope['route'] == route
+        assert envelope['automation']['owner'] == authority.logical_owner(sid)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['chat_id', 'thread_id'])
+async def test_thread_wake_display_drift_preserves_route_checks(tmp_path, monkeypatch, field):
+    from gateway.session_identity import replace_source
+    _runner, authority, adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', _THREAD_SOURCE)
+    try:
+        drifted = replace_source(source, chat_name='old title', chat_topic='old topic',
+                                 auto_thread_created=True, auto_thread_initial_name='initial', **{field: '7'})
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await authority.admit_automation(adapter, event, 'notice')
+        rows = list_session_admissions(authority.db,
+            session_id=authority.logical_owner(metadata['gateway_session_id']), pending_only=False)
+        assert not any(row['payload'].get('native_text_v1', {}).get('automation') for row in rows)
+    finally:
+        authority.db.close()
+
+
 @pytest.mark.asyncio
 async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, caplog):
     """A refused wake used to requeue silently; the refusal code is what diagnoses it (#138940)."""

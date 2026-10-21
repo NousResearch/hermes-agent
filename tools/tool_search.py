@@ -24,7 +24,8 @@ from tools.tool_search_catalog import (
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import (
-    local_batch_error, normalize_tool_call_entries, not_deferrable_error, validate_deferred_call_args)
+    local_batch_error, normalize_tool_call_entries, not_deferrable_error, session_unavailable_error,
+    unavailable_in_session_reason, validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
 from tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
@@ -166,6 +167,13 @@ def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:
     return (_fn(td).get("name", "") for td in tool_defs)
 
 
+def session_tool_names(tool_defs: Iterable[dict[str, Any]]) -> frozenset[str]:
+    """Every tool name in the session's ``tool_defs`` — what this session can actually
+    reach. Public wrapper over the private name extractor so callers outside this module
+    (the ``model_tools`` dispatcher) can scope error messages to the real session."""
+    return frozenset(n for n in _tool_def_names(tool_defs) if n)
+
+
 def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozenset] = None,
                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
@@ -222,9 +230,8 @@ def _bridge_schema(name: str, description: str, properties: dict[str, Any],
 
 
 _CONNECTIONS_HINT = (
-    " Names starting with `connectors__` are tools of remote connector accounts "
-    "(Gmail, Linear, Notion, ...); `manage_connections` checks whether an account "
-    "is connected and gets the authorization link when it is not.")
+    " `connectors__` names are tools of the user's app accounts (Gmail, Linear, ...); "
+    "`manage_connections` checks or authorizes an account.")
 
 
 def _search_description(deferred_count: int, listing: Optional[str], listing_form: str,
@@ -236,17 +243,9 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
     desc = (
         (f"Search {deferred_count} additional tools that are loaded on demand. "
          if deferred_count else "Search remote connector tools (email, calendars, issue trackers, and more). ")
-        + "Takes a list of queries searched in parallel against the same "
-        "catalog; send one query per distinct capability you need. Queries are "
-        "keyword searches, not questions: the app or service name plus an action "
-        "and object, no filler words (`gmail send email`, `nvidia driver status`, "
-        "not `what's my GPU driver version?`); a word no tool contains makes the "
-        "query return nothing. Returns "
-        "matching tool names grouped per query plus a shared map with each "
-        "tool's description. Follow with "
-        f"`{TOOL_DESCRIBE_NAME}` to load full parameter schemas, "
-        f"then `{TOOL_CALL_NAME}` to invoke. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched."
+        + "Send one keyword query per capability you need; returns matching tool names "
+        f"and descriptions. Then `{TOOL_DESCRIBE_NAME}` loads schemas and `{TOOL_CALL_NAME}` "
+        "invokes. Tools already in your tool list need no search."
         + (_CONNECTIONS_HINT if connections_granted else ""))
     if not listing:
         return desc
@@ -258,10 +257,8 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
             "not substitute a generic tool (terminal/browser) without "
             "searching.\n\n" + listing)
     desc += (
-        "\n\nEvery deferred capability is listed below. If a tool name "
-        "appears here, do NOT claim it is unavailable — load it with "
-        f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
-        "already see the exact name).")
+        "\n\nEvery tool listed below exists: never call it unavailable, and go straight to "
+        f"`{TOOL_DESCRIBE_NAME}` when you see the exact name.")
     if listing_form == "mixed":
         desc += (
             " For servers marked 'names not listed', the tools exist "
@@ -283,11 +280,11 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Keyword queries, one per capability: app or service name + action + object (e.g. ['github create issue', 'slack send message', 'gmail fetch emails']). Not questions or sentences: every word must appear in tool text, or the query returns nothing. Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
+                    "description": "One query per capability: service + action + object keywords (e.g. ['gmail send email', 'github create issue']), never a question; every word must match tool text. Searched in parallel.",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of matches per query. Defaults to 5 and is clamped to the configured maximum (25 by default).",
+                    "description": "Max matches per query (default 5).",
                 },
             },
             ["queries"],
@@ -308,13 +305,9 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
         ),
         _bridge_schema(
             TOOL_CALL_NAME,
-            "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
-            "— one entry per invocation; a single call is an array of one. "
-            "Independent calls may be batched together. Local entries are split "
-            "into individual tool calls by the agent and follow each tool's "
-            "concurrency policy. Results are returned in input order. "
-            f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
-            "Policy, hooks, and approvals run as for directly-listed tools.",
+            "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per "
+            "invocation (batch independent calls; results come back in order). Arguments match "
+            f"the schema from `{TOOL_DESCRIBE_NAME}`; approvals and hooks apply as usual.",
             {
                 "calls": {
                     "type": "array",
@@ -444,11 +437,12 @@ def _string_list_arg(args: dict[str, Any], key: str, *, dedupe: bool, max_items:
 
 def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
-                         connector_search: Optional[Any] = None) -> str:
+                         connector_search: Optional[Any] = None, call: Optional[Any] = None) -> str:
     config = config or load_config()
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
     if err:
+        _record_search_metric(current_tool_defs, hits=0, outcome="error")
         return err
     raw_limit = args.get("limit")
     limit = (config.search_default_limit if raw_limit is None
@@ -458,7 +452,7 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     hosted_failure: Optional[str] = None
     if connections_in_scope(current_tool_defs):
         remote_entries, hosted_failure = connector_entries_by_group(
-            queries, connector_search=connector_search)
+            queries, connector_search=connector_search, call=call)
     results: list[dict[str, Any]] = []
     tools_map: dict[str, dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
@@ -482,12 +476,25 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
                                "results": results, "tools": tools_map}
     if hosted_failure:
         payload["connectors"] = connectors_unavailable(hosted_failure, verb="searched")
+    _record_search_metric(current_tool_defs, catalog=catalog, hits=len(tools_map),
+                          outcome="connector_unavailable" if hosted_failure else "hits" if tools_map else "no_hits")
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _record_search_metric(current_tool_defs: list[dict[str, Any]], *, hits: int, outcome: str,
+                          catalog: Optional[list[CatalogEntry]] = None) -> None:
+    """One ``hermes.tool_search.count`` row: which corpora the search read, never the query."""
+    from hermes_cli.observability.shared_metrics_events import record_tool_search
+
+    local = bool(catalog if catalog is not None else _deferrable_in(current_tool_defs))
+    hosted = connections_in_scope(current_tool_defs)
+    scope = "both" if local and hosted else "connector" if hosted else "local"
+    record_tool_search(scope=scope, hits=hits, outcome=outcome)
 
 
 def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
-                           connector_describe: Optional[Any] = None) -> str:
+                           connector_describe: Optional[Any] = None, call: Optional[Any] = None) -> str:
     config = config or load_config_readonly()
     names, err = _string_list_arg(
         args, "names", dedupe=True, max_items=_MAX_DESCRIBE_NAMES_PER_CALL,
@@ -496,12 +503,13 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
-    remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
+    remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe, call=call)
 
     tools: dict[str, dict[str, Any]] = {}
     not_found: list[str] = []
     undescribed: list[str] = []
     errors: dict[str, str] = {}
+    session_names = session_tool_names(current_tool_defs)
     for name in names:
         fn = by_name.get(name)
         remote_fn = remote_schemas.get(name)
@@ -513,10 +521,13 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
                            "parameters": remote_fn.get("parameters", {})}
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
+        elif unavailable := session_unavailable_error(name, session_names):
+            # A core tool absent here, deferred or not: tool_search cannot surface it.
+            errors[name] = unavailable
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = not_deferrable_error(name)
+            errors[name] = not_deferrable_error(name, session_names)
         else:
             not_found.append(name)
     result: dict[str, Any] = {"tools": tools}
@@ -554,7 +565,18 @@ def out_of_scope_reason(name: str) -> Optional[str]:
     return None
 
 
-def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
+def scope_block_reason(name: str) -> str:
+    """Block message for a ``tool_call`` naming a tool outside the session's scope. A core tool
+    (deferred by ``defer:`` or not) names its real reason, since tool_search cannot surface it
+    here; anything else keeps the search hint."""
+    return (out_of_scope_reason(name)
+            or (unavailable_in_session_reason(name)
+                if name in _core_tool_names() and _registry_entry(name) is not None else None)
+            or f"'{name}' is not available in this session. Use tool_search to find tools you can call.")
+
+
+def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[Iterable[str]] = None,
+                            ) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -567,6 +589,10 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     one dispatch unit owned by the ``model_tools`` bridge branch, and the
     sentinel is what planners/display layers see. A single local entry keeps
     the historical single-tool contract unchanged.
+
+    ``session_tool_names`` is the session's own tool list, when the caller has it. Passed
+    through so a core tool this session cannot reach reports *unavailable* rather than
+    "call it directly" — the static core list cannot tell the two apart.
 
     On parse error, returns ``(None, {}, error_message)``.
     """
@@ -581,8 +607,11 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
 
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
+    unavailable = session_unavailable_error(name, session_tool_names)
+    if unavailable:
+        return None, {}, unavailable
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, not_deferrable_error(name)
+        return None, {}, not_deferrable_error(name, session_tool_names)
     return name, raw_args, None
 
 
@@ -611,6 +640,7 @@ __all__ = [
     "normalize_tool_call_entries",
     "out_of_scope_reason",
     "resolve_underlying_call",
+    "scope_block_reason",
     "scoped_deferrable_names",
     "search_catalog",
     "should_activate",

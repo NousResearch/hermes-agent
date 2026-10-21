@@ -137,7 +137,7 @@ def _age_cached_rows(seconds):
     for row in cache.values():
         row["at"] -= seconds
     for key, row in cache.items():
-        models_mod._store_cache_entry(key, row, cache)
+        models_mod._store_cache_entry(key, row)
 
 
 def test_picker_native_catalog_uses_the_short_native_ttl(monkeypatch):

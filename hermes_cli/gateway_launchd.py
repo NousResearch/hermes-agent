@@ -49,7 +49,7 @@ def _probe_launchd_domain_for_label(label: str) -> str:
     # Not loaded anywhere: Aqua → gui/<uid>; anything else (Background, loginwindow) → user/<uid>,
     # the pre-probing default and the recommended domain on macOS 26+.
     try:
-        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT, check=False)
         if "Aqua" in (result.stdout or ""):
             return gui_domain
     except launchctl_errors:
@@ -676,6 +676,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
 
 
 def launchd_uninstall():
+    gateway_service_owner.refuse_foreign_launchd_plist("uninstall")
     plist_path = _gw().get_launchd_plist_path()
     # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
     subprocess.run(
@@ -688,6 +689,7 @@ def launchd_uninstall():
 
 
 def launchd_start():
+    gateway_service_owner.refuse_foreign_launchd_plist("start")
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
 
@@ -739,6 +741,7 @@ def _launchd_ok(message: str) -> None:
 
 
 def launchd_stop():
+    gateway_service_owner.refuse_foreign_launchd_plist("stop")
     target = f"{_launchd_domain()}/{get_launchd_label()}"
     _gw()._mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
@@ -777,6 +780,7 @@ def _wait_for_launchd_service_pid(
 
 
 def launchd_restart():
+    gateway_service_owner.refuse_foreign_launchd_plist("restart")
     label = _gw().get_launchd_label()
     domain = _gw()._launchd_domain()
     target = f"{domain}/{label}"
@@ -902,7 +906,7 @@ def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT, check=False)
         service_listed = result.returncode == 0
         list_output = result.stdout
     except subprocess.TimeoutExpired:
@@ -960,4 +964,4 @@ def launchd_status(deep: bool = False):
         if log_file.exists():
             print()
             print("Recent logs:")
-            subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+            subprocess.run(["tail", "-20", str(log_file)], timeout=10, check=False)

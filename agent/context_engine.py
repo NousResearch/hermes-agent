@@ -223,7 +223,7 @@ class ContextEngine(ABC):
             "compression_count": self.compression_count,
         }
 
-    def clone_for_agent(self) -> ContextEngine:
+    def clone_for_agent(self) -> "ContextEngine":
         """Per-agent instance of a plugin-registered engine (the plugin system holds ONE shared
         instance; every AIAgent gets its own so a child's update_model() cannot mutate the parent's).
         Override when the engine holds uncopyable state (locks, DB connections): return a fresh

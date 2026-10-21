@@ -35,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime", "provides_locales",
+    "requires_hermes", "python_runtime", "provides_locales", "requires_auth", "oauth",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -126,6 +126,26 @@ def _manifest_int(raw: object, key: str, warn: str, fallback: Optional[int]) -> 
         return fallback
 
 
+def _config_schema_entries(key: str, raw: Any) -> dict[str, Any]:
+    """``config_schema`` (key -> {type?, default?, description?, ...}) keeping only mapping entries;
+    warns on what it drops or cannot type-check. Shared by ``plugin.yaml`` and ``plugin.json``."""
+    schema: dict[str, Any] = {}
+    for skey, spec in (raw if isinstance(raw, Mapping) else {}).items():
+        if not isinstance(spec, Mapping):
+            logger.warning(
+                "Plugin %s: config_schema entry %r must be a mapping (e.g. {type: str}); skipping", key, skey)
+            continue
+        stype = spec.get("type")
+        if stype is not None and str(stype).lower() not in _CONFIG_SCHEMA_TYPES:
+            logger.warning(
+                "Plugin %s: config_schema key %r declares unknown type %r "
+                "(known: %s); type check will be skipped for it",
+                key, skey, stype, ", ".join(sorted(_CONFIG_SCHEMA_TYPES)),
+            )
+        schema[str(skey)] = dict(spec)
+    return schema
+
+
 def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     """Validate/normalize manifest v2 fields into PluginManifest kwargs (warnings, never failures).
 
@@ -153,22 +173,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         lambda item: item.strip() if isinstance(item, str) and item.strip() else None,
         "Plugin %s: python_dependencies entry %r must be a non-empty requirement string; skipping",
     )
-    # config_schema — mapping of key -> {type?, default?, description?, required?}.
-    schema: dict[str, Any] = {}
-    raw_schema = _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping")
-    for skey, spec in (raw_schema or {}).items():
-        if not isinstance(spec, Mapping):
-            logger.warning(
-                "Plugin %s: config_schema entry %r must be a mapping (e.g. {type: str}); skipping", key, skey)
-            continue
-        stype = spec.get("type")
-        if stype is not None and str(stype).lower() not in _CONFIG_SCHEMA_TYPES:
-            logger.warning(
-                "Plugin %s: config_schema key %r declares unknown type %r "
-                "(known: %s); type check will be skipped for it",
-                key, skey, stype, ", ".join(sorted(_CONFIG_SCHEMA_TYPES)),
-            )
-        schema[str(skey)] = dict(spec)
+    schema = _config_schema_entries(key, _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping"))
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
@@ -488,7 +493,7 @@ def requires_hermes_error(manifest: PluginManifest) -> Optional[str]:
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
     """Build the manifest for a portable Agent Plugin directory (``plugin.json``); diagnostics warn."""
-    from hermes_cli.agent_plugins import read_agent_plugin_manifest
+    from hermes_cli.agent_plugins import manifest_config_schema, read_agent_plugin_manifest
     data, diagnostics = read_agent_plugin_manifest(child)
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)
@@ -497,6 +502,7 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
         portable=True, skill_namespace=_portable_skill_namespace(key),
+        config_schema=_config_schema_entries(key, manifest_config_schema(data)),
     )
 
 

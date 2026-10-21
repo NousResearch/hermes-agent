@@ -206,14 +206,6 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
     icon: 'search',
     tone: 'agent'
   },
-  setup_choose: {
-    icon: 'question',
-    tone: 'agent'
-  },
-  start_chat: {
-    icon: 'comment',
-    tone: 'agent'
-  },
   terminal: {
     icon: 'terminal',
     tone: 'terminal'

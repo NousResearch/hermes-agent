@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (次のターンのみ — 1 回応答した後に元へ戻ります)"
     switch_cancelled: "🟡 モデルの切り替えをキャンセルしました。現在のモデルは変わりません ({model})。"
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_テキスト代替: 切り替えるには `{prefix}approve`、現在のモデルを維持するには `{prefix}cancel` と返信してください。_"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **アクティブなエージェントとタスク**"
     active_agents: "**アクティブなエージェント:** {count}"
@@ -162,6 +164,7 @@ gateway:
     full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
+    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug` を送信してください。"
   deny:
     stale: "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending: "拒否待ちのコマンドはありません。"
@@ -184,8 +187,8 @@ gateway:
     choice_normal: "normal — 標準処理"
     choice_auto: "auto — 各ターンの最初の数秒間だけ高速"
     choice_cold: "cold — セッションの最初のターンのみ高速"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra、料金 6 倍）"
-    ultrafast_not_supported: "⚡ Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: `{model}`）。"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast、料金 6 倍"
+    ultrafast_not_supported: "⚡ このアカウントまたはルートでは `{model}` の Ultrafast は利用できません。"
   footer:
     status: "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
     usage: "使い方: `/footer [on|off|status]`"
@@ -435,7 +438,6 @@ gateway:
     last_activity: "**最終アクティビティ:** {timestamp}"
     model: "**モデル:** `{model}`"
     model_provider: "**モデル:** `{model}` ({provider})"
-    free_tier: "Nous · 無料プラン · nous/welcome · /login でログイン"
     context: "**コンテキスト:** {used} / {total} ({pct}%)"
     context_used: "**コンテキスト:** ~{used} トークン"
     tokens: "**累計請求トークン:** {tokens} _(現在のコンテキストサイズではありません。`/context` を使用してください)_"
@@ -444,6 +446,9 @@ gateway:
     state_no: "いいえ"
     queued: "**キュー内の後続:** {count}"
     platforms: "**接続プラットフォーム:** {platforms}"
+  discard:
+    nothing: "破棄するものはありません: このチャットに再起動で失われたターンはありません。"
+    done: "🗑️ 失われたターンを {count} 件破棄しました。再実行はしていません。保存されたメッセージにこれから応答します。"
   stop:
     stopped_pending: "⚡ 停止しました。エージェントはまだ開始していません — このセッションを続行できます。"
     stopped: "⚡ 停止しました。このセッションを続行できます。"
@@ -686,6 +691,7 @@ gateway:
     generic_failed_with_hint: "⚠️ 問題が発生し、この返答を完了できませんでした。{hint}\n/retry で再試行するか、/new で新しい会話を始めてください。技術的な詳細はゲートウェイのログ (`hermes logs`) にあります。"
     history_unavailable: "⚠️ このセッションの履歴が一時的に利用できないため、このメッセージは処理されませんでした。運用者に state.db の確認を依頼し、正常になってから再送信してください。/reset は意図的に新しい会話を始めたい場合のみ使ってください。"
     no_credentials: "⚠️ AI モデルサービスに接続できなかったため、このメッセージは処理されませんでした。/login で再度サインインするか、/model で別のモデルを選んでください。失敗が続く場合は、ホストで `hermes doctor` を実行してください。"
+    cron_session_read_only: "⚠️ このチャットはスケジュールされたジョブ専用で、そのジョブしか実行しないため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。"
   skills:
     disabled: "**{name}** スキルはインストールされていますが無効です。\n有効化するには: `hermes skills config`"
     not_installed: "**{name}** スキルは利用可能ですがインストールされていません。\nインストールするには: `hermes skills install {install_name}`"
@@ -779,8 +785,6 @@ gateway:
   plan:
     ack_task: "計画中: {task}"
     ack_conversation: "この会話のコンテキストから計画を作成しています…"
-  initiate_setup:
-    ack: "セットアップを開始しています…"
   init:
     start_failed: "/init を開始できませんでした — もう一度お試しください。"
     ack_update: "プロジェクトスキャンから AGENTS.md を更新しています…"
@@ -843,7 +847,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ ゲートウェイの再起動に成功しました。セッションは継続します。"
-    free_tier_line: "推論: Nous 無料プラン (nous/welcome)。さらに利用するにはログイン: /login"
     online: "♻️ ゲートウェイがオンラインです — Hermes が復帰し、準備完了です。"
     db_corrupt: "⚠️ セッションデータベースの破損を検出しました。メッセージが永続化されない可能性があります。復旧オプション:\n1. `hermes {profile_arg}doctor --fix` を実行\n2. ゲートウェイを停止し、次で復旧:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (復旧可能と報告された場合) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — 復旧は先に破損ファイルのスナップショットを取ります。稼働中の state.db に対して `sqlite3 ... \".recover\"` を実行しないでください。脆弱な sqlite3 CLI はさらに破損させる可能性があります\n3. {backups_dir}/ のバックアップから復元\nサニタイズ済みの診断情報は `hermes {profile_arg}doctor` で確認できます。"
     db_fts_corrupt: "⚠️ セッションデータベースが検索インデックス (FTS5) に限定された破損エラーを報告しました。メッセージテーブルは損傷していません。修復されるまでメッセージが永続化されない可能性があります: `hermes {profile_arg}doctor --fix` を実行し、ゲートウェイを再起動してください。`hermes {profile_arg}doctor` が損傷を確認しない限り、復旧ツールの実行やバックアップからの復元は行わないでください。"
@@ -1532,6 +1535,8 @@ slash:
     description: "共有されたプロファイルアーカイブを新しいプロファイルとしてインポート"
   stop:
     description: "実行中のバックグラウンドプロセスをすべて終了"
+  discard:
+    description: "Hermes の再起動で失われたターンを破棄し、このチャットのキューを再開します"
   pause:
     description: "新しい作業を全体的に一時停止（緊急停止）。'/pause off' で再開"
   deny:
@@ -1558,8 +1563,6 @@ slash:
     description: "このセッションでプロンプトを一定間隔で繰り返し実行"
   plan:
     description: "何も実行せずに markdown の実装計画を .hermes/plans/ に書き出す"
-  initiate-setup:
-    description: "初回セットアップを実行: あなたについて知り、Hermes をあなたに合わせて設定します"
   moa:
     description: "デフォルトの Mixture of Agents プリセットでプロンプトを 1 回実行し、元のモデルに戻す"
   subgoal:
@@ -1687,6 +1690,21 @@ slash:
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
+  modern:
+    thought_for: "{seconds}秒考えました"
+    thought: "考えました"
+    working: "作業中…"
+    preparing: "{what} を準備中…"
+    hint_steer: "誘導"
+    hint_queue: "キュー"
+    hint_interrupt: "中断"
+    hint_stop: "停止"
+    hint_commands: "コマンド"
+    hint_files: "ファイル"
+    hint_shell: "シェル"
+    placeholder_busy_steer: "入力してこのターンを誘導 · Tab で後にキュー"
+    placeholder_busy_interrupt: "入力してこのターンを切り替え · Tab で後にキュー"
+    placeholder_busy_queue: "入力してこのターンの後にメッセージをキュー"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "請求情報を読み込めませんでした"
@@ -1972,6 +1990,7 @@ cli:
     desc_switch_anyway: "現在の Hermes セッションでこのモデルを使用します。"
     choice_cancel: "キャンセル"
     desc_keep_current_model: "現在のモデルを維持します。"
+    confirm_choice_prompt: "選択 [1/2]: "
     switch_cancelled: "モデルの切り替えをキャンセルしました。"
     selection_failed: "✗ モデルの選択に失敗しました: {error}"
     switch_failed: "⚠ {model} への切り替えに失敗しました（{error}）。{old_model} を引き続き使用します。"
@@ -2229,6 +2248,7 @@ cli:
     queue_heading: "キュー · {count} 件キュー待ち · /queue list{controls}"
     more_queued: "+{count} 件"
     transcript_unavailable: "ライブトランスクリプトはまだ利用できません。"
+    control_pending: "送信中…"
     steer_prompt: "ステア: "
     roster_empty: "稼働中のサブエージェントやバックグラウンドプロセスはありません。結果は会話内に届きます。"
     entry_gone: "この項目はすでに終了しています。"
@@ -2279,6 +2299,7 @@ cli:
     failed: "接続に失敗しました"
     authorized_no_tools: "認可されました。ツールは利用できません。"
     connected: "接続済み"
+    named_account: "Hermes はこの {name} アカウントを {alias} と名付けました。名前はいつでも変更できます。"
     waiting: "待機中…"
   editor:
     only_interactive: "外部エディターは対話型 CLI 内でのみ利用できます。"
@@ -2366,6 +2387,14 @@ cli:
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"
     moved: "キュー項目 {source} を {destination} に移動しました。"
     usage_add: "使い方: /queue add <prompt>"
+    gateway_refused: "ゲートウェイはキューに追加しませんでした: {error}。何も追加されていません。ターン終了後に再送してください。"
+    submit_unknown: "ゲートウェイが応答しませんでした ({error})。プロンプトはすでにキューにある可能性があります。再送する前に /queue list を確認してください。"
+    move_gateway_fifo: "ゲートウェイはキュー内のプロンプトを送信順に実行します。代わりに編集または削除してください。"
+    remove_refused: "キュー項目 {index} を削除できませんでした: {error}"
+    edit_refused: "キュー項目 {index} を編集できませんでした: {error}"
+    already_started: "キュー項目 {index} はすでに開始しています。送信したとおりに実行されます。"
+    started_stopped: "キュー項目 {index} はすでに開始していたため、ゲートウェイが停止しました。"
+    change_unknown: "ゲートウェイからキュー項目 {index} の応答がありません ({error})。再試行する前に /queue list を確認してください。"
   reload:
     env_reloaded: ".env を再読み込みしました（{count} 件の変数を更新）"
   steer:
@@ -2660,7 +2689,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: {model}）。"
+      ultrafast_not_supported: "(._.) このアカウントまたはルートでは {model} の Ultrafast は利用できません。"
       usage: "使い方: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} を {value} に設定しました {scope}"
@@ -2918,8 +2947,6 @@ cli:
     plan:
       planning: "📋 計画中: {task}"
       from_conversation: "📋 この会話のコンテキストから計画を作成しています..."
-    initiate_setup:
-      starting: "🧭 セットアップを開始しています..."
     init:
       updating: "⚡ プロジェクトのスキャン結果から AGENTS.md を更新しています..."
       generating: "⚡ プロジェクトのスキャン結果から AGENTS.md を生成しています..."
@@ -3008,6 +3035,10 @@ cli:
       usage_disconnect: "disconnect   デフォルトのブラウザバックエンドに戻します"
       usage_status: "status       現在のブラウザモードを表示します"
       usage_use: "use [off]    Browser Use モード (CLI 3.0) に切り替え / 組み込みツールに戻します"
+      remote_gateway: "/browser connect と /browser disconnect はゲートウェイホスト上の Chromium 系ブラウザーを管理します — ローカルゲートウェイ接続時のみ利用できます。"
+      checking: "{url} で Chromium 系ブラウザーのリモートデバッグを確認しています..."
+      new_sessions_only: "新しいセッションに適用されます — このセッションは現在のツールを維持します（/new で開始）。"
+      status_gateway_default: "🌐 ブラウザー: ゲートウェイの既定ブラウザーバックエンド（ライブ CDP 接続なし）"
     heartbeat:
       label: "ハートビート"
       paused: "⏸ ハートビートを一時停止しました: {prompt}"
@@ -3116,6 +3147,10 @@ cli:
     loaded: "（読み込み済み）"
     not_found: "（見つかりません）"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "未設定！"
     value_not_set: "未設定"
     section_model: "モデル"
@@ -3297,8 +3332,22 @@ cli:
     next_session_deepens: "次回の `hermes -w` セッションでクローンを深化し、マージ済みのワークツリーを自動的に削除します。"
     unpushed_keeping: "⚠ ワークツリーに未プッシュのコミットがあるため保持します: {path}"
     uncommitted_keeping: "⚠ ワークツリーに未コミットの変更があるため保持します: {path}"
+    kept_reason: "⚠ ワークツリーを保持します ({reason}): {path}"
     clean_up_manually: "手動でクリーンアップするには: git worktree remove --force {path}"
     cleaned_up: "✓ ワークツリーをクリーンアップしました: {path}"
+    exit_question_dirty: "このワークツリーには未コミットの変更があります: {path}"
+    exit_question_unpushed: "このワークツリーには未プッシュのコミットがあります: {path}"
+    exit_choice_keep: "ワークツリーを保持する（デフォルト）"
+    exit_choice_archive: "アーカイブして削除する（復元可能）"
+    exit_choice_discard: "削除して変更を破棄する"
+    archiving: "{path} をアーカイブしています…(大きなツリーでは時間がかかることがあります)"
+    archived: "✓ ワークツリーを {ref} にアーカイブして削除しました: {path}"
+    restore_hint: "復元するには: hermes worktree restore {name}"
+    archive_failed: "✗ {path} をアーカイブできなかったため保持します: {error}"
+    archived_kept: "✓ ワークツリーを {ref} にアーカイブしましたが保持しました ({reason}): {path}"
+    sweep_archived_removed: "アーカイブして削除 → {ref}"
+    sweep_archived_kept: "アーカイブ済み、保持 ({reason}) → {ref}"
+    discarded: "ワークツリーを削除し、変更を破棄しました: {path}"
 display:
   verb:
     web_search: "ウェブを検索中"
@@ -3727,7 +3776,7 @@ tips:
   t241: "ゲートウェイはセッションごとに AIAgent インスタンスをキャッシュします。このキャッシュを破棄すると Anthropic のプロンプトキャッシュが壊れます。"
   t242: "どの Web サイトも /.well-known/skills/index.json でスキルを公開でき、スキルハブが自動的に検出します。"
   t243: "~/.hermes/skills/.hub/audit.log のスキル監査ログには、すべてのインストールと削除の操作が記録されます。"
-  t244: "古い git ワークツリーは起動時に自動整理されます。クリーンで完全にマージ済みのツリーは削除され、変更や未プッシュの作業があるものは必ず保持されます。"
+  t244: "古い git ワークツリーは自動的に整理されます。クリーンでマージ済みのツリーは削除され、未コミットまたは未プッシュの変更がある放置されたツリーは先にアーカイブされ、hermes worktree restore で復元できます。"
   t245: "プロファイルは HERMES_HOME で Hermes の状態を分離します。terminal.home_mode が profile でない限り、ホスト側ツールのサブプロセスは本来の HOME を維持します。"
   t246: "環境変数 HERMES_HOME_MODE（8 進数、例: 0701）で、Web サーバーがたどれるようにディレクトリのパーミッションを指定できます。"
   t247: "コンテナモード: HERMES_HOME に .container-mode を置くと、ホストの CLI が自動的にコンテナ内で実行されます。"

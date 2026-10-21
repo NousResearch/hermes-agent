@@ -16,6 +16,18 @@ import urllib.request
 
 LLAMACPP_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
 
+
+def child_query(model_id: str) -> str:
+    """Query string for a status read of one router child (``/props``, ``/slots``, ``/metrics``).
+
+    The router loads an unloaded model for any request that names it (``--models-autoload``), so a
+    status read right after an Eject or an idle unload would load the model straight back.
+    ``autoload=false`` makes the router answer 400 "model is not loaded" instead.
+    """
+    from urllib.parse import quote
+
+    return f"model={quote(model_id)}&autoload=false"
+
 logger = logging.getLogger(__name__)
 
 

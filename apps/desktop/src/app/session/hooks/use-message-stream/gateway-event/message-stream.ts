@@ -1,7 +1,6 @@
 import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
-import { $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
@@ -12,14 +11,15 @@ import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
-import { reportLocalSetupTurnComplete } from '@/store/local-setup-offer'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
-import { storedSessionIdForRuntimeId } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionStates } from '@/store/session-states'
+import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -85,23 +85,6 @@ function turnFailure(payload: GatewayEventPayload | undefined, finalText: string
   }
 }
 
-function reportOnboardingTurnComplete(ctx: GatewayEventContext, sessionId: string): void {
-  // The whole agent loop has returned: the end of a task, not a step in one.
-  // Only the session on screen counts, which drops subagent mirrors (child ids).
-  if (!ctx.isActiveEvent) {
-    return
-  }
-
-  const setupThreads = $chatOnboardingThreadIds.get()
-  const storedId = storedSessionIdForRuntimeId(sessionId)
-
-  reportLocalSetupTurnComplete({
-    failed: ctx.payload?.status !== 'complete',
-    sessionId,
-    setupChat: setupThreads.includes(sessionId) || (storedId !== null && setupThreads.includes(storedId))
-  })
-}
-
 function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {
   const { deps, payload, occurredAt } = ctx
   const label = coerceGatewayText(payload?.label) || 'reference'
@@ -135,6 +118,12 @@ function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {
 
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
+/** The stamped completion of a messaging turn Desktop sent decides its unread dot. */
+function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefined, profile?: string) {
+  const storedId = $sessionStates.get()[runtimeId]?.storedSessionId ?? runtimeId
+  lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
+}
+
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -393,6 +382,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Keyed by session so only one window beeps when several are open.
     playCompletionSound(sessionId)
+    lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
@@ -407,8 +397,6 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       typeof payload?.status === 'string' ? payload.status : undefined,
       payload?.response_reused === true
     )
-
-    reportOnboardingTurnComplete(ctx, sessionId)
 
     if (payload?.status === 'complete') {
       noteFreeTierTurnComplete()

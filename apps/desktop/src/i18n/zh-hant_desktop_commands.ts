@@ -1,0 +1,45 @@
+// Desktop-side /rollback /agents /config /history /save /export /import /timestamps lines
+// (en_desktop_commands.ts is the source).
+export const zhHantDesktopCommands = {
+  error: (message: string) => `錯誤：${message}`,
+  rollbackUsage: '用法：/rollback [list] | diff <n|hash> | <n|hash> [file] [--all]',
+  checkpointsDisabled: '此工作階段未啟用檢查點（在 config.yaml 中設定 checkpoints.enabled）。',
+  checkpointsEmpty: '此工作目錄還沒有檢查點。',
+  checkpointsHeader: '檢查點（最新的在前）：',
+  checkpointsHint:
+    '使用 /rollback <n> [file] 還原（加上 --all 會一併覆寫你自己的修改）；使用 /rollback diff <n> 預覽。',
+  noDiff: '自該檢查點以來沒有變更。',
+  rollbackFailed: (error: string) => `回溯失敗：${error}`,
+  unknownError: '未知錯誤',
+  restored: (hash: string) => (hash ? `已還原檢查點 ${hash}。` : '已還原檢查點。'),
+  rewound: (count: string) => `已從此對話中回退 ${count} 則訊息。`,
+  reopenForRewind: '重新開啟此對話以查看回退後的內容。',
+  agentsEmpty: '此對話中沒有作用中的子代理或背景程序。',
+  subagentsHeader: (count: string) => `子代理（${count}）：`,
+  subagentFallback: '子代理',
+  statusRunning: '執行中',
+  toolCalls: (count: string) => `${count} 次工具呼叫`,
+  processesHeader: (count: string) => `背景程序（${count}）：`,
+  configHeader: '設定（顯示、核准、貼上與語音設定；其他內容不顯示）：',
+  configDefaults: '（預設值）',
+  configFooter: '請在「設定」中變更，或在閘道主機上用 `hermes config edit` 編輯 config.yaml。',
+  historyHeader: (count: string) => `對話紀錄（${count} 則訊息）：`,
+  historyEmpty: '還沒有訊息。',
+  historyYou: '你',
+  historyHermes: 'Hermes',
+  saveUsage: '用法：/save [json|md|html] [filename] [redact]',
+  saveLegacyRefused:
+    '未儲存：此閘道無法匯出遮蔽、指定檔名或非 JSON 的副本。請更新閘道，或不帶選項執行 /save，在閘道主機上寫入原始 JSON。',
+  savedOnHost: (path: string) => `已儲存到閘道主機：${path}`,
+  unknownPath: '（未知路徑）',
+  saveUnsupported: '錯誤：此桌面版本無法儲存檔案',
+  saveDialogTitle: '儲存對話',
+  savedTo: (path: string) => `對話已儲存到 ${path}`,
+  saveCancelled: '未儲存（已取消）。',
+  exportRemote: '/export 會從閘道主機打包設定檔，而閘道主機不是這台電腦。請在該主機上執行 `hermes profile export`。',
+  importRemote:
+    '/import 會在閘道主機上安裝設定檔，而閘道主機不是這台電腦。請在該主機上執行 `hermes profile import <archive>`。',
+  timestampsUsage: '用法：/timestamps [on|off|status]',
+  timestampsOn: '時間戳記：開（僅此視窗；在 config.yaml 中設定 display.timestamps 以保留）',
+  timestampsOff: '時間戳記：關（僅此視窗；在 config.yaml 中設定 display.timestamps 以保留）'
+}

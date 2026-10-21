@@ -171,7 +171,6 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        ws_client = SimpleNamespace()
         owned_executor = object()
         submitted_executors = []
 
@@ -1137,7 +1136,7 @@ class TestAdapterBehavior(unittest.TestCase):
             def __init__(self, *_a: object, **_k: object) -> None:
                 pass
 
-            async def __aenter__(self) -> _FakeAsyncClient:
+            async def __aenter__(self) -> "_FakeAsyncClient":
                 events.append("client_enter")
                 return self
 
@@ -1497,7 +1496,7 @@ class TestPendingInboundQueue(unittest.TestCase):
 class TestWebhookSecurity(unittest.TestCase):
     """Tests for webhook signature verification, rate limiting, and body size limits."""
 
-    def _make_adapter(self, encrypt_key: str = "") -> FeishuAdapter:
+    def _make_adapter(self, encrypt_key: str = "") -> "FeishuAdapter":
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 

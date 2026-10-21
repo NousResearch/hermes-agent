@@ -40,11 +40,13 @@ _DESCRIPTOR = {
 
 class _HelloServer:
     """Connector stub: records every hello per connection, answers the first with a
-    descriptor, and drops the first ``drops`` connections once all hellos are in."""
+    descriptor, and drops the first ``drops`` connections once all hellos are in
+    (with ``close_code``, e.g. 4401 for an expired upgrade token)."""
 
-    def __init__(self, drops: int = 0) -> None:
+    def __init__(self, drops: int = 0, close_code: int = 1000) -> None:
         self.hellos: list[list[dict]] = []
         self._drops = drops
+        self._close_code = close_code
         self._server = None
         self.url = ""
 
@@ -70,7 +72,7 @@ class _HelloServer:
                 if len(hellos) == 1:
                     await ws.send(json.dumps({"type": "descriptor", "descriptor": _DESCRIPTOR}) + "\n")
                 if drop and len(hellos) == len(_IDENTITIES):
-                    await ws.close()
+                    await ws.close(code=self._close_code)
                     return
 
 
@@ -101,6 +103,29 @@ async def test_every_hello_carries_one_instance_id_that_survives_a_reconnect():
     (instance_id,) = _instance_ids(first)
     assert isinstance(instance_id, str) and instance_id
     assert _instance_ids(second) == {instance_id}
+
+
+@pytest.mark.asyncio
+async def test_the_fresh_token_redial_after_a_4401_keeps_the_instance_id():
+    # A 4401 after the handshake (an upgrade token that aged out) is retried at once
+    # with a freshly minted token, bypassing the 5 s supervisor backoff below.
+    async with _HelloServer(drops=1, close_code=4401) as srv:
+        t = _transport(
+            srv.url, gateway_id="gw-x", upgrade_secret="secret-x", reconnect=True, reconnect_backoff_s=5.0
+        )
+        try:
+            await t.connect()
+            await t.handshake()
+            await async_wait_until(
+                lambda: len(srv.hellos) >= 2 and len(srv.hellos[1]) == len(_IDENTITIES),
+                timeout=3.0, what="the fresh-token re-dial to send its hellos",
+            )
+            assert t.auth_revoked is False
+        finally:
+            await t.disconnect()
+
+    (instance_id,) = _instance_ids(srv.hellos[0])
+    assert _instance_ids(srv.hellos[1]) == {instance_id}
 
 
 @pytest.mark.asyncio

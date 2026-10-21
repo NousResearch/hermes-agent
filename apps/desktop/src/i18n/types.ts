@@ -797,6 +797,8 @@ catalog: CatalogTranslations
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string
       sessionDensityDesc: string
+      sidebarNavTitle: string
+      sidebarNavDesc: string
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string

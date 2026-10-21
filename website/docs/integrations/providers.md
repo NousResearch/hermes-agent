@@ -1701,6 +1701,12 @@ Notes:
 
 ## Fallback Providers
 
+After authentication recovery is exhausted, Hermes skips remaining model entries sharing
+the rejected provider, endpoint and credential source for that turn. Explicit alternative
+keys or endpoints and credential pools retain their existing recovery behaviour. The
+suppression expires on the next turn, so repaired credentials can be tried again. It
+never adds a fallback destination: only the configured chain is considered.
+
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:
 
 ```yaml

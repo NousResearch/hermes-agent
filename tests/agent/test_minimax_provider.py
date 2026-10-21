@@ -61,7 +61,7 @@ class TestMinimaxThinkingSupport:
 
 
 class TestMinimaxM31AdaptiveEffort:
-    """MiniMax-M3.1-Flash-Preview speaks the adaptive contract: ``output_config.effort`` in
+    """MiniMax-M3.1-Flash (including Preview) speaks the adaptive contract: ``output_config.effort`` in
     low/medium/high/xhigh/max with a default of ``max``, and thinking that cannot be disabled
     (``thinking: {"type": "disabled"}`` -> HTTP 400 "requires adaptive thinking").
     https://platform.minimax.io/docs/guides/text-generation#thinking
@@ -71,7 +71,8 @@ class TestMinimaxM31AdaptiveEffort:
     ``/reasoning`` said.
     """
 
-    M31 = ("MiniMax-M3.1-Flash-Preview", "minimax/MiniMax-M3.1-Flash-Preview", "MiniMax-M3.1")
+    M31 = ("MiniMax-M3.1-Flash", "minimax/MiniMax-M3.1-Flash",
+           "MiniMax-M3.1-Flash-Preview", "minimax/MiniMax-M3.1-Flash-Preview", "MiniMax-M3.1")
 
     def _kwargs(self, model, reasoning_config):
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -96,17 +97,39 @@ class TestMinimaxM31AdaptiveEffort:
         kwargs = self._kwargs("MiniMax-M3.1-Flash-Preview", {"enabled": True, "effort": "minimal"})
         assert kwargs["output_config"] == {"effort": "low"}
 
-    def test_m31_thinking_off_is_never_sent_as_a_disable(self):
-        """The disable is a 400 on M3.1; omission is the only 'off' it accepts."""
-        kwargs = self._kwargs("MiniMax-M3.1-Flash-Preview", {"enabled": False})
-        assert "thinking" not in kwargs
-        assert "output_config" not in kwargs
+    def test_m31_explicit_off_requests_minimum_reasoning(self):
+        """M3.1 cannot stop thinking; explicit off must not fall back to server-default max."""
+        import hermes_yaml as yaml
+        from hermes_constants import parse_reasoning_effort
+
+        configs = [
+            {"enabled": False}, {"enabled": False, "effort": "high"},
+            {"effort": "none"}, {"enabled": True, "effort": " NONE "},
+            *(parse_reasoning_effort(value) for value in ("none", "disabled", False)),
+            parse_reasoning_effort(yaml.safe_load("off")),
+        ]
+        for model in self.M31:
+            for config in configs:
+                kwargs = self._kwargs(model, config)
+                assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}, (model, config)
+                assert kwargs["output_config"] == {"effort": "low"}, (model, config)
+
+    def test_m31_unset_keeps_the_server_default(self):
+        for model in self.M31:
+            for config in (None, {}):
+                kwargs = self._kwargs(model, config)
+                assert "thinking" not in kwargs, (model, config)
+                assert "output_config" not in kwargs, (model, config)
+        assert self._kwargs(self.M31[0], {"enabled": True})["output_config"] == {"effort": "medium"}
 
     def test_m3_and_m2_keep_manual_thinking(self):
         for model in ("MiniMax-M3", "minimax/MiniMax-M3", "MiniMax-M2.7", "MiniMax-M3-Flash"):
             kwargs = self._kwargs(model, {"enabled": True, "effort": "low"})
             assert kwargs["thinking"]["type"] == "enabled", model
             assert "output_config" not in kwargs, model
+            off_kwargs = self._kwargs(model, {"enabled": False})
+            assert "thinking" not in off_kwargs, model
+            assert "output_config" not in off_kwargs, model
 
     def test_lookalikes_do_not_match(self):
         from agent.anthropic_endpoints import _model_name_is_minimax_adaptive
@@ -114,7 +137,7 @@ class TestMinimaxM31AdaptiveEffort:
                   "MiniMax-M3.10", "minimax-m3.11-Flash", "minimax-m3-10", "minimax-m3-1x",
                   "not-minimax-m3.1", "", None):
             assert _model_name_is_minimax_adaptive(m) is False, m
-        for m in ("MiniMax-M3.1-Flash-Preview", "minimax-m3.1", "MiniMax-M3-1", "minimax/minimax-m3.1-x",
+        for m in ("MiniMax-M3.1-Flash", "minimax/MiniMax-M3.1-Flash", "MiniMax-M3.1-Flash-Preview", "minimax-m3.1", "MiniMax-M3-1", "minimax/minimax-m3.1-x",
                   "vendor/MiniMax-M3.1-20260901", "MiniMax-M3-1-Flash-Preview"):
             assert _model_name_is_minimax_adaptive(m) is True, m
 

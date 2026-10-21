@@ -27,6 +27,7 @@ from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
 )
 from agent.errors import EmptyStreamError
+from agent.reasoning_effort import requested_effort
 
 from hermes_cli.version_info import get_version_info
 
@@ -620,6 +621,12 @@ def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max
     models and manual compat models (MiniMax M3/M2.x) get budget_tokens. Haiku through 4.5 gets none. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
+    if _model_name_is_minimax_adaptive(model) and (
+        reasoning_config.get("enabled") is False or requested_effort(reasoning_config) == "none"
+    ):
+        # M3.1 cannot disable thinking. Omission selects server-default max, so an explicit
+        # off request gets the minimum supported reasoning instead; unset stays untouched.
+        return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "low"}}
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
@@ -690,7 +697,7 @@ def build_anthropic_kwargs(
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
     # endpoints support manual thinking for M3/M2.x; the M3.1 line is adaptive (effort, default max,
-    # and thinking cannot be disabled — an off request omits the controls, leaving thinking on).
+    # and thinking cannot be disabled: explicit off requests low, while unset keeps the default).
     # Haiku through 4.5 gets no thinking request; Haiku 5.5+ is adaptive.
     # Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
     # endpoints (api.moonshot.cn/anthropic, api.kimi.com/coding) accept ``thinking.type="adaptive"`` +

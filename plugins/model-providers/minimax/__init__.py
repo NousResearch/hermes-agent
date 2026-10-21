@@ -31,10 +31,12 @@ class MiniMaxProfile(ProviderProfile):
         if not _is_minimax_global_openai_base_url(base_url):
             return {}, {}
         if _model_name_is_minimax_adaptive(model):
-            # M3.1 rejects both disabled thinking and effort=none. Omit those
-            # requests, as on the Anthropic route; the model keeps thinking.
+            # M3.1 cannot disable thinking. Clamp explicit off to its minimum effort;
+            # only an unset preference should keep the server's default (max).
             effort = requested_effort(reasoning_config)
-            clamped = clamp_effort(None if effort == "none" else effort, MINIMAX_M31_EFFORTS)
+            if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+                effort = "none"
+            clamped = clamp_effort(effort, MINIMAX_M31_EFFORTS)
             return ({}, {"reasoning_effort": clamped}) if clamped in MINIMAX_M31_EFFORTS else ({}, {})
         is_m3 = str(model or "").strip().lower() in {"minimax-m3", "minimax/minimax-m3"}
         if not is_m3:

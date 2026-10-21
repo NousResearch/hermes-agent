@@ -160,7 +160,9 @@ def test_m31_chat_completions_effort_reaches_wire(minimax_profile):
     import json
 
     import httpx
+    import hermes_yaml as yaml
     from openai import OpenAI
+    from hermes_constants import parse_reasoning_effort
     from agent.transports.chat_completions import ChatCompletionsTransport
 
     profile, _ = minimax_profile
@@ -183,12 +185,17 @@ def test_m31_chat_completions_effort_reaches_wire(minimax_profile):
             ("xhigh", "xhigh"), ("max", "max"), ("minimal", "low"), ("ultra", "max"),
         )
     ] + [(config, None) for config in (
-        None, {}, {"enabled": True}, {"enabled": False},
-        {"enabled": False, "effort": "high"}, {"effort": "none"}, {"effort": "invalid"},
+        None, {}, {"enabled": True}, {"effort": "invalid"},
+    )] + [(config, "low") for config in (
+        {"enabled": False}, {"enabled": False, "effort": "high"},
+        {"effort": "none"}, {"enabled": True, "effort": " NONE "},
+        *(parse_reasoning_effort(value) for value in ("none", "disabled", False)),
+        parse_reasoning_effort(yaml.safe_load("off")),
     )]
     with OpenAI(api_key="test-only", base_url="https://api.minimax.io/v1",
                 http_client=httpx.Client(transport=httpx.MockTransport(capture))) as client:
-        for model in ("MiniMax-M3.1-Flash-Preview", "minimax/MiniMax-M3.1-Flash-Preview",
+        for model in ("MiniMax-M3.1-Flash", "minimax/MiniMax-M3.1-Flash",
+                      "MiniMax-M3.1-Flash-Preview", "minimax/MiniMax-M3.1-Flash-Preview",
                       "MiniMax-M3.1", "MiniMax-M3-1", "vendor/MiniMax-M3-1-Flash-Preview"):
             for config, expected in cases:
                 kwargs = ChatCompletionsTransport().build_kwargs(

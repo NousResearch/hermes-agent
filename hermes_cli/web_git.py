@@ -100,19 +100,6 @@ def _ref_exists(cwd: str, ref: str) -> bool:
 # ── shared helpers ───────────────────────────────────────────────────────────
 
 
-def resolve_rename_path(raw: str) -> str:
-    """``old => new`` (and ``dir/{old => new}/f``) → the NEW path, so a row addresses the real file."""
-    path = str(raw or "").strip()
-    if " => " not in path:
-        return path
-    head, _, tail = path.partition("{")
-    if tail and "}" in tail:
-        inner, _, suffix = tail.partition("}")
-        _, _, to = inner.partition(" => ")
-        return f"{head}{to}{suffix}".replace("//", "/")
-    return path.split(" => ")[-1].strip()
-
-
 def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
     """NUL-delimited numstat → literal destination paths; binary files (``-``) → 0."""
     counts: dict[str, tuple[int, int]] = {}

@@ -101,7 +101,8 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
     if gated:
         head = f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run."
         tail = "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
-        message = " ".join([head, *extra, *(["This call goes past the chat's spend limit."] if over else []), tail])
+        # The limit notice leads: the messaging gateway's text fallback keeps only the first ~200 characters.
+        message = " ".join([head, *(["This call goes past the chat's spend limit."] if over else []), *extra, tail])
         description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
                        f"Approve to run '{tool_name}' once, or deny to block it.")
         title = f"MCP server '{server_name}' is asking"

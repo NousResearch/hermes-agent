@@ -82,6 +82,15 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
         _record_cost_policy(server_name, config, key)
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
+        _warn_unknown_cost_keys(server_name, key, [t.name for t in tools if getattr(t, "name", None)])
+
+
+def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:
+    from tools.mcp_tool_costs import unknown_cost_keys
+    if unknown := unknown_cost_keys(_core._server_cost_policies.get(key), tool_names):
+        logger.warning("MCP server '%s': tool_costs names %s, which the server does not offer, so those calls "
+                       "carry no cost and no spend limit. Use the server's own tool names (without Hermes' "
+                       "'mcp_%s_' prefix).", server_name, unknown, server_name)
 
 
 def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:

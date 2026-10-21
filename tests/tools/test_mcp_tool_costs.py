@@ -2,8 +2,10 @@
 
 Invariants: a costed call's prompt names the cost and the chat's running total; only dispatched
 calls count; a call that would cross ``spend_limit`` asks even on a ``trust: full`` server and is
-refused unattended without dispatching; chats and profiles never share a tally; malformed
-declarations fail with a named error (package and config.yaml) while unknown keys only warn.
+refused unattended without dispatching; chats and profiles never share a tally, a chat keeps its
+total across a session-id rotation and each cron run has its own; parallel over-limit calls are asked
+one at a time; malformed declarations fail with a named error (package and config.yaml) while unknown
+keys only warn.
 """
 
 import asyncio
@@ -48,6 +50,7 @@ def session():
          patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True), \
          patch.dict(mcp_tool._server_cost_policies, {}, clear=True), \
          patch.dict(mcp_tool_costs._spent, {}, clear=True), \
+         patch.dict(mcp_tool_costs._ask_locks, {}, clear=True), \
          patch.object(mcp_tool_costs, "_unscoped_moved_to", None):
         yield session
 
@@ -168,3 +171,69 @@ def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp
         # A native entry rejected for a malformed budget is not revived by the package's looser one.
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": {"srv": {"command": "x", "spend_limit": -5}}}):
             assert "srv" not in _load_mcp_config()
+
+
+def test_a_chat_keeps_its_total_across_a_rotation_and_each_cron_run_has_its_own(session, caplog):
+    from cron.scheduler import _CronRunScope
+    from gateway.session_context import clear_session_vars, set_session_vars
+    with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+        _register(dict(COSTED, tool_costs={**COSTED["tool_costs"], "mcp_srv_typo": 3}))
+    assert "mcp_srv_typo" in caplog.text  # a key the server does not offer is named, never silently dropped
+    for _ in range(2):
+        _call("paid_render", chat="parent")
+    # Compression (CLI, TUI/Desktop) and /branch continue the chat under a new id through this one hook.
+    from tools.approval_yolo import transfer_session_yolo
+    transfer_session_yolo("parent", "child")
+    assert "used about 80 credits" in _call("paid_render", chat="child", answer="decline")[1][0]
+    # Cron: the approval session key is "" for every job; each run binds its own tally.
+    tokens = set_session_vars(cron_session="1")
+    try:
+        for job in ("job-a", "job-b", "job-c"):
+            scope = _CronRunScope({}, job, "run-1")
+            scope.enter()
+            try:
+                token = set_current_session_key("")
+                try:
+                    for _ in range(2):
+                        assert json.loads(handlers._make_tool_handler("srv", "paid_render", 30.0)({})) == {"result": "ok"}
+                finally:
+                    reset_current_session_key(token)
+            finally:
+                scope.exit()
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_parallel_over_limit_calls_are_asked_one_at_a_time(session):
+    import threading
+    _register(COSTED)
+    for _ in range(2):
+        _call("paid_render")  # 80 of 100: the next two parallel calls both cross the limit
+    open_prompts, peak, prompts, gate = [0], [0], [], threading.Barrier(2, timeout=2)
+
+    def consent(msg, desc, **kw):
+        open_prompts[0] += 1
+        peak[0] = max(peak[0], open_prompts[0])
+        prompts.append(msg)
+        try:
+            gate.wait()  # unserialized prompts would meet here; serialized ones time out alone
+        except threading.BrokenBarrierError:
+            pass
+        open_prompts[0] -= 1
+        return "accept"
+
+    def one():
+        token = set_current_session_key("chat-a")
+        try:
+            handlers._make_tool_handler("srv", "paid_render", 30.0)({})
+        finally:
+            reset_current_session_key(token)
+
+    with patch("tools.approval_prompt.request_elicitation_consent", side_effect=consent):
+        threads = [threading.Thread(target=one) for _ in range(2)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(10)
+    assert peak[0] == 1 and len(prompts) == 2
+    assert {"used about 80 credits" in p for p in prompts} == {True, False}  # the second saw the first's booking

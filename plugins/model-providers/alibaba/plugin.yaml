@@ -1,0 +1,5 @@
+name: alibaba-provider
+kind: model-provider
+version: 1.0.0
+description: Alibaba DashScope (international)
+author: Nous Research

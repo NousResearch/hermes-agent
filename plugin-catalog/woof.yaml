@@ -1,0 +1,29 @@
+name: woof
+repo: https://github.com/recastsystems/hermes-woof
+sha: 2c82b34eb386a490d25439757556f6bab84048af
+description: "Plan, launch, watch and compare WOOF weather simulations on your own NVIDIA GPU: size runs with WOOF's own planner, launch them locally or on an ssh/WSL GPU host, get maps in the chat while the forecast runs, compare physics or resolution, run multi-arm research campaigns and score runs against radar and surface observations. Disclosure — runs need Linux x86_64 with an NVIDIA GPU (plan-only elsewhere); the user-run hermes woof install pip-installs recast-woof>=1.0.0,<1.1 into ~/woof-env and downloads WOOF tables and optional geography (about 1.6 GB); runs execute the WOOF CLI as detached background jobs writing to ~/woof-runs and fetch public weather data; run events are pushed into the chat as user-role messages; the optional serve/ scripts download llama.cpp and a Qwen GGUF and start an unauthenticated local model server."
+maintainer: recastsystems
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/recastsystems/hermes-woof#readme
+capabilities:
+  provides_tools:
+    - woof_doctor
+    - woof_catalog
+    - woof_docs
+    - woof_plan
+    - woof_launch
+    - woof_status
+    - woof_stop
+    - woof_show
+    - woof_compare
+    - woof_campaign
+    - woof_score
+    - woof_report
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,22 @@
+{
+  "client_id": "https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json",
+  "client_name": "Hermes Agent",
+  "client_uri": "https://hermes-agent.nousresearch.com",
+  "logo_uri": "https://nousresearch.github.io/hermes-agent/docs/img/logo.png",
+  "application_type": "native",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none",
+  "redirect_uris": [
+    "http://127.0.0.1:27890/callback",
+    "http://localhost:27890/callback",
+    "http://127.0.0.1:27891/callback",
+    "http://localhost:27891/callback",
+    "http://127.0.0.1:27892/callback",
+    "http://localhost:27892/callback",
+    "http://127.0.0.1:27893/callback",
+    "http://localhost:27893/callback",
+    "http://127.0.0.1:27894/callback",
+    "http://localhost:27894/callback"
+  ]
+}

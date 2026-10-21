@@ -1,0 +1,974 @@
+import { EventEmitter } from 'node:events'
+
+import type { GatewayEvent } from '@hermes/shared/gateway-events'
+import {
+  DEFAULT_HEARTBEAT_DEADLINE_MS,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  JsonRpcGatewayError,
+  JsonRpcRequestChannel,
+  type ServerRequest,
+  wireFrameText
+} from '@hermes/shared/json-rpc-channel'
+import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
+import { WebSocket as UndiciWebSocket } from 'undici'
+
+import {
+  canonicalEvent,
+  canonicalRequest,
+  canonicalResult,
+  type CreationContract,
+  launchToolProgress
+} from './canonicalGateway.js'
+import type { AnyGatewayEvent } from './gatewayTypes.js'
+import { t } from './i18n/runtime.js'
+import { CircularBuffer } from './lib/circularBuffer.js'
+import { recordParentLifecycle } from './lib/parentLog.js'
+import { bootstrapLocalGateway, isTerminalBootstrapFailure, type LocalGatewayGrant } from './localGatewayBootstrap.js'
+
+const MAX_GATEWAY_LOG_LINES = 200
+const MAX_LOG_LINE_BYTES = 4096
+const MAX_BUFFERED_EVENTS = 2000
+const MAX_LOG_PREVIEW = 240
+const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTUP_TIMEOUT_MS ?? '15000', 10) || 15000)
+const REQUEST_TIMEOUT_MS = Math.max(30000, parseInt(process.env.HERMES_TUI_RPC_TIMEOUT_MS ?? '120000', 10) || 120000)
+const WS_CONNECTING = 0
+const WS_OPEN = 1
+const WS_CLOSING = 2
+const WS_CLOSED = 3
+
+// Keepalive + dead-connection detection (issue #32997) lives in
+// @hermes/shared's JsonRpcRequestChannel; these re-exports keep the TUI's
+// timing constants readable at their call sites and in tests.
+export const WS_HEARTBEAT_INTERVAL_MS = DEFAULT_HEARTBEAT_INTERVAL_MS
+export const WS_HEARTBEAT_DEAD_MS = DEFAULT_HEARTBEAT_DEADLINE_MS
+// Exponential backoff for reconnect attempts after a transport drop. No
+// jitter: a single TUI process has nobody to desynchronize from, and the
+// deterministic ladder is what the activity feed reports.
+export const RECONNECT_BASE_MS = 1_000
+export const RECONNECT_MAX_MS = 30_000
+
+const getWebSocketCtor = (): typeof WebSocket =>
+  typeof WebSocket === 'undefined' ? (UndiciWebSocket as unknown as typeof WebSocket) : WebSocket
+
+const truncateLine = (line: string) =>
+  line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
+
+const resolveGatewayAttachUrl = () => {
+  const raw = process.env.HERMES_TUI_GATEWAY_URL?.trim()
+
+  return raw ? raw : null
+}
+
+const resolveSidecarUrl = () => {
+  const raw = process.env.HERMES_TUI_SIDECAR_URL?.trim()
+
+  return raw ? raw : null
+}
+
+// Matches `<scheme>://user:pass@host…` style user-info segments in
+// otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
+// Used by the `redactUrl` fallback so embedded credentials are
+// scrubbed from log lines even when the URL is unparseable.
+const _USERINFO_FALLBACK_RE = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i
+
+// Connection URLs (gateway, sidecar) often carry bearer tokens in the query
+// string. We surface them in user-facing log lines and the
+// `gateway.start_timeout` payload, so always strip the query string and any
+// embedded user-info before logging.
+const redactUrl = (raw: string): string => {
+  if (!raw) {
+    return raw
+  }
+
+  try {
+    const url = new URL(raw)
+    const userInfo = url.username || url.password ? '***@' : ''
+    const query = url.search ? '?***' : ''
+
+    return `${url.protocol}//${userInfo}${url.host}${url.pathname}${query}`
+  } catch {
+    // WHATWG URL rejected the input. Best-effort: strip an embedded
+    // `user:pass@` segment AND the query string so a malformed token
+    // bearer can never escape into the log tail.
+    const noUserInfo = raw.replace(_USERINFO_FALLBACK_RE, '$1***@')
+    const queryIdx = noUserInfo.indexOf('?')
+
+    return queryIdx >= 0 ? `${noUserInfo.slice(0, queryIdx)}?***` : noUserInfo
+  }
+}
+
+// Reconnects after the first launch are discovery-only, except that a bounded number per window
+// re-ensure an owner that is not ready (gateway_bootstrap.py --recover): crashed, idle-exited,
+// stopped with `hermes gateway stop` while this TUI is open, or an older Hermes's gateway. Main's
+// TUI owned its sidecar, so an open TUI comes back on its own; the budget keeps a crash-looping
+// owner from being respawned without pause.
+export const OWNER_RECOVERY_LIMIT = 3
+export const OWNER_RECOVERY_WINDOW_MS = 60_000
+
+
+export interface AttachHold { sid: string; frames: AnyGatewayEvent[] }
+export class GatewayClient extends EventEmitter {
+  private ws: WebSocket | null = null
+  private wsConnectPromise: Promise<void> | null = null
+  private sidecarWs: WebSocket | null = null
+  private attachUrl: null | string = null
+  private sidecarUrl: null | string = null
+  private logs = new CircularBuffer<string>(MAX_GATEWAY_LOG_LINES)
+  // Request ids, pending map, timeouts, error mapping and the gateway.ping
+  // heartbeat are shared with the desktop/web WebSocket client; this class
+  // only owns the two transports (child stdio, attached socket) and the
+  // buffered-event replay that Ink's mount order needs.
+  private readonly channel = new JsonRpcRequestChannel({
+    // A mid-turn socket streams deltas every second; killing the only
+    // transport that carried live traffic split sessions that completed
+    // server-side (#115251). Count any inbound frame as liveness, exactly
+    // like the desktop/web client; a silent drop still trips the deadline.
+    heartbeatLiveness: 'any-inbound',
+    onEvent: ev => this.publishWire(ev as AnyGatewayEvent),
+    onHeartbeatFailure: () => this.onHeartbeatFailure(),
+    onRequestHandlerError: (error, req) =>
+      this.pushLog(`[protocol] server request handler crashed: ${req.method} (${error.message})`),
+    onUnhandledRequest: req => this.pushLog(`[protocol] unhandled server request: ${req.method}`),
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    unrefTimers: true
+  })
+  private bufferedEvents = new CircularBuffer<AnyGatewayEvent>(MAX_BUFFERED_EVENTS)
+  // Server→client requests (clarify, approval, sudo, …) follow the same
+  // mount-order contract as events: an attached session mid-turn can send one
+  // the instant the socket opens, before the Ink handler is registered.
+  private bufferedRequests: ServerRequest[] = []
+  private pendingExit: number | null | undefined
+  private ready = false
+  private readyTimer: ReturnType<typeof setTimeout> | null = null
+  private subscribed = false
+  private drainGeneration = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
+  // Set on kill() so we never auto-reconnect after an intentional shutdown.
+  private disposed = false
+
+  private bootstrapFlight: Promise<void> | null = null
+  private bootstrapError: Error | null = null
+  private localStarted = false
+  private localGeneration = 0
+  private recoveryAttempts: number[] = []
+  isCanonical = false
+  private creationContract?: CreationContract
+  private describedSkin?: Record<string, unknown>
+  private describeFlight?: Promise<void>
+  private attachHold: AttachHold | null = null
+  // The last session.create whose outcome is in doubt (see createCanonical).
+  private unsettledCreate?: { key: string; requestId: unknown }
+
+  constructor(
+    private bootstrap: (start: boolean, recover?: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway
+  ) {
+    super()
+    // useInput / createGatewayEventHandler can legitimately attach many
+    // listeners. Default 10-cap triggers spurious warnings.
+    this.setMaxListeners(0)
+    this.channel.onRequest(request => {
+      if (this.subscribed) {
+        this.emit('request', request)
+      } else {
+        this.bufferedRequests.push(request)
+      }
+    })
+  }
+
+  get attached(): boolean {
+    return this.attachUrl !== null
+  }
+
+  /** Frames off the socket. On a canonical gateway the owner's execution stamp rides on
+   * the params (`authority_epoch`/`execution_generation`); fold it into the payload the
+   * pre-cutover handlers read, and let this client own readiness (it publishes
+   * `gateway.ready` itself after `runtime.describe`, so the listener's ready would be a
+   * second one) while still negotiating the transport's heartbeat capability. */
+  private publishWire(ev: AnyGatewayEvent) {
+    if (!this.isCanonical && ev.type === 'gateway.ready' && this.attachUrl !== null &&
+        (ev as { payload?: { session_authority?: boolean } }).payload?.session_authority === true) {
+      // An explicit HERMES_TUI_GATEWAY_URL endpoint whose session verbs belong to an authority:
+      // negotiate the canonical wire exactly like a local grant, keeping the listener's skin.
+      return this.adoptCanonicalAttach(ev as GatewayEvent<'gateway.ready'>)
+    }
+
+    if (this.isCanonical && ev.type === 'gateway.ready') {
+      if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
+        this.channel.startHeartbeat()
+      }
+
+      return
+    }
+
+    if (this.isCanonical) {
+      // An idle frame (session.info from _publish_pending) carries its stamp in the payload only
+      // (B2-18): fall back to it, and never stamp an absent value over it.
+      const shared = ev as AnyGatewayEvent & { authority_epoch?: number; execution_generation?: number }
+      const payload = (canonicalEvent(ev).payload ?? {}) as { authority_epoch?: number; execution_generation?: number }
+      const epoch = shared.authority_epoch ?? payload.authority_epoch
+      const generation = shared.execution_generation ?? payload.execution_generation
+      ev.payload = { ...payload, ...(epoch !== undefined ? { execution_epoch: String(epoch) } : {}),
+        ...(generation !== undefined ? { execution_generation: generation } : {}) } as never
+
+      if (this.attachHold && (ev as { session_id?: unknown }).session_id === this.attachHold.sid) {
+        this.attachHold.frames.push(ev)
+
+        return
+      }
+    }
+
+    this.publish(ev)
+  }
+
+  private adoptCanonicalAttach(ev: GatewayEvent<'gateway.ready'>) {
+    const ws = this.ws
+
+    this.isCanonical = true
+
+    if (ev.payload?.heartbeat && ws?.readyState === WS_OPEN) {
+      this.channel.startHeartbeat()
+    }
+
+    this.describeThenReady(ws, { skin: ev.payload?.skin })
+  }
+
+  /** Canonical readiness is runtime.describe on this socket. A failed describe is a transport
+   * failure (B2-21): drop the socket onto the backoff path, which redials and re-describes. */
+  private describeThenReady(ws: WebSocket | null, payload: Record<string, unknown>) {
+    this.describeFlight = undefined
+    void this.describeRuntime().then(() => {
+      // The owner's resolved profile skin (`runtime.describe.skin`, main's `gateway.ready.skin`)
+      // unless the listener's own ready already carried one.
+      const ready = payload.skin === undefined && this.describedSkin ? { ...payload, skin: this.describedSkin } : payload
+
+      if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: ready } as unknown as AnyGatewayEvent) }
+    }).catch(error => {
+      this.publish({ type: 'gateway.start_timeout', payload: {
+        python: 'runtime.describe', cwd: '', stderr_tail: String(error)
+      } })
+
+      if (this.ws === ws) {
+        this.closeGatewaySocket()
+        this.handleTransportExit(1, String(error))
+      }
+    })
+  }
+
+  private publish(ev: AnyGatewayEvent) {
+    if (ev.type === 'gateway.ready') {
+      this.ready = true
+      this.clearReconnect()
+      this.reconnectAttempts = 0
+
+      if (this.readyTimer) {
+        clearTimeout(this.readyTimer)
+        this.readyTimer = null
+      }
+
+      if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat === true && this.ws?.readyState === WS_OPEN) {
+        this.channel.startHeartbeat()
+      }
+    }
+
+    if (this.subscribed) {
+      return void this.emit('event', ev)
+    }
+
+    this.bufferedEvents.push(ev)
+  }
+
+  private clearReadyTimer() {
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer)
+      this.readyTimer = null
+    }
+  }
+
+  private closeSidecarSocket() {
+    try {
+      this.sidecarWs?.close()
+    } catch {
+      // best effort
+    } finally {
+      this.sidecarWs = null
+    }
+  }
+
+  private closeGatewaySocket() {
+    // Null the active reference BEFORE invoking close(): real WebSocket
+    // implementations dispatch the 'close' event after a microtask hop,
+    // so by the time the handler runs `this.ws` should already be null
+    // and the identity guard will correctly classify the close as
+    // belonging to a discarded socket. (Test fakes emit synchronously,
+    // so doing the swap up front is also what makes the identity guard
+    // match real timing in tests.)
+    const ws = this.ws
+    this.ws = null
+    this.wsConnectPromise = null
+
+    try {
+      ws?.close()
+    } catch {
+      // best effort
+    }
+  }
+
+  // The shared heartbeat found no inbound frame for a full deadline: force the
+  // socket closed so the ordinary close path reconnects (issue #32997).
+  private onHeartbeatFailure() {
+    const ws = this.ws
+
+    if (!ws) {
+      return
+    }
+
+    this.lifecycle('[lifecycle] websocket silent drop detected (heartbeat ack timeout); forcing reconnect')
+
+    try {
+      ws.close()
+    } catch {
+      // ignore
+    }
+  }
+
+  private scheduleReconnect() {
+    if (this.disposed || this.reconnectTimer !== null) {
+      return
+    }
+
+    const delay = reconnectBackoffDelayMs(this.reconnectAttempts, {
+      baseDelayMs: RECONNECT_BASE_MS,
+      capMs: RECONNECT_MAX_MS,
+      jitter: false
+    })
+
+    this.reconnectAttempts += 1
+    this.lifecycle(`[lifecycle] scheduling gateway reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`)
+    this.publish({ type: 'gateway.reconnecting', payload: { attempt: this.reconnectAttempts, delay_ms: delay } })
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+
+      if (this.disposed) {
+        return
+      }
+
+      this.start()
+      this.drain()
+    }, delay)
+    this.reconnectTimer.unref?.()
+  }
+
+  private clearReconnect() {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+  }
+
+  private resetStartupState() {
+    // Reject any in-flight RPCs left over from the previous transport
+    // before we swap. Otherwise the old transport's stale exit/close
+    // handlers (now identity-gated to ignore unrelated transports)
+    // never settle the channel's pending RPCs, leaving callers hanging on promises
+    // attached to a discarded child / socket.
+    this.channel.detach(new Error(t('libText.gateway.restarting')))
+    this.ready = false
+    // `subscribed` is NOT reset here: the renderer drain()s once on mount, so a
+    // reset would strand every post-reconnect event (gateway.ready included) in
+    // the buffer forever (#111594).
+    // Invalidate any pending deferred drain() flush from a prior transport so
+    // its queued microtask becomes a no-op (it captured the old generation).
+    this.drainGeneration += 1
+    this.bufferedEvents.clear()
+    this.bufferedRequests = []
+    this.pendingExit = undefined
+    this.clearReadyTimer()
+  }
+
+  private startReadyTimer(python: string, cwd: string) {
+    this.readyTimer = setTimeout(() => {
+      if (this.ready) {
+        return
+      }
+
+      // Append the most recent gateway stderr/log lines to the timeout
+      // event so users can tell apart "wrong python", "missing dep",
+      // and "config parse failure" from one glance instead of having
+      // to dig through `/logs`.  Capped to keep the activity feed
+      // readable on slow boots.
+      const stderrTail = this.getLogTail(20)
+
+      this.lifecycle(`[startup] timed out waiting for gateway.ready (python=${python}, cwd=${cwd})`)
+      this.publish({
+        type: 'gateway.start_timeout',
+        payload: { cwd, python, stderr_tail: stderrTail }
+      })
+    }, STARTUP_TIMEOUT_MS)
+  }
+
+  private handleTransportExit(code: null | number, reason?: string) {
+    this.clearReadyTimer()
+    this.ready = false
+    this.closeSidecarSocket()
+    this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
+    this.channel.detach(
+      new Error(reason || (code === null ? t('libText.gateway.exited') : t('libText.gateway.exitedWithCode', code)))
+    )
+
+    // Self-heal: a dropped transport (real close OR silent drop caught by the
+    // heartbeat) should reconnect instead of stranding the UI on a dead socket
+    // (issue #32997). Intentional shutdown sets `disposed` and skips this.
+    // Schedule before the synchronous 'exit' emission: in spawn mode useMainApp's
+    // recovery subscriber may call start() immediately, and start() cancels this
+    // timer so there is only one recovery owner; the attempt counter survives
+    // until gateway.ready so backoff keeps growing across failed restarts.
+    this.scheduleReconnect()
+
+    if (this.subscribed) {
+      this.emit('exit', code)
+    } else {
+      this.pendingExit = code
+    }
+  }
+
+  private connectSidecarMirror() {
+    this.closeSidecarSocket()
+
+    if (!this.sidecarUrl) {
+      return
+    }
+
+    const WebSocketCtor = getWebSocketCtor()
+
+    if (typeof WebSocketCtor === 'undefined') {
+      this.pushLog(`[sidecar] WebSocket unavailable; skipping mirror to ${redactUrl(this.sidecarUrl)}`)
+
+      return
+    }
+
+    try {
+      const ws = new WebSocketCtor(this.sidecarUrl)
+
+      this.sidecarWs = ws
+      ws.addEventListener('close', () => {
+        if (this.sidecarWs === ws) {
+          this.sidecarWs = null
+        }
+      })
+      ws.addEventListener('error', () => {
+        this.pushLog('[sidecar] mirror connection error')
+      })
+    } catch (err) {
+      this.pushLog(`[sidecar] failed to connect ${redactUrl(this.sidecarUrl)} (constructor error)`)
+      this.sidecarWs = null
+    }
+  }
+
+  private mirrorEventToSidecar(rawFrame: string) {
+    const ws = this.sidecarWs
+
+    if (!ws || ws.readyState !== WS_OPEN) {
+      return
+    }
+
+    try {
+      ws.send(rawFrame)
+    } catch {
+      // best effort
+    }
+  }
+
+  /** B2-19: hold this session's canonical frames while its resume/activate is in flight. Fanout
+   * frames can beat the reply; the caller applies the snapshot, then settleAttach replays only the
+   * held frames after the snapshot (same replay_epoch, seq > last_sequence). */
+  holdAttach(sessionId: string): AttachHold | null {
+    if (!this.isCanonical) { return null }
+
+    return (this.attachHold = { sid: sessionId, frames: [] })
+  }
+
+  /** End a hold: with the applied snapshot, replay only frames it does not contain; without one
+   * (failed or superseded attach), deliver what was held. A replaced hold is a no-op. */
+  settleAttach(hold: AttachHold | null, snapshot?: object | null) {
+    if (!hold || this.attachHold !== hold) { return }
+    this.attachHold = null
+
+    const fence = snapshot as { last_sequence?: unknown; replay_epoch?: unknown } | null | undefined
+
+    for (const ev of hold.frames) {
+      const { replay_epoch: epoch, seq } = ev as { replay_epoch?: unknown; seq?: unknown }
+
+      if (!fence || (epoch === fence.replay_epoch && typeof seq === 'number' && seq > Number(fence.last_sequence ?? -1))) {
+        this.publish(ev)
+      }
+    }
+  }
+
+  hydrateSharedPrompts(snapshot: unknown) {
+    if (!this.isCanonical) { return }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+
+    for (const prompt of result.prompts ?? []) {
+      this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
+        payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as AnyGatewayEvent)
+    }
+  }
+
+  publishLocalEvent(ev: AnyGatewayEvent) {
+    const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
+
+    this.mirrorEventToSidecar(frame)
+    this.publish(ev)
+  }
+
+  private handleWebSocketFrame(raw: unknown) {
+    const text = wireFrameText(raw)
+
+    if (!text) {
+      return
+    }
+
+    const frame = this.channel.handleFrame(text)
+
+    if (!frame) {
+      this.protocolError('malformed websocket frame', text, '(empty frame)')
+
+      return
+    }
+
+    if (frame.method === 'event') {
+      this.mirrorEventToSidecar(text)
+    }
+  }
+
+  private protocolError(what: string, text: string, emptyLabel: string) {
+    const preview = text.trim().slice(0, MAX_LOG_PREVIEW) || emptyLabel
+
+    this.pushLog(`[protocol] ${what}: ${preview}`)
+    this.publish({ type: 'gateway.protocol_error', payload: { preview } })
+  }
+
+  private startLocalGateway() {
+    const generation = ++this.localGeneration
+    const start = !this.localStarted
+    const recover = !start && this.claimOwnerRecovery()
+    this.localStarted = true
+    this.bootstrapError = null
+    this.bootstrapFlight = this.bootstrap(start, recover).then(grant => {
+      if (this.disposed || generation !== this.localGeneration) { return }
+      this.attachUrl = grant.url
+      this.isCanonical = true
+      // Main's /logs opened with the sidecar's spawn line; the shared owner's equivalent is the attach.
+      this.lifecycle(`[lifecycle] attached shared gateway ${start ? 'start' : recover ? 'recover' : 'discover'} ` +
+        `url=${redactUrl(grant.url)} profile=${grant.profile_id} instance=${grant.instance_id}`)
+      this.startAttachedGateway(grant.url, grant.protocols)
+    }).catch(error => {
+      if (this.disposed || generation !== this.localGeneration) { return }
+      this.bootstrapError = error instanceof Error ? error : new Error(String(error))
+      this.clearReadyTimer()
+      this.publish({ type: 'gateway.start_timeout', payload: {
+        python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
+      } })
+      this.channel.detach(this.bootstrapError)
+
+      // The helper's interpreter cannot load Hermes (gateway_bootstrap.py `gateway unavailable:`):
+      // no reconnect fixes that, so report it once instead of retrying every 30 s forever (#138878).
+      if (isTerminalBootstrapFailure(this.bootstrapError.message)) {
+        this.lifecycle(`[lifecycle] gateway bootstrap cannot start; not retrying: ${this.bootstrapError.message.match(/^gateway unavailable: .*$/m)?.[0]}`)
+
+        return
+      }
+
+      this.scheduleReconnect()
+    })
+  }
+
+  /** One slot of the sliding owner re-ensure budget, so a crash-looping owner is not respawned forever. */
+  private claimOwnerRecovery(now = Date.now()) {
+    this.recoveryAttempts = this.recoveryAttempts.filter(at => now - at < OWNER_RECOVERY_WINDOW_MS)
+
+    if (this.recoveryAttempts.length >= OWNER_RECOVERY_LIMIT) {
+      return false
+    }
+
+    this.recoveryAttempts.push(now)
+
+    return true
+  }
+
+  private startAttachedGateway(attachUrl: string, protocols?: string[]) {
+    const safeAttachUrl = redactUrl(attachUrl)
+    this.startReadyTimer('websocket', safeAttachUrl)
+
+    const WebSocketCtor = getWebSocketCtor()
+
+    if (typeof WebSocketCtor === 'undefined') {
+      const line = `[startup] WebSocket API unavailable; cannot attach to ${safeAttachUrl}`
+
+      this.pushLog(line)
+      this.publish({ type: 'gateway.stderr', payload: { line } })
+      this.handleTransportExit(1, t('libText.gateway.websocketUnavailable'))
+
+      return
+    }
+
+    try {
+      const ws = new WebSocketCtor(attachUrl, protocols)
+      let settled = false
+
+      this.ws = ws
+      // Bind the channel to the socket as soon as it exists (not on open):
+      // RPCs issued while CONNECTING await wsConnectPromise and then must
+      // reach *this* generation; a stale generation's late frames are
+      // already filtered by the `this.ws !== ws` guards below.
+      this.channel.attach({ send: text => ws.send(text) })
+
+      const connectPromise = new Promise<void>((resolve, reject) => {
+        ws.addEventListener(
+          'open',
+          () => {
+            if (this.ws !== ws) {
+              return
+            }
+
+            if (!settled) {
+              settled = true
+              resolve()
+            }
+
+            this.connectSidecarMirror()
+
+            // The canonical gateway has no ready frame (readiness is the discovery grant +
+            // runtime.describe); the client-local ready carries the skin runtime.describe resolved.
+            if (this.isCanonical) { this.describeThenReady(ws, {}) }
+          },
+          { once: true }
+        )
+
+        ws.addEventListener(
+          'error',
+          () => {
+            if (!settled) {
+              this.pushLog('[startup] gateway websocket connect error')
+              settled = true
+              reject(new Error(t('libText.gateway.websocketConnectionFailed')))
+            }
+          },
+          { once: true }
+        )
+        ws.addEventListener(
+          'close',
+          ev => {
+            if (!settled) {
+              settled = true
+              reject(new Error(t('libText.gateway.websocketClosedDuringConnect', ev.code)))
+            }
+          },
+          { once: true }
+        )
+      })
+
+      // The connect promise is only awaited by RPCs that arrive while
+      // the socket is still connecting. If no request races the open
+      // (or a teardown drops the reference before anyone observes it),
+      // a connect-error / early-close rejection would surface as an
+      // unhandled promise rejection in Node. Attach a no-op handler to
+      // ensure the rejection is always observed.
+      connectPromise.catch(() => {})
+      this.wsConnectPromise = connectPromise
+
+      ws.addEventListener('message', ev => {
+        if (this.ws === ws) {
+          this.handleWebSocketFrame(ev.data)
+        }
+      })
+      ws.addEventListener('close', ev => {
+        // Skip close events from sockets that have already been
+        // replaced — start() / closeGatewaySocket() can swap `this.ws`
+        // before an in-flight close lands, and we must not clear the
+        // new ready timer or reject the new pending requests on behalf
+        // of a stale socket.
+        if (this.ws !== ws) {
+          this.pushLog(`[lifecycle] stale websocket close ignored code=${ev.code}`)
+
+          return
+        }
+
+        this.pushLog(`[lifecycle] websocket close code=${ev.code}`)
+        this.ws = null
+        this.wsConnectPromise = null
+        this.handleTransportExit(
+          ev.code,
+          ev.code ? t('libText.gateway.websocketClosedWithCode', ev.code) : t('libText.gateway.websocketClosed')
+        )
+      })
+      ws.addEventListener('error', () => {
+        const line = '[gateway] websocket transport error'
+
+        this.pushLog(line)
+        this.publish({ type: 'gateway.stderr', payload: { line } })
+      })
+    } catch (err) {
+      this.pushLog(`[startup] failed to connect websocket gateway ${safeAttachUrl} (constructor error)`)
+      this.handleTransportExit(1, t('libText.gateway.websocketStartupFailed'))
+    }
+  }
+
+  start() {
+    if (this.disposed) {
+      // kill() is terminal: every caller (die / dieWithCode /
+      // graceful-exit-cleanup / dead-output-stream) exits the Node process
+      // right after, so there is no legitimate kill-then-start flow. A
+      // start() arriving here is a recovery subscriber reacting to the
+      // killed child's late `exit` — respawning now would recreate the
+      // gateway on a PTY that is already gone.
+      this.pushLog('[lifecycle] start() ignored after kill()')
+
+      return
+    }
+
+    this.disposed = false
+    this.clearReconnect()
+
+    const attachUrl = resolveGatewayAttachUrl()
+    const sidecarUrl = resolveSidecarUrl()
+
+    this.attachUrl = attachUrl
+    this.sidecarUrl = sidecarUrl
+    this.resetStartupState()
+
+    this.closeGatewaySocket()
+    this.closeSidecarSocket()
+
+    if (attachUrl) {
+      // Each explicit connection negotiates its wire from the listener's ready frame.
+      this.isCanonical = false
+      this.creationContract = undefined
+      this.startAttachedGateway(attachUrl)
+
+      return
+    }
+
+    this.startLocalGateway()
+  }
+
+  private pushLog(line: string) {
+    this.logs.push(truncateLine(line))
+  }
+
+  /** Record a client-side diagnostic line in the /logs tail (raw wire text the UI replaced with plain copy). */
+  recordLog(line: string) {
+    this.pushLog(line)
+  }
+
+  // Death-explaining breadcrumbs (spawn / exit / kill / replace) — kept in the
+  // in-memory tail for /logs AND persisted to the gateway crash log so the
+  // reason survives a parent exit and lands next to the child's SIGTERM panic.
+  private lifecycle(line: string) {
+    this.pushLog(line)
+    recordParentLifecycle(line)
+  }
+
+  drain() {
+    // Defer the buffered-event replay to the next microtask, and DO NOT flip
+    // `subscribed` until that microtask runs.
+    //
+    // `drain()` is called from the consumer's mount-time subscribe effect
+    // (ui-tui/src/app/useMainApp.ts). In *attach* mode the gateway is already
+    // running, so it replays `gateway.ready` / `session.info` the instant the
+    // socket connects — those land in `bufferedEvents` *before* the consumer
+    // subscribes. If we emitted them synchronously here, the `gateway.ready`
+    // handler's `patchUiState` / `setHistoryItems` cascade would run while
+    // React is still inside the first commit, tripping "Too many re-renders"
+    // (Minified React error #301) — issue #36658. Spawn/inline/sidecar modes
+    // don't hit this because `gateway.ready` only arrives after the Python
+    // child boots, i.e. on a later async tick.
+    //
+    // Crucially, `subscribed` stays false until the flush so any LIVE event
+    // arriving in the gap between here and the microtask keeps buffering
+    // (publish() pushes when !subscribed) instead of emitting synchronously
+    // and jumping ahead of the chronologically-earlier replayed events. The
+    // flush re-drains the buffer right after flipping `subscribed`, so any
+    // in-window arrivals are delivered in FIFO order. A generation token makes
+    // the queued microtask a no-op if the transport was reset/killed meanwhile.
+    const generation = this.drainGeneration
+
+    queueMicrotask(() => {
+      if (this.drainGeneration !== generation) {
+        return
+      }
+
+      this.subscribed = true
+
+      // Replay everything buffered up to now, then any events that arrived in
+      // the gap before this microtask ran — all in chronological order.
+      for (const ev of this.bufferedEvents.drain()) {
+        this.emit('event', ev)
+      }
+
+      for (const request of this.bufferedRequests.splice(0)) {
+        this.emit('request', request)
+      }
+
+      if (this.pendingExit !== undefined) {
+        const code = this.pendingExit
+
+        this.pendingExit = undefined
+        this.emit('exit', code)
+      }
+    })
+  }
+
+  getLogTail(limit = 20): string {
+    return this.logs.tail(Math.max(1, limit)).join('\n')
+  }
+
+  private async ensureAttachedWebSocket(method: string): Promise<WebSocket> {
+    if (!this.attachUrl) {
+      throw new Error('gateway not running')
+    }
+
+    if (!this.ws || this.ws.readyState === WS_CLOSED || this.ws.readyState === WS_CLOSING) {
+      this.start()
+
+      if (!resolveGatewayAttachUrl()) { await this.bootstrapFlight }
+    }
+
+    if (this.ws?.readyState === WS_CONNECTING) {
+      try {
+        await this.wsConnectPromise
+      } catch (err) {
+        throw err instanceof Error ? err : new Error(String(err))
+      }
+    }
+
+    if (!this.ws || this.ws.readyState !== WS_OPEN) {
+      throw new Error(`gateway not connected: ${method}`)
+    }
+
+    return this.ws
+  }
+
+  private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
+
+  /** The owner's session.create contract. A failed read is not cached: the next
+   * session.create asks again instead of reporting an outdated gateway forever. */
+  private describeRuntime(): Promise<void> {
+    if (!this.describeFlight) {
+      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract; skin?: Record<string, unknown> | null }>('runtime.describe').then(
+        description => {
+          this.creationContract = description.session_create
+          this.describedSkin = description.skin && typeof description.skin === 'object' ? description.skin : undefined
+        },
+        error => {
+          if (this.describeFlight === flight) { this.describeFlight = undefined }
+
+          throw error
+        })
+
+      this.describeFlight = flight
+    }
+
+    return this.describeFlight
+  }
+
+  private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    return this.ensureAttachedWebSocket(method).then(() =>
+      this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method)))
+  }
+
+  request<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    const attachUrl = resolveGatewayAttachUrl()
+
+    if (attachUrl) {
+      if (this.attachUrl !== attachUrl) {
+        // The env var rotated at runtime — restart the transport so
+        // switching from spawned-gateway mode to attach mode also
+        // tears down the old Python child. Merely closing `this.ws`
+        // would leave a previously spawned gateway process alive.
+        this.channel.detach(new Error(t('libText.gateway.attachUrlChanged')))
+        this.start()
+      }
+
+      return this.isCanonical
+        ? this.requestCanonical<T>(method, params, timeoutMs)
+        : this.requestOverWebSocket<T>(method, params, timeoutMs)
+    }
+
+    if (!this.bootstrapFlight) { this.start() }
+
+    return this.bootstrapFlight!.then(() => {
+      if (this.bootstrapError) { throw this.bootstrapError }
+
+      return this.requestCanonical<T>(method, params, timeoutMs)
+    })
+  }
+
+  /** One request through the canonical wire adapter (local grant or negotiated explicit attach). */
+  private requestCanonical<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    return (async () => {
+      if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
+      const request = canonicalRequest(method, params, this.creationContract)
+
+      if (request.method === 'session.create') { return this.createCanonical<T>(request.params, timeoutMs) }
+      const value = await this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
+
+      return canonicalResult(method, value, request.params)
+    })()
+  }
+
+  /** session.create plus the launch tool-progress pin, as one outcome for the caller. The owner keys a
+   * local session by request_id, so a create that failed after it may have committed (lost ACK, or the
+   * pin refused after the ACK) is retried with the SAME request_id when the options match: the owner
+   * answers with the session it already minted and the pin is reapplied, never a second session. */
+  private async createCanonical<T>(prepared: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    const toolProgress = launchToolProgress()
+    const { request_id: _fresh, ...options } = prepared
+    const key = JSON.stringify(Object.keys(options).sort().map(name => [name, options[name]]))
+    const retry = this.unsettledCreate?.key === key ? this.unsettledCreate : undefined
+    // Taken, not peeked: a concurrent create never shares an identity still in flight.
+    this.unsettledCreate = undefined
+    const params = retry ? { ...prepared, request_id: retry.requestId } : prepared
+    let acknowledged = false
+
+    try {
+      const value = await this.requestOverWebSocket<T>('session.create', params, timeoutMs)
+      acknowledged = true
+
+      if (toolProgress) {
+        // Launch pin, before the caller can submit: a refusal fails this create visibly.
+        const sid = (value as { session_id?: string } | null)?.session_id
+
+        await this.requestOverWebSocket('config.set', { key: 'verbose', session_id: sid, value: toolProgress })
+      }
+
+      return canonicalResult('session.create', value, params)
+    } catch (error) {
+      // An owner's error reply to the create itself is a definitive refusal (nothing to recover);
+      // an ACKed create, a timeout or a dropped socket may have committed the session.
+      if (acknowledged || !(error instanceof JsonRpcGatewayError)) {
+        this.unsettledCreate = { key, requestId: params.request_id }
+      }
+
+      throw error
+    }
+  }
+
+  kill(reason = 'requested') {
+    this.disposed = true
+    this.localGeneration++
+    this.clearReconnect()
+    this.reconnectAttempts = 0
+    this.channel.stopHeartbeat()
+    this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} (detach only)`)
+    this.closeGatewaySocket()
+    this.closeSidecarSocket()
+    this.clearReadyTimer()
+    // The ws 'close' handler is identity-gated on `this.ws === ws`
+    // and we just nulled `this.ws`, so it will short-circuit and
+    // skip handleTransportExit. Reject pending RPCs explicitly so
+    // attach-mode promises do not hang after an intentional kill.
+    this.channel.detach(new Error(t('libText.gateway.closed')))
+  }
+}

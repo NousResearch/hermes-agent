@@ -19,6 +19,17 @@ const PANE_REVEALERS: Record<string, () => void> = {
   terminal: () => setTerminalTakeover(true)
 }
 
+// The store setters above are same-value no-ops: `$open` already reads true
+// while the pane sits in a zone the user minimized from its chevron, so the
+// listener never fires and the tool reported success over an invisible pane
+// (#106009). An explicit reveal also un-minimizes and fronts the tree pane.
+const TREE_PANE_OF: Record<string, string> = {
+  files: 'files',
+  review: 'review',
+  sessions: 'sessions',
+  terminal: 'terminal'
+}
+
 /** Reveal a desktop pane by name. Returns false for an unknown pane. */
 export function revealDesktopPane(pane: string): boolean {
   const reveal = PANE_REVEALERS[pane]
@@ -29,13 +40,33 @@ export function revealDesktopPane(pane: string): boolean {
 
   reveal()
 
+  const treePane = TREE_PANE_OF[pane]
+
+  if (treePane) {
+    revealTreePane(treePane)
+  }
+
   return true
+}
+
+// Elite is the terminal deck with the tools its card names open. The preset itself rests them, so the
+// same deck picked in Settings stays quiet; a pick from the layout card or set_theme shows the difference.
+const PICK_OPENS = new Map<string, readonly string[]>([['terminal-deck', ['terminal', 'files']]])
+
+/** The panes a layout pick opens beyond its preset's resting set. */
+export const layoutPickOpens = (preset: string): readonly string[] => PICK_OPENS.get(preset) ?? []
+
+/** Open the panes `layoutPickOpens` names for `preset`. */
+export function openLayoutPickPanes(preset: string): void {
+  for (const pane of layoutPickOpens(preset)) {
+    revealDesktopPane(pane)
+  }
 }
 
 /** Apply a layout preset by id, resolved against the layouts contribution
  *  registry — the SAME list the layout picker renders, so core presets
  *  (default/focus/terminal-deck/quad), plugin presets, and user-saved presets
- *  are all addressable by the backend `apply_layout` tool. Returns false for
+ *  are all addressable by the backend `set_theme` tool. Returns false for
  *  an unknown id. */
 export function applyDesktopLayoutPreset(preset: string): boolean {
   if (!preset) {

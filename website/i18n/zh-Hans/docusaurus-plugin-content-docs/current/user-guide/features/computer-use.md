@@ -121,11 +121,27 @@ Hermes 应用多层防护机制：
 HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
 ```
 
-完全替换后端（用于测试）：
+完全替换驱动：在 `config.yaml` 中用 `computer_use.backend` 指定后端（默认 `cua`，或已安装的 provider 插件目录名）。
+`hermes tools` → Computer Use 会列出所有已安装的后端。
 
+### Windows 自动启动（可选）
+
+在 Windows 上，cua-driver 可以通过开机计划任务（`cua-driver-serve`）常驻运行。该任务为
+**可选项**：默认情况下 Computer Use 按需、按会话启动驱动——与 macOS 和 Linux 完全一致，
+安装或启用工具集时不会注册任何计划任务（#97389）。
+
+在 `config.yaml` 中设置以下内容即可启用（下次安装驱动或启用工具集时会注册或修复该任务）：
+
+```yaml
+computer_use:
+  autostart: true   # 默认：false（按需启动；不注册计划任务）
 ```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
-```
+
+通过 SSH 远程驱动 Windows 时需要它：Session 0 没有交互式桌面，按需启动的驱动无法访问
+（参见 [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)）。如果任务已
+存在但你不再需要它，可从管理员终端运行 `cua-driver autostart disable`（或
+`schtasks /Delete /TN cua-driver-serve`）删除——`computer_use.autostart` 为 false 时
+Hermes 不会重新注册。
 
 ## 故障排查
 

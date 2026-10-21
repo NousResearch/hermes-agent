@@ -53,7 +53,7 @@ def _fake_proc_dir(entries: dict):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestProcFallback:
     """_scan_gateway_pids reads /proc when available, skips ps.
 
@@ -76,6 +76,9 @@ class TestProcFallback:
             patch("os.path.isdir", side_effect=_isdir),
             patch("os.listdir", side_effect=_listdir),
             patch("builtins.open", side_effect=_open),
+            # The fake /proc entries are ours: the other-users filter stats the REAL /proc/<pid>,
+            # so a root-owned runner process that happens to hold PID 12345 dropped the fake gateway.
+            patch("hermes_cli.gateway_migrate_guards.pid_is_other_users", return_value=False),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_ps,
         ):
@@ -114,172 +117,150 @@ class TestProcFallback:
         mock_ps.assert_not_called()  # /proc dir existed, so ps not called
 
 
-class TestPsFallbackBsdCompat:
-    """Verify the ps fallback command uses BSD/macOS-compatible flags.
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize(("euid", "expected"), [(1000, [111]), (0, [111, 222])])
+def test_other_users_gateways_are_not_ours_unless_root(euid, expected):
+    """A non-root caller never counts (or signals) another uid's gateway; root keeps the host-wide scan."""
+    owners = {111: 1000, 222: 2000}
+    ps_out = f"111 {_GATEWAY_CMD}\n222 {_GATEWAY_CMD}\n"
+    with (
+        patch("os.path.isdir", side_effect=lambda p: p != "/proc"),
+        patch("os.geteuid", return_value=euid),  # windows-footgun: ok — POSIX-only test (platforms marker)
+        patch("hermes_cli.gateway_migrate_guards._pid_uid", side_effect=owners.get),
+        patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
+        patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=ps_out, stderr="")),
+    ):
+        assert gateway_mod._scan_gateway_pids(set(), all_profiles=True) == expected
 
-    The old ``ps -A eww`` command fails on macOS/BSD because the BSD ``e``
-    flag (show environment) is not valid there.  The fix replaces it with
-    ``ps -Aww`` which works on both BSD and procps ps.
+
+@pytest.mark.platforms("linux")
+class TestPsFallbackBsdCompat:
+    """The ps fallback must use flags BSD/macOS ps accepts (#73626, #74075).
+
+    ``ps -A eww`` fails on macOS (BSD ``e`` is not the procps flag), which
+    made gateway discovery silently return nothing whenever /proc is absent.
+    Linux-only like ``TestProcFallback``: the real host selects the POSIX arm
+    and only /proc's absence is faked, to force the ps rung.
     """
 
-    def test_ps_flags_are_bsd_compatible(self):
-        """ps is called with ``-Aww``, not ``-A eww``."""
+    def test_ps_fallback_uses_bsd_compatible_flags_and_columns(self):
         with (
-            patch("hermes_cli.gateway.is_windows", return_value=False),
             patch("os.path.isdir", side_effect=lambda p: p != "/proc"),
             patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
             patch("subprocess.run") as mock_run,
         ):
-            # Return a failing rc=1 so the scan finishes quickly.
-            mock_run.return_value = MagicMock(
-                returncode=1, stdout="", stderr=""
-            )
-            pids = gateway_mod._scan_gateway_pids(set())
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+            assert not gateway_mod._scan_gateway_pids(set())
 
-        assert not pids  # rc=1 → empty result
-        # Find the ps call among all subprocess.run invocations
-        ps_call = None
-        for call_args in mock_run.call_args_list:
-            args = call_args[0][0] if call_args[0] else []
-            if args and args[0] == "ps":
-                ps_call = args
-                break
-        assert ps_call is not None, "ps was not invoked at all"
-        assert "-Aww" in ps_call, (
-            f"Expected ps -Aww, got: {ps_call}"
-        )
-        assert "eww" not in " ".join(ps_call), (
-            f"ps eww flag still present: {ps_call}"
-        )
-
-    def test_ps_command_includes_pid_and_command_columns(self):
-        """The ps command requests ``pid=,command=`` output columns."""
-        with (
-            patch("hermes_cli.gateway.is_windows", return_value=False),
-            patch("os.path.isdir", side_effect=lambda p: p != "/proc"),
-            patch("hermes_cli.gateway._get_ancestor_pids", return_value=set()),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="  123 gateway run\n", stderr=""
-            )
-            gateway_mod._scan_gateway_pids(set())
-
-        ps_call = None
-        for call_args in mock_run.call_args_list:
-            args = call_args[0][0] if call_args[0] else []
-            if args and args[0] == "ps":
-                ps_call = args
-                break
-        assert ps_call is not None
-        assert "-o" in ps_call and "pid=,command=" in ps_call, (
-            f"Missing -o pid=,command= in: {ps_call}"
-        )
+        ps_calls = [
+            c[0][0] for c in mock_run.call_args_list if c[0] and c[0][0] and c[0][0][0] == "ps"
+        ]
+        assert ps_calls, "ps was not invoked at all"
+        ps_call = ps_calls[0]
+        assert "-Aww" in ps_call and "eww" not in " ".join(ps_call), ps_call
+        assert "-o" in ps_call and "pid=,command=" in ps_call, ps_call
 
 
 class TestGetServicePidsAllProfiles:
     """_get_service_pids(all_profiles=...) discovery across profiles."""
 
+    @pytest.mark.platforms("macos")
     def test_default_scope_uses_current_profile_label(self):
         """Without all_profiles, only the current profile's launchd agent is
-        queried (``launchctl list <label>``)."""
+        located (per-label domain-explicit probe, #73627)."""
+        located = []
+
+        def _fake_locate(label):
+            located.append(label)
+            return ("gui/501", 123)
+
         with (
-            patch("hermes_cli.gateway.is_macos", return_value=True),
             patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
             patch(
                 "hermes_cli.gateway.get_launchd_label",
                 return_value="ai.hermes.gateway.myprofile",
             ),
+            patch(
+                "hermes_cli.gateway._locate_launchd_gateway_service",
+                side_effect=_fake_locate,
+            ),
             patch("subprocess.run") as mock_run,
         ):
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="123\t0\tai.hermes.gateway.myprofile", stderr=""
-            )
             pids = gateway_mod._get_service_pids()
 
         assert pids == {123}
-        # Must have used ``launchctl list <label>``, not bare ``launchctl list``
+        # Default scope: exactly the current profile's label, no fleet
+        # enumeration and no bare `launchctl list` scan.
+        assert located == ["ai.hermes.gateway.myprofile"]
         launchctl_calls = [
             c[0][0]
             for c in mock_run.call_args_list
             if c[0] and c[0][0] and c[0][0][0] == "launchctl"
         ]
-        assert len(launchctl_calls) == 1
-        assert launchctl_calls[0][1] == "list"
-        assert launchctl_calls[0][2] == "ai.hermes.gateway.myprofile"
+        assert launchctl_calls == []
 
+    @pytest.mark.platforms("macos")
     def test_all_profiles_enumerates_all_gateway_labels(self):
-        """With all_profiles=True, ``launchctl list`` is called without a label
-        filter, and every row whose last column starts with ``ai.hermes.gateway``
-        is collected."""
+        """With all_profiles=True, every install-derived gateway label is
+        located (#73627), and the bare ``launchctl list`` prefix scan still
+        widens the EXCLUDE set with unmapped ai.hermes.gateway* agents
+        (#74075 belt-and-suspenders)."""
+        located = []
+        label_pids = {
+            "ai.hermes.gateway": 123,
+            "ai.hermes.gateway-profile-b": 456,
+        }
+
+        def _fake_locate(label):
+            located.append(label)
+            pid = label_pids.get(label)
+            return ("gui/501", pid) if pid else (None, None)
+
         with (
-            patch("hermes_cli.gateway.is_macos", return_value=True),
             patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
+            patch(
+                "hermes_cli.gateway.get_launchd_label",
+                return_value="ai.hermes.gateway",
+            ),
+            patch(
+                "hermes_cli.gateway.launchd_gateway_labels_for_install",
+                return_value=["ai.hermes.gateway", "ai.hermes.gateway-profile-b"],
+            ),
+            patch(
+                "hermes_cli.gateway._locate_launchd_gateway_service",
+                side_effect=_fake_locate,
+            ),
             patch("subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=(
-                    "123\t0\tai.hermes.gateway.profile-a\n"
-                    "456\t0\tai.hermes.gateway.profile-b\n"
+                    "999\t0\tai.hermes.gateway-unmapped\n"
                     "789\t0\tcom.apple.some.other.agent\n"
                 ),
                 stderr="",
             )
             pids = gateway_mod._get_service_pids(all_profiles=True)
 
-        assert pids == {123, 456}
-        # The non-gateway label (789) must NOT be included.
+        # Label-derived fleet + prefix-scan stragglers; non-gateway excluded.
+        assert pids == {123, 456, 999}
         assert 789 not in pids
-        # Must have used bare ``launchctl list``
+        assert sorted(located) == [
+            "ai.hermes.gateway",
+            "ai.hermes.gateway-profile-b",
+        ]
         launchctl_calls = [
             c[0][0]
             for c in mock_run.call_args_list
             if c[0] and c[0][0] and c[0][0][0] == "launchctl"
         ]
-        assert len(launchctl_calls) == 1
-        assert launchctl_calls[0] == ["launchctl", "list"]
+        assert launchctl_calls == [["launchctl", "list"]]
 
-    def test_all_profiles_empty_when_no_gateway_labels(self):
-        """When no ai.hermes.gateway* labels exist, all_profiles returns empty."""
-        with (
-            patch("hermes_cli.gateway.is_macos", return_value=True),
-            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="789\t0\tcom.apple.some.other.agent\n",
-                stderr="",
-            )
-            pids = gateway_mod._get_service_pids(all_profiles=True)
-
-        assert pids == set()
-
-    def test_all_profiles_handles_broken_pid_column(self):
-        """Non-integer PID entries are silently skipped."""
-        with (
-            patch("hermes_cli.gateway.is_macos", return_value=True),
-            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=(
-                    "-\t0\tai.hermes.gateway.broken\n"
-                    "  123  \t0\tai.hermes.gateway.ok\n"
-                ),
-                stderr="",
-            )
-            pids = gateway_mod._get_service_pids(all_profiles=True)
-
-        assert pids == {123}
-
+    @pytest.mark.platforms("linux")
     def test_all_profiles_preserves_systemd_behavior(self):
         """systemd scope is unaffected by the all_profiles switch — it already
         lists every hermes-gateway* unit unconditionally."""
         with (
-            patch("hermes_cli.gateway.is_macos", return_value=False),
             patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
             patch("subprocess.run") as mock_run,
         ):

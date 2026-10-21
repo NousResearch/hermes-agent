@@ -5,6 +5,13 @@ import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
 import { notifyError } from '@/store/notifications'
 import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
@@ -109,36 +116,36 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
   return (
     <>
       {menuOpen ? (
-        <>
-          <div className="fixed inset-0 z-50" onClick={onClose} onContextMenu={e => e.preventDefault()} />
-          {/* Styled to DropdownMenuContent/Item scale (rounded-lg card, p-1,
-              text-xs rows) — the hand-rolled fixed positioning stays because
-              the target is a canvas point, not a DOM anchor. */}
-          <div
-            className="fixed z-50 min-w-36 rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 shadow-md backdrop-blur-md"
-            style={{ left: target.x, top: target.y }}
-          >
-            <div className="truncate px-2 py-1 text-[0.68rem] text-muted-foreground">{target.label}</div>
-            <button
-              className="block w-full cursor-pointer rounded-md px-2 py-1 text-left text-xs hover:bg-(--ui-control-active-background) hover:text-foreground disabled:opacity-50"
+        <DropdownMenu onOpenChange={open => !open && onClose()} open>
+          <DropdownMenuTrigger asChild>
+            {/* A zero-size anchor at the canvas click point, as AppContextMenu
+                does: Radix positions against it like a real trigger and flips or
+                shifts the menu back inside the viewport near the window edges,
+                so the destructive row can never be clipped off-window. */}
+            <span aria-hidden style={{ left: target.x, position: 'fixed', top: target.y }} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" onCloseAutoFocus={e => e.preventDefault()} side="bottom">
+            <DropdownMenuLabel className="truncate text-[0.68rem] font-normal text-muted-foreground">
+              {target.label}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
               disabled={loading}
-              onClick={() => void openEdit()}
-              type="button"
+              onSelect={e => {
+                // Keep the menu up while the node content loads; openEdit closes it.
+                e.preventDefault()
+                void openEdit()
+              }}
             >
               Edit {noun}…
-            </button>
-            <button
-              className="block w-full cursor-pointer rounded-md px-2 py-1 text-left text-xs text-destructive hover:bg-destructive/10"
-              onClick={() => {
-                setDeleting({ id: target.id, kind: target.kind, label: target.label })
-                onClose()
-              }}
-              type="button"
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => setDeleting({ id: target.id, kind: target.kind, label: target.label })}
+              variant="destructive"
             >
               {target.kind === 'skill' ? 'Archive skill' : 'Delete memory'}
-            </button>
-          </div>
-        </>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       ) : null}
 
       <Dialog onOpenChange={value => !value && !saving && setEditing(null)} open={Boolean(editing)}>

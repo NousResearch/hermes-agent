@@ -375,7 +375,7 @@ function hasErrorSignal(record: Json): boolean {
   return (
     record.success === false ||
     record.ok === false ||
-    /\b(error|failed|failure|fatal|exception)\b/i.test(status) ||
+    /^(error|failed|failure|fatal|exception)$/i.test(status.trim()) ||
     ERROR_KEYS.some(k => hasMeaningfulErrorValue(record[k]))
   )
 }
@@ -402,7 +402,7 @@ function valueErrorText(value: unknown): string {
   return ''
 }
 
-function findNestedError(value: unknown, depth: number, seen: Set<unknown>): string {
+function findNestedError(value: unknown, depth: number, seen: Set<unknown>, failed = false): string {
   if (depth > 5) {
     return ''
   }
@@ -417,7 +417,7 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
 
   if (Array.isArray(v)) {
     for (const item of v) {
-      const nested = findNestedError(item, depth + 1, seen)
+      const nested = findNestedError(item, depth + 1, seen, failed)
 
       if (nested) {
         return nested
@@ -428,6 +428,10 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
   }
 
   const record = v as Json
+
+  if (record.success === true || record.ok === true) {
+    return ''
+  }
 
   for (const k of ERROR_KEYS) {
     if (!hasMeaningfulErrorValue(record[k])) {
@@ -449,8 +453,13 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
     }
   }
 
-  for (const k of [...ERROR_KEYS, ...WRAPPER_KEYS, 'details', 'meta']) {
-    const nested = findNestedError(record[k], depth + 1, seen)
+  // Returned data and stdout can describe failures without the tool failing.
+  // Only unwrap them to explain a failure already declared by the envelope.
+  const failureDeclared = failed || hasErrorSignal(record)
+  const nestedKeys = failureDeclared ? [...ERROR_KEYS, ...WRAPPER_KEYS, 'details'] : ERROR_KEYS
+
+  for (const k of nestedKeys) {
+    const nested = findNestedError(record[k], depth + 1, seen, failureDeclared)
 
     if (nested) {
       return nested

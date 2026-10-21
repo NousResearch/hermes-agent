@@ -21,7 +21,7 @@ Generate flat, minimal educational SVG visuals as HTML.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `diagrams`, `svg`, `visualization`, `education`, `physics`, `chemistry`, `engineering` |
-| Related skills | [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) |
+| Related skills | [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md) |
 
 ## Reference: full SKILL.md
 
@@ -317,7 +317,7 @@ mkdir -p .diagrams/sn2-mechanism
 # ...write .diagrams/sn2-mechanism/index.html...
 
 # Serve on loopback only, free port
-cd .diagrams && python3 -c "
+cd .diagrams && python -c "
 import http.server, socketserver
 with socketserver.TCPServer(('127.0.0.1', 0), http.server.SimpleHTTPRequestHandler) as s:
     print(f'Serving at http://127.0.0.1:{s.server_address[1]}/')

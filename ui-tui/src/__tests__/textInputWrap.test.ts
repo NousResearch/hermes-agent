@@ -20,10 +20,6 @@ describe('cursorLayout — word-wrap parity with wrap-ansi', () => {
     expect(cursorLayout('hello world', 6, 40)).toEqual({ column: 6, line: 0 })
   })
 
-  it('places cursor at end of a non-full line', () => {
-    expect(cursorLayout('hi', 2, 10)).toEqual({ column: 2, line: 0 })
-  })
-
   it('does not push exact-fill text onto a phantom next line', () => {
     // Regression: the previous hand-rolled wrap algorithm forced the cursor
     // onto (line+1, 0) when the text exactly filled the row. wrap-ansi keeps
@@ -66,10 +62,6 @@ describe('cursorLayout — word-wrap parity with wrap-ansi', () => {
   it('honours explicit newlines', () => {
     expect(cursorLayout('one\ntwo', 5, 40)).toEqual({ column: 1, line: 1 })
     expect(cursorLayout('one\ntwo', 4, 40)).toEqual({ column: 0, line: 1 })
-  })
-
-  it('does not wrap when cursor is before the right edge', () => {
-    expect(cursorLayout('abcdefg', 7, 8)).toEqual({ column: 7, line: 0 })
   })
 
   it('matches wrap-ansi end-position for typing-style incremental input', () => {

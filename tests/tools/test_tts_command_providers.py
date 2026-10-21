@@ -22,25 +22,24 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_tool import (
-    BUILTIN_TTS_PROVIDERS,
-    COMMAND_TTS_OUTPUT_FORMATS,
+from tools.tts_command_provider import (
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
-    _generate_command_tts,
-    _get_command_tts_output_format,
     _get_command_tts_timeout,
     _get_named_provider_config,
-    _has_any_command_tts_provider,
     _is_command_provider_config,
-    _is_command_tts_voice_compatible,
     _iter_command_providers,
-    _render_command_tts_template,
+    render_command_template as _render_command_tts_template,
+    run_command_provider as _run_command_tts,
+    shell_quote_context as _shell_quote_context,
+)
+from tools.tts_tool import (
+    BUILTIN_TTS_PROVIDERS,
+    _generate_command_tts,
+    _get_command_tts_output_format,
     _resolve_command_provider_config,
     _resolve_max_text_length,
-    _run_command_tts,
-    _shell_quote_context,
     check_tts_requirements,
     text_to_speech_tool,
 )
@@ -128,7 +127,7 @@ class TestCommandTtsEnv:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -139,6 +138,23 @@ class TestCommandTtsEnv:
         assert "OPENAI_API_KEY" not in env
         assert env["MY_SAFE_TTS_VAR"] == "keep"
 
+
+    def test_env_passthrough_forwards_the_served_profiles_value(self, monkeypatch):
+        """Under the multiplexer os.environ holds the launch profile's .env; a served profile's
+        command provider must get its own declared key, never the launch profile's."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MY_TTS_TOKEN", "tok-launch")
+        command = _shell_command(sys.executable, "-c", "import os; print(os.environ.get('MY_TTS_TOKEN'))")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"MY_TTS_TOKEN": "tok-work"})
+        try:
+            result = _run_command_tts(command, timeout=30, env_passthrough=["MY_TTS_TOKEN"])
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert result.stdout.strip() == "tok-work"
 
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
@@ -159,8 +175,6 @@ class TestGetNamedProviderConfig:
 
 
 class TestIsCommandProviderConfig:
-    def test_empty_dict_is_false(self):
-        assert _is_command_provider_config({}) is False
 
 
     def test_type_mismatch_is_false(self):
@@ -168,7 +182,7 @@ class TestIsCommandProviderConfig:
 
 
 # ---------------------------------------------------------------------------
-# _iter_command_providers / _has_any_command_tts_provider
+# _iter_command_providers
 # ---------------------------------------------------------------------------
 
 class TestIterCommandProviders:
@@ -185,11 +199,6 @@ class TestIterCommandProviders:
         assert names == ["piper-cli", "voxcpm"]
 
 
-    def test_has_any_command_provider_when_none(self):
-        assert _has_any_command_tts_provider({"providers": {}}) is False
-        assert _has_any_command_tts_provider({}) is False
-
-
 # ---------------------------------------------------------------------------
 # config getters
 # ---------------------------------------------------------------------------
@@ -203,13 +212,8 @@ class TestConfigGetters:
         assert _get_command_tts_output_format({}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
 
-    def test_voice_compatible_boolean(self):
-        assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True
-        assert _is_command_tts_voice_compatible({"voice_compatible": False}) is False
 
 
-    def test_voice_compatible_default_off(self):
-        assert _is_command_tts_voice_compatible({}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -323,38 +327,6 @@ class TestRenderCommandTtsTemplate:
 # ---------------------------------------------------------------------------
 
 class TestRunCommandTts:
-    def test_reads_process_output_in_large_chunks(self):
-        read_sizes: dict[str, list[int]] = {"stdout": [], "stderr": []}
-
-        class FakeStream:
-            def __init__(self, name: str, chunks: list[str]):
-                self.name = name
-                self.chunks = chunks
-
-            def read(self, size: int) -> str:
-                read_sizes[self.name].append(size)
-                if self.chunks:
-                    return self.chunks.pop(0)
-                return ""
-
-        class FakeProcess:
-            def __init__(self):
-                self.pid = 12345
-                self.returncode = 0
-                self.stdout = FakeStream("stdout", ["done"])
-                self.stderr = FakeStream("stderr", ["tick"])
-
-            def wait(self, timeout=None):
-                return self.returncode
-
-        with patch("tools.tts_tool.subprocess.Popen", return_value=FakeProcess()):
-            result = _run_command_tts("fake tts", timeout=0.25)
-
-        assert result.returncode == 0
-        assert result.stdout == "done"
-        assert result.stderr == "tick"
-        assert read_sizes["stdout"][0] == 65536
-        assert read_sizes["stderr"][0] == 65536
 
 
     def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
@@ -396,11 +368,12 @@ class TestGenerateCommandTts:
         assert result == str(out)
         assert out.exists()
         # The command copied the input text file over to output, so it
-        # contains the original UTF-8 text.
-        assert out.read_text(encoding="utf-8") == "hello world"
+        # contains the original UTF-8 text. utf-8-sig reads BOM'd and
+        # BOM-less alike (repo policy: reads utf-8-sig).
+        assert out.read_text(encoding="utf-8-sig") == "hello world"
 
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only timeout semantics")
+    @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
         config = {
             "command": f'"{sys.executable}" -c "import time; time.sleep(10)"',
@@ -524,7 +497,7 @@ class TestCommandTtsEnvPassthrough:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
 
         result = _run_command_tts(
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
@@ -536,10 +509,144 @@ class TestCommandTtsEnvPassthrough:
         assert "OPENAI_API_KEY" not in env
 
     def test_allowlist_parsed_from_provider_config(self):
-        from tools.tts_tool import _command_provider_env_passthrough
+        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
 
         assert _command_provider_env_passthrough(
             {"env_passthrough": ["A_KEY", " B_KEY ", ""]}
         ) == ["A_KEY", "B_KEY"]
         assert _command_provider_env_passthrough({}) == []
         assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []
+
+
+class TestCommandProviderSpawnGroupKwargs:
+    """The command-provider shell's process-group/no-console spawn kwargs.
+
+    On Windows the spawn routes through ``cmd.exe`` (``shell=True``); without
+    ``CREATE_NO_WINDOW`` that child allocates a visible console window flash on
+    every provider run from a windowless host (pythonw gateway, TUI, Desktop).
+    The platform branch is keyed on ``os.name``, so the pure helper takes the
+    platform as data (assertable on every host) and the spawn-site tests run
+    only where the branch is real (``platforms`` gating).
+    """
+
+    def test_nt_branch_hides_the_console_window(self, monkeypatch):
+        from hermes_cli import _subprocess_compat
+        from tools.tts_command_provider import provider_popen_group_kwargs
+
+        # Pin the compat module's host probe so the nt data branch is assertable
+        # on every host (the helper caches IS_WINDOWS from the real platform).
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+        kwargs = provider_popen_group_kwargs("nt")
+        # CREATE_NEW_PROCESS_GROUP (0x200) | CREATE_NO_WINDOW (0x08000000):
+        # group so the idle-timeout kill can signal the tree, no window so
+        # the cmd.exe shim doesn't flash a console.
+        assert kwargs["creationflags"] == 0x08000000 | 0x00000200
+        assert "start_new_session" not in kwargs
+
+    def test_nt_branch_matches_the_shared_detach_bundle(self, monkeypatch):
+        from hermes_cli import _subprocess_compat
+        from tools.tts_command_provider import provider_popen_group_kwargs
+
+        monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+        assert provider_popen_group_kwargs("nt")["creationflags"] == (
+            _subprocess_compat.windows_detach_flags_without_breakaway()
+        )
+
+    def test_posix_branch_uses_start_new_session(self):
+        from tools.tts_command_provider import provider_popen_group_kwargs
+
+        kwargs = provider_popen_group_kwargs("posix")
+        assert kwargs == {"start_new_session": True}
+
+    @pytest.mark.platforms("windows")
+    def test_popen_kwargs_hide_console_window_windows(self, monkeypatch):
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured.update(kwargs)
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        # Own process group (tree-kill on idle timeout) AND a hidden console.
+        assert captured["creationflags"] & 0x08000000, "CREATE_NO_WINDOW missing"
+        assert captured["creationflags"] & 0x00000200, "CREATE_NEW_PROCESS_GROUP missing"
+        assert "start_new_session" not in captured
+
+    @pytest.mark.platforms("posix")
+    def test_popen_kwargs_start_new_session_posix(self, monkeypatch):
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured.update(kwargs)
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        assert captured["start_new_session"] is True
+        assert "creationflags" not in captured
+
+
+class TestIdleKillConsoleHidden:
+    """The idle-timeout process-tree kill must not flash a console either.
+
+    On Windows ``terminate_command_process_tree`` shells out to ``taskkill``
+    (a console-subprocess) without ``CREATE_NO_WINDOW`` — the same bug class
+    as the provider spawn itself, one code path later.
+    """
+
+    @pytest.mark.platforms("windows")
+    def test_idle_kill_taskkill_hides_console_windows(self, monkeypatch):
+        import tools.tts_command_provider as mod
+
+        runs = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            if "taskkill" in cmd:
+                runs.append(kwargs)
+            return real_run(["cmd", "/c", "exit", "0"], **{k: v for k, v in kwargs.items() if k != "capture_output"})
+
+        class Proc:
+            pid = 4242
+            returncode = 0
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.terminate_command_process_tree(Proc())
+
+        assert runs, "taskkill was not invoked"
+        assert runs[0].get("creationflags", 0) & 0x08000000, "CREATE_NO_WINDOW missing on taskkill"

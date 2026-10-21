@@ -14,8 +14,8 @@ Skills 是 agent 在需要时可以加载的按需知识文档。它们遵循**�
 
 另请参阅：
 
-- [捆绑 Skills 目录](/reference/skills-catalog)
-- [官方可选 Skills 目录](/reference/optional-skills-catalog)
+- [捆绑 Skills 目录](../../reference/skills-catalog.md)
+- [官方可选 Skills 目录](../../reference/optional-skills-catalog.md)
 
 ## 使用 Skills
 
@@ -26,13 +26,13 @@ Skills 是 agent 在需要时可以加载的按需知识文档。它们遵循**�
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
-/plan design a rollout for migrating our auth provider
+/songsee analyze the frequency spread of this mix
 
 # 只输入 skill 名称即可加载它，并让 agent 询问你的需求：
 /excalidraw
 ```
 
-捆绑的 `plan` skill 是一个很好的示例。运行 `/plan [request]` 会加载该 skill 的指令，告知 Hermes 在需要时检查上下文、编写 markdown 实现计划而非直接执行任务，并将结果保存在相对于当前工作区/后端工作目录的 `.hermes/plans/` 下。
+（计划模式的工作方式相同，但现在是内置命令：`/plan [request]` 告知 Hermes 在需要时检查上下文、编写 markdown 实现计划而非直接执行任务，并将结果保存在相对于当前工作区/后端工作目录的 `.hermes/plans/` 下。）
 
 你也可以通过自然对话与 skills 交互：
 
@@ -174,7 +174,7 @@ required_environment_variables:
 
 当遇到缺失的值时，Hermes 仅在本地 CLI 中实际加载 skill 时才会安全地请求输入。你可以跳过设置并继续使用该 skill。消息平台不会在聊天中请求密钥——它们会告诉你改用本地的 `hermes setup` 或 `~/.hermes/.env`。
 
-一旦设置，声明的环境变量会**自动传递**到 `execute_code` 和 `terminal` 沙箱——skill 的脚本可以直接使用 `$TENOR_API_KEY`。对于非 skill 的环境变量，使用 `terminal.env_passthrough` 配置选项。详情参见[环境变量传递](/user-guide/security#environment-variable-passthrough)。
+一旦设置，声明的环境变量会**自动传递**到 `execute_code` 和 `terminal` 沙箱——skill 的脚本可以直接使用 `$TENOR_API_KEY`。对于非 skill 的环境变量，使用 `terminal.env_passthrough` 配置选项。详情参见[环境变量传递](../security.md#environment-variable-passthrough)。
 
 ### Skill 配置设置
 
@@ -192,7 +192,7 @@ metadata:
 
 设置存储在 config.yaml 的 `skills.config` 下。`hermes config migrate` 会提示配置未设置的项，`hermes config show` 会显示它们。当 skill 加载时，其解析后的配置值会注入到上下文中，agent 会自动知晓已配置的值。
 
-详情参见 [Skill 设置](/user-guide/configuration#skill-settings) 和[创建 Skills——配置设置](/developer-guide/creating-skills#config-settings-configyaml)。
+详情参见 [Skill 设置](../configuration.md#skill-settings) 和[创建 Skills——配置设置](../../developer-guide/creating-skills.md#config-settings-configyaml)。
 
 ## Skill 目录结构
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from hermes_cli.nous_account import NousPaidServiceAccessInfo, NousPortalAccountInfo
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+import subprocess
 
 
 def _patch_common_status_deps(monkeypatch, status_mod, tmp_path, *, openai_base_url=""):
@@ -18,13 +19,13 @@ def _patch_common_status_deps(monkeypatch, status_mod, tmp_path, *, openai_base_
         return ""
 
     monkeypatch.setattr(status_mod, "get_env_value", _get_env_value, raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", dict, raising=False)
     monkeypatch.setattr(
-        auth_mod, "get_nous_auth_status_local", lambda: {}, raising=False
+        auth_mod, "get_nous_auth_status_local", dict, raising=False
     )
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", dict, raising=False)
     monkeypatch.setattr(
-        status_mod.subprocess,
+        subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(stdout="inactive\n", returncode=3),
     )
@@ -44,7 +45,7 @@ def test_show_status_displays_configured_dict_model_and_provider_label(monkeypat
     monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "anthropic", raising=False)
     monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Anthropic", raising=False)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
 
     out = capsys.readouterr().out
     assert "Model:        anthropic/claude-sonnet-4" in out
@@ -71,11 +72,11 @@ def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, ca
     monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "lmstudio", raising=False)
     monkeypatch.setattr(status_mod, "provider_label", lambda provider: "LM Studio", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.models.probe_lmstudio_models",
+        "hermes_cli.models_local.probe_lmstudio_models",
         lambda api_key=None, base_url=None, timeout=5.0: [],
     )
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
 
     out = capsys.readouterr().out
     assert "LM Studio" in out

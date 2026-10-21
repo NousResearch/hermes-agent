@@ -17,10 +17,6 @@ import { deferred } from '../../test/deferred'
 
 const requestGateway = vi.fn()
 
-vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
-  useGatewayRequest: () => ({ requestGateway })
-}))
-
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
@@ -89,11 +85,15 @@ function installDelegate(): void {
   setSessionTileDelegate({
     archiveSession: vi.fn(async () => undefined),
     branchSession: vi.fn(async () => undefined),
+    branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(async () => undefined),
     executeSlash: vi.fn(async () => undefined),
     interruptSession: vi.fn(async () => undefined),
     resumeTile: vi.fn(async () => RUNTIME_ID),
-    submitToSession: vi.fn(async () => undefined),
+    submitToSession: vi.fn(async () => ({
+      runtimeSessionId: RUNTIME_ID,
+      storedSessionId: null
+    })),
     updateSession
   })
 }
@@ -137,7 +137,7 @@ describe('session tile attachment occurrence ownership', () => {
     const original = makeAttachment()
     const attach = deferred<{ attached: boolean; path: string }>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'image.attach_bytes') {
         return attach.promise
       }
@@ -146,13 +146,13 @@ describe('session tile attachment occurrence ownership', () => {
         throw new Error('submit failed after staging')
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -183,7 +183,7 @@ describe('session tile attachment occurrence ownership', () => {
     const replacement = makeAttachment()
     const attach = deferred<{ attached: boolean; path: string }>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'image.attach_bytes') {
         return attach.promise
       }
@@ -192,13 +192,13 @@ describe('session tile attachment occurrence ownership', () => {
         throw new Error('submit failed after staging')
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -225,18 +225,18 @@ describe('session tile attachment occurrence ownership', () => {
     const replacement = makeAttachment()
     const attach = deferred<{ attached: boolean; path: string }>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'image.attach_bytes') {
         return attach.promise
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -262,18 +262,20 @@ describe('session tile attachment occurrence ownership', () => {
     const replacement = makeUrlAttachment('new')
     const submit = deferred<Record<string, never>>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
-        return submit.promise
+        await submit.promise
+
+        return { admission_id: params.submission_id, status: 'started' }
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -299,7 +301,7 @@ describe('session tile attachment occurrence ownership', () => {
     const scope = createScope()
     const original = makeFileAttachment()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'file.attach') {
         return {
           attached: true,
@@ -308,13 +310,13 @@ describe('session tile attachment occurrence ownership', () => {
         }
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     await act(async () => {

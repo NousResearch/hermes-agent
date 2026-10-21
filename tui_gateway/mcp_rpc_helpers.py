@@ -1,65 +1,44 @@
 """Shared helpers for the per-profile MCP lifecycle RPCs (mcp.servers.*).
 
-These live in their own module (not methods_tools) because methods_tools
-handlers are rebound onto ``tui_gateway.server``'s globals at install time
-(see method_ctx.HandlerRegistry.install); a plain module-level def in
-methods_tools would not be reachable from a rebound handler body. Handlers
-import these at call time instead.
+Published onto ``tui_gateway.server`` as ``_mcp_summarize_server`` so the rebound handler
+bodies in methods_tools resolve it.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping
 
 
-def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]:
-    """Resolve the optional ``profile`` param to a HERMES_HOME override token.
+def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dict[str, dict], dict[str, str | None]]:
+    servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
+    plugins: dict[str, str | None] = {name: None for name in servers}
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from tools.mcp_tool_config import _filter_suspicious_mcp_servers
 
-    Returns ``(token, error)``: ``token`` is None for the launch profile (no
-    override) or an opaque reset token; ``error`` is a JSON-RPC error dict
-    (built via ``err_fn``) when the named profile doesn't exist. Callers reset
-    ``token`` in a finally via :func:`reset_profile`.
-    """
-    profile = str(params.get("profile") or "").strip()
-    if not profile:
-        return None, None
-    from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import set_hermes_home_override
-
-    profile_dir = get_profile_dir(profile)
-    if not profile_dir or not profile_dir.is_dir():
-        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
-    return set_hermes_home_override(str(profile_dir)), None
-
-
-def reset_profile(token) -> None:
-    if token is not None:
-        try:
-            from hermes_constants import reset_hermes_home_override
-
-            reset_hermes_home_override(token)
-        except Exception:
-            pass
+        discover_plugins()
+        manager = get_plugin_manager()
+        portable = _filter_suspicious_mcp_servers(manager.get_portable_mcp_servers())
+        owners = manager.get_portable_mcp_server_plugins()
+        for name, cfg in portable.items():
+            if name not in servers:
+                servers[name] = dict(cfg)
+                plugins[name] = owners.get(name)
+    except Exception:
+        pass
+    return servers, plugins
 
 
-def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
-    """Serialize one server's config for a UI (no secret values).
-
-    Mirrors web_server._mcp_server_summary plus an ``oauth_tokens_present``
-    flag so a UI can tell an OAuth server that still needs authentication from
-    one already authenticated.
-    """
+def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
+    from tools.mcp_tool_common import mcp_server_enabled
 
     cfg = cfg if isinstance(cfg, dict) else {}
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
     auth = cfg.get("auth")
     headers = cfg.get("headers") or {}
-    if not auth and isinstance(headers, dict) and any(
-        str(key).lower() == "authorization" for key in headers
-    ):
+    if not auth and isinstance(headers, dict) and any(str(key).lower() == "authorization" for key in headers):
         auth = "header"
-    tokens_present = _oauth_tokens_present(name) if auth == "oauth" else None
     return {
         "name": name,
         "transport": transport,
@@ -68,7 +47,18 @@ def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
         "args": list(cfg.get("args") or []),
         "env": sorted(str(k) for k in (cfg.get("env") or {})),
         "auth": auth,
-        "oauth_tokens_present": tokens_present,
-        "enabled": cfg.get("enabled", True) is not False,
+        "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
+        "enabled": mcp_server_enabled(cfg),
         "tools": cfg.get("tools"),
-    }
+        "source": "plugin" if plugin is not None else "config",
+        "plugin": plugin}
+
+
+def record_mcp_add(entry: Any, server_config: Mapping[str, Any], saved: bool) -> None:
+    """Count an ``mcp.servers.add`` as an MCP extension install. A save fails only on a suspicious
+    command/args configuration (``_save_mcp_server`` returns False)."""
+    from hermes_cli.mcp_catalog import record_mcp_install
+
+    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
+    record_mcp_install(source, entry.name if entry is not None else None, "success" if saved else "failed",
+                       failure_class=None if saved else "config_rejected")

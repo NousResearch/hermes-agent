@@ -1,0 +1,27 @@
+name: vaultknox
+repo: https://github.com/Ufonik88/Hermes-VaultKnox
+sha: 8aea272fd9b071615fcd0c93a38b760485673316
+subdir: src/vaultknox/_hermes_plugin
+description: "Secret-leak protection for Hermes chats. Scans inbound messages and outbound replies for API keys, tokens, and passwords with a 28-pattern detector registry, redacts them before they reach session storage or the user, and injects safe secret-handling rules so the agent never asks for secrets in chat. Zero dependencies, fully offline detection; pairs with the optional hermes-vault CLI for encrypted storage. Disclosure — rewrites inbound user messages (regex secret redaction, may false-positive on password-like strings), injects a secret-handling prompt each conversation and rewrites assistant replies that ask for secrets; outbound replies are value-redacted with the same registry (regex-based, so a shape no detector covers passes through), with findings logged as detector name plus SHA-256 fingerprint and never the raw value. The vaultknox tool is inert unless the separate vaultknox pip package is installed, its write gate is a tool argument the model sets, and a vault policy that authorises raw consume_token returns the plaintext to the model."
+maintainer: Ufonik88
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Ufonik88/Hermes-VaultKnox/blob/8aea272fd9b071615fcd0c93a38b760485673316/docs/PLUGIN.md
+version: "0.8.3"
+image: https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/8aea272fd9b071615fcd0c93a38b760485673316/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/8aea272fd9b071615fcd0c93a38b760485673316/docs/images/quickstart-terminal.png
+  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/8aea272fd9b071615fcd0c93a38b760485673316/docs/images/protection-flow.png
+  - https://raw.githubusercontent.com/Ufonik88/Hermes-VaultKnox/8aea272fd9b071615fcd0c93a38b760485673316/docs/images/plugin-verify.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - vaultknox
+  provides_hooks:
+    - pre_gateway_dispatch
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

@@ -92,7 +92,7 @@ class TestSharedCleanerWiring:
     """The ONE cleaner must be applied on every TTS entry path."""
 
     def test_tool_path_strips_think_blocks(self):
-        from tools.tts_tool import _strip_markdown_for_tts
+        from tools.tts_text_normalize import _strip_markdown_for_tts
 
         cleaned = _strip_markdown_for_tts("<think>hidden</think>**Loud** and clear 🎉")
         assert "hidden" not in cleaned
@@ -107,7 +107,7 @@ class TestSharedCleanerWiring:
         assert result["success"] is False
 
     def test_streaming_helper_uses_shared_cleaner(self):
-        from tools.tts_tool import _strip_markdown_for_tts
+        from tools.tts_text_normalize import _strip_markdown_for_tts
 
         cleaned = _strip_markdown_for_tts("Temp is 14°C today\nand rising")
         assert "degrees Celsius" in cleaned

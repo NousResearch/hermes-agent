@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { Fragment } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
@@ -10,7 +11,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { CountSkeleton } from '@/components/ui/skeleton'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
-import { compactNumber } from '@/lib/format'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 

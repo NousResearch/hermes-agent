@@ -1481,31 +1481,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
         """Probe enabled portable MCP packages without loading plugins (shares the full-discovery
         manifest collection so precedence/gating cannot diverge)."""
-        if _env_enabled("HERMES_SAFE_MODE"):
-            return False
-        plugins_config = raw_config.get("plugins")
-        if not isinstance(plugins_config, dict):
-            return False
-
-        def _names(value: Any) -> set[str]:
-            return {v for v in value if isinstance(v, str)} if isinstance(value, list) else set()
-
-        enabled = _names(plugins_config.get("enabled"))
-        disabled = _names(plugins_config.get("disabled", []))
-        if not enabled:
-            return False
-        for lookup_key, manifest in {manifest_key(m): m for m in self._collect_directory_manifests()}.items():
-            names = {lookup_key, manifest.name}
-            if not manifest.portable or names & disabled or not names & enabled:
-                continue
-            try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
-                from hermes_cli.agent_plugins import _discover_mcp
-                if _discover_mcp(Path(manifest.path), get_hermes_home() / "plugin-data"
-                                 / (manifest.skill_namespace or lookup_key), [], create_data=False):
-                    return True
-            except (OSError, RuntimeError, ValueError):
-                continue  # fail closed on an unreadable package; full discovery reports it
-        return False
+        from hermes_cli.plugins_discovery import has_enabled_portable_mcp
+        return has_enabled_portable_mcp(self, raw_config)
 
     def _scan_directory(
         self, path: Path, source: str, skip_names: Optional[set[str]] = None,

@@ -12,7 +12,7 @@ import importlib.metadata
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
@@ -216,6 +216,48 @@ def collect_directory_manifests() -> list[PluginManifest]:
     else:
         logger.debug("Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)")
     return manifests
+
+
+def has_enabled_portable_mcp(manager, raw_config: Mapping[str, Any]) -> bool:
+    """Probe portable MCP declarations without loading plugins, honoring native name precedence."""
+    from hermes_cli import plugins as _origin
+
+    if _origin._env_enabled("HERMES_SAFE_MODE"):
+        return False
+    plugins_config = raw_config.get("plugins")
+    if not isinstance(plugins_config, dict):
+        return False
+
+    def _names(value: Any) -> set[str]:
+        return {v for v in value if isinstance(v, str)} if isinstance(value, list) else set()
+
+    enabled = _names(plugins_config.get("enabled"))
+    disabled = _names(plugins_config.get("disabled", []))
+    if not enabled:
+        return False
+    from hermes_cli.mcp_security import validate_mcp_server_entry
+
+    native = raw_config.get("mcp_servers")
+    # Native precedence applies after validation: accepted dict entries reserve names even when disabled.
+    native_names = {
+        name for name, cfg in native.items()
+        if isinstance(cfg, dict) and not validate_mcp_server_entry(name, cfg)
+    } if isinstance(native, dict) else set()
+    for lookup_key, manifest in {manifest_key(m): m for m in manager._collect_directory_manifests()}.items():
+        names = {lookup_key, manifest.name}
+        if not manifest.portable or names & disabled or not names & enabled:
+            continue
+        try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
+            from hermes_cli.agent_plugins import _discover_mcp
+            servers = _discover_mcp(
+                Path(manifest.path), get_hermes_home() / "plugin-data"
+                / (manifest.skill_namespace or lookup_key), [], create_data=False,
+            )
+            if servers.keys() - native_names:
+                return True
+        except (OSError, RuntimeError, ValueError):
+            continue  # fail closed on an unreadable package; full discovery reports it
+    return False
 
 
 def resolve_manifest_winners(manifests: list[PluginManifest]) -> dict[str, PluginManifest]:

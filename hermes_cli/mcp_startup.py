@@ -54,14 +54,19 @@ def get_mcp_server_filter() -> Optional[list[str]]:
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_cli.config_effective import load_user_config_effective
+        from tools.mcp_tool_common import mcp_server_enabled
 
-        raw_config = read_raw_config() or {}
-        if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
+        config = load_user_config_effective() or {}
+        mcp_servers = config.get("mcp_servers")
+        if isinstance(mcp_servers, dict) and any(
+            isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
+            for server_cfg in mcp_servers.values()
+        ):
             return True
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
 
-        return has_enabled_agent_plugin_mcp(raw_config)
+        return has_enabled_agent_plugin_mcp(config)
     except Exception:
         return True  # conservative: still try discovery in the background; startup can't block
 
@@ -101,10 +106,13 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """
     home_key = hermes_home_key()
     with _mcp_discovery_lock:
+        thread = _mcp_discovery_thread.get(home_key)
+        if thread is not None and thread.is_alive():
+            return
+        # An idle configuration is not an attempted discovery and must not claim a slot.
+        if not _has_configured_mcp_servers():
+            return
         if home_key in _mcp_discovery_started:
-            thread = _mcp_discovery_thread.get(home_key)
-            if thread is not None and thread.is_alive():
-                return
             try:
                 connected = _any_mcp_connected()
                 pending = _servers_awaiting_connect() if connected else []
@@ -123,8 +131,6 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             _mcp_discovery_thread.pop(home_key, None)
 
         _mcp_discovery_started.add(home_key)
-        if not _has_configured_mcp_servers():
-            return
 
         # Bare threads start from an empty context: run discovery under a copy of the caller's, so
         # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)

@@ -1,13 +1,15 @@
 name: tavily
+title: Tavily
 repo: https://github.com/tavily-ai/tavily-hermes-plugin
-sha: a64749f5eaedade2957786798945eee6045b3e49
-description: 'Search, extract, map, crawl, and research through Tavily hosted MCP, with a web research skill. The default connection requires TAVILY_API_KEY; supports Hermes-managed OAuth through a native MCP override.'
+sha: f3d7ce6f077d355fae2d9044d48895be44708508
+description: 'Search, extract, map, crawl, and research through Tavily hosted MCP, with six Tavily skills. The default connection requires TAVILY_API_KEY; supports Hermes-managed OAuth through a native MCP override.'
 maintainer: tavily-ai
 tier: community
 category: web
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/tavily-ai/tavily-hermes-plugin/blob/a64749f5eaedade2957786798945eee6045b3e49/README.md
+docs_url: https://github.com/tavily-ai/tavily-hermes-plugin/blob/f3d7ce6f077d355fae2d9044d48895be44708508/README.md
 version: "1.0.0"
+image: https://raw.githubusercontent.com/tavily-ai/tavily-hermes-plugin/f3d7ce6f077d355fae2d9044d48895be44708508/assets/tavily-catalog-card.svg
 platforms: []
 capabilities:
   provides_tools: []

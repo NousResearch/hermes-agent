@@ -30,6 +30,11 @@ from gateway.restart import (
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
+from gateway.shutdown_notice import (
+    delivery_target_key as _delivery_target_key,
+    notice_target_key as _notice_target_key,
+    record_shutdown_notice,
+)
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -142,25 +147,6 @@ def _send_failed(result: Any) -> bool:
 def _send_error(result: Any) -> str:
     """Error text of a failed ``send()`` result (adapters may omit it)."""
     return getattr(result, "error", "send returned success=False")
-
-
-def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedup key for one notice destination: thread/topic platforms share a chat but route apart."""
-    return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
-    """Dedupe key for one DELIVERED chat: profile-independent, except Telegram private chats.
-
-    Two served profiles can share one home chat (one Telegram group for the whole host) and owe it
-    ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
-    under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
-    """
-    from gateway.delivery import looks_like_telegram_private_chat_id
-    if (profile and profile != "default" and platform_value == "telegram"
-            and looks_like_telegram_private_chat_id(chat_id)):
-        platform_value = f"{profile}:{platform_value}"
-    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _effective_watchdog_leash(runner: object) -> float:
@@ -1128,6 +1114,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
             async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
                 await present_notification(_send_home, platform=platform)
+
+        # The next startup tells these chats the gateway is back (see gateway.shutdown_notice).
+        from gateway.run import _hermes_home as _home_path
+        record_shutdown_notice(_home_path, notified, restart_source)
 
     # Agent finalization / resource cleanup
     @staticmethod

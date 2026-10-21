@@ -171,7 +171,10 @@ class GatewayTurnPersistenceMixin:
                 False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
             )
         last_reasoning = agent_result.get("last_reasoning")
-        if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
+        # A whitespace-only reasoning payload ("\n\n") must not render an empty reasoning
+        # block on messaging platforms. Only render when there is real text.
+        if not (_show_reasoning_effective and response and not _intentional_silence
+                and isinstance(last_reasoning, str) and last_reasoning.strip()):
             return response
         from gateway.stream_consumer_fences import escape_code_fences_for_display
         # Collapse long reasoning to keep messages readable

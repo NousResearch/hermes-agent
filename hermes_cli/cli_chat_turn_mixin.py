@@ -639,23 +639,26 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
-            if reasoning and getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import thought_rows
-                for line in thought_rows(None, reasoning, self.reasoning_full):
-                    _cprint(line)
-            elif reasoning:
-                w = self._scrollback_box_width()
-                r_label = f" {t('cli.chat.reasoning_label')} "
-                r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
-                r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                # First 10 lines unless the user opted into /reasoning full.
-                lines = reasoning.strip().splitlines()
-                if len(lines) > 10 and not self.reasoning_full:
-                    display_reasoning = "\n".join(lines[:10])
-                    display_reasoning += f"\n{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - 10)}{_RST}"
+            # Whitespace-only reasoning ("\n\n") would render an empty box on either layout —
+            # require real text before anything is drawn.
+            if reasoning and reasoning.strip():
+                if getattr(self, "_modern_layout", False):
+                    from hermes_cli.cli_modern_layout import thought_rows
+                    for line in thought_rows(None, reasoning, self.reasoning_full):
+                        _cprint(line)
                 else:
-                    display_reasoning = reasoning.strip()
-                _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+                    w = self._scrollback_box_width()
+                    r_label = f" {t('cli.chat.reasoning_label')} "
+                    r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
+                    r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
+                    # First 10 lines unless the user opted into /reasoning full.
+                    lines = reasoning.strip().splitlines()
+                    if len(lines) > 10 and not self.reasoning_full:
+                        display_reasoning = "\n".join(lines[:10])
+                        display_reasoning += f"\n{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - 10)}{_RST}"
+                    else:
+                        display_reasoning = reasoning.strip()
+                    _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
     def _chat_print_response_panel(self, turn, response):
         """Response box (close TTS-drawn box / post-stream transform / Rich Panel), then billing CTA."""

@@ -350,3 +350,52 @@ def test_a_reset_cannot_leave_a_hosted_agent_from_inside_it(two_profiles):
     assert current_scope() == Scope("local", str(a), LOCAL_OWNER)
     local.reset()
     assert current_scope() is None
+
+
+def test_a_mirrored_hermes_home_is_not_mistaken_for_the_launch_profile(tmp_path, monkeypatch):
+    """An embedding host pins the launch home and mirrors the served profile into ``HERMES_HOME``:
+    binding that profile must give it its own secrets, never the launch profile's env-only keys."""
+    from hermes_constants import pin_process_hermes_home
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    launch, served = tmp_path / "launch", _profile(tmp_path, "b", "local")
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("OPENAI_API_KEY", "launch-only-key")
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    pin_process_hermes_home(launch)
+    try:
+        activate_multi_profile_hosting()
+        monkeypatch.setenv("HERMES_HOME", str(served))
+        with bind_profile_scope(served, hydrate_secrets=False):
+            assert (current_secret_scope() or {}).get("OPENAI_API_KEY") is None
+            assert current_secret_scope_home() == str(served)
+    finally:
+        pin_process_hermes_home(None)
+
+
+def test_home_reads_during_another_threads_first_scope_import_see_no_override(monkeypatch):
+    """``hermes_scope`` is in ``sys.modules`` before its body has run; a home read in that window is
+    an unbound read, not an AttributeError."""
+    import sys
+    import types
+    from hermes_constants import get_hermes_home_override
+    monkeypatch.setitem(sys.modules, "hermes_scope", types.ModuleType("hermes_scope"))
+    assert get_hermes_home_override() is None
+
+
+def test_a_reassigned_token_variable_does_not_grow_the_state(two_profiles):
+    import contextvars
+    import hermes_scope
+    a, _b = two_profiles
+
+    def run() -> int:
+        token = None
+        for _ in range(500):
+            token = set_hermes_home_override(str(a))
+        node, depth = hermes_scope._STATE.get(), 0
+        while node is not None:
+            node, depth = node.parent, depth + 1
+        del token
+        return depth
+
+    assert contextvars.copy_context().run(run) <= 3

@@ -49,10 +49,10 @@ def get_hermes_home_override() -> str | None:
 
     Read through ``sys.modules``, not an import: this module is on the boot path (launchers,
     ``hermes_bootstrap``, ``pm``) and must work alone, including in a checkout an update left
-    half-written. Nothing can be bound before ``hermes_scope`` is imported, so when it is not
-    loaded there is no override."""
-    scope = sys.modules.get("hermes_scope")
-    return (scope.current_state().home or None) if scope is not None else None
+    half-written. Nothing can be bound before ``hermes_scope`` has finished importing, so while
+    it is absent or still initialising (another thread's first import) there is no override."""
+    current_state = getattr(sys.modules.get("hermes_scope"), "current_state", None)
+    return (current_state().home or None) if current_state is not None else None
 
 
 def _expand_hermes_home(path: str) -> Path:

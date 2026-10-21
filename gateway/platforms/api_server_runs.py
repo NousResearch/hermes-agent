@@ -121,12 +121,12 @@ _TOOL_COMPLETED_RESULT_MAX_CHARS = 100_000
 def _tool_completed_result(result: Any, redact_sensitive_text: Callable[..., str]) -> str | None:
     if result is None:
         return None
+    # Parse JSON strings so redaction runs per leaf and cannot eat a closing quote.
     if isinstance(result, str):
         with suppress(ValueError):
             parsed = json.loads(result)
             if isinstance(parsed, (dict, list)):
                 result = parsed
-    # Redact leaves before serialising so a secret ending a JSON string cannot eat its closing quote.
     if isinstance(result, str):
         text = redact_sensitive_text(result, force=True)
     else:
@@ -136,7 +136,7 @@ def _tool_completed_result(result: Any, redact_sensitive_text: Callable[..., str
 
 
 def _redacted_tool_args(value: Any, redact_sensitive_text: Callable[..., str]) -> Any:
-    """Redact every string leaf so the structure stays valid JSON for the client."""
+    # Redact every string leaf so the structure stays valid JSON.
     if isinstance(value, str):
         return redact_sensitive_text(value, force=True)
     if isinstance(value, dict):

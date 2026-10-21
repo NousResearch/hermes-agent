@@ -10,6 +10,7 @@
 import type { PluginRestOptions } from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { KANBAN_LOCALES } from './i18n'
 import type { CompletionEvent } from './completion-notify'
 
 /** Mirrors the module's public surface (no `typeof import()` — repo eslint
@@ -77,6 +78,20 @@ const ev = (
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+describe('failure notification copy', () => {
+  it('does not promise automatic retries in any bundled language', () => {
+    const retryClaim = /retry|再試行|重试|重試/i
+    const bundles = Object.values(KANBAN_LOCALES) as unknown as Array<{
+      notify: { crashedTitle: string; timedOutTitle: string }
+    }>
+
+    for (const bundle of bundles) {
+      expect(bundle.notify.crashedTitle).not.toMatch(retryClaim)
+      expect(bundle.notify.timedOutTitle).not.toMatch(retryClaim)
+    }
+  })
 })
 
 describe('authoritative baseline', () => {

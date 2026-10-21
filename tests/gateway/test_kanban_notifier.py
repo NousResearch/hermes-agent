@@ -131,6 +131,37 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     assert adapter.handled[0].source.thread_id == "20197"
 
 
+def test_failure_ping_translations_do_not_promise_retry():
+    from agent.i18n import t
+
+    retry_terms_by_language = {
+        "af": ("herprobeer", "outomaties"),
+        "ar": ("المحاولة", "تلقائيًا"),
+        "de": ("erneut versucht", "automatisch"),
+        "en": ("retry", "retried"),
+        "es": ("reintent",),
+        "fr": ("réessay", "automatiquement"),
+        "ga": ("triail eile", "go huathoibríoch"),
+        "hu": ("újrapróbál", "automatikusan"),
+        "it": ("ritentat", "automaticamente"),
+        "ja": ("再試行",),
+        "ko": ("다시 시도", "자동으로"),
+        "pt": ("tentada novamente", "automaticamente"),
+        "ru": ("повтор", "автоматически"),
+        "tr": ("yeniden denenecek",),
+        "uk": ("спробу буде повторено", "автоматично"),
+        "zh": ("重试",),
+        "zh-hant": ("重試",),
+    }
+    for lang, retry_terms in retry_terms_by_language.items():
+        for kind, values in (
+            ("crashed", {"head": "Kanban test"}),
+            ("timed_out", {"head": "Kanban test", "span": "its time limit"}),
+        ):
+            text = t(f"gateway.kanban.ping.{kind}", lang=lang, **values).lower()
+            assert not any(term in text for term in retry_terms), (lang, kind, text)
+
+
 def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     """A sub stamped with the gateway's own named profile uses self.adapters.
 
@@ -325,6 +356,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     # First crash delivered.
     assert len(adapter.sent) == 1
     assert "stopped unexpectedly" in adapter.sent[0]["text"].lower()
+    assert "retry" not in adapter.sent[0]["text"].lower()
 
     # Subscription survives — the cursor advanced past event #1, but the
     # row is still there.

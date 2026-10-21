@@ -391,8 +391,8 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s)"
+    return " timed out (max_runtime=0s)"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
@@ -401,7 +401,7 @@ _KANBAN_EVENT_FORMATTERS = {
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
-    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
+    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone)"),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
 }

@@ -192,14 +192,25 @@ class StateToken:
 
 
 def _fold(node: _Node | None) -> _Node | None:
-    """Merge the top two changes into one while neither can be reset and they share an owner: such
-    changes are permanent and replay together, so a caller that discards its tokens (a set with no
-    reset, repeated in a long-lived process) keeps the chain short."""
-    while (node is not None and node.parent is not None and not node.change.resettable()
-           and not node.parent.change.resettable() and node.change.owner is node.parent.change.owner):
-        merged = _Change({**node.parent.change.fields, **node.change.fields}, node.change.owner)
-        node = _Node(node.state, merged, node.parent.parent)
-    return node
+    """Merge every run of adjacent changes that can no longer be reset and share an owner into one
+    change. Such changes are permanent and replay together, so a caller that discards its tokens
+    (a set with no reset, or one token variable reassigned in a loop) keeps the chain as long as
+    the number of live tokens, not the number of calls. Returns *node* itself when nothing folds."""
+    chain: list[_Node] = []
+    while node is not None:
+        chain.append(node)
+        node = node.parent
+    rebuilt: _Node | None = None
+    folded = False
+    for current in reversed(chain):
+        below = rebuilt
+        if (below is not None and not current.change.resettable() and not below.change.resettable()
+                and current.change.owner is below.change.owner):
+            merged = _Change({**below.change.fields, **current.change.fields}, current.change.owner)
+            rebuilt, folded = _Node(current.state, merged, below.parent), True
+        else:
+            rebuilt = current if not folded else _Node(current.state, current.change, below)
+    return rebuilt
 
 
 def push_state(**fields: Any) -> StateToken:

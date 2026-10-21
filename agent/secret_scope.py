@@ -167,8 +167,9 @@ def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Opti
                 "set_secret_scope(None) inside a bound scope would leave its home and terminal "
                 "policy without their secrets; bind a scope at the activity's entry point")
         from agent.runtime_scope import legacy_switch
-        from hermes_constants import get_process_hermes_home
-        switched = legacy_switch(profile_home or get_process_hermes_home(), secrets=secrets)
+        from hermes_constants import get_routing_process_hermes_home
+        # Unstamped marks the launch profile, by the same identity serves_routed_profile uses.
+        switched = legacy_switch(profile_home or get_routing_process_hermes_home(), secrets=secrets)
         if switched is not None:
             return switched
     bound = None if secrets is None else BoundSecrets(secrets, str(profile_home) if profile_home else None)

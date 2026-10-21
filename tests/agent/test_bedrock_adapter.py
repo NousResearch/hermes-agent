@@ -1248,6 +1248,7 @@ class TestInferenceProfileContextLength:
     def setup_method(self):
         from agent import bedrock_adapter
         bedrock_adapter._inference_profile_model_cache.clear()
+        bedrock_adapter._inference_profile_failures.clear()
 
     def test_arn_resolves_wrapped_model_window_in_the_arn_region(self):
         # No region passed (agent/model_metadata.py::_resolve_bedrock_context_length passes none) and
@@ -1274,8 +1275,50 @@ class TestInferenceProfileContextLength:
                 caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
             assert get_bedrock_context_length(self.ARN, probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1 and self.ARN in warnings[0].getMessage()
-        assert "GetInferenceProfile" in warnings[0].getMessage()
+        window = [r for r in warnings if "GetInferenceProfile" in r.getMessage()]
+        assert len(window) == 1 and self.ARN in window[0].getMessage()
+        # The resolver also says, once, that it could not resolve the profile.
+        assert any("could not resolve inference profile" in r.getMessage() for r in warnings)
+
+    def test_failed_resolution_still_sends_cache_markers(self):
+        # Regression: a lookup that fails at process start (expired SSO
+        # token) must not turn prompt caching off. Markers go out from the first call, the lookup is
+        # retried after the backoff, and a success is cached.
+        from agent import bedrock_adapter
+        from agent.bedrock_adapter import build_converse_kwargs
+        client = MagicMock()
+        client.get_inference_profile.side_effect = [
+            Exception("Token has expired and refresh failed"),
+            {"models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}]},
+        ]
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"}]
+        clock = [1000.0]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                patch("agent.bedrock_adapter.time.monotonic", side_effect=lambda: clock[0]):
+            first = build_converse_kwargs(model=self.ARN, messages=messages)
+            assert first["system"][-1] == {"cachePoint": {"type": "default"}}
+            clock[0] += 10
+            build_converse_kwargs(model=self.ARN, messages=messages)
+            assert client.get_inference_profile.call_count == 1  # inside the backoff window
+            clock[0] += bedrock_adapter._INFERENCE_PROFILE_RETRY_SECONDS
+            later = build_converse_kwargs(model=self.ARN, messages=messages)
+            build_converse_kwargs(model=self.ARN, messages=messages)
+        assert later["system"][-1] == {"cachePoint": {"type": "default"}}
+        assert client.get_inference_profile.call_count == 2
+
+    def test_unresolved_profile_rejecting_cache_point_is_stripped_and_retried(self):
+        # The optimistic default is safe: if the unresolved profile wraps a model that refuses
+        # cachePoint, the existing self-heal strips the marker and the call still succeeds.
+        from agent.bedrock_adapter import build_converse_kwargs, recover_from_cache_point_rejection
+        client = MagicMock()
+        client.get_inference_profile.side_effect = Exception("AccessDeniedException")
+        messages = [{"role": "system", "content": "Be helpful."}, {"role": "user", "content": "Hi"}]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client):
+            kwargs = build_converse_kwargs(model=self.ARN, messages=messages)
+        exc = Exception("ValidationException: #/system/1: extraneous key [cachePoint] is not permitted")
+        retry = recover_from_cache_point_rejection(exc, kwargs)
+        assert retry is not None
+        assert {"cachePoint": {"type": "default"}} not in retry["system"]
 
     def test_profile_wrapping_claude_keeps_prompt_cache_markers(self):
         # build_converse_kwargs gates cachePoint on the model id; the opaque profile ARN must be

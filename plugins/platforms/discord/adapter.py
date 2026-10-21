@@ -1212,13 +1212,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_attachment_policy import DiscordAttachmentPolicyMixin, seed_attachment_config
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+class DiscordAdapter(DiscordAttachmentPolicyMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
                      DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -4934,22 +4935,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             "free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false", truthy=True,
         )
 
-    def _discord_max_attachment_bytes(self) -> int:
-        """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
-        configured = self.config.extra.get("max_attachment_bytes")
-        if configured is None:
-            configured = _scoped_gate_env("DISCORD_MAX_ATTACHMENT_BYTES") or None
-        if configured is None or configured == "":
-            return 32 * 1024 * 1024
-        try:
-            value = int(configured)
-        except (TypeError, ValueError):
-            logger.warning(
-                "[Discord] Invalid max_attachment_bytes value %r, falling back to 32 MiB",
-                configured,
-            )
-            return 32 * 1024 * 1024
-        return max(0, value)
 
     @staticmethod
     def _is_discord_voice_message_attachment(att: Any) -> bool:
@@ -6041,7 +6026,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     # types rely on ``gateway/run.py`` emitting a (sandbox-translated) path note.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
                     _is_text = ext in _TEXT_INJECT_EXTENSIONS or (content_type or "").startswith("text/")
-                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    from gateway.config import _coerce_bool
+                    inline_text = _coerce_bool(self.config.extra.get("inline_text_attachments"), default=True)
+                    if inline_text and _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = att.filename or f"document{ext or '.txt'}"
@@ -7329,6 +7316,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    seed_attachment_config(discord_cfg, seeded_extra)
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]

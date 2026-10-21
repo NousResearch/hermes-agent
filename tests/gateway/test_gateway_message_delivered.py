@@ -224,6 +224,26 @@ class TestNonStreamedFinal:
         _send(adapter, _event(adapter), "k", "Stopped.", {}, reply_to=None, is_ephemeral_response=True)
         assert fired == []
 
+    def test_command_reply_without_an_agent_turn_does_not_fire(self, fired):
+        """A refused ``/resume`` (or any command answered without a turn) is a system reply: no
+        final, no session_id, so an observer must not see it as a delivered turn."""
+        adapter = _Adapter(SendResult(success=True, message_id="1"))
+        event = _event(adapter)
+        event.text = "/resume other-chat-session"
+        _send(adapter, event, "k", "⚠️ /resume blocked: 'x' belongs to a different user or chat.", {},
+              reply_to=None)
+        assert fired == []
+
+    def test_command_that_ran_an_agent_turn_still_reports_its_final(self, fired):
+        adapter = _Adapter(SendResult(success=True, message_id="1"))
+        event = _event(adapter)
+        event.text = "/plan ship the hook"
+        event._delivered_from_agent_turn = True          # stamped by _handle_message_with_agent
+        event._delivered_turn_session_id = "sid-plan"
+        _send(adapter, event, "k", "plan", {}, reply_to=None)
+        (_, payload), = fired
+        assert payload["session_id"] == "sid-plan" and payload["text"] == "plan"
+
     def test_slow_callback_never_delays_the_delivery(self):
         adapter = _Adapter(SendResult(success=True, message_id="1"))
         started = []

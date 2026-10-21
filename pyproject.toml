@@ -177,7 +177,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.3.0; python_version >= '3.14'",
+  "Pillow==13.0.0; python_version >= '3.14'",  # GHSA-8g5g-8vmr-9782 (heap overflow in ImagingJpegDecode)
   # HEIF/HEIC/AVIF decode for the vision tools. iPhone photos and screenshots
   # are HEIC (frequently mislabeled .jpg by upload pipelines); Pillow has no
   # built-in HEIF codec, so without this the vision resolver rejects them as
@@ -629,6 +629,14 @@ override-dependencies = [
   # never builds a misaki G2P. The never-true marker removes it from the lock.
   # Remove this line when misaki drops it or a 3.14-capable release fits.
   "spacy-curated-transformers; sys_platform == 'never'",
+  # browser-harness 0.1.13 pins pillow==12.3.0, but pillow 12.3.0 carries
+  # GHSA-8g5g-8vmr-9782 (heap buffer overflow in ImagingJpegDecode). That
+  # decoder is reachable from Hermes: the vision tools and the document
+  # extractors decode images out of untrusted files. browser-harness's own
+  # Pillow use (Image.open, thumbnail, ImageDraw.ellipse/line) is unaffected
+  # by 13.0.0. This override lifts the cap until browser-harness relaxes it.
+  # Remove this line when browser-harness lifts its own pin.
+  "pillow==13.0.0",
 ]
 # Release-age check: Hermes's dependencies must be at least 3 days old when Hermes
 # locks them. It runs where uv.lock is resolved (`hermes pm lock`, and CI's lock

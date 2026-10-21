@@ -146,18 +146,22 @@ class GatewayVoiceMixin:
         return raw.guild.id if getattr(raw, "guild", None) else None  # regular message
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
-        adapter = self._delivery_adapter_for(event.source)
+        return await self._voice_channel_join_for_source(event.source, self._get_guild_id(event))
+
+    async def _voice_channel_join_for_source(self, source: SessionSource, guild_id: Optional[int]) -> str:
+        """Join the voice channel ``source.user_id`` is in and bind it to ``source``'s text chat.
+        Shared by ``/voice join`` and the agent's ``discord_voice`` tool."""
+        adapter = self._delivery_adapter_for(source)
         if not hasattr(adapter, "join_voice_channel"):
             return t("gateway.voice.channel_unsupported")
-        guild_id = self._get_guild_id(event)
         if not guild_id:
             return t("gateway.voice.channel_guild_only")
-        voice_channel = await adapter.get_user_voice_channel(guild_id, event.source.user_id)
+        voice_channel = await adapter.get_user_voice_channel(guild_id, source.user_id)
         if not voice_channel:
             return t("gateway.voice.channel_not_in_voice")
         # Wire callbacks BEFORE join so voice input arriving right after connection is not lost.
         self._bind_voice_input_callback(adapter)
-        voice_profile = self._adapter_profile_for_source(event.source)
+        voice_profile = self._adapter_profile_for_source(source)
         if hasattr(adapter, "_on_voice_disconnect"):
             adapter._on_voice_disconnect = functools.partial(
                 self._handle_voice_timeout_cleanup, adapter=adapter)
@@ -177,7 +181,7 @@ class GatewayVoiceMixin:
         if not success:
             adapter._voice_input_callback = None
             return t("gateway.voice.channel_join_permissions")
-        text_channel_id = int(event.source.chat_id)
+        text_channel_id = int(source.chat_id)
         # Moving to another text channel drops speech buffered for the old one (a same-channel rejoin
         # keeps it); nothing awaits between this and the binding write, so no poll sees the gap.
         previous = adapter._voice_text_channels.get(guild_id)
@@ -185,14 +189,18 @@ class GatewayVoiceMixin:
             adapter.discard_pending_voice_input(guild_id)
         adapter._voice_text_channels[guild_id] = text_channel_id
         if hasattr(adapter, "_voice_sources"):
-            adapter._voice_sources[guild_id] = event.source.to_dict()
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "all")
+            adapter._voice_sources[guild_id] = source.to_dict()
+        self._apply_voice_mode(adapter, self._voice_key_for_source(source),
+                               source.chat_id, "all")
         return t("gateway.voice.channel_joined", name=voice_channel.name)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
-        adapter = self._delivery_adapter_for(event.source)
-        guild_id = self._get_guild_id(event)
+        return await self._voice_channel_leave_for_source(event.source, self._get_guild_id(event))
+
+    async def _voice_channel_leave_for_source(self, source: SessionSource, guild_id: Optional[int]) -> str:
+        """Leave the guild's voice channel, set ``source``'s voice mode off and drop the voice input
+        callback. Shared by ``/voice leave`` and the ``discord_voice`` tool."""
+        adapter = self._delivery_adapter_for(source)
         if not (guild_id and hasattr(adapter, "leave_voice_channel")
                 and hasattr(adapter, "is_in_voice_channel")
                 and adapter.is_in_voice_channel(guild_id)):
@@ -202,8 +210,8 @@ class GatewayVoiceMixin:
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "off")
+        self._apply_voice_mode(adapter, self._voice_key_for_source(source),
+                               source.chat_id, "off")
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")

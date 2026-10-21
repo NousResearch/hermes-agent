@@ -147,6 +147,32 @@ def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _bundled_plugin_selected(home, "langfuse")
 
 
+def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run its Singularity backend for *home*: ``terminal.backend`` (or the legacy
+    ``terminal.env_type``) set to ``singularity`` in its config (managed overlay applied, as the bridge
+    reads it), else ``TERMINAL_ENV=singularity`` in its ``.env``. config.yaml wins over ``.env``, as in
+    the bridge. *process_env* (the active home at startup only) also counts a ``TERMINAL_ENV`` the
+    process received from its environment (systemd unit, Docker, shell export)."""
+    from gateway import config_loader
+    try:
+        terminal = config_loader.read_yaml_layers(home).get("terminal")
+    except Exception:  # malformed config.yaml: the bridge reads nothing from it either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        terminal = None
+    terminal = terminal if isinstance(terminal, dict) else {}
+    configured = str(terminal.get("backend") or terminal.get("env_type") or "").strip()
+    if not configured:
+        from agent.secret_scope import load_env_file
+        configured = str(load_env_file(home / ".env").get("TERMINAL_ENV") or "").strip()
+    if not configured and process_env:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            configured = str(get_secret("TERMINAL_ENV", "") or "").strip()
+        except UnscopedSecretError:  # multiplexed with no profile scope bound: no process value is this home's
+            configured = ""
+    return configured.lower() == "singularity"
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -185,6 +211,8 @@ class LeftCoreFeature:
     # catalog plugin in ``plugins.enabled`` / ``plugins.disabled`` (the loader's gate, an
     # administrator's pinned list) and for every `hermes plugins <verb>` (:func:`legacy_plugin_alias`).
     plugin_key: str = ""
+    # ``terminal.backend`` value the plugin registers: unknown-backend errors name the install command.
+    terminal_backend: str = ""
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -216,6 +244,12 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="the conversation tools keep their names; MCP clients change their args to [\"mcp-serve\"]",
         command="mcp-serve", old_command="hermes mcp serve",
     ),
+    LeftCoreFeature(
+        plugin="singularity", label="Singularity/Apptainer terminal backend", in_use=singularity_in_use,
+        unchanged="terminal.backend: singularity, terminal.singularity_image (TERMINAL_SINGULARITY_IMAGE) "
+                  "and the container_* limits are unchanged",
+        terminal_backend="singularity",
+    ),
 )
 
 def _install_sentence(feature: LeftCoreFeature) -> str:
@@ -228,6 +262,13 @@ def platform_install_hint(platform: str) -> str:
     """For an unknown platform name that left core: the sentence that names its install command for
     the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
     feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    return f". {_install_sentence(feature)}" if feature else ""
+
+
+def terminal_backend_install_hint(backend: str) -> str:
+    """For a ``terminal.backend`` value that left core: the sentence that names its install command for
+    the active home, else ``""``. Appended to "unknown terminal backend" errors."""
+    feature = next((f for f in LEFT_CORE if f.terminal_backend and f.terminal_backend == backend), None)
     return f". {_install_sentence(feature)}" if feature else ""
 
 

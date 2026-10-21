@@ -6,7 +6,6 @@ monkeypatching on web_server stays authoritative.
 """
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional
@@ -82,12 +81,6 @@ def _probe_docker_backend(_cfg) -> tuple:
         return ("unavailable", f"{runtime} probe failed: {exc}")
 
 
-def _probe_singularity_backend(_cfg) -> tuple:
-    if shutil.which("singularity") or shutil.which("apptainer"):
-        return ("ready", "")
-    return ("needs_setup", "Neither singularity nor apptainer found on PATH.")
-
-
 def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
     host = _terminal_cfg_value(terminal_cfg, "ssh_host", "TERMINAL_SSH_HOST")
     user = _terminal_cfg_value(terminal_cfg, "ssh_user", "TERMINAL_SSH_USER")
@@ -125,7 +118,6 @@ def _probe_daytona_backend(_cfg) -> tuple:
 _BACKEND_PROBES = {
     "local": lambda _cfg: ("ready", ""),
     "docker": _probe_docker_backend,
-    "singularity": _probe_singularity_backend,
     "ssh": _probe_ssh_backend,
     "modal": _probe_modal_backend,
     "daytona": _probe_daytona_backend,

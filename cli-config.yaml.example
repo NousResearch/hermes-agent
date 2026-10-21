@@ -503,9 +503,10 @@ terminal:
 #   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
-# OPTION 4: Singularity/Apptainer container
+# OPTION 4: Singularity/Apptainer container (the official `singularity` plugin)
 # Commands run in a Singularity container (common in HPC environments)
 # Great for: HPC clusters, shared compute environments
+# Install it first: hermes plugins install singularity
 # -----------------------------------------------------------------------------
 # terminal:
 #   backend: "singularity"
@@ -541,7 +542,7 @@ terminal:
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, modal, daytona, container plugin backends -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

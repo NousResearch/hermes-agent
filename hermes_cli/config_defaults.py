@@ -5,7 +5,7 @@ docs of config.yaml.
 """
 
 
-#: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
+#: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
 #: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
 #: is the template copied, and the config migration unsets it, never a user's own pin.
@@ -353,12 +353,11 @@ DEFAULT_CONFIG = {
         # reads host values) — useful under systemd without the user's shell env. Example:
         # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
-        "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
         "modal_image": DEFAULT_SANDBOX_IMAGE,
         "daytona_image": DEFAULT_SANDBOX_IMAGE,
         "vercel_image": DEFAULT_VERCEL_IMAGE,  # vercel_sandbox backend only: a Vercel-managed or VCR image
         "vercel_runtime": "",  # deprecated by Vercel; a legacy runtime pin (node24 | node22 | python3.13) overrides vercel_image
-        # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
+        # Container limits (docker, modal, daytona, vercel_sandbox, container plugin backends; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -2542,7 +2541,7 @@ DEFAULT_CONFIG = {
         # 0 keeps screens up until stopped.
         "idle_stop_minutes": 30,
         # Where the screen (and with it computer_use and the bot's browser) runs.
-        #   auto      follow the terminal backend: inside the docker / ssh / singularity sandbox when one is
+        #   auto      follow the terminal backend: inside the docker / ssh / streaming plugin sandbox when one is
         #             configured, on the gateway host when terminal.backend is local. A sandbox backend that
         #             cannot host a screen (modal, daytona, vercel) REFUSES rather than quietly running the
         #             desktop on the host beside the sandbox you chose for the agent.

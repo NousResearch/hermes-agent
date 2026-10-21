@@ -17,6 +17,7 @@ import {
   contextValue,
   formatDurationSeconds,
   isRecord,
+  NEUTRAL_FAILURE_TOOLS,
   numberValue,
   parseMaybeObject,
   unwrapToolPayload
@@ -732,6 +733,10 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
   }
 
   if (part.toolName === 'terminal' && error === 'Command failed with exit code 1.') {
+    return 'notice'
+  }
+
+  if (NEUTRAL_FAILURE_TOOLS.has(part.toolName)) {
     return 'notice'
   }
 

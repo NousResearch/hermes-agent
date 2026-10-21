@@ -1015,6 +1015,13 @@ def _degraded_suffix(data: dict) -> str:
     return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
 
 
+# Tools whose refused calls are the agent's own retry loop, not something the user must act on: a
+# skill_manage write refused by the size cap, a stale old_string or a guard is re-planned by the
+# agent. Renderers show these rows neutrally; the failure still reaches the model and the loop
+# guardrail unchanged (display-only).
+NEUTRAL_FAILURE_TOOLS = frozenset({"skill_manage"})
+
+
 def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):

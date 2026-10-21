@@ -270,6 +270,29 @@ the same seam. The plugin catalog refuses it at admission (`hermes plugins
 validate`, `no core override` check). If a public hook you need is missing,
 open an issue describing it.
 
+### Admitted gateway turn origin
+
+An inbound integration may register one origin projector per platform and profile with
+`ctx.register_inbound_origin_projector(platform="slack", capture=..., validate=...)`.
+`capture(event)` returns a small JSON object or `None`; `validate(claim, source)`
+checks that object's identity against the gateway's `SessionSource`. Hermes freezes
+the projection before native admission yields, limits it to 16 KiB, stores it in
+the native admission, and revalidates it after recovery. It never persists the
+platform SDK event. An unavailable or changed projector refuses a claimed row;
+older rows without a projection do not acquire one on replay.
+
+Plugin-owned tools can call `gateway.trusted_turn_origin.current_origin()` to
+read an immutable `TrustedTurnOrigin` for the executing human turn. The claim is
+available as `origin.claims[plugin_id]`; absent claims grant nothing. The origin
+also carries the gateway's platform, profile, workspace, channel, user, message
+and thread identifiers. Queued human follow-ups rebind it to their own sender;
+internal and eventless turns expose `None`. `admission_id` is optional, since a
+queued follow-up need not have a separate native admission. Plugins should use
+the `TRUSTED_TURN_ORIGIN_API_VERSION` constant for this contract's version.
+
+This API supplies origin evidence to plugin tools. It does not restrict other
+tools or enforce a channel's tool policy; those need a separate execution gate.
+
 ### Deprecation policy
 
 A documented native plugin behavior may be deprecated only with all of the

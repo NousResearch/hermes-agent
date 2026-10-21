@@ -2810,29 +2810,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "text-transform:uppercase;color:#666;margin:0}"
             "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}"
             "@media(min-width:861px) and (max-width:1199px){.pane-statue{opacity:.45}}"
-            # Phones and tablets: the rail becomes a header band with the bust
-            # on its left looking right, and the full Hermes sits under the
-            # content looking left.
+            ".pane-mark{display:none}"
+            # Phones and tablets: the rail becomes a header band (portal brand
+            # and status, bust behind looking right). Under the content the
+            # product name is set huge in the display face, like the site's
+            # footer wordmark, with the full Hermes rising in front of it.
             "@media(max-width:860px){"
             ".frame{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}"
             ".rail-statue{right:auto;bottom:auto;left:-56px;top:-28px;height:150%;opacity:.3}"
-            ".rail-inner{min-height:0;display:grid;grid-template-columns:1fr auto;"
-            "grid-template-areas:'top bottom' 'mid mid';align-items:start;gap:24px 16px;padding:22px 20px}"
-            ".rail-top{grid-area:top}.rail-bottom{grid-area:bottom}"
-            ".rail-mid{grid-area:mid;margin:0;display:flex;flex-wrap:wrap;gap:14px 28px}"
+            ".rail-inner{min-height:0;flex-direction:row;flex-wrap:wrap;justify-content:space-between;"
+            "align-items:flex-start;gap:18px 16px;padding:22px 20px}"
+            ".rail-mid{margin:0;display:flex;flex-wrap:wrap;gap:14px 28px}"
             ".rail-row .rail-value{margin:0}"
             ".brand-chip{width:42px;height:52px}.brand-text{font-size:30px}"
             ".rail-sub{font-size:9px;margin-top:10px}"
-            ".rail-globe{width:44px;padding:5px;margin:0 0 8px auto}"
-            ".rail-logo{width:116px;margin:0}.rail-foot{display:none}"
+            ".rail-bottom{display:none}"
             ".pane{flex-direction:column;align-items:stretch}"
             ".pane-inner{order:1;padding:36px 20px 0;max-width:none}"
             ".display{font-size:clamp(52px,16vw,88px)}"
             ".pane-foot{order:2;position:static;padding:30px 20px 0}"
-            ".pane-statue{order:3;position:static;width:min(640px,112%);height:auto;"
-            "align-self:flex-end;margin:auto -12% 0 0;padding-top:4px;opacity:.85}}"
+            ".pane-mark{order:3;display:block;margin:auto 0 0;padding:44px 16px 0;"
+            "font-family:var(--display);font-weight:500;text-transform:uppercase;"
+            # "BROWSER" is ~2.25em wide in Rules Compressed: fill the width.
+            "font-size:min(300px,calc((100vw - 32px)/2.3));line-height:.8;color:rgba(5,5,232,.12)}"
+            ".pane-statue{order:4;position:relative;z-index:1;width:min(640px,112%);height:auto;"
+            "align-self:flex-end;margin:-32% -12% 0 0;opacity:.85}}"
             # Phones: session and extension already appear in the prompt.
-            "@media(max-width:600px){.rail-row:not(.rail-row-status){display:none}}"
+            "@media(max-width:600px){.rail-row:not(.rail-row-status){display:none}"
+            ".rail-mid{text-align:right}.rail-value{font-size:11px}}"
             "@media(max-width:860px) and (max-height:500px){.display{font-size:52px;margin-bottom:14px}"
             ".rail-row:not(.rail-row-status){display:none}.rail-inner{gap:12px 16px;padding:16px 20px}"
             ".pane-inner{padding-top:20px}}"
@@ -2865,6 +2870,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             + f"{body_extra}"
             "</div>"
             "<p class=\"pane-foot\">Return to Hermes Browser</p>"
+            "<p class=\"pane-mark\" aria-hidden=\"true\">Hermes<br>Browser</p>"
             "</main>"
             "</div></body></html>"
         )

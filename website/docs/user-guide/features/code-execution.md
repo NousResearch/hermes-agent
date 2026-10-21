@@ -155,6 +155,17 @@ Security-critical invariants are identical across both modes:
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
 
+## Persistent session kernel
+
+Calls reuse a Python child for the same session, execution mode, interpreter,
+working directory, and tool set. Imports, variables, and loaded data can persist
+between cells. The child environment is fixed when the kernel starts.
+
+Pass `reset: true` to discard that kernel state. A timeout or interrupted kernel
+can also lose it. Do not assume that a later terminal environment change is
+already visible inside an existing kernel. The old `code_execution.kernel_mode`
+setting is no longer a separate switch.
+
 ## Resource Limits
 
 | Resource | Limit | Notes |
@@ -227,6 +238,8 @@ The child process runs with a **minimal environment**. API keys, tokens, and cre
 
 Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, or `AUTH` in their names are excluded. Only safe system variables (`PATH`, `HOME`, `LANG`, `SHELL`, `PYTHONPATH`, `VIRTUAL_ENV`, etc.) are passed through.
 
+Approvals: gateway sessions approve a script as a whole before it runs. In a local CLI, TUI, Desktop or ACP session, a turn you typed gets no whole-script prompt: Python-level file and process operations in the script run unprompted and only its `terminal()` calls ask. Injected and automation turns keep the whole-script prompt. See [`execute_code` scripts](../security.md#execute-code-scripts).
+
 ### Skill Environment Variable Passthrough
 
 When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` child processes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code.
@@ -240,7 +253,7 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
-See the [Security guide](/user-guide/security#environment-variable-passthrough) for full details.
+See the [Security guide](../security.md#environment-variable-passthrough) for full details.
 
 ### `HERMES_*` variables in the child
 
@@ -310,7 +323,7 @@ Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stu
 | Running a build or test suite | ❌ | ✅ |
 | Looping over search results | ✅ | ❌ |
 | Interactive/background processes | ❌ | ✅ |
-| Needs API keys in environment | ⚠️ Only via [passthrough](/user-guide/security#environment-variable-passthrough) | ✅ (most pass through) |
+| Needs API keys in environment | ⚠️ Only via [passthrough](../security.md#environment-variable-passthrough) | ✅ (most pass through) |
 
 **Rule of thumb:** Use `execute_code` when you need to call Hermes tools programmatically with logic between calls. Use `terminal` for running shell commands, builds, and processes.
 

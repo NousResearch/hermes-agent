@@ -1,5 +1,6 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+uv.lock text eol=lf
 
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
@@ -22,6 +23,8 @@ docker/entrypoint.sh text eol=lf
 *.js    text eol=lf
 *.mjs   text eol=lf
 *.cjs   text eol=lf
+*.cts   text eol=lf
+*.mts   text eol=lf
 *.jsx   text eol=lf
 *.json  text eol=lf
 *.yaml  text eol=lf

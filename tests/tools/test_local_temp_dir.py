@@ -7,6 +7,7 @@ logs/pid/exit files, code-execution sandboxes) at real storage.
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +24,7 @@ def _make_local_env(env: dict) -> LocalEnvironment:
 def test_temp_dir_override_honored(tmp_path):
     target = str(tmp_path)
     env = _make_local_env({"TERMINAL_TEMP_DIR": target})
-    assert env.get_temp_dir() == target
+    assert Path(env.get_temp_dir()) == Path(target)
 
 
 def test_temp_dir_from_process_env(tmp_path):
@@ -32,7 +33,7 @@ def test_temp_dir_from_process_env(tmp_path):
     prev = os.environ.get("TERMINAL_TEMP_DIR")
     os.environ["TERMINAL_TEMP_DIR"] = target
     try:
-        assert env.get_temp_dir() == target
+        assert Path(env.get_temp_dir()) == Path(target)
     finally:
         if prev is None:
             os.environ.pop("TERMINAL_TEMP_DIR", None)
@@ -53,20 +54,20 @@ def test_temp_dir_empty_falls_through(tmp_path, monkeypatch):
     """An empty/relative terminal.temp_dir must not redirect."""
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     env = _make_local_env({"TERMINAL_TEMP_DIR": ""})
-    assert env.get_temp_dir() == str(tmp_path)
+    assert Path(env.get_temp_dir()) == tmp_path
 
 
 def test_default_is_hermes_cache_not_tmp(tmp_path, monkeypatch):
     """With no overrides at all, the default temp root is real storage under
     HERMES_HOME (cache/terminal), NOT tmpfs /tmp."""
-    import hermes_constants  # noqa: F401 — resolves HERMES_HOME per call
+    import hermes_constants
 
     for var in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     env = _make_local_env({})
     result = env.get_temp_dir()
-    assert result == str(tmp_path / ".hermes" / "cache" / "terminal")
+    assert Path(result) == tmp_path / ".hermes" / "cache" / "terminal"
     assert os.path.isdir(result)
 
 
@@ -75,7 +76,7 @@ def test_tmpdir_still_beats_default(tmp_path, monkeypatch):
     monkeypatch.delenv("TERMINAL_TEMP_DIR", raising=False)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     env = _make_local_env({})
-    assert env.get_temp_dir() == str(tmp_path)
+    assert Path(env.get_temp_dir()) == tmp_path
 
 
 def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
@@ -114,12 +115,83 @@ def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
         f.write_text("x")
         os.utime(f, (old, old))
 
-    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=72)
+    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=24)
     assert removed == 4  # stale snap + 3 dead-group files
     assert keep.exists()
     assert live_pid.exists() and live_log.exists()
     assert not stale.exists()
     assert not (root / "hermes_bg_dead1.log").exists()
+
+
+def test_cleanup_terminal_temp_cache_revalidates_before_each_delete(tmp_path, monkeypatch):
+    """The age snapshot is a candidate list: a bg session whose .log is written after it
+    keeps its remaining files, and a directory rmtree could not remove is not counted."""
+    import pathlib
+    import time
+
+    from tools.environments import local as local_mod
+
+    root = tmp_path / "cache" / "terminal"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(local_mod, "_default_terminal_temp_dir", lambda: root)
+    old = time.time() - 100 * 3600
+    for suffix in ("pid", "log", "exit"):
+        f = root / f"hermes_bg_resumed.{suffix}"
+        f.write_text("x")
+        os.utime(f, (old, old))
+    stuck = root / "stuck-dir"
+    stuck.mkdir()
+    os.utime(stuck, (old, old))
+
+    real_unlink = pathlib.Path.unlink
+
+    fired = []
+
+    def unlink_then_session_writes(self, *args, **kwargs):
+        real_unlink(self, *args, **kwargs)
+        if self.name.startswith("hermes_bg_resumed.") and not fired:
+            fired.append(self.name)  # the session writes its log right after the first delete
+            (root / "hermes_bg_resumed.log").write_text("RESUMED OUTPUT\n")
+
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink_then_session_writes)
+    monkeypatch.setattr(local_mod.shutil, "rmtree", lambda *a, **k: None)
+
+    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=24)
+    survivors = {p.name for p in root.glob("hermes_bg_resumed.*")}
+    # Only the member deleted before the write is gone (iterdir order picks which one).
+    expected = {f"hermes_bg_resumed.{s}" for s in ("pid", "log", "exit")} - (set(fired) - {"hermes_bg_resumed.log"})
+    assert survivors == expected, (fired, survivors)
+    assert stuck.exists()
+    assert removed == len(set(fired) - {"hermes_bg_resumed.log"})  # never the stuck dir
+
+
+def test_cleanup_terminal_temp_cache_uninspectable_residue_is_not_counted(tmp_path, monkeypatch):
+    """An entry that survives its delete and cannot be lstat'd is not proven gone."""
+    import pathlib
+    import time
+
+    from tools.environments import local as local_mod
+
+    root = tmp_path / "cache" / "terminal"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(local_mod, "_default_terminal_temp_dir", lambda: root)
+    old = time.time() - 100 * 3600
+    residue = root / "residue.txt"
+    residue.write_text("x")
+    os.utime(residue, (old, old))
+
+    tried = []
+    monkeypatch.setattr(pathlib.Path, "unlink", lambda self, *a, **k: tried.append(self))
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        if tried and os.fspath(path) == os.fspath(residue):
+            raise PermissionError(13, "denied", os.fspath(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(local_mod.os, "lstat", lstat)
+    assert local_mod.cleanup_terminal_temp_cache(max_age_hours=24) == 0
+    assert tried == [residue] and residue.exists()
 
 
 if __name__ == "__main__":

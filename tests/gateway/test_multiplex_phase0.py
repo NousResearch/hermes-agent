@@ -11,7 +11,7 @@ Covers the three Phase 0 deliverables:
 import pytest
 from datetime import datetime
 from unittest.mock import patch
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import GatewayConfig, Platform
@@ -73,6 +73,7 @@ class TestMultiplexConfigFlag:
         import asyncio
         from types import SimpleNamespace
         from gateway import run as run_mod
+        from gateway import run_bootstrap
         from cron.scheduler_provider import InProcessCronScheduler
 
         captured = {}
@@ -89,7 +90,7 @@ class TestMultiplexConfigFlag:
             _primary_profile_name="rex", _draining=False, _external_drain_active=False)
 
         async def _go():
-            return run_mod._start_gateway_start_cron_and_housekeeping(runner)
+            return run_bootstrap._start_gateway_start_cron_and_housekeeping(runner)
 
         cron_stop, _provider, cron_thread, hk = asyncio.run(_go())
         cron_stop.set()

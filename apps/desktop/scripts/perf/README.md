@@ -29,9 +29,9 @@ npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-b
 ## Profiling an existing workspace
 
 ```bash
-node scripts/perf/run.mjs live-window --seconds 15 --json /tmp/live-window.json
+node scripts/perf/run.mjs live-window --seconds 15 --json ~/.hermes/cache/scratch/live-window.json
 # Attribution is a separate pass, not an FPS comparison:
-node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile /tmp
+node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile ~/.hermes/cache/scratch
 ```
 
 `live-window` never opens/closes tabs, seeds messages, moves focus, or forces GC.

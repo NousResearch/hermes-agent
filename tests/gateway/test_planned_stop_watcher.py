@@ -201,3 +201,35 @@ def test_planned_stop_marker_targets_self_probe_is_non_destructive(tmp_path, mon
     assert status_mod.planned_stop_marker_targets_self() is True
 
 
+def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, monkeypatch):
+    """`hermes gateway stop` writes the marker, THEN signals. When the watcher fires in between and
+    consumes the marker, the trailing SIGTERM must not read as an external kill (exit 1 → a
+    Restart=on-failure supervisor revives the gateway the operator stopped). A bare SIGTERM with no
+    planned stop before it is still an external kill."""
+    import signal
+    from types import SimpleNamespace
+
+    import gateway.run as run_mod
+    import gateway.shutdown_forensics as forensics
+
+    marker = tmp_path / ".gateway-planned-stop.json"
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    monkeypatch.setattr(status_mod, "consume_takeover_marker_for_self", lambda: False)
+    monkeypatch.setattr(forensics, "snapshot_shutdown_context", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod.asyncio, "create_task", lambda coro: coro.close())
+
+    def _handler():
+        runner = SimpleNamespace(_signal_initiated_shutdown=False, stop=lambda: asyncio.sleep(0))
+        flag = [False]
+        return run_mod._start_gateway_make_shutdown_signal_handler(runner, flag), flag
+
+    handler, flag = _handler()
+    _write_self_marker(marker)
+    handler(None)  # the watcher's call: consumes the marker
+    assert not marker.exists()
+    handler(signal.SIGTERM)  # the CLI's own SIGTERM, marker already gone
+    assert flag[0] is False
+
+    bare, bare_flag = _handler()
+    bare(signal.SIGTERM)
+    assert bare_flag[0] is True

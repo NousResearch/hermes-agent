@@ -16,7 +16,7 @@ def _runner():
     runner = object.__new__(GatewayRunner)
     calls = {}
     runner._switch_cached_agent_model = lambda *_a, **_k: None
-    runner._record_model_switch = AsyncMock()
+    runner._record_model_switch = AsyncMock(return_value=None)  # None = config write succeeded
     runner._model_switch_confirmation = AsyncMock(return_value="switched")
     runner._apply_reasoning_selection = (
         lambda session_key, platform_key, value, persist_global=False:

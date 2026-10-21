@@ -24,12 +24,24 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import type { ProfileRoute } from './types'
 
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
   clearBotAttentionMock: vi.fn(),
   hostMock: {
     onEvent: vi.fn(),
+    pluginDecisions: {
+      get: () => {
+        try {
+          const raw = window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')
+
+          return raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
+        } catch {
+          return {}
+        }
+      }
+    },
     profileRoutes: vi.fn(),
     requestProfile: vi.fn(),
     retainProfileSocket: vi.fn()
@@ -44,7 +56,12 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
   }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache }))
+// relay.ts imports ./shared, which holds the $pendingBotOpen atom.
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { atom } = await import('nanostores')
+
+  return { atom, host: hostMock, LruCache: UnboundedCache }
+})
 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),
@@ -55,11 +72,15 @@ vi.mock('./data', () => ({
 const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DRAIN_INTERVAL_MS = 30_000
 
-const route = (id: string): ProfileRoute => ({
+const route = (
+  id: string,
+  options: { mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
+): ProfileRoute => ({
   connectionId: id,
-  mode: 'remote',
-  profile: 'default',
-  targetProfile: 'default'
+  mode: options.mode ?? 'remote',
+  ...(options.primary === true ? { primary: true } : {}),
+  profile: options.profile ?? 'default',
+  targetProfile: options.profile ?? 'default'
 })
 
 /** Every RPC through one table, recording what each connection was asked. */
@@ -67,6 +88,7 @@ interface RelayCall {
   connectionId: string
   method: string
   params: Record<string, unknown>
+  route: ProfileRoute
 }
 
 function respondWith(handler: (call: RelayCall) => unknown) {
@@ -74,7 +96,7 @@ function respondWith(handler: (call: RelayCall) => unknown) {
 
   ;(hostMock.requestProfile as ReturnType<typeof vi.fn>).mockImplementation(
     async (target: ProfileRoute, method: string, params: Record<string, unknown>) => {
-      const call = { connectionId: target.connectionId, method, params: structuredClone(params ?? {}) }
+      const call = { connectionId: target.connectionId, method, params: structuredClone(params ?? {}), route: structuredClone(target) }
 
       calls.push(call)
 
@@ -115,23 +137,29 @@ async function loadRelay() {
 
 /** Fire the gateway's pending-envelope broadcast and let the debounced drain
  *  run to completion. */
-async function pushAndSettle(times = 1) {
-  const listener = (hostMock.onEvent as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as () => void
+async function pushAndSettle(times = 1, event?: { connectionId?: string }) {
+  const listener = (hostMock.onEvent as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1] as (payload?: {
+    connectionId?: string
+  }) => void
 
   for (let i = 0; i < times; i += 1) {
-    listener()
+    listener(event)
   }
 
   await vi.advanceTimersByTimeAsync(RELAY_PUSH_DEBOUNCE_MS + 10)
 }
 
+const PLUGIN_DECISIONS_KEY = 'hermes.desktop.pluginDecisions.v2'
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
+  window.localStorage.removeItem(PLUGIN_DECISIONS_KEY)
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
   hostMock.retainProfileSocket = vi.fn(() => vi.fn())
+  delete hostMock.connections
 })
 
 afterEach(() => {
@@ -171,11 +199,11 @@ describe('push-notified drain (#93091)', () => {
     stopBotRelay()
   })
 
-  it('keeps the interval poll as a BACKSTOP at the slow cadence', async () => {
+  it('keeps the interval poll as a BACKSTOP only when the shell cannot signal work', async () => {
     // The poll was 4s back when it WAS the delivery path — which (before
     // route retention) meant a fresh WebSocket dial + teardown per connection
-    // every 4s. Push carries envelope latency now; the poll only covers older
-    // backends and events that never reach the tap.
+    // every 4s. With the push door, an idle tick must not open a socket.
+    // Shells that cannot broadcast pending mail still poll.
     const calls = respondWith(() => ({ envelopes: [] }))
     const { startBotRelay, stopBotRelay } = await loadRelay()
 
@@ -189,9 +217,22 @@ describe('push-notified drain (#93091)', () => {
 
     await vi.advanceTimersByTimeAsync(2000)
 
-    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(0)
 
     stopBotRelay()
+
+    hostMock.onEvent = undefined
+    calls.length = 0
+    const legacy = await loadRelay()
+
+    legacy.startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(2)
+
+    legacy.stopBotRelay()
   })
 
   it('re-schedules a push that raced an in-flight drain instead of dropping it', async () => {
@@ -276,7 +317,128 @@ describe('push-notified drain (#93091)', () => {
   })
 })
 
+describe('the 30s drain does not open a gateway socket with nothing to deliver (#118856)', () => {
+  it('does not dial when the push door is present and no route has outbox work', async () => {
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('does not dial a route that did not signal outbox work', async () => {
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+
+    await pushAndSettle(1, { connectionId: 'a' })
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain').map(call => call.connectionId)).toEqual(['a'])
+
+    stopBotRelay()
+  })
+
+  it('does not dial when Bot Mode is off, even if an outbox event arrives', async () => {
+    window.localStorage.setItem(PLUGIN_DECISIONS_KEY, JSON.stringify({ 'hermes-bots': false }))
+
+    const calls = respondWith(() => ({ envelopes: [{ id: 'env-1', target_connection: 'b' }] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle(1, { connectionId: 'a' })
+    await vi.advanceTimersByTimeAsync(RELAY_DRAIN_INTERVAL_MS)
+
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(0)
+
+    stopBotRelay()
+  })
+})
+
 describe('relay-route socket retention (#93594)', () => {
+  it('does not poll or retain the non-primary local source of a remote-primary Desktop', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-primary', { primary: true, profile: 'research' }),
+      route('local', { mode: 'local' }),
+      route('local', { mode: 'local', profile: 'research' })
+    ])
+    const pins = trackRetention()
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    // Only the sole remaining connection's one-time roster clear goes out — once per profile
+    // route, since each profile home holds its own roster; the local source is never polled.
+    // Two profiles of one connection are not peers: no profiles.list, nothing pinned.
+    expect(calls).toEqual([
+      { connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] }, route: route('remote-primary', { primary: true }) },
+      {
+        connectionId: 'remote-primary',
+        method: 'bot_relay.roster.sync',
+        params: { agents: [] },
+        route: route('remote-primary', { primary: true, profile: 'research' })
+      }
+    ])
+    expect(pins).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('preserves local-primary, multi-remote, and fail-open peer sets', async () => {
+    for (const routes of [
+      [route('local', { mode: 'local', primary: true }), route('remote-peer')],
+      [route('remote-primary', { primary: true }), route('remote-peer')],
+      [route('remote-primary'), route('local', { mode: 'local' })],
+      [route('remote-primary', { primary: true }), route('local', { mode: 'local', primary: true })],
+      [
+        route('remote-primary', { primary: true }),
+        route('remote-primary', { profile: 'research' }),
+        route('local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        route('local', { mode: 'local' }),
+        route('unexpected-local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        { ...route('remote-peer'), primary: false } as unknown as ProfileRoute,
+        route('local', { mode: 'local' })
+      ]
+    ]) {
+      hostMock.profileRoutes = vi.fn(async () => routes)
+      const pins = trackRetention()
+      const calls = respondWith(() => ({ envelopes: [] }))
+      const { startBotRelay, stopBotRelay } = await loadRelay()
+
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      await pushAndSettle()
+
+      expect(new Set(calls.map(call => call.connectionId))).toEqual(new Set(routes.map(item => item.connectionId)))
+      // One profiles.list per connection, however many of its profiles are routed.
+      const lists = calls.filter(call => call.method === 'profiles.list').map(call => call.connectionId)
+      expect(lists.sort()).toEqual([...new Set(routes.map(item => item.connectionId))].sort())
+      // Every eligible profile route (its own socket scope and outbox) is pinned exactly once.
+      expect(pins.map(pin => pin.route)).toEqual(routes)
+
+      stopBotRelay()
+    }
+  })
+
   it('pins each connection ONCE across many drain ticks', async () => {
     const pins = trackRetention()
 
@@ -371,6 +533,147 @@ describe('relay-route socket retention (#93594)', () => {
 })
 
 describe('the roster loop pushes the OTHER connections’ agents', () => {
+  it.each([false, true])('discards a stopped roster fetch (restart=%s)', async restart => {
+    let release!: () => void
+
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    let first = true
+    let failB = false
+
+    const calls = respondWith(async call => {
+      if (call.method === 'profiles.list') {
+        if (call.connectionId === 'b' && failB) {
+          throw new Error('temporary profile lookup failure')
+        }
+
+        if (call.connectionId === 'b' && first) {
+          first = false
+          await held
+
+          return { profiles: [{ name: 'stale' }] }
+        }
+
+        return { profiles: [{ name: 'current' }] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls.filter(call => call.method === 'profiles.list')).toHaveLength(2)
+    stopBotRelay()
+
+    if (restart) {
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toHaveLength(2)
+    }
+
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+    expect(syncs).toHaveLength(restart ? 2 : 0)
+    expect(
+      syncs.every(call => (call.params.agents as Array<{ profile: string }>).every(row => row.profile === 'current'))
+    ).toBe(true)
+
+    if (restart) {
+      // A late old response must not poison the new run's fallback cache.
+      failB = true
+      await vi.advanceTimersByTimeAsync(60_000)
+      const later = calls.filter(call => call.method === 'bot_relay.roster.sync').slice(2)
+      expect(later).toHaveLength(2)
+      expect(
+        later.every(call => (call.params.agents as Array<{ profile: string }>).every(row => row.profile === 'current'))
+      ).toBe(true)
+    }
+
+    stopBotRelay()
+  })
+
+  it('a stale run finishing does not free the restarted run’s busy flag', async () => {
+    const holds: Record<string, { release: () => void; promise: Promise<void> }> = {}
+
+    for (const id of ['stale', 'current']) {
+      let release!: () => void
+
+      const promise = new Promise<void>(resolve => {
+        release = resolve
+      })
+
+      holds[id] = { promise, release }
+    }
+
+    const seen: Record<string, number> = { a: 0, b: 0 }
+
+    const calls = respondWith(async call => {
+      if (call.method === 'profiles.list') {
+        seen[call.connectionId] += 1
+
+        // Run 1 parks on b, the restarted run parks on a.
+        if (call.connectionId === 'b' && seen.b === 1) {
+          await holds.stale.promise
+        } else if (call.connectionId === 'a' && seen.a === 2) {
+          await holds.current.promise
+        }
+
+        return { profiles: [{ name: call.connectionId }] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    const listCount = () => calls.filter(call => call.method === 'profiles.list').length
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    stopBotRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(listCount()).toBe(4)
+
+    // The stale run lands while the restarted run is still in flight; the
+    // next tick must still see that run's busy flag, not start a third.
+    holds.stale.release()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(listCount()).toBe(4)
+
+    holds.current.release()
+    await vi.advanceTimersByTimeAsync(0)
+    stopBotRelay()
+  })
+
+  it('does not clear a sole gateway after stopping during label lookup', async () => {
+    let release!: () => void
+
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    hostMock.connections = vi.fn(async () => {
+      await held
+
+      return []
+    })
+    const calls = respondWith(() => ({}))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hostMock.connections).toHaveBeenCalled()
+    stopBotRelay()
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([])
+    delete hostMock.connections
+  })
+
   it('gives each gateway a union roster that excludes its own agents', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {
@@ -430,6 +733,42 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
 
     expect(pushedToA?.params.agents).toEqual([expect.objectContaining({ profile: 'ops' })])
+
+    stopBotRelay()
+  })
+
+  it.each([
+    [{ registry: true }, 'This Mac'],
+    [{ registry: false }, 'a']
+  ])('names the machine by its registry label (%o -> %s)', async ({ registry }, expected) => {
+    // tools/bot_mode_probe.py injects "@handle on <connection_label or connection_id>" into every
+    // bot's roster, and tools/bot_relay.py names the machine the same way when it refuses a target
+    // as offline. The route carries identity only, so the label has to come from the registry —
+    // without it every peer bot addresses its teammates by raw connection id. A Desktop build with
+    // no registry rejects the call, and the id stays.
+    if (registry) {
+      hostMock.connections = vi.fn(async () => [
+        { id: 'a', label: 'This Mac' },
+        { id: 'b', label: 'Noir (cto)' }
+      ])
+    } else {
+      delete hostMock.connections
+    }
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pushedToB = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'b')
+
+    expect(pushedToB?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'a', connection_label: expected, profile: 'a' })
+    ])
 
     stopBotRelay()
   })
@@ -513,7 +852,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
       }
 
       if (call.method === 'bot_relay.deliver') {
-        return { reply: 'all green' }
+        return { status: 'settled', delivery_id: envelope.id, admission_id: 'admission-1', reply: 'all green' }
       }
 
       return {}
@@ -526,8 +865,15 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
-      params: { message: 'status?', profile: 'ops' }
+      params: { id: envelope.id, message: 'status?', profile: 'ops' }
     })
+
+    // #93911: the deliver deadline must outlive the backend's own turn bound.
+    const deliverCall = (hostMock.requestProfile as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([, method]) => method === 'bot_relay.deliver'
+    )
+
+    expect(deliverCall?.[3]).toBe(RELAY_DELIVER_TIMEOUT_MS)
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
       params: { id: 'env-1', reply: 'all green' }
@@ -535,6 +881,103 @@ describe('the drain loop wires drain → deliver → reply', () => {
     // A delivered background DM is this bot's "good turn".
     expect(clearBotAttentionMock).toHaveBeenCalledWith('b::ops')
 
+    stopBotRelay()
+  })
+
+  it('drains every sender profile and delivers on the exact target profile', async () => {
+    const ops = { ...route('a'), profile: 'ops', targetProfile: 'ops' }
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), ops, route('b')])
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {return { envelopes: call.route.profile === 'ops' ? [envelope] : [] }}
+
+      if (call.method === 'bot_relay.deliver') {return {status: 'settled', delivery_id: envelope.id, admission_id: 'admission', reply: 'isolated'}}
+
+      return {}
+    })
+
+    const {startBotRelay, stopBotRelay} = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.find(call => call.method === 'bot_relay.deliver')?.route).toEqual({...route('b'), profile: 'ops', targetProfile: 'ops'})
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.route).toEqual(ops)
+    stopBotRelay()
+  })
+
+  it('retries the same envelope after pending or lost ACK without replying early', async () => {
+    let attempts = 0
+    let drained = false
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        if (call.connectionId !== 'a' || drained) {return { envelopes: [] }}
+        drained = true
+
+        return { envelopes: [envelope] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        attempts += 1
+
+        if (attempts === 1) {throw new Error('socket lost after commit')}
+
+        return { status: attempts === 2 ? 'queued' : 'settled', delivery_id: envelope.id,
+          admission_id: 'exact-admission', reply: attempts === 2 ? '' : 'exact reply' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
+    await pushAndSettle()
+    const deliveries = calls.filter(call => call.method === 'bot_relay.deliver')
+    expect(deliveries).toHaveLength(3)
+    expect(deliveries.every(call => call.params.id === envelope.id)).toBe(true)
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toEqual({id: envelope.id, reply: 'exact reply'})
+    stopBotRelay()
+  })
+
+  it('posts a refused receipt back as the sender’s terminal answer, without an admission', async () => {
+    // A same-id resend after the FIFO refused the delivery (nothing committed) answers the
+    // declared refused result: terminal, so the refusal reaches the sender instead of staying retained.
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {return { envelopes: call.connectionId === 'a' ? [envelope] : [] }}
+
+      if (call.method === 'bot_relay.deliver') {
+        return { status: 'failed', refused: true, delivery_id: envelope.id, error: 'Bot Chat delivery refused',
+          reason: 'agent_blocked', reply: '' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.find(call => call.method === 'bot_relay.reply')?.params).toEqual({
+      id: envelope.id, error: 'Bot Chat delivery refused', reason: 'agent_blocked'
+    })
+    stopBotRelay()
+  })
+
+  it('retains an answer with neither an admission nor a refusal', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {return { envelopes: call.connectionId === 'a' ? [envelope] : [] }}
+
+      if (call.method === 'bot_relay.deliver') {return { status: 'failed', delivery_id: envelope.id, error: 'lost' }}
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await pushAndSettle()
+    expect(calls.filter(call => call.method === 'bot_relay.reply')).toHaveLength(0)
     stopBotRelay()
   })
 
@@ -741,6 +1184,52 @@ describe('the roster loop forgets a machine that left', () => {
     stopBotRelay()
   })
 
+  it('retries the clear on the next tick when the push fails, instead of spending it', async () => {
+    // The clear is one-shot per sole connection, so spending it before the push lands means a
+    // failure is never retried: the surviving gateway keeps the departed machine's agents in every
+    // bot's prompt, and as message_agent targets, for the life of the Desktop. requestProfile
+    // throws on a socket that is not up yet, not only on a backend too old to have the RPC.
+    let clearFails = true
+
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return { profiles: [{ name: call.connectionId === 'a' ? 'default' : 'ops' }] }
+      }
+
+      if (call.method === 'bot_relay.roster.sync' && clearFails && !(call.params.agents as unknown[]).length) {
+        throw new Error('Hermes gateway is not connected')
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+
+    // b leaves; the clear is attempted and fails.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toHaveLength(1)
+    calls.length = 0
+
+    // Next tick must try again rather than treat the roster as already forgotten.
+    clearFails = false
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([
+      expect.objectContaining({ connectionId: 'a', params: { agents: [] } })
+    ])
+
+    // And once it lands it is spent, exactly as before.
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([])
+
+    stopBotRelay()
+  })
+
   it('clears the roster of a sole connection that replaced the previous sole one', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {
@@ -763,9 +1252,7 @@ describe('the roster loop forgets a machine that left', () => {
     hostMock.profileRoutes = vi.fn(async () => [route('c')])
     await vi.advanceTimersByTimeAsync(60_000)
 
-    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual([
-      'c'
-    ])
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual(['c'])
 
     stopBotRelay()
   })
@@ -779,13 +1266,16 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
   type RelayEnvelopeFixture = { id: string; message: string; target_connection: string; target_profile: string }
   const toB: RelayEnvelopeFixture = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
   const toA: RelayEnvelopeFixture = { id: 'env-2', message: 'quick one', target_connection: 'a', target_profile: 'default' }
+  // Canonical `bot_relay.deliver` answers carry the exact delivery identity;
+  // a reply without it is retained for recovery, never ACKed to the sender.
+  const settled = (id: string, reply: string) => ({ status: 'settled', delivery_id: id, admission_id: `adm-${id}`, reply })
 
   it('claims every outbox first and delivers to different targets concurrently', async () => {
     let releaseB!: (value: { reply: string }) => void
 
     const pendingB = new Promise<{ reply: string }>(resolve => {
       releaseB = resolve
-    })
+    }).then(res => settled(toB.id, res.reply))
 
     const calls = respondWith(call => {
       if (call.method === 'bot_relay.outbox.drain') {
@@ -793,7 +1283,7 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
       }
 
       if (call.method === 'bot_relay.deliver') {
-        return call.connectionId === 'b' ? pendingB : { reply: 'done' }
+        return call.connectionId === 'b' ? pendingB : settled(toA.id, 'done')
       }
 
       return {}
@@ -835,7 +1325,7 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
 
     const pendingB = new Promise<{ reply: string }>(resolve => {
       releaseB = resolve
-    })
+    }).then(res => settled(toB.id, res.reply))
 
     const outbox: Record<string, RelayEnvelopeFixture[]> = { a: [toB], b: [] }
 
@@ -845,7 +1335,9 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
       }
 
       if (call.method === 'bot_relay.deliver') {
-        return call.params.message === 'long job' ? pendingB : { reply: `${call.params.message} done` }
+        return call.params.message === 'long job'
+          ? pendingB
+          : settled(String(call.params.id), `${call.params.message} done`)
       }
 
       return {}

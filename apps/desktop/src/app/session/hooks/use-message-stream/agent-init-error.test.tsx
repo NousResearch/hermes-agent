@@ -78,22 +78,63 @@ describe('useMessageStream agent-init error surfacing (#63078)', () => {
     expect(toast).toBeDefined()
     expect(toast!.detail).toBeUndefined()
   })
-
-  it('renders the pre-ready cancel error event (#65567 server emit) visibly', () => {
+  it('merges the terminal error frame into the card the agent-init error event already painted', async () => {
     mountStream()
     seedOptimisticFirstMessage()
 
     act(() =>
       stream.handleEvent({
-        payload: { message: 'Turn cancelled before the agent was ready' },
+        payload: { message: 'Hermes could not start the assistant for this session. Details: no provider.' },
         session_id: SID,
         type: 'error'
       })
     )
 
-    const state = stream.state()
-    expect(state.messages.some(m => m.role === 'assistant' && m.error?.includes('cancelled'))).toBe(true)
-    expect(state.messages.some(m => m.id === 'user-123-abc')).toBe(true)
-    expect(state.busy).toBe(false)
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          error: 'no provider',
+          error_surface: { code: 'agent_init_failed', layer: 'runtime', retryable: true },
+          status: 'error',
+          text: 'no provider'
+        },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    const errorRows = stream.state().messages.filter(m => m.role === 'assistant' && m.error)
+    expect(errorRows).toHaveLength(1)
+    expect(errorRows[0]!.errorSurface?.code).toBe('agent_init_failed')
+  })
+  it('keeps one card when the terminal error frame arrives before the agent-init error event', async () => {
+    mountStream()
+    seedOptimisticFirstMessage()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          error: 'no provider',
+          error_surface: { code: 'agent_init_failed', layer: 'runtime', retryable: true },
+          status: 'error',
+          text: 'no provider'
+        },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    act(() =>
+      stream.handleEvent({
+        payload: { message: 'Hermes could not start the assistant for this session. Details: no provider.' },
+        session_id: SID,
+        type: 'error'
+      })
+    )
+
+    const errorRows = stream.state().messages.filter(m => m.role === 'assistant' && m.error)
+    expect(errorRows).toHaveLength(1)
+    expect(errorRows[0]!.error).toContain('could not start the assistant')
+    expect(errorRows[0]!.errorSurface?.code).toBe('agent_init_failed')
   })
 })

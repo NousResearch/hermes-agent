@@ -12,8 +12,9 @@ from contextvars import copy_context
 from typing import Any
 from uuid import uuid4
 
+from agent.i18n import t
 from gateway.run_agent_cache import _first_agent
-from gateway.slash_access import policy_for_source
+from gateway.slash_access import policy_for_runner_source
 from hermes_cli import anon_auth
 
 logger = logging.getLogger("gateway.run")
@@ -33,6 +34,24 @@ class _SignInAttempt:
 # These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a consent
 # link and sign-in code there would publish them rather than deliver them to one person.
 _LOGIN_BLOCKED_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
+
+
+def _publish_local_notice(runner, source, text: str) -> bool:
+    """A LOCAL session's adapter ``send`` is a no-op (viewers read the event stream), so the
+    sign-in link/code/result reach its viewers as a sticky ``notification.show``. False when
+    *source* is not a live local session (the platform push applies)."""
+    from gateway.config import Platform
+    if getattr(source, "platform", None) != Platform.LOCAL:
+        return False
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    live = authority.sessions.get(source.chat_id) if authority is not None else None
+    if live is None:
+        return False
+    live.event_stream.publish(source.chat_id, {"text": text, "level": "info", "kind": "sticky",
+                                               "key": "login:" + uuid4().hex[:8]},
+                              event_type="notification.show")
+    return True
 
 
 class GatewayLoginCommandsMixin:
@@ -71,7 +90,7 @@ class GatewayLoginCommandsMixin:
         if not paired_dm:
             return anon_auth.LOGIN_DM_ONLY
 
-        policy = policy_for_source(self.config, src)
+        policy = policy_for_runner_source(self, src)
         if policy.enabled and not policy.is_admin(getattr(src, "user_id", None)):
             return anon_auth.LOGIN_NOT_ALLOWED
 
@@ -151,6 +170,8 @@ class GatewayLoginCommandsMixin:
     async def _push_login(self, attempt: _SignInAttempt, text: str) -> None:
         """Push one notice without allowing a transport failure to abort the state drain."""
         try:
+            if _publish_local_notice(self, attempt.source, text):
+                return
             await self._deliver_platform_notice(attempt.source, text)
         except Exception:
             logger.warning("/login %s: push failed", attempt.attempt_id, exc_info=True)
@@ -168,7 +189,7 @@ class GatewayLoginCommandsMixin:
             if state.model_changed and state.model:
                 failed = await self._sweep_sessions_off_welcome()
                 if failed:
-                    copy += "\nSome chats are still on the free tier; use /model in those chats to switch."
+                    copy += t("gateway.login.free_tier_remaining")
             await self._push_login(attempt, copy)
             return
         await self._push_login(attempt, state.copy)

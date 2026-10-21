@@ -98,6 +98,7 @@ def _process_claude_code_refresh_worker(
 
     # Keep this worker hermetic: each profile has its own auth store, while
     # both workers deliberately point at the same Claude credential source.
+    auth_mod._global_auth_file_path = lambda: None
     anthropic_mod.claude_code_credentials_path = lambda: shared_path
     anthropic_mod.read_claude_code_credentials = read_shared_credentials
     anthropic_mod._write_claude_code_credentials = write_shared_credentials
@@ -182,10 +183,8 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
     """CONCURRENCY 'Hermes processes' race the same stale refresh token
     against the real cross-process lock + real on-disk pool persistence.
 
-    Bottleneck check: total wall-clock time must stay close to what a
-    correctly-serialized (or adopt-without-refreshing) implementation would
-    take, not blow up toward CONCURRENCY * network_delay -- and every
-    participant must end up with a usable, non-exhausted credential.
+    Every participant must end up with a usable, non-exhausted credential and
+    the single-use stale token must be POSTed exactly once.
     """
     server = _SingleUseTokenServer(delay_seconds=0.02)
     monkeypatch.setattr(
@@ -226,7 +225,6 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
     for t in threads:
         remaining = max(0.1, deadline - time.monotonic())
         t.join(timeout=remaining)
-    elapsed = time.monotonic() - start
 
     still_alive = [t for t in threads if t.is_alive()]
     assert not still_alive, (
@@ -246,21 +244,13 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
             f"process {idx} ended up with an exhausted Anthropic credential "
             "despite valid tokens existing on disk"
         )
-
-    # Bottleneck signal: this must stay well below "every thread pays the
-    # full network delay independently" (CONCURRENCY * delay). If the fix
-    # regresses into N sequential POSTs instead of lock+adopt, this is
-    # where it would show up first.
-    naive_serial_upper_bound = CONCURRENCY * server.delay_seconds * 3
-    assert elapsed < naive_serial_upper_bound, (
-        f"refresh race took {elapsed:.2f}s for {CONCURRENCY} concurrent "
-        f"processes -- expected well under {naive_serial_upper_bound:.2f}s "
-        "if the lock + pool-store adoption path is working efficiently"
-    )
+    # Deterministic replacement for the old wall-clock bound: the single-use
+    # stale token is POSTed exactly once, however many racers there are.
+    assert server.calls.count("stale-rt") == 1, server.calls
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_distinct_profiles_share_one_claude_refresh_without_duplicate_post(
     hermes_home,
 ):

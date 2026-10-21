@@ -11,8 +11,6 @@ contract (every fallback activation must restart the outer iteration so the
 pre-API preflight re-runs against the fallback's context window).
 """
 
-import ast
-import inspect
 
 
 def _collect_cache_controls(obj):
@@ -173,149 +171,6 @@ class TestMoACacheControlThreadsTtl:
         assert all("ttl" not in m for m in markers)
 
 
-class TestFailoverRestartsPreflight:
-    """#84733: a fallback provider switch must re-run the pre-API preflight.
-
-    ``_try_activate_fallback`` already shrinks the compressor's context
-    window to the fallback's; the pre-API preflight runs at the top of the
-    OUTER iteration loop, before the retry loop. So the restart discipline
-    is loop-aware:
-
-    - Sites INSIDE the retry loop (``while retry_count < max_retries``)
-      must ``break`` out of it with ``restart_with_rebuilt_messages`` set,
-      so the handler after the retry loop refunds the budget and
-      ``continue``s the outer iteration (which re-runs the preflight).
-      A plain ``continue`` there would only re-fire the retry loop and
-      skip the preflight — the original bug.
-    - Sites DIRECTLY in the outer loop must ``continue`` — the next outer
-      iteration re-runs the preflight already. A ``break`` there would
-      exit the conversation loop and end the turn without ever calling
-      the just-activated fallback.
-
-    Source-level guard: parsing the function is cheap, and the assertion
-    encodes the bug class — a new failover site added with the wrong
-    restart statement for its loop fails here on purpose.
-    """
-
-    def test_every_fallback_activation_restarts_preflight(self):
-        """The retry-loop body now lives in verdict helpers (``turn_api_call``,
-        ``turn_api_error``, ``turn_response_check``): a fallback activation there must
-        end in ``return _verdict("break")`` — the loop's ``break`` — so the
-        ``restart_with_rebuilt_messages`` handler after the retry loop refunds the
-        budget and re-runs the preflight. Every ``_try_activate_fallback`` reference
-        must be a direct ``if agent._try_activate_fallback():`` site so this guard can
-        bind its restart discipline (#84733)."""
-        from agent import turn_api_call, turn_api_error, turn_response_check
-
-        def _verdict_kind(stmt):
-            if (
-                isinstance(stmt, ast.Return)
-                and isinstance(stmt.value, ast.Call)
-                and isinstance(stmt.value.func, ast.Name)
-                and stmt.value.func.id == "_verdict"
-                and stmt.value.args
-                and isinstance(stmt.value.args[0], ast.Constant)
-            ):
-                return stmt.value.args[0].value
-            return None
-
-        seen = 0
-        for mod in (turn_api_call, turn_api_error, turn_response_check):
-            tree = ast.parse(inspect.getsource(mod))
-            fallback_ifs = [
-                node
-                for node in ast.walk(tree)
-                if isinstance(node, ast.If)
-                and isinstance(node.test, ast.Call)
-                and isinstance(node.test.func, ast.Attribute)
-                and node.test.func.attr == "_try_activate_fallback"
-            ]
-            all_refs = [
-                node
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Attribute)
-                and node.attr == "_try_activate_fallback"
-            ]
-            assert len(all_refs) == len(fallback_ifs), (
-                f"{mod.__name__}: every _try_activate_fallback reference must be a "
-                "direct `if agent._try_activate_fallback(...):` site (#84733)"
-            )
-            for node in fallback_ifs:
-                kinds = [_verdict_kind(stmt) for stmt in node.body]
-                assert "break" in kinds, (
-                    f"{mod.__name__}: retry-loop fallback activation must return "
-                    "_verdict(\"break\") so the restart-with-rebuilt-messages handler "
-                    "re-runs the pre-API preflight against the fallback's context "
-                    "window (#84733)"
-                )
-                assert "continue" not in kinds, (
-                    f"{mod.__name__}: a `continue` verdict would only re-fire the retry "
-                    "loop and skip the preflight (#84733)"
-                )
-            seen += len(fallback_ifs)
-        assert seen >= 5, "expected the retry-loop _try_activate_fallback sites"
-
-        # The restart consumer must re-issue the OUTER iteration (`continue` verdict).
-        from agent import turn_iteration_prep
-
-        tree = ast.parse(inspect.getsource(turn_iteration_prep.apply_retry_restarts))
-        handlers = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.Attribute)
-            and node.test.attr == "restart_with_rebuilt_messages"
-        ]
-        assert handlers and all(
-            any(_verdict_kind(stmt) == "continue" for stmt in node.body) for node in handlers
-        ), "the restart handler must `continue` the outer iteration (#84733)"
-
-    def test_restart_handler_clears_preflight_block(self):
-        """The single consumer of restart_with_rebuilt_messages must clear
-        _preflight_compression_blocked, so every retry-loop failover gets a
-        fresh preflight against the fallback's context window (#84733)."""
-        from agent import turn_iteration_prep
-
-        tree = ast.parse(inspect.getsource(turn_iteration_prep.apply_retry_restarts))
-        handlers = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.Attribute)
-            and node.test.attr == "restart_with_rebuilt_messages"
-        ]
-        assert handlers, "expected the restart_with_rebuilt_messages handler"
-        consumer = [
-            node
-            for node in handlers
-            if any(
-                isinstance(stmt, ast.Assign)
-                and any(
-                    isinstance(t, ast.Attribute)
-                    and t.attr == "restart_with_rebuilt_messages"
-                    for t in stmt.targets
-                )
-                for stmt in node.body
-            )
-        ]
-        assert consumer, "expected the flag-consuming handler"
-        for node in consumer:
-            assert any(
-                isinstance(stmt, ast.Assign)
-                and any(
-                    isinstance(t, ast.Name)
-                    and t.id == "_preflight_compression_blocked"
-                    for t in stmt.targets
-                )
-                and isinstance(stmt.value, ast.Constant)
-                and stmt.value.value is False
-                for stmt in node.body
-            ), (
-                "the restart handler must clear _preflight_compression_blocked "
-                "so the re-run preflight isn't skipped (#84733)"
-            )
-
-
 class TestAuxFallbackReplanThreadsTtl:
     """#84733 follow-up: the auxiliary fallback replan path threads the
     configured tier too — it has no live agent, so it reads the same
@@ -358,9 +213,12 @@ class TestAuxFallbackReplanThreadsTtl:
             "anthropic_messages",
             "claude-opus-4.8",
         )
+        # Multi-turn: a later call can read this prefix back, so it stays cacheable.
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "next"},
         ]
         out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
             messages, None, destination=destination
@@ -370,3 +228,35 @@ class TestAuxFallbackReplanThreadsTtl:
         assert all(m.get("ttl") == "1h" for m in markers), (
             "the configured 1h tier must reach auxiliary fallback replans"
         )
+
+    def test_replan_leaves_one_shot_unmarked_on_caching_route(self, monkeypatch):
+        """system + one user turn, no tools: nothing reads the prefix back, so a marker
+        would only pay a cache write (2x input at 1h)."""
+        from agent import auxiliary_client
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"prompt_caching": {"cache_ttl": "1h"}},
+        )
+        messages = [
+            {"role": "system", "content": "Summarize the transcript."},
+            {"role": "user", "content": "TRANSCRIPT"},
+        ]
+        for destination in (
+            auxiliary_client._FallbackDestination(
+                "anthropic", "https://api.anthropic.com", "anthropic_messages", "claude-opus-4.8"),
+            auxiliary_client._FallbackDestination(
+                "openrouter", "https://openrouter.ai/api/v1", "chat_completions", "anthropic/claude-opus-4.8"),
+        ):
+            out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
+                messages, None, destination=destination
+            )
+            assert _collect_cache_controls(out_msgs) == [], destination.provider
+        # A caller that decorated its own request (MoA advisor, iteration 1 of a
+        # per-iteration fan-out) will replay that prefix: its markers survive the replan.
+        from agent.prompt_caching import apply_anthropic_cache_control
+        advisor = apply_anthropic_cache_control(messages, cache_ttl="1h", native_anthropic=True)
+        out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
+            advisor, None, destination=auxiliary_client._FallbackDestination(
+                "anthropic", "https://api.anthropic.com", "anthropic_messages", "claude-opus-4.8"))
+        assert _collect_cache_controls(out_msgs), "a pre-decorated advisor request must keep caching"

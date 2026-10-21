@@ -18,10 +18,7 @@ from gateway.control_socket import (
     windows_pipe_name,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix-socket transport; the named-pipe half is covered on the wine2e lane",
-)
+pytestmark = pytest.mark.platforms("posix")  # Unix-socket transport; the named-pipe half is covered on the wine2e lane
 
 
 def _run(coro):
@@ -216,7 +213,7 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
     # Plant the stale file at wherever the server will actually bind
     # (in-home OR the temp-dir fallback, depending on path length).
     bind, _ = resolve_server_socket_path(home)
-    bind.parent.mkdir(parents=True, exist_ok=True)
+    bind.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     bind.touch()  # crashed predecessor's leftover
 
     async def scenario():
@@ -309,7 +306,7 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -351,7 +348,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -412,7 +409,7 @@ def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeyp
         "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+        "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -441,7 +438,7 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
         "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+        "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -455,3 +452,25 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
     # supervisor comes from the gateway's own declaration, not a PID scan
     assert gws[0].supervisor == "systemd"
     assert gws[0].code_sha == "SHA555"
+
+
+def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, monkeypatch):
+    """#132547: a pipe handle read cannot time out on its own; the query must still return None at its bound."""
+    import threading
+    import time
+
+    from gateway import control_socket
+
+    released = threading.Event()
+
+    def _silent_native_client(_home, _request, _timeout):  # accepts the request, never answers
+        released.wait(10)
+        return b""
+
+    monkeypatch.setattr("gateway.runtime_bootstrap_windows.query_runtime_control", _silent_native_client)
+    start = time.monotonic()
+    try:
+        assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None
+        assert time.monotonic() - start < 2.0
+    finally:
+        released.set()

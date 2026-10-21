@@ -13,6 +13,14 @@ export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
 // One minute keeps a continuous outage together without carrying old failures.
 export const REMOTE_LIVENESS_FAILURE_WINDOW_MS = 60_000
+// Pooled remote backends are probed from the renderer's reconnect IPC, which
+// fires on a minutes-long cadence once the primary connection is healthy — far
+// beyond REMOTE_LIVENESS_FAILURE_WINDOW_MS. With the primary's 60s window a
+// dead pooled descriptor's failure streak resets on every tick, the drop path
+// is never reached, and the pool serves the dead descriptor until app restart
+// (every call fails with ECONNRESET). A successful probe still clears the
+// streak via recordSuccess(), so a wide window cannot produce false drops.
+export const REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS = 15 * 60_000
 
 export interface RemoteLivenessFailure {
   failures: number
@@ -206,10 +214,9 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
 /**
  * Probe pooled REMOTE descriptors and drop the dead ones.
  *
- * A pooled entry backed by a remote host has no child process, so the 'exit'
- * handler that clears a dead local backend never fires, and the renderer's
- * keepalive touch keeps the idle reaper off it. Without this the pool serves a
- * descriptor for an unreachable host indefinitely.
+ * A pooled entry is a cached descriptor with no child process, so nothing
+ * signals its host's death. Without this the pool serves a descriptor for an
+ * unreachable host indefinitely.
  *
  * Entries share the primary's failure policy, keyed per base URL, so a profile
  * pointing at the same host as another does not burn the streak twice as fast.
@@ -273,7 +280,7 @@ export interface RevalidateSuspectPooledRemoteBackendsOptions<TConnection extend
  *
  * After a sleep/wake or network restore every pooled SSH tunnel is suspect:
  * the SSH master died with the network, but the local forward's descriptor is
- * still cached and the renderer keepalive keeps the idle reaper off it. Unlike
+ * still cached. Unlike
  * the background policy in revalidatePooledRemoteBackends — which tolerates a
  * failure streak because transient blips are common in steady state — a
  * suspect descriptor that fails ONE bounded probe after resume is dead: retire

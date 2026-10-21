@@ -73,7 +73,9 @@ async def _request_with_wedged_default_executor(path: str, *, warm: bool = False
 def test_profiles_route_survives_default_executor_starvation(monkeypatch):
     from hermes_cli import profiles
 
-    monkeypatch.setattr(profiles, "list_profiles", lambda: [])
+    # The route passes ``lazy_skill_count=True`` (#114041); a positional-only stub would TypeError
+    # into the directory-scan fallback and return the real profile list instead.
+    monkeypatch.setattr(profiles, "list_profiles", lambda **_: [])
 
     response = asyncio.run(_request_with_wedged_default_executor("/api/profiles"))
 

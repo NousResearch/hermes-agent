@@ -12,6 +12,15 @@ describe('sameCronSignature', () => {
     expect(sameCronSignature([session('a', 't')], [])).toBe(false)
   })
 
+  it.each(['cwd', 'git_repo_root', 'git_branch'] as const)('compares %s including cleared metadata', field => {
+    const populated = [session('a', 't', { [field]: 'workspace' })]
+    const cleared = [session('a', 't', { [field]: null })]
+    expect(sameCronSignature(populated, cleared)).toBe(false)
+    expect(sameCronSignature(cleared, populated)).toBe(false)
+    expect(sameCronSignature(cleared, [session('a', 't', { [field]: null })])).toBe(true)
+    expect(sameCronSignature(populated, [session('a', 't', { [field]: 'workspace' })])).toBe(true)
+  })
+
   it('is true when ids and titles match in order', () => {
     const a = [session('a', 'one'), session('b', 'two')]
     const b = [session('a', 'one'), session('b', 'two')]
@@ -44,12 +53,6 @@ describe('sameCronSignature', () => {
     const a = [session('a', 't', { archived: false })]
     const b = [session('a', 't', { archived: true })]
     expect(sameCronSignature(a, b)).toBe(false)
-  })
-
-  it('is true when both flags match', () => {
-    const a = [session('a', 't', { archived: false, pinned: true })]
-    const b = [session('a', 't', { archived: false, pinned: true })]
-    expect(sameCronSignature(a, b)).toBe(true)
   })
 })
 

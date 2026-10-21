@@ -1,0 +1,96 @@
+name: Desktop build dependency cache
+description: Transport reusable dependency candidates; preparation always performs owner admission.
+inputs:
+  phase:
+    description: Explicit restore or save, with preparation between the two calls.
+    required: true
+  source:
+    description: Admitted source checkout containing the dependency declarations.
+    required: true
+  cache:
+    description: Dedicated reusable dependency root passed to preparation.
+    required: true
+  work:
+    description: Job-local preparation root; never part of the snapshot.
+    required: true
+  producer:
+    description: Producer namespace (not a cache-write authorization boundary).
+    required: true
+  key:
+    description: For save, the cache-key output from the restore call.
+    default: ''
+outputs:
+  cache-key:
+    description: Immutable save key; pass this to the save phase.
+    value: ${{ inputs.key || steps.describe.outputs.cache-key }}
+  cache-paths:
+    description: JSON array of direct provider paths, including not-yet-created destinations.
+    value: ${{ steps.describe.outputs.cache-paths }}
+  input-prefix:
+    description: Preferred dependency-input restore prefix.
+    value: ${{ steps.describe.outputs.input-prefix }}
+  restore-prefix:
+    description: Same-producer, target and host fallback prefix.
+    value: ${{ steps.describe.outputs.restore-prefix }}
+  cache-hit:
+    description: Transport result only; never permission to skip preparation.
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Describe dependency transport with runner Python
+      id: describe
+      if: ${{ !cancelled() }}
+      shell: bash
+      env:
+        CACHE_ACTION: ${{ github.action_path }}
+        CACHE_PHASE: ${{ inputs.phase }}
+        CACHE_SOURCE: ${{ inputs.source }}
+        CACHE_ROOT: ${{ inputs.cache }}
+        CACHE_WORK: ${{ inputs.work }}
+        CACHE_PRODUCER: ${{ inputs.producer }}
+        CACHE_KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+        case "$CACHE_PHASE" in
+          restore) ;;
+          save) test -n "$CACHE_KEY" || { printf '%s\n' '::error::Save requires the restore cache-key.'; exit 1; } ;;
+          *) printf '%s\n' '::error::Cache phase must be restore or save.'; exit 1 ;;
+        esac
+        # Description must not create CACHE_WORK: only preparation may claim it.
+        # Paths go straight to Actions; no job-local manifest is transported.
+        if [ "$RUNNER_OS" = Windows ]; then bootstrap=python; else bootstrap=python3; fi
+        "$bootstrap" -S "$CACHE_ACTION/../../../scripts/ci/desktop_build_cache.py" describe \
+          --source "$CACHE_SOURCE" --cache "$CACHE_ROOT" --work "$CACHE_WORK" --producer "$CACHE_PRODUCER"
+
+    - name: Restore dependency candidates
+      id: restore
+      if: ${{ !cancelled() && inputs.phase == 'restore' && steps.describe.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ join(fromJSON(steps.describe.outputs.cache-paths), fromJSON('"\n"')) }}
+        key: ${{ steps.describe.outputs.cache-key }}
+        restore-keys: |
+          ${{ steps.describe.outputs.input-prefix }}
+          ${{ steps.describe.outputs.restore-prefix }}
+        enableCrossOsArchive: 'false'
+        fail-on-cache-miss: 'false'
+
+    # Owners have stopped writing before the caller enters save. No post hook
+    # or pruning can race cancellation, and signed products never enter here.
+    # Trusted workflow/token policy, not this key or condition, admits writers.
+    - name: Save dependency candidates before compilation and signing
+      id: save
+      if: ${{ !cancelled() && inputs.phase == 'save' && steps.describe.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ join(fromJSON(steps.describe.outputs.cache-paths), fromJSON('"\n"')) }}
+        key: ${{ inputs.key }}
+        enableCrossOsArchive: 'false'
+
+    - name: Report cache service failure without masking preparation
+      if: ${{ !cancelled() && (steps.restore.outcome == 'failure' || steps.save.outcome == 'failure') }}
+      shell: bash
+      run: printf '%s\n' '::warning::Desktop dependency cache unavailable; provider preparation remains authoritative.'

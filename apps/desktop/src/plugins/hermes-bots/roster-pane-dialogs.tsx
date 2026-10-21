@@ -61,14 +61,15 @@ export function renderRosterDialogs({
           setCreateOpen(false)
           void refetch()
         }}
+        onConfigureModel={setEditing}
         open={createOpen}
         roster={activeSourceRoster}
       />
       <CreateGroupChatDialog
         onClose={() => setGroupCreateOpen(false)}
-        onCreated={groupName => openGroupChat(groupName)}
-        open={groupCreateOpen} // Full multi-source roster: group chats can seat bots from other
-        // registered connections — their turns route to their own machines.
+        onCreated={(group, origin) => openGroupChat(group, origin)}
+        open={groupCreateOpen} // The dialog applies the active gateway mode to
+        // the full roster before allowing a group to be created.
         roster={roster}
       />
       <SectionNameDialog
@@ -81,7 +82,7 @@ export function renderRosterDialogs({
         }}
         onSubmit={name => {
           if (sectionDialog?.mode === 'rename') {
-            renameBotSection(sectionDialog.id, name)
+            renameBotSection(sectionDialog.id, name, roster)
           } else {
             const section = createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
 

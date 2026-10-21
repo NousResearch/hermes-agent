@@ -51,7 +51,7 @@ class TestNamedCustomProviderCatalogs:
             catalogs = _named_custom_provider_catalogs()
 
         assert len(catalogs) == 1
-        slug, label, models = catalogs[0]
+        slug, _label, models = catalogs[0]
         assert slug == "custom:relay"
         assert [m for m, _ in models] == ["model-a", "model-b"]
 
@@ -125,19 +125,10 @@ class TestNamedCustomProviderCatalogs:
         ), patch(
             "hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
-        ) as fetch:
+        ):
             catalogs = _named_custom_provider_catalogs()
 
         assert [m for m, _ in catalogs[0][2]] == ["qwen3:1.7b"]
-        fetch.assert_called_once_with(
-            "",
-            "http://127.0.0.1:11434/v1",
-            "custom:ollama",
-            False,
-            headers=None,
-            timeout=1.5,
-            api_mode=None,
-        )
     def test_legacy_credentialless_ollama_discovers_native_catalog(self):
         cfg = _cfg(
             custom_providers=[

@@ -24,7 +24,7 @@ import tool_search_livetest as base  # fixtures + helpers
 
 N_REPS = int(os.environ.get("TS_BENCH_REPS", "3"))
 
-SCENARIOS: List[Dict[str, Any]] = base.SCENARIOS + [
+SCENARIOS: list[dict[str, Any]] = base.SCENARIOS + [
     {
         "id": "F_paraphrase_hard",
         "description": "Deferred tool, zero name-word overlap (retrieval stress)",
@@ -56,21 +56,21 @@ SCENARIOS: List[Dict[str, Any]] = base.SCENARIOS + [
 ]
 
 
-def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dict[str, Any]:
+def run_one(scenario: dict[str, Any], mode: str, rep: int, out_dir: Path) -> dict[str, Any]:
     """mode: 'enabled' (bare bridge) | 'listing' (bridge + catalog listing) | 'disabled' (eager)."""
     enabled = mode in ("enabled", "listing")
     hermes_home = base.setup_isolated_home(enabled, listing=("auto" if mode == "listing" else "off"))
     os.environ["HERMES_HOME"] = str(hermes_home)
     base.reset_module_state()
-    n_registered = base.register_fake_tools()
+    base.register_fake_tools()
 
-    Path("/tmp/livetest").mkdir(exist_ok=True)
-    (Path("/tmp/livetest/notes.txt")).write_text("Hello from the test fixture.\n", encoding="utf-8")
+    base.FIXTURE_NOTES.parent.mkdir(parents=True, exist_ok=True)
+    base.FIXTURE_NOTES.write_text("Hello from the test fixture.\n", encoding="utf-8")
 
     from tools.registry import registry
     original_dispatch = registry.dispatch
 
-    tool_call_log: List[Dict[str, Any]] = []
+    tool_call_log: list[dict[str, Any]] = []
     def logging_dispatch(name, args, **kw):
         tool_call_log.append({"name": name})
         return original_dispatch(name, args, **kw)
@@ -80,7 +80,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     # it fires on both streaming and non-streaming paths with normalized
     # usage. NOTE: registered AFTER AIAgent construction because plugin
     # discovery during init calls _hooks.clear().
-    usage_log: List[Dict[str, Any]] = []
+    usage_log: list[dict[str, Any]] = []
     def usage_hook(**kw):
         u = kw.get("usage") or {}
         if u:
@@ -93,7 +93,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     started = time.time()
     error = None
     final_response = ""
-    messages_out: List[Dict[str, Any]] = []
+    messages_out: list[dict[str, Any]] = []
     pm = None
     try:
         from run_agent import AIAgent

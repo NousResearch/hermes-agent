@@ -17,7 +17,7 @@ from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace')
+_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
 _PS_FLAGS = ("-NoProfile", "-NonInteractive")
 _FILE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
@@ -30,7 +30,7 @@ def _probe(argv: list, timeout: int, ok, *, missing: str | None = None) -> bool:
     """Run a text-mode probe; True when it ran and ``ok(result)`` holds.
     A missing executable logs *missing* (when given); every other failure is silent."""
     try:
-        return bool(ok(subprocess.run(argv, timeout=timeout, **_TEXT)))
+        return bool(ok(subprocess.run(argv, timeout=timeout, **_TEXT, check=False)))
     except FileNotFoundError:
         if missing:
             logger.debug(missing)
@@ -42,7 +42,7 @@ def _probe(argv: list, timeout: int, ok, *, missing: str | None = None) -> bool:
 def _pipe_to_file(argv: list, dest: Path) -> bool:
     """Run *argv* with stdout redirected into *dest*; True when a non-empty file resulted."""
     with open(dest, "wb") as f:
-        subprocess.run(argv, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
     return _nonempty(dest)
 
 
@@ -110,7 +110,7 @@ def write_clipboard_text(text: str) -> bool:
     for argv, kw in _write_clipboard_commands(text.encode("utf-8")):
         try:
             if subprocess.run(argv, timeout=10, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, **kw).returncode == 0:
+                              stderr=subprocess.DEVNULL, **kw, check=False).returncode == 0:
                 return True
         except (OSError, subprocess.SubprocessError):
             continue
@@ -122,7 +122,7 @@ def write_clipboard_text(text: str) -> bool:
 def _osascript(expr: str, timeout: int = 3) -> str:
     """stdout of an osascript expression; "" on any failure."""
     try:
-        r = subprocess.run(["osascript", "-e", expr], timeout=timeout, **_TEXT)
+        r = subprocess.run(["osascript", "-e", expr], timeout=timeout, **_TEXT, check=False)
         return r.stdout if r.returncode == 0 else ""
     except Exception as e:
         logger.debug("osascript probe failed: %s", e)
@@ -163,7 +163,7 @@ def _macos_save_file_image(dest: Path) -> bool:
 def _macos_pngpaste(dest: Path) -> bool:
     """pngpaste (brew install pngpaste) — fastest, cleanest."""
     try:
-        r = subprocess.run(["pngpaste", str(dest)], capture_output=True, timeout=3)
+        r = subprocess.run(["pngpaste", str(dest)], stdin=subprocess.DEVNULL, capture_output=True, timeout=3, check=False)
         return r.returncode == 0 and _nonempty(dest)
     except FileNotFoundError:
         pass  # pngpaste not installed
@@ -188,7 +188,7 @@ on error
 end try
 '''
     try:
-        r = subprocess.run(["osascript", "-e", script], timeout=5, **_TEXT)
+        r = subprocess.run(["osascript", "-e", script], timeout=5, **_TEXT, check=False)
         return r.returncode == 0 and "fail" not in r.stdout and _nonempty(dest)
     except Exception as e:
         logger.debug("osascript clipboard extract failed: %s", e)
@@ -255,7 +255,7 @@ def _ps_clipboard(exe: str, timeout: int, label: str, dest: Path | None = None) 
     for check, extract in _PS_IMAGE_STRATEGIES:
         try:
             argv = [exe, *_PS_FLAGS, "-Command", check if dest is None else extract]
-            r = subprocess.run(argv, timeout=timeout, **_TEXT)
+            r = subprocess.run(argv, timeout=timeout, **_TEXT, check=False)
             if dest is None:
                 if r.returncode == 0 and "True" in r.stdout:
                     return True
@@ -327,7 +327,7 @@ def _wayland_has_image() -> bool:
 
 def _wayland_save(dest: Path) -> bool:
     try:
-        types_r = subprocess.run(_WL_LIST_TYPES, timeout=3, **_TEXT)
+        types_r = subprocess.run(_WL_LIST_TYPES, timeout=3, **_TEXT, check=False)
         types = types_r.stdout.splitlines() if types_r.returncode == 0 else ()
         mime = next((m for m in _WAYLAND_MIME_PREFERENCE if m in types), None)  # PNG preferred
         if not mime:
@@ -360,8 +360,8 @@ def _convert_to_png(path: Path) -> bool:
     tmp = path.with_suffix(".bmp")
     try:
         path.rename(tmp)
-        r = subprocess.run(["convert", str(tmp), "png:" + str(path)], capture_output=True,
-                           timeout=5)
+        r = subprocess.run(["convert", str(tmp), "png:" + str(path)], stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=5, check=False)
         if r.returncode == 0 and _nonempty(path):
             tmp.unlink(missing_ok=True)
             return True

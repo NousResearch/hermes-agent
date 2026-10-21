@@ -452,7 +452,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     publisher.verify_build = qualified
     if accepted is not None:
-        # The accepted manifest is also the next release's upgrade baseline (stable._published_baseline).
+        # Stable's pointer is the next release's upgrade baseline (stable._published_baseline); the
+        # canary's names the live canary, whose objects the R2 pruner keeps however old.
         channel = "canary" if policy == "canary-release" else "stable"
         pointer = f"releases/{channel}/release-candidates.json"
         log(f"Writing {pointer} and promoting the {channel} feeds")

@@ -438,7 +438,8 @@ export function playCompletionSound(dedupeKey?: string) {
     return play()
   }
 
-  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && play())
+  // A user can mute this window while the ownership request is in flight.
+  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && !$hapticsMuted.get() && play())
 }
 
 interface AirPuffSpec {

@@ -965,6 +965,9 @@ export const frOverrides = {
       testSent:
         "Test envoyé. Si rien n'apparaît, vérifiez les autorisations de notification de votre système et le mode Ne pas déranger.",
       testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
+      muteSoundsTitle: 'Couper les sons de l’interface',
+      muteSoundsDesc:
+        'Coupe les signaux automatiques de fin, d’activation et de réflexion, ainsi que le retour haptique. Les aperçus sonores et les réponses vocales restent audibles.',
       completionSoundTitle: 'Son de fin',
       completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
       completionSoundPreview: 'Aperçu'

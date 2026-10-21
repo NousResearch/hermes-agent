@@ -3804,6 +3804,8 @@
     "settings.notifications.kinds.turnDone.label",
     "settings.notifications.kinds.turnError.description",
     "settings.notifications.kinds.turnError.label",
+    "settings.notifications.muteSoundsDesc",
+    "settings.notifications.muteSoundsTitle",
     "settings.notifications.test",
     "settings.notifications.testBody",
     "settings.notifications.testSent",

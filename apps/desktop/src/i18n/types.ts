@@ -771,6 +771,8 @@ catalog: CatalogTranslations
       testBody: string
       testSent: string
       testUnsupported: string
+      muteSoundsTitle: string
+      muteSoundsDesc: string
       completionSoundTitle: string
       completionSoundDesc: string
       completionSoundPreview: string

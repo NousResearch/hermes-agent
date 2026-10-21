@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
 import { afterEach, test, vi } from 'vitest'
 
 import {
@@ -13,8 +12,7 @@ import {
   resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewCreatePr,
-  reviewList,
-  SIMPLE_GIT_UNSAFE_BINARY_WARN
+  reviewList
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
 
@@ -97,11 +95,11 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
   }
 })
 
-test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
+test('gitFor accepts trusted spaced binaries without intercepting console warnings', () => {
   const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
   // `windowsGitHost()` resolves nothing in this process (no configured roots, no
   // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
-  // spaced `Program Files` path, which warns once per factory call.
+  // spaced `Program Files` path.
   const warnings: unknown[][] = []
   const originalWarn = console.warn
 
@@ -118,16 +116,53 @@ test('gitFor suppresses only the known custom-binary warning and restores consol
 
     assert.equal(console.warn, recordingWarn)
 
-    // The escape hatch used directly still warns: the message gitFor filters is a
-    // live emission of the installed simple-git, so the filter cannot go stale
-    // silently (an upgrade that rewords it fails this test, not production).
-    simpleGit({ baseDir: process.cwd(), binary: spacedBin, unsafe: { allowUnsafeCustomBinary: true } })
     console.warn('unrelated warning')
   } finally {
     console.warn = originalWarn
   }
 
-  assert.deepEqual(warnings, [[SIMPLE_GIT_UNSAFE_BINARY_WARN], ['unrelated warning']])
+  assert.deepEqual(warnings, [['unrelated warning']])
+})
+
+test('gitFor executes a host tuple with prompt control and without ambient Git injection', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-host-'))
+  tempDirs.push(dir)
+  const script = path.join(dir, 'host.cjs')
+  fs.writeFileSync(script, `process.stdout.write(JSON.stringify(process.env))`)
+  vi.stubEnv('GIT_CONFIG_COUNT', '1')
+  vi.stubEnv('VISUAL', 'vi')
+  vi.stubEnv('EDITOR', 'vi')
+  vi.stubEnv('PAGER', 'cat')
+  vi.stubEnv('GIT_PAGER', 'cat')
+  vi.stubEnv('SSH_ASKPASS', 'ssh-askpass')
+  vi.stubEnv('PREFIX', '/example/prefix')
+  vi.stubEnv('git_config_count', '1')
+  vi.stubEnv('SSH_AUTH_SOCK', '/test/ssh-agent.sock')
+  vi.stubEnv('GIT_TERMINAL_PROMPT', '0')
+  vi.resetModules()
+  vi.doMock('./no-console-git', async importOriginal => ({
+    ...(await importOriginal<typeof NoConsoleGit>()),
+    simpleGitBinary: () => [process.execPath, script]
+  }))
+
+  try {
+    const { gitFor: withHost } = await import('./git-review-ops')
+    const env = JSON.parse(await withHost(dir, 'git').raw(['status']))
+    assert.equal(env.GIT_TERMINAL_PROMPT, '0')
+    assert.equal(env.HERMES_GIT_ARGV0, JSON.stringify('git'))
+    assert.equal(env.SSH_AUTH_SOCK, '/test/ssh-agent.sock')
+    assert.equal(env.HOME, process.env.HOME)
+    assert.equal(env.PATH, process.env.PATH)
+    assert.equal(env.GIT_CONFIG_COUNT, undefined)
+
+    for (const key of ['VISUAL', 'EDITOR', 'PAGER', 'GIT_PAGER', 'SSH_ASKPASS', 'PREFIX', 'git_config_count']) {
+      assert.equal(env[key], undefined, key)
+    }
+  } finally {
+    vi.unstubAllEnvs()
+    vi.doUnmock('./no-console-git')
+    vi.resetModules()
+  }
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

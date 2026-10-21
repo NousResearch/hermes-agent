@@ -25,6 +25,7 @@ from tools import slash_confirm
 from tools.slash_confirm import DEFAULT_TIMEOUT_SECONDS
 
 from tests.gateway.relay.stub_connector import StubConnector
+from tests.waiting import async_wait_until
 
 _UNTIMED_PROMPT_TTL_S = 3600.0
 
@@ -78,6 +79,40 @@ async def test_exec_approval_and_clarify_prompts_keep_their_shape():
     for action in (approval, clarify):
         assert "timeout_s" not in action
         _assert_local_expiry(adapter, action["prompt_id"], _UNTIMED_PROMPT_TTL_S, before, after)
+
+
+@pytest.mark.asyncio
+async def test_a_press_after_the_confirm_wait_gets_the_expiry_notice_not_an_approval(monkeypatch):
+    clock = [1000.0]
+    # Both the adapter's prompt registry and tools.slash_confirm read the wall clock.
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    adapter, stub = _adapter()
+    ran: list[str] = []
+
+    async def _handler(choice: str) -> str:
+        ran.append(choice)
+        return "session reset"
+
+    slash_confirm.clear("sess:1")
+    slash_confirm.register("sess:1", "7", "new", _handler)
+    try:
+        await adapter.send_slash_confirm("c1", "/new", "Discards history.", "sess:1", "7")
+        (prompt,) = _prompt_ops(stub)
+        clock[0] += DEFAULT_TIMEOUT_SECONDS + 1
+        press = MessageEvent(
+            text="/once", message_type=MessageType.COMMAND,
+            source=SessionSource(platform="telegram", chat_id="c1", chat_type="dm", user_id="u1"),
+            prompt_response={"prompt_id": prompt["prompt_id"], "option_id": "once"},
+        )
+        assert await adapter._consume_prompt_response(press) is True
+        acks = await async_wait_until(
+            lambda: [a["content"] for a in stub.sent if a.get("op") == "send"], what="the press to be acked"
+        )
+    finally:
+        slash_confirm.clear("sess:1")
+
+    assert ran == []
+    assert len(acks) == 1 and "no longer waiting" in acks[0]
 
 
 # ── every gateway entry into a slash confirm reaches the wire timed ───────

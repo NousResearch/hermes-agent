@@ -751,7 +751,10 @@ def _model_flow_vertex(config, current_model=""):
     region = region_input or current_region
 
     # 4. Model selection (curated list — Vertex has no /models listing route).
-    model_list = _PROVIDER_MODELS.get("vertex", []) or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"]
+    # Fallback ids must be LIVE publisher ids (a retired id 404s on the GCP project).
+    model_list = _PROVIDER_MODELS.get("vertex", []) or [
+        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3-flash-preview",
+    ]
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     base_url_preview = f"https://{host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
     selected = _prompt_model_selection(model_list, current_model=current_model, confirm_provider="vertex", confirm_base_url=base_url_preview)

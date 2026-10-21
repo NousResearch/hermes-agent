@@ -35,6 +35,7 @@ from agent.turn_failure_copy import (
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _is_codex_token_expired, _recover_stale_codex_reasoning
+from agent.turn_recovery_vertex import VERTEX_CAPACITY_NOTE, vertex_capacity_wait
 from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
@@ -1435,15 +1436,30 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
+    # Vertex capacity 429 (no Retry-After): the provider is out of capacity, so the generic
+    # ladder re-enters the same contended window. It gets its own ladder and its own label;
+    # every other provider falls through with the wait computed above.
+    _vertex_policy = None
+    if _retry_after is None:
+        _vertex_wait, _vertex_policy = vertex_capacity_wait(
+            base_url=base_url, error=api_error, attempt=retry_count, default_wait=wait_time,
+        )
+        if _vertex_policy:
+            wait_time = _vertex_wait
+            _backoff_policy = _vertex_policy
+            _adaptive = True
     _reset = reset_hint(api_error) if _adaptive else ""
     _free_busy = is_rate_limited and on_free_model(agent, base_url)
     _wait_reason = ("The free model is busy" if _free_busy
+                    else "Vertex capacity exhausted" if _vertex_policy
                     else "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited")
     if _adaptive:
         _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
+        if _vertex_policy:
+            _policy_note = VERTEX_CAPACITY_NOTE
         _status = (f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
                    f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
-        _announce_now = _backoff_policy == "zai_coding_overload_long"
+        _announce_now = _backoff_policy == "zai_coding_overload_long" or bool(_vertex_policy)
     else:
         _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
         # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.

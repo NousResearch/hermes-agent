@@ -166,9 +166,17 @@ def _resolve_budget_fallback(
                 # for requeue instead of being cleared behind a fallback summary. A redirect
                 # also ends it: the budget is spent, so there is no loop to restart into.
                 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                from agent.interrupt_control import system_interrupt_cause
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
-                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+                # Name the system producer behind the stop (#126748); prefix stays
+                # byte-identical for the ACP/TUI/gateway sentinel suppression.
+                _cause = system_interrupt_cause(agent)
+                _cause_note = f", cause: {_cause}" if _cause else ""
+                final_response = (
+                    f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}"
+                    f"{time.time() - _summary_start:.1f}s elapsed{_cause_note})."
+                )
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the

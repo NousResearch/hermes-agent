@@ -127,18 +127,8 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     { key: 'approvals.mode', value: 'manual', profile: 'default' },
     ['config.set']
   ],
-  [
-    'voice-live.ts engine',
-    'config.set',
-    { key: 'voice.voice_chat_mode', value: 'chained' },
-    ['config.set']
-  ],
-  [
-    'yolo-session.ts Shift+click zap',
-    'config.set',
-    { key: 'yolo', scope: 'global', value: '1' },
-    ['config.set']
-  ],
+  ['voice-live.ts engine', 'config.set', { key: 'voice.voice_chat_mode', value: 'chained' }, ['config.set']],
+  ['yolo-session.ts Shift+click zap', 'config.set', { key: 'yolo', scope: 'global', value: '1' }, ['config.set']],
   ['yolo-session.ts session toggle', 'config.set', { key: 'yolo', session_id: 's', value: '1' }, ['config.set']],
   [
     'session-tile-delegate / quick entry / bot chats (identityless)',

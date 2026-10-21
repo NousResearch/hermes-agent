@@ -17,5 +17,5 @@ export const frPluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Mettre à jour quand même',
   updateScanBlocked: (name: string) =>
     `L’analyse de sécurité a bloqué la mise à jour de ${name} (verdict « dangereux »). Impossible de passer outre.`,
-  updatedGit: (name: string) => `${name} a été mis à jour vers le dernier commit.`,
+  updatedGit: (name: string) => `${name} a été mis à jour vers le dernier commit.`
 }

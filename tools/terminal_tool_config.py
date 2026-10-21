@@ -46,11 +46,18 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
 def _safe_getcwd() -> str:
     """``os.getcwd()`` tolerant of a deleted cwd (FileNotFoundError) or a macOS
     TCC-protected one without Full Disk Access (PermissionError); falls back
-    to TERMINAL_CWD, then the home directory."""
+    to TERMINAL_CWD, then the home directory.
+
+    The fallback itself must exist: when the process cwd died *because*
+    TERMINAL_CWD's directory was deleted (the mid-session stale-cwd failure),
+    returning that same dead path here just moves the exit-126 to the caller.
+    Home is the guaranteed-valid last resort.
+    """
     try:
         return os.getcwd()
     except (FileNotFoundError, PermissionError):
-        return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
+        fallback = _tenv("TERMINAL_CWD") or os.path.expanduser("~")
+        return fallback if os.path.isdir(fallback) else os.path.expanduser("~")
 
 
 # Host-cwd shapes that cannot exist inside a container sandbox: POSIX user dirs and ANY Windows

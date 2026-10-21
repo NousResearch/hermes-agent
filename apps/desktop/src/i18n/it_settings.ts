@@ -97,6 +97,8 @@ export const itSettings = {
       title: 'Plugin desktop',
       openFolder: 'Apri la cartella dei plugin desktop',
       rescan: 'Ripeti la ricerca',
+      disable: 'Disattiva',
+      enable: 'Attiva',
       reveal: 'Mostra nel gestore di file',
       failed: 'fallito',
       kinds: {

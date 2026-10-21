@@ -108,11 +108,6 @@ export const itAssistant = {
         unsupported_gpu: 'GPU non compatibile',
         unknown: 'stato sconosciuto'
       },
-      catalogTitle: 'Catalogo dei plugin',
-      catalogBrowse: 'Esplora',
-      catalogHide: 'Nascondi l’esploratore del catalogo',
-      catalogHint:
-        'Premi "+ Aggiungi a questo agente" su qualsiasi plugin: le voci verificate vengono installate al loro commit fissato nel profilo selezionato. I plugin agente+desktop inclusi offrono entrambe le metà.',
       alreadyInstalled: (name: string) => `${name} è già installato in questo profilo.`,
       catalogProvenance: (sha: string) =>
         `Installato dal catalogo di Hermes${sha ? ` al commit fissato ${sha}` : ''}.`,
@@ -121,6 +116,14 @@ export const itAssistant = {
       pinnedBadge: (sha: string) => `fissato @ ${sha}`,
       updateToPin: (sha: string) => `Aggiorna a ${sha}`,
       updateFailed: (name: string) => `Impossibile aggiornare ${name}`,
+      updateScanBlocked: (name: string) =>
+        `La scansione di sicurezza ha bloccato l’aggiornamento di ${name} (verdetto dangerous). Non può essere scavalcato.`,
+      updateScanBody: (name: string, count: number) =>
+        `L’aggiornamento di ${name} ha ricevuto un verdetto caution (${count} ${count === 1 ? 'riscontro' : 'riscontri'}). Ogni aggiornamento viene scansionato. Applicalo solo se ti fidi della fonte:`,
+      updateScanConfirm: 'Aggiorna comunque',
+      updateScanMore: (count: number) => `+ altri ${count}`,
+      updateScanTitle: (name: string) => `La scansione di sicurezza ha segnalato ${name}`,
+      updatedGit: (name: string) => `${name} aggiornato all’ultimo commit.`,
       updated: (name: string) =>
         `${name} è stato aggiornato al commit fissato attuale del catalogo. Riavvia il gateway per applicarlo.`,
       updateConsentTitle: (name: string) => `${name} chiede di più`,
@@ -146,6 +149,7 @@ export const itAssistant = {
         'Impossibile caricare il catalogo dei plugin di Hermes. Controlla la tua connessione e riapri il link.',
       settingsToggle: (name: string) => `Impostazioni: ${name}`,
       settingsForm: {
+        optional: '(opzionale)',
         save: 'Salva configurazione',
         saved: (name: string) => `Configurazione di ${name} salvata.`,
         saveFailed: (name: string) => `Impossibile salvare la configurazione di ${name}`,
@@ -269,6 +273,18 @@ export const itAssistant = {
         streaming: 'La connessione si è interrotta prima che la risposta fosse completata. Riprova per inviarla di nuovo.'
       },
       errorCodes: {
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes è occupato in questa chat',
+          body: 'Un altro turno è in esecuzione qui e il tuo messaggio non è potuto entrare nella sua coda. Non è stato inviato nulla. Riprova quando quel turno termina.'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          title: 'Il tuo messaggio potrebbe essere già in coda',
+          body: 'Il gateway non ha confermato il tuo messaggio in tempo. Se era in coda, viene eseguito quando il turno precedente termina o viene risolto. Controlla la chat prima di inviarlo di nuovo.'
+        },
+        cron_session_read_only: {
+          title: 'Questa chat appartiene a un’attività pianificata',
+          body: 'Esegue solo quell’attività, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.'
+        },
         auth: {
           title: (provider: string) => `${provider} ha rifiutato il tuo accesso`,
           body: (provider: string) =>

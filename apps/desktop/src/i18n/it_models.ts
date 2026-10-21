@@ -121,6 +121,24 @@ export const itSettingsModels = {
       moaReferenceHint: 'consiglia una volta per turno per impostazione predefinita',
       followTask: task => `Segui ${task}`,
       inheritsFrom: task => `eredita ${task}`,
+      subagents: {
+        catalogFailed: 'Catalogo modelli non disponibile. Inserisci manualmente un provider e un modello, oppure riprova.',
+        customProvider: 'Provider personalizzato…',
+        customProviderLabel: 'Provider subagente personalizzato',
+        direct: 'Override endpoint diretto',
+        directActive:
+          'Un endpoint diretto è attivo e ha la precedenza sul provider salvato. Il suo endpoint e le sue credenziali vengono conservati finché resta selezionata questa modalità.',
+        directClear:
+          'Applicare questa route azzera l’endpoint diretto e la sua chiave salvata. Le altre impostazioni delle richieste restano.',
+        draftHint: 'Le modifiche restano locali finché non vengono applicate.',
+        inherit: 'Eredita dall’agente principale',
+        modelLabel: 'Modello subagente',
+        modelOnly: 'Modello personalizzato (usa le credenziali del genitore)',
+        parentModel: 'Usa il modello del genitore',
+        parentModelWarning:
+          'Il provider scelto deve supportare il modello del genitore. Una route solo-provider può fallire se il modello è incompatibile. Se quel provider imposta un proprio modello predefinito, i subagenti usano quello.',
+        providerLabel: 'Provider subagente'
+      },
       tasks: {
         vision: {
           label: 'Visione',

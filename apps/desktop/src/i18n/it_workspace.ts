@@ -1473,6 +1473,11 @@ export const itWorkspace = {
       startMessaging: 'Avvia messaggistica'
     }
   },
+  gatewayGroupOpen: {
+    lookupFailed: 'Impossibile cercare questo gruppo sul gateway. Riprova.',
+    missing: 'Questo gruppo del gateway non esiste più.',
+    opening: 'Apertura del gruppo del gateway…'
+  },
   ui: {
     search: {
       clear: 'Cancella ricerca'

@@ -18,18 +18,14 @@ export const itApp = {
       'Dati generali del computer: intervallo di RAM, tipo di GPU, età e canale della versione di Hermes, aggiornamenti in sospeso, se si usa un server di modelli locale',
     readDocs: 'Leggi tutti i dettagli',
     share: 'Raccogli e invia a Nous',
-    local: 'Raccogli solo in locale',
     off: 'No, grazie',
     saveFailed: 'Impossibile salvare la tua scelta',
-    collectLabel: 'Raccogli statistiche di utilizzo',
-    collectDesc:
-      'Contatori limitati salvati su questo dispositivo. Mai prompt, file, percorsi né testi di errore.',
     sendLabel: 'Invia statistiche di utilizzo a Nous',
     sendDesc:
       'Carica ogni pacchetto giornaliero sul servizio di telemetria di Nous. Vengono inviati solo dati di una finestra di consenso. Richiede la raccolta attivata.',
     unavailable: 'Aggiorna il backend di Hermes per cambiare questa impostazione.',
     stripBody: 'Solo contatori limitati, mai prompt né file.',
-    stripChoices: { share: 'Invia a Nous', local: 'Solo locale', off: 'No, grazie' },
+    stripChoices: { share: 'Invia a Nous', off: 'No, grazie' },
     stripDetails: 'Dettagli',
     dialogTitle: 'Statistiche di utilizzo',
     sending:

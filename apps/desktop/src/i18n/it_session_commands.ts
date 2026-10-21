@@ -14,6 +14,9 @@ export const itSessionCommands: SessionCommandNotices = {
   steerRejected: 'steer rifiutato — nessun turno attivo, messo in coda per il prossimo turno',
   queued: preview => `in coda: "${preview}"`,
   queueFailed: 'impossibile mettere il messaggio in coda',
+  busy: command =>
+    `sessione occupata — Hermes sta ancora rispondendo. Ferma prima la risposta corrente (pulsante Stop, o Ctrl+C in un terminale), poi esegui /${command}.`,
+  busyCompressing: command => `sessione occupata — è in corso un /compress; esegui /${command} al termine.`,
   countOne: count => `${count} messaggio in coda`,
   countOther: count => `${count} messaggi in coda`,
   queueEditKeptTitle: 'Messaggio in coda non modificato',

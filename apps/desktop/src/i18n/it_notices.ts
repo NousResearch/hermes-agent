@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { itDesktopCommands } from './it_desktop_commands'
 import { itSessionCommands } from './it_session_commands'
 
 // Avvisi della shell (toast display remoto, butterbar), sparsi in it.ts.
@@ -18,13 +19,17 @@ export const itNotices = {
     }
   },
   promptNotices: {
+    compactedTurnUnavailable:
+      'Quel messaggio è stato riassunto durante la compressione della chat, quindi non può più essere ripristinato o modificato.',
+    staleTurnUnavailable: 'Quel messaggio non è più nella cronologia di questa chat.',
     legacySendUnconfirmed:
       'Questo server non ha potuto confermare l’invio precedente di questo messaggio, quindi potrebbe essere già stato elaborato. Controlla la conversazione prima di inviarlo di nuovo.',
     mcpReloadDeferred:
       'Questa chat è occupata: la modifica MCP si applica quando il turno in corso termina e MCP si ricarica, o alla riapertura della chat',
     mcpReloadNotInChat: server => `${server} non è attivato in questa chat`,
     mcpReloadUnavailable: servers => `Connessione non riuscita: ${servers}`,
-    sessionCommands: itSessionCommands
+    sessionCommands: itSessionCommands,
+    desktopCommands: itDesktopCommands
   },
   keepAwakeOffer: {
     title: 'Il computer si è spento mentre Hermes lavorava',

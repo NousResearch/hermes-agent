@@ -6,6 +6,7 @@ import sqlite3
 from unittest.mock import Mock
 
 import pytest
+from datetime import UTC
 
 
 def test_pending_delivery_is_claimed_and_sent_once(tmp_path, monkeypatch):
@@ -243,7 +244,7 @@ def test_pending_delivery_older_than_max_age_is_failed_not_sent(tmp_path, monkey
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     monkeypatch.setattr(queue, "_max_age_seconds", lambda: 3600.0)
-    start = datetime(2026, 10, 9, 7, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 9, 7, 0, tzinfo=UTC)
     monkeypatch.setattr(queue, "_hermes_now", lambda: start)
     queue.enqueue("exec-stale", {"id": "job-1"}, "morning brief")
     monkeypatch.setattr(queue, "_hermes_now", lambda: start + timedelta(minutes=30))
@@ -264,7 +265,7 @@ def test_pending_delivery_waits_forever_by_default(tmp_path, monkeypatch):
     import cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
-    start = datetime(2026, 10, 9, 7, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 10, 9, 7, 0, tzinfo=UTC)
     monkeypatch.setattr(queue, "_hermes_now", lambda: start)
     queue.enqueue("exec-old", {"id": "job-1"}, "brief")
     monkeypatch.setattr(queue, "_hermes_now", lambda: start + timedelta(days=3))

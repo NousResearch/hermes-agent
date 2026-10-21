@@ -45,7 +45,8 @@ def _max_age_seconds() -> float:
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         return float(cron_cfg.get("delivery_max_age_seconds", 0) or 0)
-    except Exception:
+    except Exception:  # an unreadable config keeps the safe default: nothing expires
+        logger.warning("cron.delivery_max_age_seconds unreadable; queued deliveries never expire", exc_info=True)
         return 0.0
 
 

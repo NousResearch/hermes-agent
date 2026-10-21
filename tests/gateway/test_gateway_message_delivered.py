@@ -276,6 +276,34 @@ class TestNonStreamedFinal:
         assert result.success and result.message_id == "1"
 
 
+class TestSessionSharedByTwoKeys:
+    def test_each_delivery_reports_its_own_chat_after_switch_session(self, fired, tmp_path):
+        """Two routing keys on one session (``SessionStore.switch_session``): the session store can't
+        say which chat a reply went to (``lookup_by_session_id`` returns one entry), the payload can."""
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store._loaded = True
+        adapter = _Adapter(SendResult(success=True, message_id="1"))
+        sources = [adapter.build_source(chat_id="chat-a", user_id="u1", chat_type="dm"),
+                   adapter.build_source(chat_id="chat-b", user_id="u1", chat_type="group", thread_id="5")]
+        entry_a, entry_b = (store.get_or_create_session(s) for s in sources)
+        assert store.switch_session(entry_b.session_key, entry_a.session_id) is not None
+        shared = entry_a.session_id
+        assert {store.lookup_by_session_key(e.session_key).session_id for e in (entry_a, entry_b)} == {shared}
+
+        for source, entry, text in ((sources[0], entry_a, "to a"), (sources[1], entry_b, "to b")):
+            event = MessageEvent(text="hi", message_type=MessageType.TEXT, message_id="in", source=source)
+            event._delivered_turn_session_id = shared
+            _send(adapter, event, entry.session_key, text, {}, reply_to=None)
+
+        got = [(p["chat_id"], p["thread_id"], p["session_key"], p["session_id"], p["text"]) for _, p in fired]
+        assert got == [("chat-a", None, entry_a.session_key, shared, "to a"),
+                       ("chat-b", "5", entry_b.session_key, shared, "to b")]
+
+
 # --------------------------------------------------------------------------- kind="final", streamed
 
 

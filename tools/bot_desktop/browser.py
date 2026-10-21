@@ -80,7 +80,7 @@ def _userns_restricted() -> bool:
     return apparmor_restricts_unprivileged_userns()
 
 
-def dock_launch() -> Optional[Tuple[str, str]]:
+def dock_launch() -> Optional[tuple[str, str]]:
     """``(executable, user_data_dir)`` for the dock's Browser icon, or ``None`` when no Chromium exists."""
     exe = executable()
     return (exe, str(profile_dir())) if exe else None

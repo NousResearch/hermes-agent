@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 // Host-native: jsdom never reports a Mac platform, so `IS_MAC` is false here.
-// Mac-only Control/Cmd branches are not faked (AGENTS.md "Don't fake the host OS").
+// Mac-only Control/Cmd branches are not faked (tests/AGENTS.md "Don't fake the host OS").
 import { actionAllowedInInput, canonicalizeCombo, comboFromEvent } from './combo'
 
 function keydown(init: KeyboardEventInit): KeyboardEvent {

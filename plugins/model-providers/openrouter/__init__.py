@@ -111,7 +111,7 @@ class OpenRouterProfile(ProviderProfile):
     ) -> list[str] | None:
         """Public OpenRouter catalog (no auth), cached per process. Tool-call
         filtering happens in hermes_cli/models.py, which the picker reaches first."""
-        global _CACHE  # noqa: PLW0603
+        global _CACHE
         if _CACHE is not None:
             return _CACHE
         try:

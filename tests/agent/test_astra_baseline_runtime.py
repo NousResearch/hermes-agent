@@ -100,7 +100,7 @@ def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(mon
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "synthetic-account")
-    models.update_provider_cache_entry(provider, ["gpt-5.6-sol", model])
+    models._store_cache_entry(provider, models._cache_entry("synthetic-account", ["gpt-5.6-sol", model]))
     live = []
     calls = []
 

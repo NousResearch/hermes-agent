@@ -136,6 +136,31 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
         )
 
 
+def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):
+    """Plugin JS/CSS bundles are mounted at ``/dashboard-plugins/*`` and loaded
+    by the SPA via ``<script src>`` / ``<link href>`` tags, which cannot carry
+    session cookies — so every plugin asset request must bypass the OAuth gate
+    and reach ``serve_plugin_asset`` (which enforces its own suffix allowlist
+    and traversal guard). Meanwhile a non-public ``/api/*`` request must still
+    401, proving the gate itself is intact.
+    """
+    r = gated_app.get("/dashboard-plugins/some-plugin/index.js", follow_redirects=False)
+    assert r.status_code != 401, (
+        "/dashboard-plugins/ returned 401 under the OAuth gate — plugin "
+        "assets are loaded by script/link tags and must be public"
+    )
+    if r.status_code == 302:
+        location = r.headers.get("location", "")
+        assert "/login" not in location, (
+            f"/dashboard-plugins/ redirected to {location} — plugin assets "
+            "must reach serve_plugin_asset, not the login page"
+        )
+    r2 = gated_app.get("/api/auth/me", follow_redirects=False)
+    assert r2.status_code == 401, (
+        "/api/auth/me should still be gated"
+    )
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------
@@ -319,6 +344,63 @@ def test_api_auth_me_returns_session_after_login(gated_app):
 def test_api_auth_me_requires_auth(gated_app):
     # No cookies.
     r = gated_app.get("/api/auth/me")
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Loopback-mode identity probe (GH #66223)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def loopback_app():
+    """Configure web_server.app for loopback mode (auth_required=False).
+
+    Mirrors ``gated_app`` but flips the gate off and clears ``bound_host``
+    so the host-header check doesn't reject the TestClient's requests.
+    """
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = None
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app, base_url="http://127.0.0.1")
+    yield client
+    clear_providers()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.auth_required = prev_required
+
+
+def test_api_auth_me_returns_loopback_identity_with_valid_token(loopback_app):
+    """Regression for GH #66223.
+
+    In loopback mode there is no OAuth ``Session``, but the legacy
+    ``auth_middleware`` has already validated the ephemeral
+    ``_SESSION_TOKEN``.  The handler must return a minimal identity so
+    the SPA can resolve its boot state instead of spinning on a 401.
+    """
+    token = web_server._SESSION_TOKEN
+    r = loopback_app.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, (
+        f"Expected 200 with a valid token in loopback mode, "
+        f"got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["provider"] == "loopback"
+    assert body["user_id"] == "local"
+    assert "display_name" in body
+    assert "email" in body
+    assert "org_id" in body
+    assert "expires_at" in body
+
+
+def test_api_auth_me_still_rejects_missing_token_in_loopback(loopback_app):
+    """Security boundary (GH #66223): without a valid token the endpoint
+    must still 401 even in loopback mode."""
+    r = loopback_app.get("/api/auth/me")
     assert r.status_code == 401
 
 

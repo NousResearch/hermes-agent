@@ -24,7 +24,6 @@ def test_bare_hatch_uses_thread_aware_prompt_not_raw_input(capsys):
 
     def fake_prompt(prompt_text):
         calls.append(prompt_text)
-        return None  # helper cancelled (e.g. unsafe thread context)
 
     stand_in = _StandIn(_prompt_text_input=fake_prompt)
 

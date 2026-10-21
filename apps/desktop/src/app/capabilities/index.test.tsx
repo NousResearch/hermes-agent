@@ -214,9 +214,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // The selector renders on the Skills tab too (Capabilities-wide), above the catalog's sort select.
-    await waitFor(() => expect(screen.getAllByRole('combobox')).toHaveLength(2))
-    const [trigger] = screen.getAllByRole('combobox')
+    // The selector renders on the Skills tab too (Capabilities-wide); the catalog's sort lives in its Filters popover.
+    const trigger = await screen.findByRole('combobox')
     await act(async () => {
       fireEvent.click(trigger)
     })
@@ -349,6 +348,11 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     getToolsetConfig.mockResolvedValue({ has_category: false, active_provider: null, providers: [] })
 
     await renderSkills()
+
+    // Toolset settings open in a dialog from the toolset's card.
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Vision / Image Analysis' }))
+    })
 
     const link = await screen.findByRole('button', { name: /Choose vision model in Settings/ })
 
@@ -489,7 +493,18 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    const install = await screen.findByRole('switch', { name: 'Add gif-search' })
+    // The row settles once installed skills load (the discovery hero can change
+    // as they merge in), so act on the live, enabled switch.
+    await screen.findByRole('switch', { name: 'Add gif-search' })
+
+    const install = await waitFor(() => {
+      const row = screen.getByRole<HTMLButtonElement>('switch', { name: 'Add gif-search' })
+
+      expect(row.disabled).toBe(false)
+
+      return row
+    })
+
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
     expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
     expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added ascii-art' }).disabled).toBe(true)

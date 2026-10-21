@@ -1,0 +1,17 @@
+name: wyoming-voice-bridge
+repo: https://github.com/TakeshiTGAL/hermes-plugin-wyoming-voice-bridge
+sha: 7be4db8548a82a8745981d47e79d1623a173a54b
+description: "Wyoming speech-to-text and text-to-speech for a Wyoming server you run (stt/tts provider `wyoming`), plus a wyoming_voice_status tool that lists the server's models and voices. Disclosure — Audio and text to speak go to the WYOMING_* host:port you set over cleartext, unauthenticated TCP (public addresses accepted). Once selected, the providers send speech in every session, including cron and webhooks. Non-WAV audio is converted with your local ffmpeg. wyoming_voice_status asks for approval on each call and refuses under cron, yolo, approvals off, -q and unattended platforms; answering \"always\" leaves a command_allowlist line in config.yaml. It calls internal Hermes approval, config and write-guard helpers, so a Hermes update can disable the status tool or speech file writes (both fail closed)."
+maintainer: TakeshiTGAL
+tier: community
+category: voice
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-wyoming-voice-bridge#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.4"
+platforms: []
+capabilities:
+  provides_tools:
+  - wyoming_voice_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

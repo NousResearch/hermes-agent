@@ -297,7 +297,10 @@ keywords as a completed word, or contains a pasted link whose hostname ends
 with one of the host suffixes. It is purely advisory — installs still flow
 through the same validated catalog/config paths — and most hosted remote
 entries (Atlassian, Sentry, Notion, Stripe, Vercel, Supabase, and friends)
-declare it.
+declare it. Optional `applications:` (up to 16 app names), `requires_app: true`
+(the MCP needs that local app; such entries are never offered as a one-click
+pill) and `examples:` (up to six one-line outcomes) describe entries that drive
+a desktop application.
 
 GitHub is deliberately **not** in the catalog: its hosted MCP requires each
 client to bring its own OAuth app (generic dynamic client registration is
@@ -587,6 +590,10 @@ Two behaviors apply to every MCP tool result before the model sees it:
 - **Invisible Unicode TAG characters are stripped.** Characters in the U+E0000–U+E007F range render as nothing in terminals and chat UIs but are fully visible to the model — a classic prompt-injection smuggling channel for a malicious or compromised server. Hermes strips them from tool results, resource content, and tool descriptions. Legitimate emoji tag sequences (regional flags like 🏴󠁧󠁢󠁳󠁣󠁴󠁿) are preserved.
 - **Vendor `_meta` is surfaced; protocol-reserved keys are not.** When a server attaches a `_meta` mapping to a tool result (vendor namespaces like `com.example/handoff`), Hermes passes it through to the model alongside the result content. Keys under protocol-reserved prefixes — a `modelcontextprotocol` or `mcp` label followed by another label, e.g. `modelcontextprotocol.io/...` or `tools.mcp.com/...` — are dropped, matching the MCP spec's key-name rules. If nothing model-facing remains, the `_meta` field is omitted entirely.
 
+### Image results
+
+An `ImageContent` block (a screenshot, a rendered chart, a page capture) is saved to Hermes' image cache and its path is reported in the result as `MEDIA:/path/to/image.png`, so you can ask for the file on any attachment-capable surface. When the main model can see images inside tool results, the image itself is attached to the result too, so the model reads the pixels directly. MCP results follow the same rule as `vision_analyze`: `agent.image_input_mode`, an explicit `auxiliary.vision` backend and the model's vision capability all apply (see [Vision](vision.md#vision_analyze-has-the-same-dual-behavior)). Attached images are downscaled to `vision.embed_target_bytes` (up to 4 per result) because they are re-sent on every later turn. Text-only models get the path only.
+
 ## MCP utility tools
 
 When supported, Hermes also registers utility tools around MCP resources and prompts:
@@ -775,11 +782,11 @@ If you change MCP config, use:
 /reload-mcp
 ```
 
-This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
+This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, plugin credentials such as `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
 
 A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
 
-**Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe.
+**Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe. Until the token files change, starting new sessions does not retry the rejected token: only the timed self-probe does, so a dead grant cannot hammer the provider's token endpoint.
 
 ### Toolsets
 
@@ -972,6 +979,32 @@ mcp_servers:
     sampling:
       enabled: false
 ```
+
+## Tool costs and spend limits
+
+Some MCP servers spend real money or credits on every call (image, video and 3D generation, paid APIs). A server entry can declare what each tool costs and a budget per chat:
+
+```yaml
+mcp_servers:
+  renders:
+    command: "render-mcp"
+    trust: untrusted
+    tool_costs:
+      create_image: 20                                   # about 20 credits per call
+      animate: {credits: [5, 20], note: "per animation"}  # a range, with a short note
+      get_status: 0                                       # free; same as leaving it out
+    spend_limit: 100     # per chat; 0 or absent = no limit
+    cost_unit: credits   # label in prompts (default: credits)
+```
+
+- The approval prompt names the cost: `Costs about 20 credits.` or `Costs 5-20 credits (per animation).`, plus `This chat has used about 40 credits on 'renders' (limit 100).` once the chat has spent something.
+- Hermes keeps a running total per chat and per server, counting the declared figure (the top of a range) for every costed call it approved and started. Declined or blocked calls add nothing; a call whose server dies before receiving it still counts, which errs toward asking sooner. The total lives in memory: it is a budget for one conversation, not the vendor's bill.
+- The total follows the conversation when context compression or `/branch` continues it under a new session id. Starting a new chat (`/new` in the CLI, a new Desktop chat) starts a new total; on messaging platforms the total belongs to the chat, so it survives `/new` there. Each cron run has its own total. Restarting Hermes resets every total.
+- With `spend_limit`, a costed call that would take the chat past the limit asks first, even on a `trust: full` server that otherwise never prompts, and every further costed call in that chat asks again ("Allow for this session" does not silence it). Where nobody can answer (cron jobs, `hermes chat -q`, a gateway with no approver), the call is refused without running and the model is told not to retry.
+- Below the limit, a `trust: full` server still runs costed tools without asking; on a `trust: untrusted` server every write-capable call already asks and the prompt now carries the cost. Tools annotated `readOnlyHint: true` stay unprompted unless the budget requires it.
+- A malformed `tool_costs`, `spend_limit` or `cost_unit` skips the server with an error naming the key, so a budget you declared is never silently dropped. A `tool_costs` key the server does not offer (a typo, or Hermes' `mcp_<server>_` display prefix copied in) is named in a warning at connect time: use the server's own tool names.
+
+A [portable plugin package](../../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages) can declare the same table for its server. If you add a same-name `mcp_servers` entry (for example to set `trust: full`), the package's `tool_costs`, `spend_limit` and `cost_unit` still apply unless your entry sets those keys itself; `spend_limit: 0` turns the package's limit off and `tool_costs: {}` drops its costs.
 
 ## MCP Elicitation Support
 

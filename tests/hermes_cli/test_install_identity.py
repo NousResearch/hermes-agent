@@ -6,7 +6,7 @@ import time
 import pytest
 
 from gateway.hosted_rooms import local_authority_gateway_id
-import hermes_cli.install_identity as install_identity
+from hermes_cli import install_identity
 from hermes_cli.install_identity import read_or_create_install_id
 
 

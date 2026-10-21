@@ -61,6 +61,8 @@ const read = (of: keyof typeof CONNECTOR_LIFETIMES) => ({
 
 export interface HostedConnectorsView {
   accounts: readonly ConnectorAccountRow[]
+  /** The account list has answered and no read is in flight, so an account missing from it is gone. */
+  accountsLoaded: boolean
   listSlugs: ReadonlySet<string>
   phase: HostedPhase
   policy: ConnectorPolicyView
@@ -150,6 +152,7 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
 
   return {
     accounts: accounts.data?.accounts ?? [],
+    accountsLoaded: accounts.data !== undefined && !accounts.isFetching,
     listSlugs,
     phase,
     policy: policyView,

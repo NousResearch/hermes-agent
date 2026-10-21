@@ -228,7 +228,7 @@ class TestScheduleStartupOrphanSweep:
         )
         assert server._session_orphan_reaper_enabled() is False
 
-        monkeypatch.setattr(server, "_load_cfg", lambda: {})
+        monkeypatch.setattr(server, "_load_cfg", dict)
         assert server._session_orphan_reaper_enabled() is True
 
         monkeypatch.setattr(server, "_load_cfg", lambda: (_ for _ in ()).throw(RuntimeError("boom")))

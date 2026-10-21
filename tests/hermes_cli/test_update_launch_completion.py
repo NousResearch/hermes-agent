@@ -35,12 +35,14 @@ def completion_tail(monkeypatch):
 
     spawned = Spawned()
 
-    def call(command, **kwargs):
+    def run(command, **kwargs):
         spawned.append(command)
         spawned.kwargs = kwargs
-        return spawned.exit_code
+        return subprocess.CompletedProcess(command, spawned.exit_code)
 
-    monkeypatch.setattr(venv_sync.subprocess, "call", call)
+    from hermes_cli import update_custody
+
+    monkeypatch.setattr(update_custody, "run", run)
     return spawned
 
 
@@ -79,7 +81,7 @@ def _committed_checkout(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     return root
 
 
@@ -161,7 +163,7 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     fact = runtime_facts_path(root)
     syncs = []
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: fact.is_file())
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
 
     def sync(extras=None, **kwargs):
         syncs.append(extras)
@@ -206,7 +208,7 @@ def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkey
     worker.touch()
     venv_sync.arm_completion(root)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.setattr(sys, "argv", [str(worker), "--source", str(root), "--finish-update", "--prepared"])
 
     assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
@@ -225,7 +227,7 @@ def test_same_named_script_outside_the_checkout_still_repairs(tmp_path, monkeypa
     foreign.touch()
     venv_sync.arm_completion(root)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.setattr(sys, "argv", [str(foreign), "--prepared"])
 
     assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
@@ -241,7 +243,7 @@ def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completi
     root = _self_checkout(tmp_path, monkeypatch)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: None)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     venv_sync.prepare_launch(root, [])
     assert completion_tail.kwargs["stdout"] is sys.__stderr__
 
@@ -262,7 +264,7 @@ def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, m
     fact = runtime_facts_path(root)
     calls = []
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: fact.is_file())
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
 
     def sync(extras=None, **kwargs):
         calls.append((extras, kwargs))
@@ -298,7 +300,7 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
         argv[0] = "-c"
         orig = [sys.executable, "-c", "import entry", *argv[1:]]
     command = venv_sync.relaunch_command(Path(sys.executable), root, argv, orig, module)
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == ["from checkout", argv[1:]]
 
@@ -361,7 +363,7 @@ def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, co
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     calls = []
     monkeypatch.setattr(pm, "sync_venv", lambda *args, **kw: calls.append(args))
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
     assert json.loads((root / "install-stamp.json").read_text())["source"] == "adoption"
     assert calls == [(["all"],)]
@@ -374,7 +376,7 @@ def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path)
         archive.writestr("__main__.py", "import json,sys; print(json.dumps([sys.argv[1:], sys.stdout.write_through, sys.flags.utf8_mode]))")
     original = [sys.executable, "-u", "-X", "utf8", str(launcher), "arg with spaces"]
     command = venv_sync.relaunch_command(Path(sys.executable), tmp_path, [str(launcher), "arg with spaces"], original, "__main__")
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [["arg with spaces"], True, 1]
 
@@ -397,7 +399,7 @@ def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     # Fresh post-sync verification children may boot under a live updater.
     from hermes_cli import _launchers
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) is None
     assert marker.is_file()
 
@@ -421,6 +423,19 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert venv_sync.prepare_launch(root, []) is None
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
+
+
+def test_gateway_status_skips_pending_source_update_completion(tmp_path, monkeypatch, completion_tail):
+    """`gateway status` remains a read-only recovery diagnostic while a tail is owed (#139133)."""
+    import pm
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **_kw: pytest.fail("status started a dependency sync"))
+
+    assert venv_sync.prepare_launch(root, ["gateway", "status"]) is None
+    assert completion_tail == []
+    assert pending.is_file(), "a status query must leave the update tail for `hermes gateway restart`"
 
 
 @pytest.mark.parametrize("marker,value,owed_by_cli", [
@@ -447,7 +462,7 @@ def test_supervised_launch_leaves_a_pending_tail_to_the_cli(
     pending.parent.mkdir(parents=True)
     pending.write_text("owed\n")
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.setenv(marker, value)
@@ -481,7 +496,7 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
     syncs = []
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: syncs.append(a))
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
 
     venv_sync.prepare_launch(root, ["gateway", "run"])

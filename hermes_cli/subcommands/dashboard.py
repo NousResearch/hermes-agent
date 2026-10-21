@@ -74,7 +74,9 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
+    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
+    cmd_webauthn_enrol: Callable | None = None, cmd_webauthn_forget: Callable | None = None,
+    cmd_webauthn_setup: Callable | None = None) -> None:
     """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
@@ -123,3 +125,78 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    # `webauthn` is nested like `register` so bare `hermes dashboard` keeps
+    # launching the server: enrol/forget manage passkey credentials (first
+    # credential for a headless box / removal of lost ones).
+    if cmd_webauthn_enrol is not None and cmd_webauthn_forget is not None \
+            and cmd_webauthn_setup is not None:
+        dashboard_webauthn_parser = dashboard_subparsers.add_parser(
+            "webauthn", help="Manage dashboard passkey (WebAuthn) credentials",
+            description="Enrol or forget dashboard passkeys. Passkeys only work on "
+                "a WebAuthn-capable origin (https://… behind a TLS proxy or the "
+                "http://localhost SSH-tunnel path) — see the web-dashboard docs.")
+        webauthn_subparsers = dashboard_webauthn_parser.add_subparsers(dest="webauthn_subcommand")
+        webauthn_enrol_parser = webauthn_subparsers.add_parser(
+            "enrol",
+            help="Print a one-shot enrolment URL for the dashboard's passkey store",
+            description="Writes a single-use, 10-minute enrolment token into the "
+                "credential store and prints the URL to open in a browser on a "
+                "configured origin.")
+        webauthn_enrol_parser.add_argument(
+            "--label", default="",
+            help="Human-readable label stored with the credential (e.g. 'laptop touchid')")
+        webauthn_enrol_parser.add_argument(
+            "--origin", default="",
+            help="Which configured origin the enrolment URL should use when several "
+                "are set (default: the only one)")
+        webauthn_enrol_parser.set_defaults(func=cmd_webauthn_enrol)
+        webauthn_forget_parser = webauthn_subparsers.add_parser(
+            "forget",
+            help="Remove enrolled passkey credentials",
+            description="Deregister lost or suspicious passkeys. --all clears every "
+                "credential; --label / --credential-id target specific ones.")
+        webauthn_forget_parser.add_argument("--all", dest="all_credentials", action="store_true",
+            help="Forget every enrolled credential")
+        webauthn_forget_parser.add_argument("--label", default="",
+            help="Forget the credential stored with this label")
+        webauthn_forget_parser.add_argument("--credential-id", dest="credential_id", default="",
+            help="Forget the credential with this base64url rawId")
+        webauthn_forget_parser.set_defaults(func=cmd_webauthn_forget)
+        # `setup` = the pre-enrolment wizard for the three values that must be
+        # decided before the first credential (rp_id binds forever). Works
+        # non-interactively with flags so scripts/provisioning can drive it.
+        webauthn_setup_parser = webauthn_subparsers.add_parser(
+            "setup",
+            help="Configure dashboard.webauthn (rp_id/rp_name/origins) before enrolling",
+            description="Writes the dashboard.webauthn block to config.yaml: rp_id "
+                "(registrable domain — passkeys bind to it FOREVER), rp_name (the "
+                "label the browser's passkey UI shows) and the exact origins the "
+                "browser will present. Interactive when run without flags; flags "
+                "make it scriptable.")
+        webauthn_setup_parser.add_argument(
+            "--rp-id", dest="rp_id", default="",
+            help="Registrable domain of every origin (e.g. dash.example.com, or "
+                "'localhost' for the SSH-tunnel-only setup). A pasted URL is reduced "
+                "to its host. A change that strands enrolled credentials needs "
+                "--force (or a typed YES interactively)")
+        webauthn_setup_parser.add_argument(
+            "--rp-name", dest="rp_name", default="",
+            help="Label shown in the browser's passkey UI (default: the rp_id)")
+        webauthn_setup_parser.add_argument(
+            "--origin", action="append", default=None,
+            help="Exact origin the browser presents (scheme://host[:port]); "
+                "repeat for several")
+        webauthn_setup_parser.add_argument(
+            "--force", action="store_true",
+            help="Allow switching rp_id even though the credential store is not empty")
+        webauthn_setup_parser.add_argument(
+            "--skip-preflight", action="store_true",
+            help="Stage the dashboard.webauthn block without the fido2/config "
+                "preflight (for writing a config for a different box)")
+        webauthn_setup_parser.add_argument(
+            "--trusted-proxy", default="", metavar="IP",
+            help="Write this reverse-proxy address into dashboard.trusted_proxies "
+                "(skips the interactive ask; the dashboard launch still needs "
+                "--host 0.0.0.0)")
+        webauthn_setup_parser.set_defaults(func=cmd_webauthn_setup)

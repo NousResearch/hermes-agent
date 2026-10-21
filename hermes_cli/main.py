@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3  # health: allow FILE_LINES -- additive provider wiring: three `_forward_command` registry lines plus a 5-line dashboard-start hook
 """Hermes CLI - Main entry point.
 
 Usage:
@@ -1838,6 +1838,9 @@ cmd_debug = _forward_command("cmd_debug", "hermes_cli.debug", "run_debug", doc='
 cmd_skin = _forward_command("cmd_skin", "hermes_cli.skin_cmd", "skin_command", doc='Skin management (list / use / set).')
 cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", forward_return=True, doc='Restore a Hermes backup from a zip file.')
 cmd_dashboard_register = _forward_command("cmd_dashboard_register", "hermes_cli.dashboard_register", "cmd_dashboard_register", doc='Register a self-hosted dashboard OAuth client with Nous Portal.')
+cmd_webauthn_enrol = _forward_command("cmd_webauthn_enrol", "hermes_cli.dashboard_webauthn", "cmd_webauthn_enrol", doc='Print a one-shot passkey enrolment URL for the dashboard.')
+cmd_webauthn_forget = _forward_command("cmd_webauthn_forget", "hermes_cli.dashboard_webauthn", "cmd_webauthn_forget", doc='Remove enrolled dashboard passkey credentials.')
+cmd_webauthn_setup = _forward_command("cmd_webauthn_setup", "hermes_cli.dashboard_webauthn", "cmd_webauthn_setup", doc='Configure dashboard.webauthn (rp_id/rp_name/origins) before enrolling.')
 cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_enroll", "cmd_gateway_enroll", doc='Enroll a self-hosted gateway with a relay connector.')
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
@@ -2684,6 +2687,13 @@ def cmd_dashboard(args):
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
 
+    # A dashboard.webauthn block configured after a fresh (base-extras) install
+    # needs fido2; union the extra before web_server's import graph registers
+    # providers (the update-repair path covers this across updates, #124228).
+    from hermes_cli.dashboard_webauthn_extra import maybe_sync_webauthn_extra
+
+    maybe_sync_webauthn_extra()
+
     from hermes_cli.dashboard_procs import BACKEND_LOCK_NAME
     from hermes_cli.web_server import start_server
 
@@ -3411,6 +3421,9 @@ def _build_cli_parser():
         subparsers,
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
+        cmd_webauthn_enrol=cmd_webauthn_enrol,
+        cmd_webauthn_forget=cmd_webauthn_forget,
+        cmd_webauthn_setup=cmd_webauthn_setup,
     )
     # "desktop" is canonical (Hermes-Setup.exe tells users to run it, so it
     # must be the name --help shows); "gui" is a deprecated alias.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -105,13 +105,17 @@ class DashboardAuthProvider(ABC):
     Subclasses MUST set ``name`` (stable lowercase id) and ``display_name``. Capability flags:
     ``supports_password`` (credential form + ``complete_password_login``; OAuth methods may be
     ``NotImplementedError`` stubs), ``supports_token`` (``verify_token`` for the token-auth seam),
-    ``supports_session`` (False for token-only credentials such as drain, never offered a login).
+    ``supports_session`` (False for token-only credentials such as drain, never offered a login),
+    ``supports_webauthn`` (browser WebAuthn ceremony + the ``webauthn_*`` hooks below; the route
+    layer mediates a webauthn provider through ``/login`` exactly like a password provider instead
+    of the OAuth redirect dance).
     """
     name: str = ""
     display_name: str = ""
     supports_password: bool = False
     supports_token: bool = False
     supports_session: bool = True
+    supports_webauthn: bool = False
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
@@ -146,6 +150,57 @@ class DashboardAuthProvider(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support token auth "
             "(set supports_token = True and override verify_token)")
+
+    # ---- WebAuthn ceremony hooks (only called when ``supports_webauthn``) ----
+
+    def webauthn_offered_for_request(self, request) -> bool:
+        """Whether this provider should be OFFERED on this HTTP request (the providers list, the
+        passkey button and the ceremony routes all consult it). Origin-gated activation lives
+        here: a provider whose credential scope binds to specific origins (WebAuthn RP ID) must
+        never half-appear on a request the origin cannot be presented from. The default raises
+        so a mis-flagged provider fails loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support webauthn "
+            "(set supports_webauthn = True and override webauthn_offered_for_request)")
+
+    def webauthn_login_options(self, *, client_ip: str) -> tuple[dict, str]:
+        """Build the browser's ``PublicKeyCredentialRequestOptions`` JSON for a login ceremony.
+
+        Returns ``(options_json, handle)`` where ``handle`` is an opaque one-shot ceremony id the
+        route carries back (HttpOnly cookie), and ``cred`` from the browser is then completed via
+        :meth:`complete_webauthn_login`. Raises ``ProviderError`` when the ceremony store is full.
+        The default raises so a mis-flagged provider fails loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support webauthn "
+            "(set supports_webauthn = True and override webauthn_login_options)")
+
+    def complete_webauthn_login(self, *, handle: str, credential: Mapping[str, Any]) -> Session:
+        """Verify a browser WebAuthn assertion (origin, RP ID hash, challenge, UP/UV, signature)
+        for the ``handle`` ceremony and mint a :class:`Session`. Raise ``InvalidCredentialsError``
+        on any rejection (the route answers a generic 401 — no credential oracle). The default
+        raises so a mis-flagged provider fails loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support webauthn "
+            "(set supports_webauthn = True and override complete_webauthn_login)")
+
+    def webauthn_register_options(self, *, client_ip: str) -> tuple[dict, str]:
+        """Build the browser's ``PublicKeyCredentialCreationOptions`` JSON for an enrolment
+        ceremony (the route requires an authenticated session or a one-shot enrolment token
+        BEFORE calling this — enrolment is never anonymous). Returns ``(options_json, handle)``.
+        The default raises so a mis-flagged provider fails loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support webauthn "
+            "(set supports_webauthn = True and override webauthn_register_options)")
+
+    def complete_webauthn_registration(
+        self, *, handle: str, credential: Mapping[str, Any], label: str) -> dict:
+        """Verify + persist an enrolled credential for the ``handle`` ceremony; return the stored
+        record summary (id/label/created_at). Raise ``InvalidCredentialsError`` on rejection (the
+        route answers a generic 400/401). The default raises so a mis-flagged provider fails
+        loudly."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support webauthn "
+            "(set supports_webauthn = True and override complete_webauthn_registration)")
 
 
 def assert_protocol_compliance(cls: type) -> None:

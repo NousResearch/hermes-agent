@@ -147,5 +147,5 @@ def start_restart_replacement(args, *, force: bool) -> None:
     from hermes_cli import gateway as gw
     if getattr(args, "detach", False):
         from hermes_cli.gateway_runtime_start import start_detached_replacement
-        sys.exit(start_detached_replacement(gw.get_hermes_home()))
+        sys.exit(start_detached_replacement(gw.get_hermes_home(), force=force))
     gw.run_gateway(verbose=0, force=force)

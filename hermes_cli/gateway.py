@@ -5387,7 +5387,7 @@ def _stop_host_multiplexer(owner) -> int:
         return 0
 
 
-def _restart_all(system: bool) -> None:
+def _restart_all(system: bool, detach: bool = False) -> None:
     from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb
     owner = _host_multiplexer_for_all_verb()
     if owner is not None and not _host_multiplexer_is_ours(owner):
@@ -5403,10 +5403,10 @@ def _restart_all(system: bool) -> None:
     # No live owner: stop/kill/start as the host root, not as the invoking profile (whose own
     # gateway the run-side guard would refuse — the host stayed down after a Desktop update).
     with host_scope_for_all_verb(owner):
-        _restart_all_as_host(owner, system)
+        _restart_all_as_host(owner, system, detach)
 
 
-def _restart_all_as_host(owner, system: bool) -> None:
+def _restart_all_as_host(owner, system: bool, detach: bool = False) -> None:
     service_stopped = _stop_installed_service(system)
     if owner is not None:
         # Stop ONLY the host process: its served set comes back with it, and any per-profile
@@ -5436,11 +5436,11 @@ def _restart_all_as_host(owner, system: bool) -> None:
         _service_call(kind, "start", system)
         return
     from hermes_constants import get_routing_process_hermes_home, named_profile_home
-    if named_profile_home(get_routing_process_hermes_home()) is not None:
-        # A named profile's CLI never runs the root IN this process: os.environ holds that profile's
-        # .env and the root's dotenv load does not clear inherited keys, so the host served the
-        # default profile with the named profile's credentials. The detached child starts from the
-        # scrubbed host env (the root's own secrets only); `--replace` is part of its argv.
+    if detach or named_profile_home(get_routing_process_hermes_home()) is not None:
+        # Never run the root IN this process for `--detach` (the bounded caller would become the host
+        # gateway its timeout kills) or a named profile's CLI (os.environ holds that profile's .env,
+        # which the root's dotenv load does not clear: the host served default with its credentials).
+        # The detached child starts from the scrubbed host env; `--replace` is part of its argv.
         if not _spawn_detached_gateway():
             print_error("Failed to start the host gateway as a background process.")
             sys.exit(1)
@@ -5471,7 +5471,7 @@ def _cmd_restart(args):
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
         return
     if restart_all:
-        _restart_all(system)
+        _restart_all(system, getattr(args, "detach", False))
         return
 
     # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to reap

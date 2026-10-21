@@ -274,7 +274,7 @@ def test_named_profile_restart_all_reaches_the_all_aware_branch(monkeypatch):
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer",
                         lambda **k: pytest.fail("the generic guard pre-empted the --all branch"))
     called: list[bool] = []
-    monkeypatch.setattr(gw, "_restart_all", lambda system: called.append(True))
+    monkeypatch.setattr(gw, "_restart_all", lambda system, detach=False: called.append(True))
 
     gw._cmd_restart(SimpleNamespace(system=False, all=True, force=False))
 

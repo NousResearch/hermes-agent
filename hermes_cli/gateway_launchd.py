@@ -212,7 +212,13 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 def _gateway_run_command() -> list[str]:
     from hermes_cli._launchers import runtime_command
-    return runtime_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
+    from hermes_constants import get_default_hermes_root
+    # Every caller spawns an UNSUPERVISED child, which follows the sticky active_profile unless a
+    # selector pins it (main._apply_profile_override): the root's replacement booted that profile.
+    selector = shlex.split(_gw()._profile_arg())
+    if not selector and _gw().get_hermes_home().resolve() == get_default_hermes_root().resolve():
+        selector = ["--profile", "default"]
+    return runtime_command(_gw().PROJECT_ROOT, [*selector, "gateway", "run", "--replace"],
                            python=_gw().get_python_path())
 
 

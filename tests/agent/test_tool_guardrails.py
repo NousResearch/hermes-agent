@@ -478,3 +478,199 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+# ── Windowed repeat: identical (call, result) recurring out of order ────────
+# A call that comes back with the same result between unrelated calls
+# (A B A C A D A) resets the consecutive streak and never forms a clean cycle,
+# so neither detector sees it. A repeat that returns the same observation adds
+# no information; count it over the recent call window instead.
+
+_CHECK = {"command": "python check.py"}
+_CHECK_OUT = '{"output": "CHANGED: 0", "exit_code": 0, "error": null}'
+
+
+def _observe(c, tool, args, result, failed=False):
+    c.after_call(tool, args, result, failed=failed)
+    return c.observe_call(tool, args, result, failed=failed)
+
+
+def _abacada(c, middle_result=_CHECK_OUT):
+    """A B A C A D A: the 2nd A may carry a different result."""
+    observations = []
+    for i, other in enumerate(("b", "c", "d", None)):
+        result = middle_result if i == 1 else _CHECK_OUT
+        observations.append(_observe(c, "terminal", _CHECK, result))
+        if other is not None:
+            observations.append(_observe(c, "search_files", {"pattern": other}, f"hits for {other}"))
+    return observations
+
+
+def test_windowed_repeat_flags_interleaved_identical_call_at_threshold():
+    c = ToolCallGuardrailController()
+    observations = _abacada(c)
+
+    assert [o.notice for o in observations[:-1]] == [None] * 6
+    last = observations[-1]
+    assert last.kind == "windowed_repeat"
+    assert "on 4 separate calls in the last 7 tool calls" in last.notice
+    # The notice is model-visible: it names the tool, never the result or the args.
+    assert "CHANGED" not in last.notice and "check.py" not in last.notice
+    assert c.halt_decision is None
+
+
+def test_back_to_back_repeats_count_as_one_return():
+    # X X Y X X is two returns to X (each pair is the streak's business), not four occurrences.
+    c = ToolCallGuardrailController()
+    kinds = [_observe(c, "terminal", *call).kind for call in
+             ((_CHECK, _CHECK_OUT), (_CHECK, _CHECK_OUT), ({"command": "ls"}, "a b"),
+              (_CHECK, _CHECK_OUT), (_CHECK, _CHECK_OUT))]
+    assert "windowed_repeat" not in kinds
+
+
+def test_windowed_repeat_ignores_interleaved_call_whose_result_changed():
+    c = ToolCallGuardrailController()
+    observations = _abacada(c, middle_result='{"output": "CHANGED: 3", "exit_code": 0, "error": null}')
+
+    assert all(o.notice is None for o in observations)
+
+
+def test_windowed_repeat_counts_only_inside_the_window():
+    from agent.tool_guardrails import _STALL_GUARD_REPEAT_WINDOW
+
+    def run(spacing):
+        c = ToolCallGuardrailController()
+        kinds = []
+        for i in range(8 * spacing):
+            if i % spacing == 0:
+                kinds.append(_observe(c, "terminal", _CHECK, _CHECK_OUT).kind)
+            else:
+                _observe(c, "read_file", {"path": f"src/m{i}.py"}, f"contents {i}")
+        return kinds
+
+    # 4 occurrences fit the window only when 3 gaps of `spacing` stay inside it.
+    fits = (_STALL_GUARD_REPEAT_WINDOW - 1) // 3
+    assert "windowed_repeat" in run(fits)
+    assert "windowed_repeat" not in run(fits + 1)
+
+
+def test_edit_then_rerun_is_not_a_windowed_repeat():
+    # A landed edit makes the next run a new experiment, even when the failure output is unchanged.
+    for outputs in (lambda i: f"{9 - i} failed", lambda i: "1 failed: test_y"):
+        c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+        for i in range(10):
+            obs = _observe(c, "terminal", _PYTEST, json.dumps({"output": outputs(i), "exit_code": 1}), failed=True)
+            assert obs.notice is None, f"flagged rerun {i + 1}"
+            _observe(c, "read_file", {"path": "x.py", "offset": 1 + 50 * i}, f"chunk {i}")
+            _observe(c, "patch", {"path": "x.py", "old_string": f"a{i}", "new_string": f"b{i}"},
+                     '{"success": true, "diff": "..."}')
+        assert c.halt_decision is None
+
+
+def test_pollers_are_exempt_from_windowed_repeat():
+    for tool, args in (("process_manage", {"action": "poll", "session_id": "p1"}),
+                       ("mcp_jobs_poll", {"job": "j1"}),
+                       ("video_get_result", {"id": "v1"})):
+        c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+        for i in range(12):
+            assert c.observe_call(tool, args, "running").notice is None, tool
+            c.observe_call("read_file", {"path": f"log{i}"}, f"line {i}")
+        assert c.halt_decision is None, tool
+
+
+def _interleaved_checks(hard_stop, returns):
+    """``returns`` identical checks, each followed by a distinct search; the halt decision after each check."""
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=hard_stop, no_progress_block_after=5))
+    halts = []
+    for i in range(returns):
+        _observe(c, "terminal", _CHECK, _CHECK_OUT)
+        halts.append(c.halt_decision)
+        _observe(c, "search_files", {"pattern": f"p{i}"}, f"hits {i}")
+    return halts
+
+
+def test_windowed_repeat_halts_at_no_progress_block_after_only_with_hard_stop():
+    assert _interleaved_checks(hard_stop=False, returns=8) == [None] * 8
+    halts = _interleaved_checks(hard_stop=True, returns=5)
+    assert halts[:4] == [None] * 4  # the 4th return is notice-only
+    halt = halts[4]
+    assert halt is not None and halt.code == "windowed_repeat_halt"
+    assert halt.tool_name == "terminal" and halt.count == 5
+    assert "check.py" not in halt.message and "CHANGED" not in halt.message
+
+
+def test_windowed_repeat_memory_and_scan_stay_bounded_over_a_long_turn():
+    # A check every 6th call never has 4 returns inside the window, however long the turn runs:
+    # an unbounded scan would flag it, and the history it scans must not grow with the turn.
+    c = ToolCallGuardrailController()
+    for i in range(3000):
+        if i % 6 == 0:
+            assert _observe(c, "terminal", _CHECK, _CHECK_OUT).kind is None, f"flagged at call {i + 1}"
+        else:
+            _observe(c, "read_file", {"path": f"src/m{i}.py"}, f"contents {i}")
+    assert len(c._call_history) == c._call_history.maxlen
+
+
+def test_terminal_edit_between_reruns_gets_the_notice_but_never_the_halt():
+    # `sed -i` edits are invisible to the landed-edit reset, but each one is a new mutating call.
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    kinds = []
+    for i in range(7):
+        kinds.append(_observe(c, "terminal", _PYTEST, _RED, failed=True).kind)
+        _observe(c, "terminal", {"command": f"sed -i 's/a{i}/b{i}/' x.py"}, '{"output": "", "exit_code": 0}')
+    assert "windowed_repeat" in kinds
+    assert c.halt_decision is None
+
+
+def test_one_off_calls_to_tools_of_unknown_effect_hold_off_the_halt():
+    # Plugin/MCP tools are not in mutating_tools; a fresh comment between unchanged board reads may be progress.
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for i in range(7):
+        _observe(c, "kanban_list", {"board": "b1"}, '{"cards": [{"id": "t1", "status": "doing"}]}')
+        _observe(c, "kanban_comment", {"card": "t1", "text": f"step {i} done"}, '{"success": true}')
+    assert c.halt_decision is None
+
+
+def test_byte_identical_rewrite_each_lap_does_not_restart_the_window():
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for i in range(5):
+        _observe(c, "write_file", {"path": "x.py", "content": "same"}, '{"bytes_written": 4}')
+        _observe(c, "terminal", _CHECK, _CHECK_OUT)
+        _observe(c, "search_files", {"pattern": f"p{i}"}, f"hits {i}")
+    assert c.halt_decision is not None and c.halt_decision.code == "windowed_repeat_halt"
+
+
+def test_idempotent_tools_are_left_to_the_no_progress_detector():
+    c = ToolCallGuardrailController()
+    for i in range(6):
+        assert c.observe_call("read_file", {"path": "a.py"}, "same").kind != "windowed_repeat"
+        c.observe_call("terminal", {"command": f"ls {i}"}, f"out {i}")
+
+
+def test_windowed_halt_always_follows_a_notice():
+    # warn_after above the hard-stop threshold: the halt waits for the notice instead of firing silently.
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {"hard_stop_enabled": True, "warn_after": {"windowed_repeat": 6}, "hard_stop_after": {"idempotent_no_progress": 5}}
+    )
+    c = ToolCallGuardrailController(cfg)
+    first_notice = halted_at = None
+    for i in range(1, 9):
+        if _observe(c, "terminal", _CHECK, _CHECK_OUT).notice and first_notice is None:
+            first_notice = i
+        if c.halt_decision is not None and halted_at is None:
+            halted_at = i
+        _observe(c, "search_files", {"pattern": f"p{i}"}, f"hits {i}")
+    assert (first_notice, halted_at) == (6, 7)
+
+
+def test_config_parses_windowed_repeat_threshold():
+    assert ToolCallGuardrailConfig.from_mapping({}).windowed_repeat_warn_after == 4
+    nested = ToolCallGuardrailConfig.from_mapping({"warn_after": {"windowed_repeat": 6}})
+    flat = ToolCallGuardrailConfig.from_mapping({"windowed_repeat_warn_after": 7})
+    assert (nested.windowed_repeat_warn_after, flat.windowed_repeat_warn_after) == (6, 7)
+    # A call always matches itself: 1 would flag every call, so it falls back like junk does.
+    for bad in (0, 1, "x"):
+        assert ToolCallGuardrailConfig.from_mapping({"warn_after": {"windowed_repeat": bad}}).windowed_repeat_warn_after == 4
+
+    c = ToolCallGuardrailController(nested)
+    assert all(o.notice is None for o in _abacada(c))  # 4 occurrences < 6

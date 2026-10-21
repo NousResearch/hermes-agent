@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import deque
+from collections import Counter, deque
 from dataclasses import asdict, dataclass, field, fields
+from itertools import islice
 from typing import Any, Mapping
 
 from utils import safe_json_loads
@@ -46,6 +47,14 @@ STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
 _STALL_GUARD_MAX_CYCLE_PERIOD = 4
 # History window: enough for block_after laps of the longest cycle plus slack.
 _STALL_GUARD_CYCLE_HISTORY = 64
+# A call that recurs with an identical result BETWEEN other calls (A,B,A,C,A,D,A) resets the streak
+# and never forms a lap, so neither detector above sees it. A repeat that returns the same observation
+# adds no information (DeLoop, arXiv:2610.19376), so count the separate returns to one (signature, result)
+# pair over the last N calls of _call_history, in any order. Notice at windowed_repeat_warn_after returns,
+# halt at no_progress_block_after; a landed file edit restarts the window (edit -> re-run is progress).
+_STALL_GUARD_REPEAT_WINDOW = 16
+# Halt codes observe_call can raise; the runtime applies these after the call instead of before it.
+STALL_GUARD_HALT_CODES = frozenset({"identical_call_streak_halt", "identical_cycle_halt", "windowed_repeat_halt"})
 # From the 2nd byte-identical repeat the duplicate payload becomes a reference stub; smaller results
 # aren't worth it, errors never are. The args preview keeps WHAT was called if compression evicts the original.
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
@@ -75,7 +84,10 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_block_after": ("hard_stop_after", "exact_failure"),
     "same_tool_failure_halt_after": ("hard_stop_after", "same_tool_failure"),
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
+    "windowed_repeat_warn_after": ("warn_after", "windowed_repeat"),
 }
+# A call always matches itself, so a windowed-repeat threshold of 1 would flag every call.
+_THRESHOLD_MINIMUMS = {"windowed_repeat_warn_after": 2}
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
@@ -128,6 +140,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # Above the streak's 3: one re-check between other calls is normal; 4 in a short window is not.
+    windowed_repeat_warn_after: int = 4
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
@@ -147,7 +161,7 @@ class ToolCallGuardrailConfig:
         def threshold(name: str, section_name: str, key: str) -> int:
             section = data.get(section_name)
             nested = section.get(key, data.get(name)) if isinstance(section, Mapping) else data.get(name)
-            return _int_at_least(nested, getattr(d, name), 1)
+            return _int_at_least(nested, getattr(d, name), _THRESHOLD_MINIMUMS.get(name, 1))
 
         thresholds = {name: threshold(name, *src) for name, src in _THRESHOLD_SOURCES.items()}
         return cls(loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")), **flags, **thresholds)
@@ -156,7 +170,8 @@ class ToolCallGuardrailConfig:
 @dataclass(frozen=True)
 class IdenticalCallObservation:
     """``notice`` is appended after the result, ``stub`` replaces a byte-identical duplicate result;
-    ``kind`` names the detector behind the notice (``identical_call_streak`` / ``identical_cycle``)."""
+    ``kind`` names the detector behind the notice (``identical_call_streak`` / ``identical_cycle`` /
+    ``windowed_repeat``)."""
 
     notice: str | None = None
     stub: str | None = None
@@ -278,6 +293,11 @@ _DECISION_MESSAGES: dict[str, str] = {
         "arguments and identical results has run {count} times. Repeating the batch unchanged is not "
         "progress; use the results already provided or change strategy."
     ),
+    "windowed_repeat_halt": (
+        "Stopped {tool_name}: the same call with identical arguments returned the same result "
+        "on {count} separate calls in the last {span} tool calls. Repeating it adds no new information; "
+        "use the result already provided or change strategy."
+    ),
     "loop_web_search_cap": (
         "Blocked web_search: this turn has already made {cap} web searches, the per-turn limit. "
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
@@ -300,6 +320,12 @@ _IDENTICAL_CYCLE_NOTICE = (
     "(ending with {tool_name}) with identical arguments and identical results. "
     "Do not repeat the batch — change arguments, use a different tool, or "
     "proceed with what you have.]"
+)
+
+_WINDOWED_REPEAT_NOTICE = (
+    "[hermes note: {tool_name} has returned the same result for identical arguments "
+    "on {count} separate calls in the last {span} tool calls. Repeating it adds no new information — "
+    "use the result already provided, change arguments, or proceed with what you have.]"
 )
 
 # tool -> (LoopCapConfig field, controller counter attribute, decision code)
@@ -338,6 +364,9 @@ class ToolCallGuardrailController:
         # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
         # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
         self._call_history: deque[tuple[ToolCallSignature, str, bool]] = deque(maxlen=_STALL_GUARD_CYCLE_HISTORY)
+        # Trailing _call_history entries from the last new landed file edit (inclusive): the
+        # windowed-repeat span never looks past it.
+        self._calls_since_landed_edit = 0
         # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
@@ -446,7 +475,8 @@ class ToolCallGuardrailController:
     ) -> IdenticalCallObservation:
         """Track consecutive identical calls; return notice + dedupe stub info.
 
-        ``notice`` fires from the threshold-th consecutive identical (tool, args, result) call
+        ``notice`` fires from the threshold-th consecutive identical (tool, args, result) call, a
+        repeating 2-4 call cycle, or a call returned to between other calls with an unchanged result
         (observational, pollers exempt). ``stub`` replaces the CURRENT result from the 2nd byte-identical
         repeat — the tool still executed, only the context representation is deduplicated, so polling
         semantics survive; pollers are NOT exempt here since an unchanged poll is where it saves most.
@@ -477,9 +507,17 @@ class ToolCallGuardrailController:
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
         # consecutive streak on every alternation, so check the call history for a period-p lap.
         if is_plain_str:
+            # Rewriting a file with byte-identical content each lap is part of the loop, not progress.
+            new_edit = (
+                not failed and file_mutation_result_landed(tool_name, result)
+                and (signature, result_hash) not in (entry[:2] for entry in self._repeat_window())
+            )
             self._call_history.append((signature, result_hash, is_stall_guard_repeatable(tool_name)))
+            # The span restarts AT the edit, so an identical rewrite on the next lap still sees it.
+            self._calls_since_landed_edit = 1 if new_edit else self._calls_since_landed_edit + 1
         else:
             self._call_history.clear()
+            self._calls_since_landed_edit = 0
         if notice is None and is_plain_str:
             cycle = self._detect_identical_cycle()
             if cycle is not None:
@@ -487,6 +525,11 @@ class ToolCallGuardrailController:
                 notice, kind = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name), "identical_cycle"
                 if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after and self._halt_decision is None:
                     self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
+        # Windowed repeat: the same (call, result) recurring between other calls, in any order. Read-only
+        # idempotent tools are left to idempotent_no_progress, which already counts their repeats per signature.
+        if notice is None and is_plain_str and not is_stall_guard_repeatable(tool_name) and not self._is_idempotent(tool_name):
+            notice = self._windowed_repeat_notice(tool_name, signature)
+            kind = "windowed_repeat" if notice else None
 
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
@@ -526,6 +569,40 @@ class ToolCallGuardrailController:
                 # A constant sub-cycle would already have fired at a smaller period.
                 return period, laps
         return None
+
+    def _windowed_repeat_notice(self, tool_name: str, signature: ToolCallSignature) -> str | None:
+        """Notice when the latest call's (signature, result) has been returned to ``windowed_repeat_warn_after``+
+        separate times in the last ``span`` calls; with hard stops on, also halt at no_progress_block_after.
+
+        ``span`` is capped by _STALL_GUARD_REPEAT_WINDOW, by the calls since the last landed file edit,
+        so the scan is a bounded walk and edit -> re-run never accumulates.
+        The halt always follows at least one notice, and waits while the span holds a non-read-only call made
+        only once (a `sed -i` or `execute_code` edit between re-runs is an experiment, not a replay), so it
+        stops only a window of replays and reads.
+        """
+        window = self._repeat_window()  # never empty: the latest call is in it
+        span, count = len(window), _count_separate_returns(window)
+        if count < self.config.windowed_repeat_warn_after:
+            return None
+        halt_after = max(self.config.no_progress_block_after, self.config.windowed_repeat_warn_after + 1)
+        if (
+            self.config.hard_stop_enabled and count >= halt_after and self._halt_decision is None
+            and not self._has_novel_effectful_call(window)
+        ):
+            self._decide("halt", "windowed_repeat_halt", tool_name, count, signature, span=span)
+        return _WINDOWED_REPEAT_NOTICE.format(count=count, span=span, tool_name=tool_name)
+
+    def _repeat_window(self) -> list[tuple[ToolCallSignature, str, bool]]:
+        """The windowed-repeat span of _call_history, newest first: at most _STALL_GUARD_REPEAT_WINDOW calls,
+        none from before the last landed file edit."""
+        span = min(_STALL_GUARD_REPEAT_WINDOW, self._calls_since_landed_edit, len(self._call_history))
+        return list(islice(reversed(self._call_history), span))
+
+    def _has_novel_effectful_call(self, window: list[tuple[ToolCallSignature, str, bool]]) -> bool:
+        """Whether the window holds a call that may have changed something: a call made only once, to a tool
+        that is not read-only (terminal, execute_code, browser actions, MCP/plugin tools of unknown effect)."""
+        seen = Counter(sig for sig, _, _ in window)
+        return any(n == 1 and not self._is_idempotent(sig.tool_name) for sig, n in seen.items())
 
     def record_persisted_result(self, tool_call_id: str, file_path: str) -> None:
         """Remember the spillover path a persisted result was saved to."""
@@ -597,6 +674,19 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
     )
+
+
+def _count_separate_returns(window: list[tuple[ToolCallSignature, str, bool]]) -> int:
+    """Separate returns to ``window[0]``'s (signature, result) in a newest-first window. A back-to-back run
+    counts once (consecutive repeats are the streak's job): X,X,Y,X,X is two returns, A,B,A,C,A,D,A four."""
+    latest = window[0][:2]
+    count, in_run = 0, False
+    for entry in window:
+        matches = entry[:2] == latest
+        if matches and not in_run:
+            count += 1
+        in_run = matches
+    return count
 
 
 def _ordinal(count: int) -> str:

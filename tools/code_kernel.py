@@ -97,7 +97,8 @@ def _apply_memory_limit():
 
     Applied at import, before any cell executes and before the watchdogs start, so the budget is in
     force for the process's whole life. Windows enforces the same budget from the host side (Job
-    Object); RLIMIT_AS is the POSIX twin. Failure is non-fatal — an uncapped kernel still runs.
+    Object); RLIMIT_AS is the POSIX twin. Failure is non-fatal - an uncapped kernel still runs, but
+    it says so on stderr instead of silently losing the cap.
     """
     if not _MEMORY_LIMIT_BYTES or sys.platform == "win32":
         return
@@ -105,13 +106,18 @@ def _apply_memory_limit():
         import resource
         cap = int(_MEMORY_LIMIT_BYTES)
     except (ImportError, TypeError, ValueError):
+        print("hermes kernel: memory cap not applied (unreadable budget); this cell runs uncapped",
+              file=sys.stderr)
         return
     if cap <= 0:
         return
     try:
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        # Never fail silently here: an uncapped kernel is the incident this cap exists to stop.
+        print("hermes kernel: memory cap not applied (%s); this cell runs uncapped" % (exc,),
+              file=sys.stderr)
+
 
 
 _apply_memory_limit()
@@ -326,87 +332,6 @@ class _BoundedBuffer:
     def drain(self) -> str:
         chunks, self.chunks, self.total = self.chunks, [], 0
         return b"".join(chunks).decode("utf-8", errors="replace")
-
-
-class _KernelMemoryJob:
-    """Windows Job Object that caps a kernel child's memory and kills it with its host.
-
-    ``JOB_OBJECT_LIMIT_PROCESS_MEMORY`` makes a runaway cell fail its own allocation instead of
-    exhausting the host. ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` guarantees the child dies when the
-    host closes this handle — which also covers the case the parent-death watchdog cannot reach, a
-    thread that never gets scheduled because the process is wedged in allocation. See #136403.
-    """
-
-    def __init__(self, limit_bytes: int):
-        import ctypes
-        from ctypes import wintypes
-
-        class _BasicLimits(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", ctypes.c_longlong),
-                ("PerJobUserTimeLimit", ctypes.c_longlong),
-                ("LimitFlags", wintypes.DWORD),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", wintypes.DWORD),
-                ("SchedulingClass", wintypes.DWORD),
-            ]
-
-        class _IoCounters(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_ulonglong) for name in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-        class _ExtendedLimits(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", _BasicLimits),
-                ("IoInfo", _IoCounters),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t),
-            ]
-
-        self._ctypes = ctypes
-        api = ctypes.WinDLL("kernel32", use_last_error=True)
-        for name, args, result in (
-            ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
-            ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int,
-                                         ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
-            ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
-            ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
-        ):
-            fn = getattr(api, name)
-            fn.argtypes, fn.restype = args, result
-        self._api, self._handle = api, api.CreateJobObjectW(None, None)
-        if not self._handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            limits = _ExtendedLimits()
-            # PROCESS_MEMORY (0x100) | JOB_MEMORY (0x200) | KILL_ON_JOB_CLOSE (0x2000).
-            # Neither BREAKAWAY_OK nor SILENT_BREAKAWAY_OK: descendants stay contained.
-            limits.BasicLimitInformation.LimitFlags = 0x100 | 0x200 | 0x2000
-            limits.ProcessMemoryLimit = limit_bytes
-            limits.JobMemoryLimit = limit_bytes
-            if not api.SetInformationJobObject(
-                    self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
-                raise ctypes.WinError(ctypes.get_last_error())
-        except BaseException:
-            self.close()
-            raise
-
-    def assign(self, proc: subprocess.Popen) -> None:
-        # Popen retains the original process handle, avoiding a PID-reuse race.
-        if not self._api.AssignProcessToJobObject(self._handle, int(proc._handle)):
-            raise self._ctypes.WinError(self._ctypes.get_last_error())
-
-    def close(self) -> None:
-        """Terminate the contained tree; repeated closes are harmless."""
-        if self._handle is not None:
-            self._api.CloseHandle(self._handle)
-            self._handle = None
 
 
 class SessionKernel:
@@ -783,7 +708,11 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         pass_fds = (death_r,)
     if memory_limit is not None and _IS_WINDOWS:
         try:
-            kernel.job = _KernelMemoryJob(memory_limit)
+            # The shared Windows Job Object: it caps the child's address space and
+            # kills the tree with us. Windows-only surface, imported here so the
+            # module stays importable on other hosts.
+            from hermes_cli.local_runtime.processes import memory_capped_job
+            kernel.job = memory_capped_job(memory_limit)
         except Exception:
             # Best effort: a host that refuses nested job assignment must not lose execute_code.
             logger.warning("kernel memory cap unavailable; this child runs uncapped", exc_info=True)

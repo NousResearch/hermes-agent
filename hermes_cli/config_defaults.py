@@ -1997,6 +1997,13 @@ DEFAULT_CONFIG = {
         # rebound per cell — that runtime boundary is the cross-cell enforcement.
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
+        # Address-space budget for ONE kernel child, in MB. A cell is otherwise bounded
+        # only by the 300 s wall clock, which is ample time to allocate hundreds of GB:
+        # one runaway cell took down the backend, the desktop renderer and unrelated
+        # host processes. Past this budget the cell dies ALONE (Windows: a Job Object;
+        # POSIX: RLIMIT_AS in the runner). 0 = unlimited (also drops the Windows
+        # kill-with-host containment, so an orphan kernel can outlive the backend).
+        "memory_limit_mb": 4096,
     },
     # Tool Search replaces deferred tools in the model-facing array with the
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.

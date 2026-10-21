@@ -630,8 +630,7 @@ class TestKernelMemoryCap(unittest.TestCase):
         with _kernel_config(memory_limit_mb="not-a-number"):
             self.assertEqual(_kernel_memory_limit_bytes(), DEFAULT_KERNEL_MEMORY_LIMIT_MB * 1024 * 1024)
 
-    @pytest.mark.skipif(sys.platform != "win32",
-                        reason="Job Object is the Windows enforcement path")
+    @pytest.mark.platforms("windows")
     def test_child_is_placed_in_a_memory_capped_job(self):
         with _kernel_config(memory_limit_mb=512):
             result = _run("print('spawned')")

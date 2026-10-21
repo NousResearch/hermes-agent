@@ -45,7 +45,7 @@ class _ExtendedLimits(ctypes.Structure):
 
 
 class _WindowsJob:
-    def __init__(self):
+    def __init__(self, memory_limit_bytes: int | None = None):
         self._lock = threading.Lock()
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, args, result in (
@@ -65,7 +65,15 @@ class _WindowsJob:
         try:
             limits = _ExtendedLimits()
             # Neither BREAKAWAY_OK nor SILENT_BREAKAWAY_OK: descendants stay contained.
-            limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+            flags = 0x2000  # KILL_ON_JOB_CLOSE
+            if memory_limit_bytes:
+                # PROCESS_MEMORY (0x100) | JOB_MEMORY (0x200): a runaway child fails
+                # its own allocation instead of exhausting the host.
+                flags |= 0x100 | 0x200
+            limits.BasicLimitInformation.LimitFlags = flags
+            if memory_limit_bytes:
+                limits.ProcessMemoryLimit = memory_limit_bytes
+                limits.JobMemoryLimit = memory_limit_bytes
             if not self._api.SetInformationJobObject(
                     self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -85,6 +93,19 @@ class _WindowsJob:
                 if not self._api.CloseHandle(self._handle):
                     raise ctypes.WinError(ctypes.get_last_error())
                 self._handle = None
+
+
+def memory_capped_job(memory_limit_bytes: int) -> _WindowsJob:
+    """A Job Object that caps one child's address space and kills it with its owner.
+
+    ``JOB_OBJECT_LIMIT_PROCESS_MEMORY`` makes a runaway child fail its own allocation
+    instead of exhausting the host; ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` also kills
+    descendants the owner cannot reach (a thread wedged in allocation is unschedulable,
+    so neither ``taskkill`` nor a parent-death watchdog can touch it) (#136403).
+
+    Windows-only: the ctypes surface is not available on other hosts.
+    """
+    return _WindowsJob(memory_limit_bytes=memory_limit_bytes)
 
 
 _CREDENTIAL_ENV_MARKERS = ("_API_KEY", "_TOKEN", "_SECRET", "PASSWORD", "_CREDENTIALS")

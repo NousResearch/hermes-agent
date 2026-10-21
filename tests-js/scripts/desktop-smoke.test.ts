@@ -15,6 +15,17 @@ import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readIns
 import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts'
 import { MOCK_REPLY, startMockServer } from './mock-server.ts'
 
+test('a later CI step\'s mock rebinds the dead mock\'s port, so a gateway that outlived it still answers', async (): Promise<void> => {
+  // The detached gateway froze `http://127.0.0.1:<port>` at boot; the step that started that mock is gone.
+  const earlier = await startMockServer()
+  await earlier.close()
+  const later = await startMockServer({ port: earlier.port })
+
+  try {
+    expect(later.url).toBe(earlier.url)
+  } finally { await later.close() }
+})
+
 test('one server owns inference and a fresh, per-server prompt witness', async (): Promise<void> => {
   const first = await startMockServer()
   const second = await startMockServer()
@@ -280,6 +291,24 @@ test('a canonical gateway proves its tree by the cwd `gateway ensure` starts it 
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test('a canonical gateway whose cwd is unreadable proves its tree by the commit it stamped', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-gateway-sha-'))
+
+  try {
+    // Windows: CIM exposes neither cwd nor environment for the detached `gateway run`.
+    const executable = path.join(os.tmpdir(), 'hermes-tools', 'python', 'python.exe')
+    const commit = 'a'.repeat(40)
+
+    const backend = { pid: 2, parentPid: 1, executable, ownership: 'host-gateway' as const, codeSha: commit,
+      command: [executable, '-m', 'hermes_cli.main', '--profile', 'default', 'gateway', 'run', '--quiet'].map(arg => JSON.stringify(arg)).join(' ') }
+
+    expect(() => assertBackendOrigin(backend, root, 'source', { appReportedRoot: root, installedCommit: commit })).not.toThrow()
+    // A gateway started from another commit (or one that stamped none) is not vouched for.
+    expect(() => assertBackendOrigin({ ...backend, codeSha: 'b'.repeat(40) }, root, 'source', { appReportedRoot: root, installedCommit: commit })).toThrow('different source tree')
+    expect(() => assertBackendOrigin({ ...backend, codeSha: undefined }, root, 'source', { appReportedRoot: root, installedCommit: commit })).toThrow('different source tree')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('a backend bound to the tree by environment needs no root in argv', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
 
@@ -377,7 +406,7 @@ test('OLD update-window source provenance carries its verified app identity to t
     fs.mkdirSync(other, { recursive: true })
 
     // As `localBackendProcess` reports a listener that descends from the app.
-    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child',
+    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child' as const,
       command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
 
     expect((): void => {

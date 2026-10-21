@@ -336,6 +336,30 @@ class TestSSHProbeOnly:
         assert len(control_exit_calls) == 1
 
 
+class TestSCPUpload:
+    def _scp_destination(self, monkeypatch, host):
+        calls = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+        env = ssh_env.SSHEnvironment(host=host, user="alice", port=2222)
+        env._scp_upload("/tmp/local.py", "/home/alice/.hermes/skills/f.py")
+        [scp_cmd] = [cmd for cmd in calls if cmd[0] == "scp"]
+        return scp_cmd[-1]
+
+    def test_ipv6_host_is_bracketed_in_scp_destination(self, monkeypatch, _mock_ssh_runtime):
+        """scp splits ``user@host:path`` at the first colon, so a bare IPv6 literal must be bracketed."""
+        dest = self._scp_destination(monkeypatch, "2001:db8::1")
+        assert dest == "alice@[2001:db8::1]:/home/alice/.hermes/skills/f.py"
+
+    @pytest.mark.parametrize("host", ["example.com", "192.0.2.10"])
+    def test_hostname_and_ipv4_scp_destination_unchanged(self, monkeypatch, _mock_ssh_runtime, host):
+        assert self._scp_destination(monkeypatch, host) == f"alice@{host}:/home/alice/.hermes/skills/f.py"
+
+
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)

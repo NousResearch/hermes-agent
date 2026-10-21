@@ -323,3 +323,80 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
             worker.join(timeout=5)
             cleanup_vm(key)
             clear_session_vars(tokens)
+
+def test_prepared_guard_is_bound_to_call_id_and_arguments(monkeypatch):
+    """Prepared terminal consent cannot be consumed by another call or command."""
+    from agent import terminal_approval_batch as batch_mod
+    from tools import approval_context
+
+    agent_obj = SimpleNamespace(
+        _interrupt_requested=False,
+        session_id="test-session",
+        _current_turn_id="test-turn",
+    )
+
+    parsed = SimpleNamespace(
+        ref=lambda task_id: SimpleNamespace(call_id="call-original")
+    )
+
+    batch = SimpleNamespace(
+        cancelled=threading.Event(),
+        failure_seen=False,
+        agent=agent_obj,
+        task_id="test-task",
+    )
+
+    slot = SimpleNamespace(
+        batch=batch,
+        parsed=parsed,
+        preparing=False,
+        decision={"approved": True},
+        guard_key=("echo approved", "local", False),
+        check_cancelled=lambda: None,
+    )
+
+    slot_token = batch_mod._slot.set(slot)
+    call_token = approval_context._approval_tool_call_id.set("call-original")
+
+    try:
+        # 1. Exact call + exact guard key must consume the approval.
+        result = batch_mod.consume_prepared_guard(
+            "echo approved",
+            "local",
+            False,
+        )
+
+        assert result == {"approved": True}
+
+        # 2. The same prepared approval must be single-use.
+        assert batch_mod.consume_prepared_guard(
+            "echo approved",
+            "local",
+            False,
+        ) is None
+
+        # 3. A different command must not consume prepared consent.
+        slot.decision = {"approved": True}
+
+        assert batch_mod.consume_prepared_guard(
+            "echo attacker",
+            "local",
+            False,
+        ) is None
+
+        assert slot.decision == {"approved": True}
+
+        # 4. A different tool-call ID must not consume prepared consent.
+        approval_context._approval_tool_call_id.set("call-attacker")
+
+        assert batch_mod.consume_prepared_guard(
+            "echo approved",
+            "local",
+            False,
+        ) is None
+
+        assert slot.decision == {"approved": True}
+
+    finally:
+        approval_context._approval_tool_call_id.reset(call_token)
+        batch_mod._slot.reset(slot_token)

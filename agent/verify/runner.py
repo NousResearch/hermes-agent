@@ -9,6 +9,9 @@ checkout — the same trust level as the terminal tool.
 from __future__ import annotations
 
 import os
+import secrets
+import re
+import math
 import signal
 import subprocess
 import time
@@ -22,6 +25,7 @@ from agent.verify.recipes import Recipe
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
+_SANDBOX_HELPER = "/usr/local/sbin/hermes-verify-sandbox"
 _TAIL_CHARS = 2000
 PHASE_ORDER = ("bootstrap", "build", "test")
 # Project-authored shell commands; see module docstring.
@@ -90,18 +94,41 @@ def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
     return text[-limit:] if len(text) > limit else text
 
 
+
+def _run_sandbox_helper(*args: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Call the root-owned verification sandbox; never fall back to host shell."""
+    return subprocess.run(
+        ["sudo", "-n", _SANDBOX_HELPER, *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        timeout=timeout,
+    )
+
+
 def _run_phase_command(
     phase: str, command: str, root: Path, timeout: float,
     on_output: Callable[[str], None] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW)
-        output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
+        timeout_seconds = min(3600, max(1, math.ceil(timeout)))
+        proc = _run_sandbox_helper(
+            "run", str(root), phase, str(timeout_seconds), command,
+            timeout=float(timeout_seconds + 15),
+        )
+        output = proc.stdout or ""
+        timed_out = proc.returncode == 124
+        exit_code = None if timed_out else proc.returncode
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
         output = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else (raw or "")
         exit_code, timed_out = None, True
+    except OSError as exc:
+        output = f"Failed to invoke verification sandbox: {type(exc).__name__}: {exc}"
+        exit_code, timed_out = 127, False
     duration = time.monotonic() - started
     if on_output and output:
         on_output(output)
@@ -168,18 +195,84 @@ def _run_start_phase(
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
-    # start_new_session: own process group for clean teardown.
-    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
-    output = ""
+    token = secrets.token_hex(16)
+    start_timeout = min(3600, max(15, math.ceil(ready_timeout) + 15))
+    start_attempted = False
+    ready = False
+    status: int | None = None
+    error: str | None = None
+    probe_output = ""
+    start_output = ""
+    stop_output = ""
+    stop_failed = False
+
     try:
-        ready, status, error = _poll_readiness(url, ready_timeout)
+        start_attempted = True
+        launch = _run_sandbox_helper(
+            "start", str(root), str(start_timeout), token, recipe.start,
+            timeout=20.0,
+        )
+        start_output = launch.stdout or ""
+        if launch.returncode != 0 or f"STARTED {token}" not in start_output:
+            error = start_output.strip() or f"Sandbox start failed (exit {launch.returncode})"
+        else:
+            deadline = time.monotonic() + max(0.0, ready_timeout)
+            last_probe_error = ""
+            while time.monotonic() < deadline:
+                try:
+                    probe = _run_sandbox_helper("probe", token, url, timeout=6.0)
+                    probe_output = probe.stdout or ""
+                    match = re.search(r"(?m)^READY (\d+)\s*$", probe_output)
+                    if probe.returncode == 0 and match:
+                        ready = True
+                        status = int(match.group(1))
+                        break
+                    last_probe_error = probe_output.strip() or f"probe exited {probe.returncode}"
+                except subprocess.TimeoutExpired:
+                    last_probe_error = "readiness probe helper timed out"
+                except OSError as exc:
+                    last_probe_error = f"readiness probe helper failed: {exc}"
+
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(1.0, remaining))
+
+            if not ready:
+                error = f"Readiness timed out after {ready_timeout:g}s"
+                if last_probe_error:
+                    error += f": {last_probe_error}"
+    except subprocess.TimeoutExpired:
+        error = "Sandbox start helper timed out"
+    except OSError as exc:
+        error = f"Sandbox start helper failed: {type(exc).__name__}: {exc}"
     finally:
-        _terminate_process_group(proc)
-        try:
-            output = proc.stdout.read() or "" if proc.stdout is not None else ""
-        except (OSError, ValueError):
-            output = ""
-    return ReadinessResult(url, ready, status, time.monotonic() - started, error, _tail(output))
+        if start_attempted:
+            try:
+                stopped = _run_sandbox_helper("stop", token, timeout=15.0)
+                stop_output = stopped.stdout or ""
+                if stopped.returncode != 0:
+                    stop_failed = True
+                    detail = stop_output.strip() or f"stop exited {stopped.returncode}"
+                    error = f"Sandbox cleanup failed: {detail}"
+                    ready = False
+                    status = None
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                stop_failed = True
+                error = f"Sandbox cleanup failed: {type(exc).__name__}: {exc}"
+                ready = False
+                status = None
+
+    output_parts = []
+    if start_output and (error is not None or not ready):
+        output_parts.append(start_output)
+    if probe_output:
+        output_parts.append(probe_output)
+    if stop_output:
+        output_parts.append(stop_output)
+    output = "\n".join(part.rstrip() for part in output_parts if part.strip())
+    return ReadinessResult(
+        url, ready, status, time.monotonic() - started, error, _tail(output)
+    )
 
 
 def _compose_live_state_reason(root: Path) -> str | None:

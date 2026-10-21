@@ -475,6 +475,26 @@ def test_guard_session_yolo_bypasses(gw_session):
         A.disable_session_yolo(gw_session)
 
 
+
+def test_execute_code_never_offers_permanent_approval(gw_session):
+    """execute_code may be session-approved, but must never offer Always."""
+    shown = _register_capturing_resolver(gw_session, "once")
+
+    result = A.check_execute_code_guard(
+        "print('permanent approval regression test')",
+        "local",
+    )
+
+    assert result["approved"] is True
+    assert result.get("user_approved") is True
+
+    assert shown["approval_data"]["allow_permanent"] is False
+
+    with A._lock:
+        assert "execute_code" not in A._permanent_approved
+
+
+
 # ---------------------------------------------------------------------------
 # 4. Env scrubbing (#27303)
 # ---------------------------------------------------------------------------

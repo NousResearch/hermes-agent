@@ -207,6 +207,7 @@ def detect_hardline_command(command: str) -> tuple:
 
 # ---- Dangerous command patterns -----------------------------------------------------------
 DANGEROUS_PATTERNS = [
+    (r"\bhermes[\"']?\s+verify\b", "run project-controlled verification recipe (hermes verify)"),
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),

@@ -1279,12 +1279,10 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
             )
         return _approved()
 
-    # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()
-    # calls are guarded per-call (context propagates into the RPC thread, #33057), so a whole-script prompt would fire
-    # on every execute_code call. Ask-mode still takes this path even with INTERACTIVE set (how gateway/smart tests
-    # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
-    # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
-    if not is_gateway and not is_ask:
+    # Interactive CLI sessions require whole-script approval: arbitrary Python can spawn subprocesses or mutate
+    # files without going through terminal(). Headless local contexts without an approval surface keep the legacy
+    # auto-approve contract. Gateway/ask contexts retain their existing approval flow.
+    if not is_cli and not is_gateway and not is_ask:
         return _approved()
 
     session_key = get_current_session_key()
@@ -1304,7 +1302,11 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
-        smart=approval_mode == "smart",
+        smart=approval_mode == "smart" and not is_cli,
+        # execute_code is arbitrary Python.  Keep the intentional session-level
+        # approval behavior, but never offer a permanent "Always" trust grant
+        # for the coarse execute_code approval key.
+        permanent_capable=False,
         pending_body=lambda: f"**Code:**\n```python\n{redact_sensitive_text(code)}\n```",
     )
 

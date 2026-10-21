@@ -1464,7 +1464,7 @@ All ids are bounded strings; unknown values are `None` or `[]`, never guessed.
 
 | Delivery | Fires | Notes |
 |----------|-------|-------|
-| Final reply, non-streamed (`send_final_ledgered`) | Yes | All adapters, after the delivery-ledger finalize. Ephemeral system replies (`/stop`, `/new` notices) are skipped. |
+| Final reply, non-streamed (`send_final_ledgered`) | Yes | All adapters, after the delivery-ledger finalize. Ephemeral system replies (`/stop`, `/new` notices) and replies to slash commands that ran no agent turn (a refused `/resume`, `/status`, usage errors) are skipped; a command that runs an agent turn reports that turn's final. |
 | Final reply, streamed | Yes | Once the runner confirms the stream delivered the final reply, or after a successful reconcile edit. Only the final message id is known here, so `message_ids` has one entry. When the stream is not confirmed, the normal send delivers and fires instead — never both. Not when the stream's fallback resend timed out in flight (delivery is then assumed, not confirmed). |
 | Cron output, live adapter lane | Yes | Not when the confirmation timed out in flight (delivery is then assumed, not confirmed). |
 | Cron output, standalone lane | Yes | `message_ids` holds the last id the standalone sender reports. |

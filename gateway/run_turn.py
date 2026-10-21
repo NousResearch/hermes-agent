@@ -282,6 +282,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            # The final the adapter sends for this event is an agent turn's, even when the event is a
+            # slash command (gateway_message_delivered skips command replies that ran no turn).
+            event._delivered_from_agent_turn = True
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that

@@ -4366,9 +4366,18 @@ class BasePlatformAdapter(ABC):
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
-        if result.success and not is_ephemeral_response:
+        if result.success and not is_ephemeral_response and not self._is_command_reply(event):
             self._notify_final_delivered(event, session_key, text_content, result, delivery_adapter)
         return result, delivery_adapter
+
+    def _is_command_reply(self, event: MessageEvent) -> bool:
+        """The reply answers a slash command that ran no agent turn (``/resume`` refused, ``/status``,
+        a usage error): a system reply, not a turn's final, so ``gateway_message_delivered`` skips
+        it like the ephemeral ``/stop`` and ``/new`` notices. A command that runs an agent turn
+        (the runner stamps ``_delivered_from_agent_turn``) still reports that turn's final."""
+        if getattr(event, "_delivered_from_agent_turn", False):
+            return False
+        return str(event.text or "").lstrip().startswith(("/", self.typed_command_prefix or "!"))
 
     def _notify_final_delivered(
         self, event: MessageEvent, session_key: str, text_content: str, result: "SendResult",

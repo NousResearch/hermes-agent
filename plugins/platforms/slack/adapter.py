@@ -292,11 +292,9 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    """Return the free-text status setter. Not ``agents.sessions.setStatus``: its ``status`` is a
+    lifecycle enum and Slack rejects free text (``invalid_arguments: must be a valid enum value``),
+    so the "is thinking..." / live tool-progress line would never render."""
     return client.assistant_threads_setStatus
 
 

@@ -15,8 +15,11 @@ limits, concurrency, background completion units, stop fan-out, result assembly,
 validation and progress. A provider only answers "which route does this task take".
 
 The active provider is `delegation.backend` in `config.yaml`; a provider's own settings live under
-`delegation.backends.<backend name>`. The built-in `default` strategy is today's behaviour: every child follows the `delegation` section (`delegation.provider`,
-`delegation.model`, `delegation.base_url`, ...), or inherits the parent's route when those are empty.
+`delegation.backends.<backend name>`. The `default` strategy is today's behaviour: every child follows
+the `delegation` section (`delegation.provider`, `delegation.model`, `delegation.base_url`, ...), or
+inherits the parent's route when those are empty. It is itself a plugin, the bundled
+`plugins/delegation/default/` (`kind: backend`, always loaded), registered through the same
+`ctx.register_delegation_provider()` seam as yours; it is also the smallest complete example.
 A configured backend that is not installed or reports unavailable **fails closed**: `delegate_task`
 returns a tool error naming the backend and the fix, no child starts, and its schema parameters are
 absent. A session can override the backend (`agent.delegation_backends`, below).
@@ -88,7 +91,7 @@ is the default route, and `self.settings(config)` is your backend's own block,
 
 | Member | Required | Contract |
 |---|---|---|
-| `name` | yes | The `delegation.backend` value. `default` is reserved for the built-in strategy. |
+| `name` | yes | The `delegation.backend` value. `default` belongs to the bundled default strategy. |
 | `route_task(task, config)` | yes | Return the route dict for one task. `task` carries `goal`, `context`, `index` and the values the model supplied for your parameters. Raise `DelegationRouteError` to refuse; its message is the tool error the model reads. |
 | `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `index`, `output_schema`, `images`, `group`, `role`, `toolsets`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
 | `description(config)` | no | Guidance appended to the `delegate_task` description. |

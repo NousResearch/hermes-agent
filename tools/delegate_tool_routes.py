@@ -79,15 +79,12 @@ def _declared_parameters(provider: DelegationProvider, config: Mapping[str, Any]
 
 
 def schema_extension(config: Mapping[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
-    """``(extra task properties, description addendum)`` for the active provider; empty for the
-    built-in default so its schema stays byte-identical."""
-    from agent.delegation_registry import DEFAULT_BACKEND
+    """``(extra task properties, description addendum)`` for the active provider (none for the
+    default strategy, whose schema is the base one)."""
     try:
         provider = _active_provider(config)
     except DelegationRouteError:
         return {}, ""  # fails closed at spawn time, with the fix; the schema just stays the base one
-    if provider.name == DEFAULT_BACKEND:
-        return {}, ""
     try:
         addendum = provider.description(config)
     except Exception:  # plugin boundary: a broken provider costs its guidance, never the delegate_task tool

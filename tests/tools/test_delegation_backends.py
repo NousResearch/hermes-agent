@@ -10,8 +10,12 @@ import types
 import hermes_yaml as yaml
 import pytest
 
+from pathlib import Path
+
 from hermes_cli import plugins as plugins_mod
 from hermes_cli.plugins import PluginManager
+
+REPO_PLUGINS = Path(__file__).resolve().parents[2] / "plugins"
 
 PROBE_PLUGIN = '''
 from agent.delegation_provider import DelegationProvider, DelegationRouteError
@@ -51,19 +55,22 @@ OPTIONS = [
 ]
 
 
-def _home(tmp_path, monkeypatch, delegation: dict, plugins=("probe-options",)):
+def _home(tmp_path, monkeypatch, delegation: dict, plugins=("probe-options",), disabled=()):
     home = tmp_path / ".hermes"
     plugin_dir = home / "plugins" / "probe-options"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "probe-options", "version": "1.0"}), encoding="utf-8")
     (plugin_dir / "__init__.py").write_text(PROBE_PLUGIN, encoding="utf-8")
     (home / "config.yaml").write_text(yaml.safe_dump(
-        {"plugins": {"enabled": list(plugins)}, "delegation": delegation}), encoding="utf-8")
-    empty_bundled = tmp_path / "bundled"
-    empty_bundled.mkdir()
+        {"plugins": {"enabled": list(plugins), "disabled": list(disabled)}, "delegation": delegation}),
+        encoding="utf-8")
+    # Bundled plugins: only the delegation category (the default strategy is a bundled plugin).
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "delegation").symlink_to(REPO_PLUGINS / "delegation", target_is_directory=True)
     monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
     manager = PluginManager()
     manager.discover_and_load()
     return home, manager
@@ -386,3 +393,54 @@ def test_backend_settings_come_from_its_own_backends_block(tmp_path, monkeypatch
         assert _task_props(_definition())["option"]["enum"] == []
     finally:
         manager.unload()
+
+
+def test_default_strategy_is_the_bundled_plugin_through_the_same_seam(tmp_path, monkeypatch, recorded):
+    from agent.delegation_registry import get_active_provider
+    from tools.delegate_tool import delegate_task
+
+    _, manager = _home(tmp_path / "on", monkeypatch, {"model": "pinned-model"}, plugins=())
+    try:
+        assert manager._plugins["delegation/default"].enabled
+        provider = get_active_provider({})
+        assert provider.name == "default"
+        assert type(provider).__module__.startswith("hermes_plugins.delegation__default")
+        delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent())
+        assert recorded[-1]["model"] == "pinned-model"
+    finally:
+        manager.unload()
+    # Disabling the bundled default is the one way to have no strategy: a clear refusal, base schema.
+    _, manager = _home(tmp_path / "off", monkeypatch, {}, plugins=(), disabled=("delegation/default",))
+    try:
+        out = json.loads(delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent()))
+        assert "delegation/default is disabled" in out["error"]
+        assert "option" not in _task_props(_definition())
+    finally:
+        manager.unload()
+
+
+def test_runtime_with_zero_plugins_loaded_still_delegates_on_the_bundled_default(tmp_path, monkeypatch, recorded):
+    """Delegation is a core tool: a runtime whose plugin sweep never ran (or was pinned empty) loads the
+    bundled default strategy on first use instead of losing delegate_task."""
+    from agent.delegation_registry import _load_bundled, _registry
+    from tools.delegate_tool import delegate_task
+
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(yaml.safe_dump({"delegation": {"model": "pinned-model"}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pinned = PluginManager()
+    pinned._discovered = True  # zero plugins, discovery never runs
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", pinned)
+    previous = _registry.snapshot_registration("default")
+    if previous is not None:
+        _registry.restore_registration("default", previous, None)
+    try:
+        delegate_task(tasks=[{"goal": "one plain delegated task"}], parent_agent=_parent())
+        assert recorded[-1]["model"] == "pinned-model"
+        assert _registry.get_provider("default").name == "default"
+        assert _load_bundled("../../tools") is None  # config text never becomes a path
+    finally:
+        current = _registry.snapshot_registration("default")
+        if current is not None:
+            _registry.restore_registration("default", current, previous)

@@ -5,7 +5,7 @@ provider, endpoint and reasoning effort the child uses, or which Hermes profile 
 also add per-task parameters to the ``delegate_task`` schema (an enum of profile names, of titled
 model options, ...). Providers register via :meth:`PluginContext.register_delegation_provider`;
 ``delegation.backend`` in config.yaml selects the active one (unset = ``default``, today's
-behaviour). Core keeps the whole lifecycle (spawn, isolation, roles, depth, concurrency,
+behaviour, provided by the bundled ``plugins/delegation/default`` plugin). Core keeps the whole lifecycle (spawn, isolation, roles, depth, concurrency,
 background units, stop fan-out, results, ``output_schema``, progress); a provider only answers
 "which route does this task take".
 
